@@ -7,6 +7,7 @@
  * (M10).
  */
 
+import path from "node:path";
 import { isBranchPrefix, isRemoteName } from "../git/push-names.js";
 import { mostRestrictiveInnerSetting, type ProjectInnerSetting } from "./inner-agent.js";
 import type { ContextRagConfig, ProjectRagConfig } from "./rag.js";
@@ -20,6 +21,38 @@ import type {
   TrustProfile,
 } from "./schema.js";
 import { TRUST_PROFILES } from "./schema.js";
+
+/** T9.13 (FR-WS-10, LLD §5.1): `dependency_seeds[].timeout_seconds` when absent (Assumption, Delegated). */
+export const DEFAULT_SEED_TIMEOUT_SECONDS = 600;
+
+/** A declared dependency seed, resolved (LLD §5.1). Paths are relative to the primary context and normalised. */
+export interface SeedSpec {
+  readonly id: string;
+  readonly lockfile: string;
+  readonly directory: string;
+  readonly install: readonly string[];
+  readonly timeoutMs: number;
+}
+
+/**
+ * Structural problem of one seed path (`lockfile` or `directory`), or undefined: empty, absolute, a `..`, empty or `.`
+ * component, a backslash or NUL, or under `.git`. Checked at load and again before any filesystem step (T9.13).
+ */
+export function seedPathProblem(p: string): string | undefined {
+  if (p.length === 0) return "must not be empty";
+  if (p.includes("\0") || p.includes("\\")) return "must not contain NUL or a backslash";
+  if (path.posix.isAbsolute(p)) return "must be relative to the primary context";
+  const parts = p.split("/");
+  if (parts.some((s) => s === "..")) return "must not contain a '..' component";
+  if (parts.some((s) => s === "" || s === ".")) return "must be normalised (no empty or '.' component)";
+  if (parts[0]?.toLowerCase() === ".git") return "must not be under .git";
+  return undefined;
+}
+
+/** True when `inner` is `outer` or inside it (both normalised relative paths). */
+export function seedPathWithin(inner: string, outer: string): boolean {
+  return inner === outer || inner.startsWith(`${outer}/`);
+}
 
 /** Shown by `delegate_task` for a `container` project when no container environment is wired (T10.1; `serve` wires one). */
 export const CONTAINER_NOT_IMPLEMENTED = "no container environment is available to this controller (FR-PRJ-04)";
@@ -59,6 +92,8 @@ export interface ResolvedProject {
   /** T12.1 (LLD §14.1): present only when the project sets `rag`; see `effectiveProjectRag`. */
   readonly rag?: ProjectRagConfig;
   readonly contexts: readonly ResolvedContext[];
+  /** T9.13 (FR-WS-10, LLD §5.1): present only when the project declares `dependency_seeds`; declaration order. */
+  readonly dependencySeeds?: readonly SeedSpec[];
 }
 
 /** Structural violations as `<json path>: <message>` lines, in the loader's format. */
@@ -126,9 +161,43 @@ export function checkProjects(cfg: SwitchboardConfig): string[] {
         }
       }
     }
+    errs.push(...checkDependencySeeds(p, at));
     const primaries = p.contexts.filter((c) => isPrimaryContext(p, c)).length;
     if (primaries !== 1) {
       errs.push(`${at}.contexts: exactly one context must be primary ("primary": true); found ${primaries}`);
+    }
+  }
+  return errs;
+}
+
+/**
+ * T9.13 (FR-WS-10, LLD §5.1): the structural seed rules a schema cannot say. Paths are relative to the primary
+ * context, normalised and never under `.git`; a directory is neither the lockfile nor contains it; ids are unique and
+ * no two directories of a project are equal or nested. Messages never echo a path or an argument.
+ */
+function checkDependencySeeds(p: ProjectConfig, at: string): string[] {
+  const errs: string[] = [];
+  const seeds = p.dependency_seeds ?? [];
+  const ids = new Set<string>();
+  for (const [k, s] of seeds.entries()) {
+    const sat = `${at}.dependency_seeds[${k}]`;
+    if (ids.has(s.id)) errs.push(`${sat}.id: duplicate seed id in project ${p.id}`);
+    ids.add(s.id);
+    for (const field of ["lockfile", "directory"] as const) {
+      const problem = seedPathProblem(s[field]);
+      if (problem !== undefined) errs.push(`${sat}.${field}: ${problem}`);
+    }
+    if (seedPathProblem(s.lockfile) === undefined && seedPathProblem(s.directory) === undefined) {
+      if (seedPathWithin(s.lockfile, s.directory)) errs.push(`${sat}.directory: must not be or contain the lockfile`);
+    }
+    if (s.install[0] === undefined || s.install[0].length === 0) {
+      errs.push(`${sat}.install: must name an executable as its first element`);
+    }
+    for (const [m, o] of seeds.entries()) {
+      if (m >= k || seedPathProblem(o.directory) !== undefined || seedPathProblem(s.directory) !== undefined) continue;
+      if (seedPathWithin(s.directory, o.directory) || seedPathWithin(o.directory, s.directory)) {
+        errs.push(`${sat}.directory: equal to or nested with dependency_seeds[${m}].directory`);
+      }
     }
   }
   return errs;
@@ -183,6 +252,17 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
           ...(c.rag !== undefined ? { rag: structuredClone(c.rag) } : {}),
         };
       }),
+      ...(p.dependency_seeds !== undefined
+        ? {
+            dependencySeeds: p.dependency_seeds.map((s) => ({
+              id: s.id,
+              lockfile: s.lockfile,
+              directory: s.directory,
+              install: [...s.install],
+              timeoutMs: (s.timeout_seconds ?? DEFAULT_SEED_TIMEOUT_SECONDS) * 1000,
+            })),
+          }
+        : {}),
     };
   });
 }

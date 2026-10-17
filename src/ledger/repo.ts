@@ -220,7 +220,8 @@ export type ArtifactKind =
   | "log_summary"
   | "handoff_view"
   | "pr_draft" // T11.8, migration 0009
-  | "handoff_condense"; // T11.10, migration 0016
+  | "handoff_condense" // T11.10, migration 0016
+  | "seed_log"; // T9.13, migration 0022
 
 export interface NewArtifactRow {
   /** Pre-allocated with {@link Ledger.newArtifactId} when a row written first must name it (T5.5, LLD §15.2). */

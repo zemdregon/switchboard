@@ -8,6 +8,7 @@ import type { TrustProfile } from "../ledger/index.js";
 import { git, gitText, MIN_GIT_VERSION, parseGitVersion, versionAtLeast } from "./git.js";
 import { ensureWorktreeGitLink } from "./git-link.js";
 import { findNestedRepositories, nestedPathspecArgs } from "./nested.js";
+import { type SeedEnvironment, type SeedSpec, type SeedStore, seedWorktree } from "./seeds.js";
 
 /**
  * Workspace manager (T1.5; LLD §5, ADR-0006, FR-WS-01..06). Order of every step is intent row, Git action, outcome row.
@@ -82,6 +83,18 @@ export interface WorkspaceManagerOptions {
   readonly allowedRoots: readonly string[];
   readonly ids?: IdGenerator;
   readonly now?: () => Date;
+  /**
+   * T9.13 (FR-WS-10, LLD §5.1, ADR-0057): dependency seeding of a fresh worktree, after the `pre` checkpoint and before
+   * anything else sees it. Absent (`serve` composes it only when a configured project declares a seed): no call, no
+   * row, no event, and the worktree is exactly as before. Seeding never fails `prepare`.
+   */
+  readonly seeding?: {
+    readonly store: SeedStore;
+    /** The declared seeds and seed environment of a project, or undefined when it declares none. */
+    readonly plan: (
+      projectId: string,
+    ) => { readonly specs: readonly SeedSpec[]; readonly environment: SeedEnvironment } | undefined;
+  };
 }
 
 export interface PrepareInput {
@@ -168,7 +181,7 @@ const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
  */
 const worktreeCreateQueue = new Map<string, Promise<void>>();
 
-async function serialisedWorktreeCreate<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
+export async function serialisedWorktreeCreate<T>(repoRoot: string, fn: () => Promise<T>): Promise<T> {
   const previous = worktreeCreateQueue.get(repoRoot) ?? Promise.resolve();
   let release = () => {};
   const mine = new Promise<void>((resolve) => {
@@ -282,6 +295,9 @@ export class WorkspaceManager {
           )
           .run(repoRoot, baseCommit, now, input.metaSessionId);
       })();
+      if (this.options.seeding !== undefined) {
+        await this.seed(this.options.seeding, input, { worktreePath, baseCommit, repoRoot });
+      }
 
       return { mode: "worktree", worktreePath, branch, baseCommit, repoRoot, baseCheckpointId, preCheckpointId };
     } catch (err) {
@@ -432,6 +448,37 @@ export class WorkspaceManager {
   }
 
   // ---- internals ----------------------------------------------------------------------------------------------
+
+  /** T9.13: the run's project seeds, if any (the store records `seed_applied` or `seed_failed`; never throws). */
+  private async seed(
+    seeding: NonNullable<WorkspaceManagerOptions["seeding"]>,
+    input: PrepareInput,
+    ws: { worktreePath: string; baseCommit: string; repoRoot: string },
+  ): Promise<void> {
+    try {
+      const row = this.db.prepare("SELECT project_id FROM run WHERE id = ?").get(input.runId) as
+        | { project_id: string | null }
+        | undefined;
+      if (!row?.project_id) return;
+      const plan = seeding.plan(row.project_id);
+      if (plan === undefined || plan.specs.length === 0) return;
+      await seedWorktree(
+        seeding.store,
+        {
+          runId: input.runId,
+          projectId: row.project_id,
+          profile: input.trustProfile,
+          baseCommit: ws.baseCommit,
+          repoRoot: ws.repoRoot,
+          worktreePath: ws.worktreePath,
+          environment: plan.environment,
+        },
+        plan.specs,
+      );
+    } catch {
+      // Degrade, never fail (ADR-0057 item 6): the run proceeds with an unseeded worktree.
+    }
+  }
 
   private async canonicalRoots(): Promise<string[]> {
     if (!this.rootsCache) {
