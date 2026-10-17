@@ -1031,6 +1031,8 @@ async function runDaemon(
       modelGroups: config.modelGroups,
     },
     projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+    // T16.4 (LLD §19.4): a queued item resolves its skills at its own admission, on the ledger handle.
+    ...(config.skills.enabled ? { skills: { db, settings: config.skills } } : {}),
   };
   const runQueueTick = () =>
     runProjectWorkQueueTick(ledger, queueAdmission, queueSettings).catch((err) => {

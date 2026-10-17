@@ -9,6 +9,8 @@
  *   `privileged`, ELIGIBILITY_NONE for a profile no M2 adapter can compile.
  * - `HandoffBundleError` (T5.6, ADR-0038 item 7) maps to its own `TOOL_FAILURE` with `details.reason`
  *   `HANDOFF_BUNDLE_UNAVAILABLE` and its fixed message.
+ * - `SkillAdmissionError` (T16.4, LLD §19.5, FRD V15, C8) carries its own code (`INVALID_REQUEST` or
+ *   `PERMISSION_BLOCKED`) and `details.reason` (and the requested `skill` reference when one failed).
  * - Unexpected exceptions caught at the tool-handler boundary (TDD §3.2) map to `TOOL_FAILURE` with a generic message
  *   (no stack, no input echo), following the FRD WF-3 precedent for internal faults.
  */
@@ -16,6 +18,7 @@ import type { FailureCode } from "../adapters/failure.js";
 import { HandoffBundleError } from "../continuity/index.js";
 import { LifecycleError } from "../lifecycle/index.js";
 import { ProfileUnavailableError } from "../policy/index.js";
+import { SkillAdmissionError } from "../skills/admission.js";
 
 /** Codes that may succeed on a later identical attempt (LLD §4 "Retryable?" column, FR-CAP-05). */
 const RETRYABLE: ReadonlySet<FailureCode> = new Set(["RATE_LIMIT_TRANSIENT", "PROVIDER_OVERLOADED", "PROCESS_CRASH"]);
@@ -51,6 +54,7 @@ export function toToolError(err: unknown): ToolError {
   // T5.6 (ADR-0038 item 7): a bundle that cannot be built is TOOL_FAILURE, not retryable, with the fixed message and
   // `details.reason = "HANDOFF_BUNDLE_UNAVAILABLE"`; the internal cause stays in the controller.
   if (err instanceof HandoffBundleError) return new ToolError(err.code, err.message, { reason: err.details.reason });
+  if (err instanceof SkillAdmissionError) return new ToolError(err.code, err.message, { ...err.details });
   if (err instanceof LifecycleError) {
     if (err.code === "QUEUE_FULL") return new ToolError("ELIGIBILITY_NONE", err.message, { reason: "QUEUE_FULL" });
     // T14.4 (FR-CTL-06): an operator budget refusal, the same code as `QUEUE_FULL` (nothing is written, the state may

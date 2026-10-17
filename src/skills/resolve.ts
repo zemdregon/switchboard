@@ -34,6 +34,8 @@ export interface CatalogVersion {
   readonly state: SkillVersionState;
   readonly origin: SkillOrigin;
   readonly sha256: string;
+  /** `skill_version.size_bytes`, for the T16.4 run cap; `readCatalogEntry` always sets it. */
+  readonly sizeBytes?: number;
 }
 
 /** One name with its derived state; `versions` ascending. */
@@ -60,6 +62,7 @@ export function readCatalogEntry(db: Database.Database, name: string): CatalogEn
       state: byVersion.get(r.version) ?? "draft",
       origin: r.origin,
       sha256: r.sha256,
+      sizeBytes: r.size_bytes,
     })),
   };
 }
@@ -96,8 +99,8 @@ export type SkillGateReason =
   | "SKILL_NOT_APPROVED"
   | "SKILL_REPOSITORY_ORIGIN";
 
-/** Step 4 for one resolved version, the name-level checks having passed. */
-function versionGate(v: CatalogVersion, gate: SkillGate): SkillGateReason | undefined {
+/** Step 4 for one resolved version, the name-level checks having passed (also step 1' re-check, T16.4). */
+export function versionGate(v: CatalogVersion, gate: SkillGate): SkillGateReason | undefined {
   if (v.state === "revoked") return "SKILL_NOT_APPROVED";
   if (v.state !== "approved" && !draftAllowed(gate)) return "SKILL_NOT_APPROVED";
   if (v.origin === "repository_path" && isUntrustedProfile(gate.profile)) return "SKILL_REPOSITORY_ORIGIN";

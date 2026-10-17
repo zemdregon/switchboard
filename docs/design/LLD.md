@@ -5875,7 +5875,7 @@ percentage of a plan, and the text view prints "used (estimate, Switchboard-obse
 `doctor` prints one pacing line per subscription: `pace`, `deferred_until` and the source.
 
 *As built (T6.13, 2026-10-17, Delegated):* the configuration keys and the per-window figures. The projection block that
-reads them is T6.14 (below); the gate that holds runs is T6.8 and the score term is T7.15. `capacity.subscriptions`
+reads them is T6.14 (below); the gate that holds runs is T6.8 and the score term is T7.15 (built; see §17.7). `capacity.subscriptions`
 and `capacity.pacing` are
 strict in `src/config/schema.ts`; `src/config/capacity.ts` refuses a provider id that is not configured, a provider in
 two subscriptions, a window id repeated in a subscription, a `fixed` reset without an ISO instant with an offset as
@@ -5923,7 +5923,7 @@ candidate is deferred, so such a decision is built exactly as before; with `requ
 the run waits for its own gate; otherwise the deferred candidates are left out while an undeferred one remains, and
 when all are deferred a held affine provider stays the choice, else the candidates whose gate opens first remain and
 the §17.3 rule breaks the tie. The decision stores the narrowed set as `features_json.admissible`, so version 2
-replay recomputes the same selection from the row alone (decision versioning is T7.15). Each deferred candidate's
+replay recomputes the same selection from the row alone (version 3 decisions since T7.15, §17.7). Each deferred candidate's
 `candidates_json` entry gains `pacing` (`verdict: "PACING_DEFERRED"`, `until`, `subscription`, `window`, `source`), and
 `reasons_json.pacing` lists them with `hold_until` (null when an undeferred candidate was chosen). `pump()` reads the
 deferrals once per dispatch pass while runs are queued, before the breaker check (a held run never becomes the
@@ -5965,7 +5965,8 @@ both `low_water_mark` and `min_confidence` are set (§3.2); the default leaves i
 exhaustion switches. A value for `idle_ttl` is refused rather than ignored until expiry is built. Absent section: the
 defaults above. *As built (T7.13, Done 2026-10-17):* the schema also accepts a seventh weight
 `routing.weights.pacing` (0 to 100, default 1, Q-80; `src/config/schema.ts`, resolved by `resolveRouting` in
-`src/config/routing.ts`). The scorer in §17.3 still sums the six terms above; the `pacing` term is T7.15 (§17.7).
+`src/config/routing.ts`). Since T7.15 the scorer adds the `pacing` term after the six when a candidate's provider is
+in a configured subscription (§17.7); otherwise it sums the six terms above.
 
 ### 17.2 Heuristic features (FR-RTE-04)
 
@@ -6148,8 +6149,8 @@ refusals, routing-time resolution, the seventh weight `routing.weights.pacing`),
 with each member's resolution (resolved id, alias, or the stage-1 code it would get; `src/cli/doctor.ts`, informational,
 present only when groups are configured), and the **Request** subsection below (`delegate_task` and `enqueue_work`
 closed schemas, refusals, mutual exclusion, and request carry to admission). The **Candidates**, **Score** (`pacing`
-term), **Affinity**, **Decision record, version 3** and **Run fields** subsections below remain Proposed (T7.15; not
-built). Design for T7.13 to T7.15.
+term), **Affinity**, **Decision record, version 3** and **Run fields** subsections below are built by T7.15 (Done
+2026-10-17, Delegated; see "As built (T7.15)" at the end of this section). Design for T7.13 to T7.15.
 
 **Configuration** (strict keys, NFR-SEC-06). Placeholders only: neither this document nor code names a model.
 
@@ -6224,6 +6225,51 @@ fixed template.
 
 **Run fields.** The chosen member's resolved model goes into `request_json.model` and `CompileRequest.model`, as for
 T7.12 pinning. The envelope's `provider.model` reports what the native session reported, as today.
+
+*As built (T7.15, 2026-10-17, Delegated):* `src/routing/groups.ts` (member candidates), `src/routing/score.ts` (the
+seventh term and member selection), `src/routing/affinity.ts`, `src/routing/decision.ts` (version 3 record, replay,
+`collectPacingInputs`), `src/routing/explain.ts`, and the `delegate_task` and `enqueue_work` admission paths
+(`src/mcp/server.ts`, `src/queue/admission.ts`). Tests: `src/routing/group-selection.test.ts`, part 1b of
+`src/routing/affinity-property.test.ts`, and the byte-identity fixtures `src/routing/fixtures/v2-golden-input.ts` and
+`v2-golden.json` (records produced by `main`'s builder before T7.15). Points this section left open, each an
+**Assumption**:
+
+- **When version 3 is written.** Only for a request with `model_group` or `model`, or when at least one admissible
+  candidate's provider is in a configured subscription (the `pacing` term is then present). Anything else is written as
+  version 2, byte for byte as before (the fixtures above).
+- **Stage 1 per member** is one eligibility pass with the member's provider required and its model requested, which
+  checks (a) to (d) in that order (`collectFacts`). A member's configured provider id maps to its adapter id; members
+  whose provider the project does not allow are dropped like providers, and none left is `ELIGIBILITY_NONE` (reason
+  `GROUP_MEMBERS`). An explicit `model` is one member: the named provider, or the one provider whose registry resolves it
+  (FRD V14). For `privileged`, a member refused only by compile is admissible, as a provider is (FRD V11).
+- **Selection with members.** `require_provider` and `provider_preference` select among that provider's members (highest
+  score, then member order; the rule stays `required_provider` or `provider_preference`), and a held affine member among
+  them stays the choice, so the model never moves without a reason.
+- **Affinity.** The affine member is the one with the row's provider and the row's model as its resolved or configured
+  id; a row with a `null` model matches no member, so a group request is then `user_request`. The `pacing_gate` rule
+  also applies to requests without a group (candidates are providers): otherwise a deferred affine provider would be
+  passed over with no reason. A `capacity_exhausted` or `failed_after_retry` reason leaves out only the affine member;
+  other members of its provider stay in the score.
+- **Pacing inputs.** Taken at routing time from the T6.14 figures (`pacingViews`, binding window per subscription);
+  `defers` and `until` there are informational. Admission uses the T6.8 gate verdict on each candidate's facts (T6.8 was
+  merged, so no stand-in function was needed). `features_json.pacing_mode` stores the mode at top level so replay knows
+  `off` (0.5 for every candidate) even for a candidate without a subscription; `weights_json` gains `pacing` (1 when the
+  file leaves it unset) only when the term is present.
+- **Record fields.** `features_json` adds `model_group`, `requested_model`, `members` (`key`, `provider`, `model`,
+  `configured`, `order`), `pacing_mode`, `pacing_inputs` and `candidate_subscription` (`null` without pacing, `[]` without
+  members). A member's `candidates_json` entry has `provider` and `member`; every version 3 entry has `model` and
+  `pacing_verdict` (`null` or `{ verdict, until }`). `reasons_json.selection` adds `member` and `model`;
+  `reasons_json.affinity` adds `member` (group requests) and `detail: "pacing_gate"`; `reasons_json.pacing.deferred`
+  entries add `member`.
+- **Run fields.** A member decision does not run the T7.12 remembered-model pin: the member's model is the model.
+- **`explain_route`.** Its published output schema lists `schema_version` as 1, 2 or `null`, and T7.15 changes no tool
+  schema, so a version 3 row reports 2 (a scored decision) there and its exact version in `features.schema_version`. A
+  member candidate is labelled `<provider>/<model>`; `deciding_factors` adds "model group `<name>`: member `<key>`
+  chosen" (or "requested model ..."), one "pacing: `<provider>` ahead of pace | on pace | behind pace | pace unknown"
+  line per candidate provider in a subscription with " until `<time>`" when deferred, "pacing: off (neutral term)" in
+  mode `off`, and ", pacing_gate" on the affinity switch line. Widening the enum to 3 is left to a later schema change.
+- **Not changed.** Continuations route over providers (Q-99) and receive the `pacing` term like any provider request; the
+  quota failover successor (§16.6) is built by the lifecycle without pacing inputs, so it stays version 2.
 
 ## 18. Project queue, schedules and CI triggers (M15, Proposed, T15.0)
 
@@ -6683,10 +6729,12 @@ change):
 "skills": { "type": "array", "maxItems": 8, "uniqueItems": true,
             "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,47}(@[1-9][0-9]{0,5})?$" } },
 "role": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
-"skill_defaults": { "enum": ["apply", "omit"], "default": "apply" }
+"skill_defaults": { "enum": ["apply", "omit"] }
 ```
 
-The fields are part of `request_hash` (idempotency, FR-MCP-08). A queued item stores them and resolves at its own
+The fields are part of `request_hash` (idempotency, FR-MCP-08). `skill_defaults` carries no schema `default`:
+an absent field stays absent (so step 1 tells "no fields" from "apply", C8) and means `apply` at resolution.
+A queued item stores them and resolves at its own
 admission, not at enqueue time.
 
 ### 19.5 Resolution at admission (FR-SKL-03, FR-SKL-04)
@@ -6716,6 +6764,19 @@ Inside the admission transaction, after profile and ceiling checks and before th
 
 Skills are resolved once per run. They are not read by eligibility, scoring, affinity, the profile compiler, approval
 or any other policy component (import-boundary test, as for `src/retrieval/**`).
+
+*Implementation (T16.4, 2026-10-17, Delegated, not owner-approved):* `src/skills/admission.ts`. Steps 2 to 4 are the
+T16.9 `resolveSkills`; `resolveRunSkills` adds steps 1 and 5 and is pure. The lifecycle calls it through a structurally
+typed `SkillAdmissionPort` (it does not import `src/skills/`, because `src/capacity/` reaches the lifecycle), after the
+meta-session and privileged checks and before the `run` row; a refusal rolls the transaction back. Delegated readings:
+`skill_defaults` has no schema `default`, so an absent field stays absent for step 1 and means `apply`; the fields are
+stored in `request_json` when given and are part of `request_hash`. A step 1 entry that fails the re-check (or whose
+stored hash changed) is skipped with an event, not refused, as it was not requested by this request. The byte cap sums
+`skill_version.size_bytes` (front matter and body, so at least the body). `run_skill.delivery` is NOT NULL, so
+admission writes `prompt_prefix` with `delivered_at` NULL; `get_run` returns `skills` entries
+`{name, version, sha256, source, delivery}` with `delivery` null until dispatch sets `delivered_at`. A run with no
+entry and no skipped default gets no `skill_resolved` event. The import-boundary test exempts `src/skills/limits.ts`,
+the constants-only leaf `src/config/` imports (T16.3).
 
 ### 19.6 Delivery at dispatch (FR-SKL-05)
 

@@ -2,6 +2,7 @@
  * T15.1 (FR-QUE-01, LLD §18.4): admit a queued `request_json` through the same pipeline as MCP `delegate_task`, under
  * `creator_client_id`. Shared by the scheduler; MCP `server.ts` may adopt this module in a later lane.
  */
+import type Database from "better-sqlite3";
 import {
   type AdapterRegistry,
   acceptsReportedModel,
@@ -40,15 +41,26 @@ import type { DynamicProjectStore } from "../projects/index.js";
 import {
   buildRouteDecision,
   collectAffinityFacts,
+  collectPacingInputs,
   collectScoreInputs,
   DEFAULT_AFFINITY,
   DEFAULT_WEIGHTS,
+  type GroupEligibility,
+  groupStage1,
   planModelPin,
   profileRank,
   type RouteDecisionResult,
   type RouteFeatures,
+  requestedMembers,
   withModelPin,
 } from "../routing/index.js";
+import {
+  hasSkillFields,
+  SkillAdmissionError,
+  type SkillAdmissionSettings,
+  skillAdmissionPort,
+  skillRequestFields,
+} from "../skills/admission.js";
 import { gitText } from "../workspace/git.js";
 
 export type AdmitWorkOutcome =
@@ -71,6 +83,11 @@ export interface AdmitWorkDeps {
   projectStore?: DynamicProjectStore;
   candidateOrder?: readonly ProviderId[];
   models?: ModelRegistry;
+  /**
+   * T16.4 (FR-SKL-03, LLD §19.4): the skill store (the ledger's own handle) and the resolved `skills` settings. Absent,
+   * or `enabled` false, means a queued request with `skills`, `role` or `skill_defaults` fails `INVALID_REQUEST`.
+   */
+  skills?: { db: Database.Database; settings: SkillAdmissionSettings & { readonly enabled: boolean } };
 }
 
 interface ProjectResolution {
@@ -105,6 +122,8 @@ const eligibilityError = ({ decision }: EligibilityAnswer): ToolError => {
 };
 
 function mapError(err: unknown): AdmitWorkOutcome {
+  // T16.4 (LLD §19.5): a skill refusal fails the item with its code, as the same request fails delegate_task.
+  if (err instanceof SkillAdmissionError) return { kind: "failed", code: err.code };
   if (err instanceof LifecycleError) {
     if (err.code === "QUEUE_FULL") return { kind: "retry" };
     // T14.4 (FR-CTL-06): an operator budget refusal holds the item in the queue; it is tried again when the cap resets.
@@ -239,9 +258,22 @@ export async function admitWorkItemRequest(
       features: RouteFeatures;
       project?: { id: string; excluded: readonly ProviderId[]; revision?: number };
       affinity: { projectId: string | null; workspace: string; applies: boolean; requiredProvider: string | null };
+      /** T7.15 (LLD §17.7): a group or explicit-model request; candidates are its members. */
+      group?: GroupEligibility & { name: string | null; requestedModel: string | null };
     },
   ): RouteDecisionResult & { provider: ProviderId } => {
-    const eligible = admissible(answer, opts.privileged);
+    const group = opts.group;
+    if (group !== undefined) return routeWith({ input: group.input, decision: group.decision }, group.admissible, opts);
+    return routeWith(answer, admissible(answer, opts.privileged), opts);
+  };
+
+  const routeWith = (
+    answer: EligibilityAnswer,
+    eligible: string[],
+    opts: Parameters<typeof route>[1],
+  ): RouteDecisionResult & { provider: ProviderId } => {
+    const group = opts.group;
+    const providers = [...new Set(eligible.map((c) => group?.members.find((m) => m.key === c)?.provider ?? c))];
     const settings = {
       weights: deps.config.routing?.weights ?? DEFAULT_WEIGHTS,
       windowSeconds: deps.config.capacity?.windowSeconds ?? DEFAULT_CAPACITY_WINDOW_SECONDS,
@@ -250,12 +282,18 @@ export async function admitWorkItemRequest(
       ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
     };
     const now = new Date();
-    const scoreInputs = collectScoreInputs(ledger, eligible, settings, now, null);
+    const scoreInputs = collectScoreInputs(ledger, providers, settings, now, null);
     const affinity = collectAffinityFacts(
       ledger,
       { ...opts.affinity, admissible: eligible, decision: answer.decision, scoreInputs },
       deps.config.routing?.affinity ?? DEFAULT_AFFINITY,
     );
+    // T7.15 (LLD §16.9, §17.7): the `pacing` term, only when a candidate's provider is in a configured subscription.
+    const sub = deps.config.capacity;
+    const pacing =
+      sub?.subscriptions !== undefined && sub.pacing !== undefined
+        ? collectPacingInputs(ledger, { subscriptions: sub.subscriptions, pacing: sub.pacing }, providers, now)
+        : undefined;
     const result = buildRouteDecision({
       input: answer.input,
       decision: answer.decision,
@@ -266,6 +304,10 @@ export async function admitWorkItemRequest(
       scoreInputs,
       weights: settings.weights,
       ...(opts.project !== undefined ? { project: opts.project } : {}),
+      ...(group !== undefined
+        ? { group: { name: group.name, requestedModel: group.requestedModel, members: group.members } }
+        : {}),
+      ...(pacing !== undefined ? { pacing } : {}),
     });
     if (result.provider === null) throw eligibilityError(answer);
     return { ...result, provider: result.provider as ProviderId };
@@ -374,20 +416,27 @@ export async function admitWorkItemRequest(
         }
       }
     }
-    if (routing.model !== undefined && routing.provider_preference === undefined && routing.require_provider !== true) {
-      const targetModel = routing.model;
-      const enabledProviders = registry
+    /** FRD V14: the enabled providers whose restricted registry resolves `model`. */
+    const resolvingProviders = (model: string): string[] =>
+      registry
         .list()
         .map((a) => a.id)
-        .filter((id) => deps.config.providers?.get(id)?.enabled !== false);
-      const resolving = enabledProviders.filter((p) => {
-        if (!models?.restricted(p)) return false;
-        const res = models.resolve(p, targetModel);
-        return res.ok && res.source !== "unrestricted";
-      });
-      if (resolving.length !== 1) {
+        .filter((id) => deps.config.providers?.get(id)?.enabled !== false)
+        .filter((p) => {
+          if (!models?.restricted(p)) return false;
+          const res = models.resolve(p, model);
+          return res.ok && res.source !== "unrestricted";
+        });
+    if (routing.model !== undefined && routing.provider_preference === undefined && routing.require_provider !== true) {
+      if (resolvingProviders(routing.model).length !== 1) {
         throw invalid("name a provider for this model", { field: "routing.model" });
       }
+    }
+    // T16.4 (LLD §19.4): the queued fields resolve here, at the item's own admission, never at enqueue.
+    const skillFields = skillRequestFields(request);
+    const skillsOn = deps.skills?.settings.enabled === true;
+    if (hasSkillFields(skillFields) && !skillsOn) {
+      throw invalid("skills, role and skill_defaults need skills.enabled", { reason: "SKILLS_DISABLED" });
     }
     const canonical = {
       tool: "delegate_task",
@@ -400,25 +449,56 @@ export async function admitWorkItemRequest(
       routing,
       priority: request.priority,
       ...(scope?.ok ? { privileged_scope: scope.scope } : {}),
+      ...skillFields,
     };
     const hash = requestHash(canonical);
     const required = routing.require_provider === true ? (routing.provider_preference as ProviderId) : undefined;
     const privileged = scope?.ok === true;
     const minimumCapability = routing.minimum_capability;
     const narrowed = projectCandidates(resolved, required);
-    const answer = await lifecycle.checkEligibility({
-      candidates: narrowed.candidates,
-      ...(required !== undefined ? { requiredProvider: required } : {}),
+    const question = {
       trustProfile: profile,
       clientMaxProfile: resolved.effectiveMax,
       cwd: workspace,
       ...(minimumCapability !== undefined ? { minimumCapability } : {}),
+    };
+    // T7.15 (LLD §17.7): with a group or an explicit model, each member is a stage-1 candidate.
+    const named = requestedMembers(routing, modelGroups, narrowed.candidates, (m) => {
+      const r = resolvingProviders(m);
+      return r.length === 1 ? r[0] : undefined;
     });
-    if (answer.decision.outcome.kind !== "eligible" && admissible(answer, privileged).length === 0) {
-      throw eligibilityError(answer);
+    if (named !== undefined && named.members.length === 0) {
+      throw new ToolError("ELIGIBILITY_NONE", "no member of the requested group or model has an allowed provider", {
+        reason: "GROUP_MEMBERS",
+      });
     }
-    if (required !== undefined && !admissible(answer, privileged).includes(required)) throw eligibilityError(answer);
+    const group =
+      named === undefined
+        ? undefined
+        : {
+            ...(await groupStage1(named.members, required ?? null, privileged, (provider, model) =>
+              lifecycle.checkEligibility({
+                ...question,
+                candidates: [provider as ProviderId],
+                requiredProvider: provider as ProviderId,
+                model,
+              }),
+            )),
+            name: named.name,
+            requestedModel: named.requestedModel,
+          };
+    const answer =
+      group ??
+      (await lifecycle.checkEligibility({
+        candidates: narrowed.candidates,
+        ...(required !== undefined ? { requiredProvider: required } : {}),
+        ...question,
+      }));
+    const admitted = group?.admissible ?? admissible(answer, privileged);
+    if (answer.decision.outcome.kind !== "eligible" && admitted.length === 0) throw eligibilityError(answer);
+    if (group === undefined && required !== undefined && !admitted.includes(required)) throw eligibilityError(answer);
     const routed0 = route(answer, {
+      ...(group !== undefined ? { group } : {}),
       preference: routing.provider_preference,
       privileged,
       features: await lifecycle.routeFeatures(
@@ -443,13 +523,17 @@ export async function admitWorkItemRequest(
       },
     });
     const capModel = answer.input.facts.find((f) => f.provider === routed0.provider)?.model;
-    const { routed, model } = await pinModel(
-      routed0,
-      { trustProfile: profile, clientMaxProfile: resolved.effectiveMax, cwd: workspace },
-      privileged,
-      minimumCapability,
-      capModel,
-    );
+    // T7.15 (LLD §17.7 Run fields): a chosen member runs with its resolved model; no remembered-model pin applies.
+    const { routed, model } =
+      routed0.member !== null
+        ? { routed: routed0, model: routed0.member.model }
+        : await pinModel(
+            routed0,
+            { trustProfile: profile, clientMaxProfile: resolved.effectiveMax, cwd: workspace },
+            privileged,
+            minimumCapability,
+            capModel,
+          );
 
     const submitted = await lifecycle.submit({
       clientId: creatorClientId,
@@ -464,6 +548,17 @@ export async function admitWorkItemRequest(
       ...(model !== undefined ? { model } : {}),
       project: resolved.snapshot,
       idempotencyKey,
+      ...(skillsOn && deps.skills !== undefined
+        ? {
+            skills: skillAdmissionPort({
+              db: deps.skills.db,
+              settings: deps.skills.settings,
+              ...(resolved.project.skills !== undefined ? { project: resolved.project.skills } : {}),
+              ...(client.skills !== undefined ? { clientSkills: client.skills } : {}),
+              fields: skillFields,
+            }),
+          }
+        : {}),
       ...(verification.length > 0 ? { verificationCommands: verification } : {}),
       ...(scope?.ok
         ? {

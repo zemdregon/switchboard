@@ -439,7 +439,10 @@ FR-SKL-10 store aspects that T16.1 built (validator, canonicaliser, content stor
 `src/skills/configured.ts`), the FR-SKL-09 operator CLI that T16.2 built (`src/cli/skills.ts`, read helpers
 `src/skills/read.ts` and `src/skills/diff.ts`; the `doctor` skills line; skills in `runs show`), and the
 FR-SKL-08 MCP-tools aspect that T16.9 built (read-only `list_skills` and `get_skill` in `src/mcp/`, the §19.5
-steps 2 to 4 resolver in `src/skills/resolve.ts`); the four limit defaults stay Assumptions and their ranges are
+steps 2 to 4 resolver in `src/skills/resolve.ts`), and the FR-SKL-03, FR-SKL-04 and FR-SKL-07 admission aspect that
+T16.4 built (`skills`, `role` and `skill_defaults` on `delegate_task`, `continue_task` and `enqueue_work`, ordered
+resolution with gates and caps in the admission transaction, `run_skill` rows, the `skill_resolved` event and skill
+metadata in `get_run`; `src/skills/admission.ts`); the four limit defaults stay Assumptions and their ranges are
 Delegated (LLD §19.3).
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
