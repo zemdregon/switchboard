@@ -143,6 +143,11 @@ export function createWorkQueueLedgerSlice(
     return getWorkItemFixed(id);
   };
 
+  const isBlockingPredecessor = (predecessorId: string): boolean => {
+    const pred = getWorkItemFixed(predecessorId);
+    return pred !== undefined && pred.state !== "DONE" && pred.state !== "CANCELLED";
+  };
+
   const unblockDependents = (predecessorId: string) => {
     const successors = db
       .prepare(`SELECT successor_id FROM project_work_dependency WHERE predecessor_id = ?`)
@@ -153,10 +158,7 @@ export function createWorkQueueLedgerSlice(
       const preds = db
         .prepare(`SELECT predecessor_id FROM project_work_dependency WHERE successor_id = ?`)
         .all(successor_id) as { predecessor_id: string }[];
-      const blocking = preds.some((p) => {
-        const pred = getWorkItemFixed(p.predecessor_id);
-        return pred !== undefined && pred.state !== "DONE" && pred.state !== "CANCELLED";
-      });
+      const blocking = preds.some((p) => isBlockingPredecessor(p.predecessor_id));
       if (!blocking) setState(successor_id, "READY", {}, "ready");
     }
   };
@@ -238,7 +240,9 @@ export function createWorkQueueLedgerSlice(
         const at = ts();
         const id = ids.id("que");
         const preds = input.predecessorIds ?? [];
-        const initialState: WorkItemState = preds.length === 0 ? "READY" : "PENDING";
+        // A predecessor that is already DONE or CANCELLED never transitions again, so unblockDependents would not
+        // promote this item later; apply the same rule here.
+        const initialState: WorkItemState = preds.some(isBlockingPredecessor) ? "PENDING" : "READY";
         db.prepare(
           `INSERT INTO project_work_item (id, project_id, creator_client_id, state, priority, request_json, source_kind,
             source_id, idempotency_key, created_at, updated_at)
