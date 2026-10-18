@@ -231,7 +231,7 @@ shared adapter port is in [SDD §5](SDD.md#5-requirements-to-design-traceability
 `none-documented`, `commitChannel` `finalize-only`, `resumeCwd` `bound`) per TDD §4.4, not exercised here.
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("antigravity compile matrix (T4.32)", "antigravity
-  bypass-class declarations (ADR-0035, ADR-0045)", "antigravity probe and auth placeholder (fail closed until T4.34)",
+  bypass-class declarations (ADR-0035, ADR-0045)", "antigravity probe (T4.32)",
   "antigravity registry entry and manifest gate (T4.32)"); `src/adapters/providers.test.ts` (refused bypass-flag
   shapes)
 - **Modules:** `src/adapters/antigravity/adapter.ts`, `src/adapters/antigravity/protocol.ts`,

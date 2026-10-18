@@ -1944,6 +1944,13 @@ check settled now reads **Observed (1.3.4, [LC] Cn)**; cells the note lists unde
 [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks). The checklist in §4.4.3 and the contradiction note in
 §4.4.5 are kept as written.
 
+*Update 2026-10-18 (Delegated; T4.32 probe fix).* Antigravity 1.4.0 no longer lists `--output-format` in `--help`
+([live checks 2026-10-17](../research/live-checks-2026-10-17-claude-codex.md) §5), causing `output_format` and `flags`
+probe steps to fail although the flag remains supported by the CLI. The probe accepts `--output-format` when listed
+in `--help`, and otherwise falls back to a no-model check (`agy --output-format json --help` exiting 0 without Go-style
+undefined flag errors) to verify flag acceptance without spawning a model call or requiring a login. Help flags are
+matched across `stdout` and `stderr`, and the undefined-flag check reads both streams.
+
 | Aspect | Detail |
 | --- | --- |
 | Automation surface | `agy -p "<prompt>"` (aliases `--print`, `--prompt`): response on stdout, diagnostics (errors, authentication prompts, progress, permission notices) on stderr [H, R2 L74, L110]. Version: `agy --version` [I]; **Observed (1.3.4, [LC] C1):** one line, the bare version `1.3.4`, exit 0. Platforms: macOS, Linux, Windows [I]; only Linux is evaluated here (NFR-PORT-02, NFR-PORT-03) |

@@ -3,7 +3,16 @@
  * no `agy` binary is run; probe output is the shape the 2026-10-14 live check recorded (`1.3.4`).
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -221,20 +230,34 @@ describe("antigravity bypass-class declarations (ADR-0035, ADR-0045)", () => {
 
 describe("antigravity probe (T4.32)", () => {
   const runner =
-    (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
+    (table: Record<string, Partial<ProbeOutput>>): ProbeRunner =>
     async (argv) => {
       const key = argv.slice(1).join(" ");
-      const hit = table[key] ?? { stdout: "", exitCode: 2 };
-      return { stdout: hit.stdout, stderr: "", exitCode: hit.exitCode, timedOut: false } as ProbeOutput;
+      const hit = table[key] ?? { exitCode: 2 };
+      return {
+        stdout: hit.stdout ?? "",
+        stderr: hit.stderr ?? "",
+        exitCode: hit.exitCode ?? 0,
+        timedOut: hit.timedOut ?? false,
+      } as ProbeOutput;
     };
   const HELP =
     "Usage of agy:\n  -c, --continue\n  --conversation string\n  --dangerously-skip-permissions\n" +
     "  --output-format string\n  -p, --print, --prompt string\n  --sandbox\n";
+  const HELP_1_4 = HELP.replace("  --output-format string\n", "");
 
-  it("passes the five steps on the live-check shapes and reports the version line", async () => {
-    const r = await adapter().probe(
-      runner({ "--version": { stdout: "1.3.4\n", exitCode: 0 }, "--help": { stdout: HELP, exitCode: 0 } }),
-    );
+  it("passes the five steps on 1.3.4-style help where --help lists --output-format", async () => {
+    let checkedOutputFormat = false;
+    const r = await adapter().probe(async (argv) => {
+      const key = argv.slice(1).join(" ");
+      if (key === "--version") return { stdout: "1.3.4\n", stderr: "", exitCode: 0, timedOut: false };
+      if (key === "--help") return { stdout: HELP, stderr: "", exitCode: 0, timedOut: false };
+      if (key === "--output-format json --help") {
+        checkedOutputFormat = true;
+        return { stdout: HELP, stderr: "", exitCode: 0, timedOut: false };
+      }
+      return { stdout: "", stderr: "", exitCode: 2, timedOut: false };
+    });
     expect(r.binaryVersion).toBe("1.3.4");
     expect(r.steps.map((s) => [s.step, s.ok])).toEqual([
       ["binary", true],
@@ -243,6 +266,54 @@ describe("antigravity probe (T4.32)", () => {
       ["output_format", true],
       ["flags", true],
     ]);
+    expect(checkedOutputFormat).toBe(false);
+  });
+
+  it("passes on 1.4-style help where --help omits --output-format but CLI accepts the flag", async () => {
+    let checkedOutputFormat = false;
+    const r = await adapter().probe(async (argv) => {
+      const key = argv.slice(1).join(" ");
+      if (key === "--version") return { stdout: "1.4.0\n", stderr: "", exitCode: 0, timedOut: false };
+      if (key === "--help") return { stdout: HELP_1_4, stderr: "", exitCode: 0, timedOut: false };
+      if (key === "--output-format json --help") {
+        checkedOutputFormat = true;
+        return { stdout: HELP_1_4, stderr: "", exitCode: 0, timedOut: false };
+      }
+      return { stdout: "", stderr: "", exitCode: 2, timedOut: false };
+    });
+    expect(r.binaryVersion).toBe("1.4.0");
+    expect(checkedOutputFormat).toBe(true);
+    expect(r.steps.map((s) => [s.step, s.ok])).toEqual([
+      ["binary", true],
+      ["version", true],
+      ["command", true],
+      ["output_format", true],
+      ["flags", true],
+    ]);
+  });
+
+  it("fails with today's message when --help omits --output-format and CLI rejects the flag", async () => {
+    const r = await adapter().probe(
+      runner({
+        "--version": { stdout: "1.4.0\n", exitCode: 0 },
+        "--help": { stdout: HELP_1_4, exitCode: 0 },
+        "--output-format json --help": {
+          stdout: "",
+          stderr: "flags provided but not defined: -output-format\n",
+          exitCode: 2,
+        },
+      }),
+    );
+    expect(r.steps.find((s) => s.step === "output_format")).toEqual({
+      step: "output_format",
+      ok: false,
+      detail: "--output-format",
+    });
+    expect(r.steps.find((s) => s.step === "flags")).toEqual({
+      step: "flags",
+      ok: false,
+      detail: "missing --output-format",
+    });
   });
 
   it("names a missing flag, an unparseable version and a missing binary", async () => {
@@ -260,6 +331,122 @@ describe("antigravity probe (T4.32)", () => {
     expect(noVersion.binaryVersion).toBeNull();
     const missing = await new AntigravityAdapter({ pathEnv: "/nonexistent" }).probe(runner({}));
     expect(missing.steps).toEqual([{ step: "binary", ok: false, detail: "agy not found on PATH" }]);
+  });
+
+  describe("fake binary probe assertions (T4.32)", () => {
+    function makeFakeAgy(behavior: "1.3.4" | "1.4-accepted" | "1.4-rejected" | "1.4-stderr"): {
+      dir: string;
+      exe: string;
+      logFile: string;
+      cleanup: () => void;
+    } {
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), "switchboard-fake-agy-")));
+      const exe = join(dir, "agy");
+      const logFile = join(dir, "calls.log");
+      const script = `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    -p|--prompt|--print|-p=*|--prompt=*|--print=*)
+      echo "MODEL CALL FORBIDDEN: $arg" >&2
+      exit 99
+      ;;
+  esac
+done
+echo "$@" >> "${logFile}"
+
+if [ "$1" = "--version" ]; then
+  echo "1.4.0"
+  exit 0
+fi
+
+if [ "$1" = "--help" ]; then
+  if [ "${behavior}" = "1.3.4" ]; then
+    printf "Usage of agy:\\n  --conversation string\\n  --dangerously-skip-permissions\\n  --output-format string\\n  --prompt string\\n"
+  elif [ "${behavior}" = "1.4-stderr" ]; then
+    printf "Usage of agy:\\n  --conversation string\\n  --dangerously-skip-permissions\\n  --prompt string\\n" >&2
+  else
+    printf "Usage of agy:\\n  --conversation string\\n  --dangerously-skip-permissions\\n  --prompt string\\n"
+  fi
+  exit 0
+fi
+
+if [ "$1" = "--output-format" ] && [ "$2" = "json" ] && [ "$3" = "--help" ]; then
+  if [ "${behavior}" = "1.4-rejected" ]; then
+    echo "flags provided but not defined: -output-format" >&2
+    exit 2
+  else
+    printf "Usage of agy:\\n  --conversation string\\n  --dangerously-skip-permissions\\n  --prompt string\\n"
+    exit 0
+  fi
+fi
+
+exit 1
+`;
+      writeFileSync(exe, script);
+      chmodSync(exe, 0o755);
+      return { dir, exe, logFile, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+    }
+
+    it("1.3.4-style fake binary (flag listed in help) passes and never spawns a model call", async () => {
+      const fake = makeFakeAgy("1.3.4");
+      try {
+        const adp = new AntigravityAdapter({ executable: fake.exe });
+        const res = await adp.probe(createProbeRunner(["PATH", "HOME"]));
+        expect(res.steps.every((s) => s.ok)).toBe(true);
+        const calls = readFileSync(fake.logFile, "utf8").trim().split("\n");
+        expect(calls).toEqual(["--version", "--help"]);
+      } finally {
+        fake.cleanup();
+      }
+    });
+
+    it("1.4-style fake binary (flag not in help, flag accepted) passes and never spawns a model call", async () => {
+      const fake = makeFakeAgy("1.4-accepted");
+      try {
+        const adp = new AntigravityAdapter({ executable: fake.exe });
+        const res = await adp.probe(createProbeRunner(["PATH", "HOME"]));
+        expect(res.steps.every((s) => s.ok)).toBe(true);
+        const calls = readFileSync(fake.logFile, "utf8").trim().split("\n");
+        expect(calls).toEqual(["--version", "--help", "--output-format json --help"]);
+      } finally {
+        fake.cleanup();
+      }
+    });
+
+    it("1.4-style fake binary with help on stderr passes and never spawns a model call", async () => {
+      const fake = makeFakeAgy("1.4-stderr");
+      try {
+        const adp = new AntigravityAdapter({ executable: fake.exe });
+        const res = await adp.probe(createProbeRunner(["PATH", "HOME"]));
+        expect(res.steps.every((s) => s.ok)).toBe(true);
+        const calls = readFileSync(fake.logFile, "utf8").trim().split("\n");
+        expect(calls).toEqual(["--version", "--help", "--output-format json --help"]);
+      } finally {
+        fake.cleanup();
+      }
+    });
+
+    it("1.4-style fake binary that rejects flag fails with today's message and never spawns a model call", async () => {
+      const fake = makeFakeAgy("1.4-rejected");
+      try {
+        const adp = new AntigravityAdapter({ executable: fake.exe });
+        const res = await adp.probe(createProbeRunner(["PATH", "HOME"]));
+        expect(res.steps.find((s) => s.step === "output_format")).toEqual({
+          step: "output_format",
+          ok: false,
+          detail: "--output-format",
+        });
+        expect(res.steps.find((s) => s.step === "flags")).toEqual({
+          step: "flags",
+          ok: false,
+          detail: "missing --output-format",
+        });
+        const calls = readFileSync(fake.logFile, "utf8").trim().split("\n");
+        expect(calls).toEqual(["--version", "--help", "--output-format json --help"]);
+      } finally {
+        fake.cleanup();
+      }
+    });
   });
 
   it("reads no Antigravity credential, settings or state file (source inspection)", () => {
