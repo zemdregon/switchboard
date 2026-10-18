@@ -849,7 +849,8 @@ design)."
     `decided_by: mcp_proxy:<client_id>`, and that no code emits the ADR-0048 `approval_pending` or `needs_attention`
     sink events). So the ADR status stays `Proposed` until the queued docs-consistency and code-consistency
     follow-ups merge. A follow-up row then changes both to `Accepted` with this decision as provenance and closes
-    the M14 clause "ADR-0047 and ADR-0048 accepted". This decision does not touch Q-30 (durable approvals cannot be revoked): it stays open as written.
+    the M14 clause "ADR-0047 and ADR-0048 accepted". This decision does not touch Q-30 (durable approvals cannot
+    be revoked): it stays open as written.
 
 62\. Q-46 and Q-55 (M9 E4/E7): the conservative option (2026-10-18). **Relayed by the orchestrator (Linus, with
 standing authority) as an owner direction; the wording below is the relayed text, not checked against zemdregon's own
