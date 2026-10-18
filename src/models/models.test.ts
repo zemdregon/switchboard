@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ClaudeAdapter } from "../adapters/claude/adapter.js";
+import { modelLiteralHits } from "../adapters/fixtures/model-literals.js";
 import { AdapterRegistry } from "../adapters/registry.js";
 import type { ProbeOutput, ProbeResult, ProbeRunner } from "../adapters/types.js";
 import { loadConfig } from "../config/index.js";
@@ -211,16 +212,6 @@ describe("providers.<id>.models config (T4.5)", () => {
 
 // ---- model-literal ban (FR-ADP-05; TDD §4.9 item 13) -------------------------------------------------------------------
 
-/** Provider and model-family words that, followed by a version digit or a tier word, read as a model name. */
-const FAMILY =
-  "claude|gpt|chatgpt|gemini|gemma|grok|kimi|moonshot|sonnet|opus|haiku|composer|llama|mistral|deepseek|qwen|muse|o[134]";
-const MODEL_LIKE = new RegExp(
-  `\\b(?:${FAMILY})[-_. ]?(?:mini|pro|flash|nano|max|ultra|lite|turbo|preview|latest|[0-9])`,
-  "i",
-);
-/** A context-window-sized number or a 128k/1m style size. */
-const LIMIT_LIKE = /\b(?:1_?000_?000|2_?00_?000|128_?000|256_?000|32_?768|65_?536|131_?072|\d{2,4}[kK])\b/;
-
 function adapterSourceFiles(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
@@ -230,15 +221,6 @@ function adapterSourceFiles(dir: string): string[] {
     } else if (/\.(ts|json)$/.test(name) && !/\.test\.ts$/.test(name)) out.push(full);
   }
   return out;
-}
-
-function modelLiteralHits(text: string): string[] {
-  const hits: string[] = [];
-  text.split("\n").forEach((line, i) => {
-    const m = MODEL_LIKE.exec(line) ?? LIMIT_LIKE.exec(line);
-    if (m) hits.push(`${i + 1}: ${m[0]}`);
-  });
-  return hits;
 }
 
 describe("no model name or context limit in adapter source (FR-ADP-05, T4.5)", () => {

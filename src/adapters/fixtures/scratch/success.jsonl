@@ -1,0 +1,5 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written in the fake CLI event shapes (src/adapters/fake/cli.mjs); scratch is not a real provider","exit":0,"write":{"path":"hello.txt","content":"hello from the scratch replay\\n"}}}
+{"type":"session","session_id":"scratch-session-0001"}
+{"type":"tool","tool":"edit","name":"write_file","target":"hello.txt"}
+{"type":"message","text":"Wrote hello.txt."}
+{"type":"result","ok":true,"summary":"Added hello.txt."}

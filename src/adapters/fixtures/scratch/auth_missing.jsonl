@@ -1,0 +1,2 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written in the fake CLI event shapes (src/adapters/fake/cli.mjs); scratch is not a real provider","exit":1}}
+{"type":"error","category":"auth","message":"SYNTHETIC: not logged in"}

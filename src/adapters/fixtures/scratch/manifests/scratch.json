@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "provider": "scratch",
+  "validated_cli_version": "unverified-synthetic",
+  "validated_version_range": "<0.0.0",
+  "validated_on": "2026-10-18",
+  "auth_modes_allowed": ["native_cached_subscription"],
+  "automation_surface": ["documented_headless"],
+  "credential_export_allowed": false,
+  "dashboard_scraping_allowed": false,
+  "network_protocol_reverse_engineering": false,
+  "commercial_multi_user_status": "requires-review",
+  "source_revision": "not-applicable: SYNTHETIC test adapter (T4.1, T4.2); scratch is not a real provider and has no documentation or terms",
+  "notes": "Test-only manifest for the T4.1 scratch adapter (src/adapters/fixtures/scratch-provider.ts), held to TDD 4.9 item 2 by src/adapters/checklist.test.ts. It lives under fixtures, not src/adapters/manifests, so the build never ships a manifest for a provider that does not exist. The range admits no version, so the version gate reports ADAPTER_VERSION_UNVERIFIED; no version is validated."
+}
