@@ -279,8 +279,9 @@ no credential read, no prompt or transcript printed). It records statuses, failu
 session ids, and the bundle's artifact id and SHA-256. A provider that is not installed, not in its validated range or
 not logged in makes its checks `NOT_CHECKED`, and the script exits 1. Running it is the operator task T5.12.
 
-**Live-test budget guard (T8.9, NFR-MAINT-05).** Both live scripts call `admitLiveRun` in `scripts/live/budget.mjs`
-after choosing their provider plug-ins and before `dist/` is loaded or any provider process is spawned (probe, auth
+**Live-test budget guard (T8.9, NFR-MAINT-05).** All three live scripts call `admitLiveRun` in `scripts/live/budget.mjs`
+after choosing their provider (a plug-in from `scripts/live/providers/` for smoke and pair, an adapter id for the
+malicious leg) and before `dist/` is loaded or any provider process is spawned (probe, auth
 status, `switchboard serve`). `SWITCHBOARD_LIVE_BUDGET_FILE` names the operator's budget file; unset, the scripts behave
 as on `main` and print one stderr warning. The file format is owned by the header of `scripts/live/budget.mjs` and shown
 in the [README](../../README.md#live-test-budget-guard): `schema_version` 1, `window_hours`, `global_max_runs`,
@@ -289,7 +290,8 @@ file, a relative path or a path inside the repository refuse (fail closed). The 
 injected) refuses, in this order, a purpose (`SWITCHBOARD_LIVE_PURPOSE`) not on the allowlist, a provider not listed, a
 start inside the minimum gap after the last `start` record, and a request that would pass the global or a per-provider
 cap of provider runs counted from `start` records inside the rolling window (a smoke run is one provider run, a pair
-direction one per provider). A refusal appends a `denied` record and exits 75 (`EX_TEMPFAIL`); an admission appends
+direction one per provider, a live-malicious invocation up to three on its provider). A refusal appends a `denied`
+record and exits 75 (`EX_TEMPFAIL`); an admission appends
 `start` and, on process exit, `finish` with the exit code. The file's model reaches the run without a new flag: the
 in-script compile (flag audit) carries it, the throwaway `serve` config lists only that model in `providers.<id>.models`
 with capability `low`, and the delegation asks for `minimum_capability: "low"` (T7.8 stage 1). Delegated choices: the
