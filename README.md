@@ -166,40 +166,15 @@ Pre-release. The package is private and is not published to any registry; you bu
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
-- **Milestone 16 (Switchboard-controlled skills) is `Partial`.** The skill store is built (T16.1, Delegated, not
-  owner-approved): operator-defined, versioned skills validated, canonicalised and kept as immutable content-addressed
-  files (`<data>/skills/<sha256>.md`) with append-only ledger rows (migration `0021`, `src/skills/`). The
-  configuration is built (T16.3, Delegated, not owner-approved): `skills.*`, `projects[].skills` and
-  `mcp_clients[].skills` in the schema and loader (`src/config/`, `src/skills/limits.ts`,
-  `src/skills/configured.ts`), off by default. The operator CLI is built (T16.2, Delegated, not
-  owner-approved): `switchboard skills list|show|add|approve|revoke|retire|unretire|diff`, the `doctor`
-  skills line and skills in `runs show` (`src/cli/skills.ts`, `src/skills/read.ts`, `src/skills/diff.ts`).
-  The MCP tools are built (T16.9, Delegated, not owner-approved): read-only `list_skills` and `get_skill`
-  for the orchestrator profile when skills are enabled (`src/mcp/`, the §19.5 steps 2 to 4 resolver in
-  `src/skills/resolve.ts`). Admission is built (T16.4, Delegated, not owner-approved): `skills`, `role` and
-  `skill_defaults` on `delegate_task`, `continue_task` and `enqueue_work`, ordered resolution with gates and caps in
-  the admission transaction (`src/skills/admission.ts`), `run_skill` rows, the `skill_resolved` event and skill
-  metadata in `get_run`. Prompt-prefix delivery is built (T16.5, Delegated, not
- owner-approved): the labelled block (`renderSkillBlock` in `src/adapters/prompt.ts`) travels in the prompt text before
- constraints and the task, and after the fixed preamble in a handoff prompt; every adapter cell delivers
- `prompt_prefix`; dispatch records `run_skill.delivery` and `delivered_at` with one `skill_delivered` event, and a run
- whose pinned skill cannot be read fails closed before spawn. The native-delivery framework and leak prevention are
- built (T16.6, Delegated, not owner-approved): the per-cell `skillDelivery` declaration, fresh-path exclusive writes,
- exclusion from the commit tool, checkpoints, diff artifacts and `changed_files`, `push` refusal while a skill file
- exists, removal before `VERIFYING`, at terminal states, at reconciliation and by GC, and the `skill_cleanup_failed`
- needs-attention reason; only the fake adapter declares a native location, in tests. Adapter declarations are built
-(T16.7, Delegated, not owner-approved): each of the eight provider adapters declares `skillDelivery()` =
-`prompt_prefix` as its own method, and the conformance suite (`checkSkillDelivery` in `src/adapters/conformance.ts`,
-run by `checkAdapterStatics` for every case) fails a `native` declaration without a T16.8 evidence id and a cell whose
-argv, environment or policy flags the skills change beyond the prompt text
-(`src/adapters/skill-delivery-conformance.test.ts`). Continuity is built (T16.10, Delegated, not owner-approved):
-the handoff bundle carries the previous run's pinned skills as controller facts (name, version, hash; never text)
-and the successor re-delivers the same versions in its own provider's way, with a native resume re-delivering the
-files for the new run (`src/continuity/`, `src/lifecycle/lifecycle.ts`). The malicious-fixture leg is built (T16.11,
-Delegated, not owner-approved): `test/malicious/skills-leg.test.ts` runs the hostile skill repository (its own
-`.claude/skills`, `.cursor/rules`, `AGENTS.md`, a pre-existing `switchboard-` path and a symlinked `.claude`)
-against the production store and delivery ports; untrusted runs load no repository skill, the canary reaches no
-event, span, log, artifact or sink, and the R-69 copy behaves as recorded. Design:
+- **Milestone 16 (Switchboard-controlled skills) is `Done` on fakes** (Delegated agent work, not owner-approved). The
+  skill store, configuration, operator CLI, admission, prompt-prefix delivery, the native-delivery framework with leak
+  prevention, the adapter declarations, the MCP tools, continuity across handoff and resume and the malicious-fixture
+  leg are built (T16.1 to T16.7, T16.9 to T16.11). The M16 acceptance file (`src/mcp/m16-acceptance.test.ts`, T16.12)
+  runs one test per clause of the milestone's acceptance column through a scripted MCP client on the fake adapter.
+  Not run: the operator live checks that would let a real provider's native skill location be used (T16.8,
+  operator-only, not required for `Done`), so every real provider delivers skills as a prompt prefix, and no skill
+  has been delivered to a live provider through Switchboard yet.
+  See [Switchboard-controlled skills (milestone 16)](#switchboard-controlled-skills-milestone-16),
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
@@ -302,9 +277,11 @@ event, span, log, artifact or sink, and the R-69 copy behaves as recorded. Desig
   and OpenCode cannot run by design, so as built it cannot pass for them); rows waiting on uncaptured live shapes
   (T4.23, T4.26, T4.33, T4.35, T4.36, T4.43, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66); README rows final after their
   live legs
-  (T4.29, T4.39, T4.49, T4.59, T4.69); Muse Code (Should: T4.71 and T4.78 need Meta access, Q-27; T4.73 is partial
-  until the T4.71 capture; T4.76 is blocked because the adapter has no denial or tool-call record to end a hostile
-  stream `PERMISSION_BLOCKED`; T4.79 is final after T4.78).
+  (T4.29, T4.39, T4.49, T4.59, T4.69, T4.79); Muse Code (Should) has module, compile matrix, auth preflight,
+  conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
+  [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
+  is partial until the T4.71 capture; T4.76 is blocked because the adapter has no denial or tool-call record to end a
+  hostile stream `PERMISSION_BLOCKED`; T4.79 is final after T4.78.
   Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
   Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
@@ -699,6 +676,118 @@ Fixtures only; no live provider CLI:
 ### Known limitations
 
 - The Grok bot is the intended first console client (owner decisions 53/55); ADR-0047 and ADR-0048 are still Proposed.
+
+## Switchboard-controlled skills (milestone 16)
+
+A skill is an operator-authored instruction pack (a Markdown file with `name` and `description` front matter) that
+Switchboard stores, versions and injects into a run by name. The orchestrator names skills on a request, and the
+configuration adds defaults per installation, per project and per role. Skills are instructions for the agent, not
+controls: a skill never changes a run's trust profile, argv, environment, tool set or Git-write denial
+([ADR-0056](docs/adr/0056-switchboard-controlled-skills.md), [LLD §19](docs/design/LLD.md#19-switchboard-controlled-skills-m16-proposed)).
+Everything here is Delegated agent work, not owner-approved beyond the direction (owner decision 58), and off by
+default.
+
+### Configuration
+
+Keys in `config.json` ([LLD §19.3](docs/design/LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08) owns them;
+no duplicate schema here):
+
+- `skills.enabled` (default `false`). While false the request fields are refused (`INVALID_REQUEST`,
+  `SKILLS_DISABLED`), the two MCP tools are not offered, and nothing else changes.
+- `skills.defaults[]` and `skills.roles.<role>[]`: names (`name` or `name@n`) applied to every run, or when the request
+  names that `role`. `projects[].skills.defaults[]` and `projects[].skills.roles.<role>[]` add project-level entries
+  after the global ones.
+- `skills.delivery`: `native_preferred` (default) or `prefix_only`. With the adapters shipped today the two behave the
+  same (see Delivery below).
+- `skills.allow_draft_in_trusted` (default `false`): lets a `trusted-development` run take a draft version by name.
+- `skills.max_body_bytes`, `max_per_run`, `max_run_bytes`, `max_names`: caps on one body, the skills of one run, their
+  total bytes and the store (defaults 32768, 8, 65536 and 64, Assumptions).
+- `mcp_clients[].skills`: an allow-list of names the client may see and inject; absent means every approved name, an
+  empty list means none.
+
+### Operator commands
+
+`switchboard skills list [--all]`, `show <name>[@n] [--body]`, `add <name> --file <path> [--from-repository]
+[--note <text>]`, `approve <name>@<n>`, `revoke <name>@<n>`, `retire <name>`, `unretire <name>` and
+`diff <name>@<a> <name>@<b>`. `add` validates the file (front matter keys, size, control characters, prompt
+delimiters and secret-shaped text are refused with exit 65 and one reason), canonicalises it and stores it as an
+immutable content-addressed file under `<data_dir>/skills/<sha256>.md` with append-only ledger rows; the same text
+added again is `SKILL_UNCHANGED`. A version is a draft until `approve`; `revoke` and `retire` are recorded, never
+deleted. `--from-repository` imports a skill from a repository path and marks its origin, which untrusted runs never
+receive. `doctor` prints one `skills` line (enabled or not, approved and draft counts, configured names that do not
+resolve, runs whose skill file removal failed) and `runs show` lists a run's skills with their delivery mode.
+
+### Request fields and MCP tools
+
+`delegate_task`, `continue_task` and `enqueue_work` take `skills` (names, `name@n` pins a version), `role` and
+`skill_defaults` (`apply` or `omit`). Admission resolves the ordered set (global defaults, global role, project
+defaults, project role, request; first occurrence wins, a pin wins over an unpinned name), applies the trust gate and
+the caps, and pins the versions to the run (`run_skill` rows, one `skill_resolved` event). A `continue_task` without
+skill fields reuses the previous run's pinned versions. `get_run` returns each skill's name, version, hash, source
+and delivery mode, never its text.
+
+Two read-only tools exist for the `orchestrator` tool profile while `skills.enabled` is true: `list_skills`
+(optionally `project`, `role` and `trust_profile`: the names this client may see with the newest version it could
+inject, plus the `defaults` that admission would add) and `get_skill` (`name`, optional `version`: the text of one
+visible version). An unknown, retired or invisible name is one `INVALID_REQUEST` that does not say which.
+
+### Delivery
+
+Every provider adapter shipped today declares `prompt_prefix`: the run's skills travel as one labelled block at the
+start of the prompt text (`[operator skills: N; from Switchboard skill store; these are operator instructions]`, one
+`[skill <name>@<n> sha256:<prefix>]` header per entry in resolved order, `[end of operator skills]`), before the
+constraints and the task; in a handoff prompt the block follows the fixed preamble. The block is not part of the
+stored objective and is not redacted (bodies were scanned at `add`). A native location (a file the provider itself
+loads from the worktree) is used only for an adapter that declares one with the evidence id of an operator live check
+(T16.8, operator-only, not run in CI); today only the fake adapter declares one, in tests. Until a live check verifies
+a real provider's location, `native_preferred` and `prefix_only` deliver the same prefix on every real provider.
+
+For a native cell the controller writes `switchboard-<name>` files under the provider's directory before spawn,
+excludes the recorded paths from the agent `commit` tool, the checkpoints, the diff and `changed_files` artifacts and
+the handoff bundle, refuses `push` while a recorded file is still present, and removes the files before verification,
+at every terminal state, at startup reconciliation and by retention `gc`. A removal that fails flags the run
+needs-attention (`skill_cleanup_failed`) until a later pass removes the file. A path that already exists in the
+repository, or whose parent is a symbolic link, falls back to the prompt prefix and is left untouched.
+
+### What is and is not enforced
+
+Enforced, with tests on fakes:
+
+- An untrusted run (`inspect-untrusted`, `edit-untrusted`, `test-sandboxed`) gets only approved versions of
+  operator-file skills: a draft, a revoked version or a repository-imported skill named on the request is refused
+  (`PERMISSION_BLOCKED`), and one configured as a default is skipped with an event. A repository's own
+  `.claude/skills`, `.cursor/rules` or `AGENTS.md` is never loaded by Switchboard.
+- Argv, environment, policy flags and the tool set are identical with and without skills; with skills disabled every
+  surface is unchanged.
+- No run event, span, log line, sink payload, `get_run` view or ledger row carries skill text; only names, versions,
+  hashes and modes.
+- For the fake native cell: the file never reaches a commit, checkpoint, diff, patch, `changed_files` or handoff
+  bundle, blocks publication while present, and is gone after every terminal state, a restart and `gc`.
+
+Not enforced:
+
+- A skill is advice. Switchboard does not check that the agent followed it, and the block is ordinary prompt text to
+  the provider (not a secret, not a sandbox).
+- R-69: in a cell that loads repository content (an approved bypass run), the agent can read a native skill file and
+  copy its text into another file, which then reaches a commit. Path exclusion catches the recorded path, not the
+  copy. Native delivery is off for every real provider until T16.8 verifies a cell, and `add` refuses secret-shaped
+  text, so a copy exposes operator instructions, not credentials.
+- No real provider's native skill location is verified (T16.8 is operator-only). Prompt-prefix delivery has not been
+  observed on a live provider through Switchboard either; the acceptance tests run on fakes.
+
+### Status and tests
+
+Fixtures only; no live provider CLI:
+
+- M16 acceptance: `src/mcp/m16-acceptance.test.ts` (one test per clause of the M16 acceptance column).
+- Store and format (T16.1): `src/skills/skills.test.ts`; configuration (T16.3): `src/skills/skills-config.test.ts`;
+  operator CLI (T16.2): `src/cli/skills.test.ts`.
+- Admission (T16.4): `src/mcp/skill-admission.test.ts`, `src/skills/admission.test.ts`,
+  `src/skills/import-boundary.test.ts`; tools (T16.9): `src/mcp/skill-tools.test.ts`.
+- Delivery (T16.5 to T16.7): `src/lifecycle/skill-delivery.test.ts`, `src/adapters/skill-prefix.test.ts`,
+  `src/lifecycle/native-skills.test.ts`, `src/workspace/native-skills.test.ts`, `src/reconcile/native-skills.test.ts`,
+  `src/adapters/skill-delivery-conformance.test.ts`.
+- Malicious-fixture leg (T16.11): `test/malicious/skills-leg.test.ts`.
 
 ## Run as an MCP server
 
@@ -2183,6 +2272,164 @@ the guard enforces Git writes only), pinned as `kimiUnguardedStreams`. The live 
 T4.65 and T4.67 are `Done` against their Done-when on synthetic fixtures; T4.62 to T4.64 and T4.66 stay `Partial`.
 No end-to-end run through Switchboard against a logged-in `kimi` has been recorded yet (T4.68).
 
+## Muse Code CLI (milestone 4)
+
+Muse Code is a `Should` provider (FR-ADP-12). Config id `muse-code`; routing and `list_capabilities` id `muse`
+(`src/adapters/providers.ts`). Every native spelling the adapter uses is in `src/adapters/muse/protocol.ts`, cited to a
+source tag of [TDD §4.8](docs/design/TDD.md#48-muse-code-m4) with the status that section gives it (confirmed,
+corrected, reported by a third party, or **Assumption**). **No `muse` binary has been installed or run for any of this
+work, and nothing here is validated against a live CLI.** Using Muse Code needs Meta access (open question Q-27),
+which has not been verified.
+
+Switchboard would run the **`muse`** binary once per run as
+`muse exec --json -w off --approval-mode on-request --sandbox-network restricted|unrestricted --trust-workspace <prompt>`
+(`src/adapters/muse/adapter.ts`). The prompt is the last positional argv word and is visible in the process list. The
+child environment is empty with an allowlist of `PATH` and `HOME` (`MUSE_ENV_ALLOWLIST`): `META_API_KEY`, which would
+hide a browser login (TDD §4.8 "Auth preflight"), never reaches the child, and `MUSE_NO_AUTO_UPDATE` is not set
+because only a third party reports it. The adapter never reads a Muse credential, trust or settings file and never
+writes provider configuration ("the module source has no filesystem writes (inspection)" and "by inspection, the
+adapter reads no file of the Muse home and no credential name (FR-AUTH-02)" in `src/adapters/muse/muse.test.ts`).
+
+**Not runnable as shipped.** The compliance manifest (`src/adapters/manifests/muse.json`) has the range `<0.0.0`, so it
+admits no version: with a `muse` on `PATH`, `doctor` and `list_capabilities` report `ADAPTER_VERSION_UNVERIFIED` ("doctor
+lists muse with its version gate failing ADAPTER_VERSION_UNVERIFIED", "list_capabilities reports muse as
+ADAPTER_VERSION_UNVERIFIED with no supported profile"), until an operator runs `switchboard adapters validate muse-code`
+(ROADMAP T4.78). Without a `muse` on `PATH`, which is the case on any host that has not installed it, the probe's
+`binary` step fails and routing excludes the provider as `BINARY_MISSING` (`src/routing/eligibility.ts`). The provider
+is not disabled in configuration by default (a provider not listed under `providers` is enabled,
+`src/config/load.ts`); set `providers.muse-code.enabled` to `false` to exclude it as `PROVIDER_DISABLED`.
+
+### Login
+
+| Provider | Login step the adapter reports | Status of that step |
+| --- | --- | --- |
+| Muse Code | `muse login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs it) | Meta documents `muse auth set`, `muse logout` and sign-in on first run or with `/login`; `muse login` appears in Meta's changelog and a third-party report; no auth status command is documented ([TDD §4.8](docs/design/TDD.md#48-muse-code-m4) "Auth preflight"). Requires Meta access (Q-27), which is **not verified**; no Muse login has been checked |
+
+The auth preflight (T4.74) runs `muse auth status` with a 10-second timeout and nothing but `PATH` and `HOME`. That
+command is an **Assumption** (no status command is documented), as are its replies: at exit 0, a first stdout line
+starting `Logged in` is `OK` and one starting `Not logged in` is `AUTH_REQUIRED` naming `muse login`. Any other first
+line, a non-zero or null exit, a timeout, empty output or a spawn failure is `UNKNOWN` (fail closed), and the reason
+carries at most the first 80 printable characters of that line. Without a binary on `PATH` it is `UNKNOWN` and nothing
+runs. Tests: "muse auth preflight (T4.74, ...)" in `src/adapters/muse/muse.test.ts` ("runs only `auth status` with a
+short timeout and passes no META_API_KEY", "a logged-out first line at exit 0 is AUTH_REQUIRED naming the native login",
+"any other output, exit code, timeout or spawn failure is UNKNOWN and never leaks past the first line or carries an
+account value", "is UNKNOWN when the binary is not on PATH, without running anything"). The `doctor` probe runs
+`muse --version` and `muse exec --help`, which must list `--json`, `--approval-mode` and `--sandbox-network` ("muse
+probe on synthetic output (T4.72, FR-ADP-02)").
+
+### Trust profiles
+
+The compile matrix (T4.72, Delegated, fail closed) follows Grok Build: only an approved `privileged` bypass scope
+compiles. Each `Ineligible` reason below is the adapter's text, verbatim (`#build` in `src/adapters/muse/adapter.ts`
+and `NON_PRIVILEGED_UNSUPPORTED_DETAIL` in `src/adapters/muse/protocol.ts`); routing reports `PROFILE_UNSUPPORTED` and
+`CAPABILITY_MISSING` as `ELIGIBILITY_NONE`.
+
+| Profile | Available now | Effect in this version |
+| --- | --- | --- |
+| `inspect-untrusted` | no | `PROFILE_UNSUPPORTED`: "inspect-untrusted: Muse Code has no T4.71 results yet: whether --approval-mode holds with no TTY, what --sandbox-network restricted blocks and whether home-directory skills can be suppressed are Unverified (TDD §4.8), so no control a non-privileged profile needs is shown to hold (FR-POL-02)" |
+| `edit-untrusted` | no | As `inspect-untrusted`, with the profile name `edit-untrusted` |
+| `test-sandboxed` | no | As `inspect-untrusted`, with the profile name `test-sandboxed` |
+| `trusted-development` | no | As `inspect-untrusted`, with the profile name `trusted-development` |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once for a client whose `privileged_approval` is `not_required`). Only a scope that sets `bypass`, on an approved run, with worktree files, shell `broad`, network `off` or `on`, repository configuration `enabled`, no requested model and an objective that is not empty and does not start with `-` compiles, as `muse exec --json -w off --approval-mode on-request --sandbox-network <restricted for network off, unrestricted for on> --trust-workspace <prompt>`. Approvals and the sandbox stay on; nothing bypass-class but `--trust-workspace` is emitted. Every other scope is refused, as below |
+
+Refusals, in the order the adapter checks them (the first unmet check is the reason):
+
+| Request | Reason code | Detail (verbatim) |
+| --- | --- | --- |
+| Shell allowlist entry that could write Git (any profile, checked first) | `PROFILE_UNSUPPORTED` | "shell allowlist entries could write Git (FR-GIT-01): " followed by the entries |
+| A bypass approval on a profile other than `privileged` | `PROFILE_UNSUPPORTED` | "bypassApproved is set on a profile other than privileged: a bypass applies only to an approved privileged scope (FR-POL-03, ADR-0017)" |
+| `privileged` with no scope binding | `PROFILE_UNSUPPORTED` | "privileged without an approved scope binding (LLD §3.1)" |
+| `privileged` without `bypass` | `PROFILE_UNSUPPORTED` | "privileged without bypass: no non-bypass Muse Code cell is shown to hold until T4.71 (TDD §4.8), and the shared argv audit refuses -w (a declared Cursor short flag, ADR-0037) outside an approved bypass run, so \`-w off\` could not spawn" |
+| `bypass` set but the run's bypass approval missing | `PROFILE_UNSUPPORTED` | "privileged scope sets bypass but the run's bypassApproved is false: the Muse Code bypass cell is compiled only for an approved bypass run (FR-POL-03, ADR-0017)" |
+| Shell other than `broad` | `CAPABILITY_MISSING` | "privileged shell=\<mode\>: Muse Code documents no per-run allow rule, and whether --approval-mode untrusted stops or denies with no TTY is Unverified: T4.71" |
+| Read-only files, or a workspace that is not writable | `CAPABILITY_MISSING` | "privileged read-only files: no read-only file mode is documented" |
+| Network `allowlist` | `CAPABILITY_MISSING` | "privileged network=allowlist: what --sandbox-network proxy-only admits is not documented (R-36)" |
+| Repository configuration `disabled` or `approved` | `CAPABILITY_MISSING` | "privileged repository_config=\<mode\>: an untrusted headless run stops naming --trust-workspace ([M-log]), user-level rules and home-directory skills load regardless ([M-cfg], [M-ext]) and the CLI has no per-item approval" |
+| A requested model | `CAPABILITY_MISSING` | "no model flag is sourced for Muse Code and no model registry data (T4.5)" |
+| An empty objective, or one starting with `-` | `CAPABILITY_MISSING` | "the prompt is one positional argument ([M-ext]) and no end-of-options marker is sourced, so an empty objective or one starting with '-' is not compiled" |
+| No `muse` on `PATH` | `CAPABILITY_MISSING` | "muse not found on PATH" |
+
+Tests: "muse compile matrix per profile (T4.72)" ("%s is Ineligible PROFILE_UNSUPPORTED until T4.71, with and without a
+bypass approval", "privileged compiles only an approved bypass scope with worktree files, shell broad, network off or
+on, repo enabled", "privileged without bypass, or with bypass but no approval, is Ineligible with its reason", "a
+model, a read-only workspace, a git-writing allowlist, a dash-led or empty objective and a missing binary are
+Ineligible") and "muse argv invariants (T4.72)" ("`-w off` is present in every compiled argv, as one adjacent pair after
+`exec`", "approvals and the sandbox stay on: no bypass-class flag or widening value is ever emitted", "no bypass-class
+flag outside the approved bypass case: the audit refuses the compiled argv in every other context").
+
+**Bypass-class declarations.** The registry entry declares `--disable-approval`, `--disable-sandbox` and
+`--trust-workspace` (with the shared `--yolo`) as bypass flags, and `--approval-mode never`,
+`--sandbox-network unrestricted` and `--sandbox-network enabled` as bypass values, so the argv audit refuses them
+outside an approved bypass run ("declares the TDD §4.8 bypass-class flags and values, refused outside the approved
+bypass case"). Because the shared audit also refuses `-w` (Cursor's declared short flag) outside that run, no Muse
+argv could spawn anywhere else.
+
+**Resume (FR-SES-03).** `resumeArgs` adds `--session-id <uuid>` before the prompt and compiles through the same matrix,
+with the same refusals; a binding of another provider or an id that is not a uuid is refused, and
+`--allow-workspace-switch` is never emitted (`resumeCwd` `bound`). Tests: "muse resume args (T4.73, FR-SES-03)".
+
+### Parser rules
+
+The `--json` parser (T4.73, `parseEvent` and `extractResult` in `src/adapters/muse/adapter.ts`) reads one record per
+line, keyed on a string `kind`:
+
+- `run_started` binds the session id from its `session_id` field, which must be a uuid; `run_output_delta` `text`
+  becomes assistant text, joined as the summary; `task_lifecycle`, `command_accepted`, `command_result`,
+  `model_configured`, `tool_result` and `turn_input_user` are dropped.
+- **Success only for `terminal: "completed"`.** A run succeeds only with a `run_terminal` record whose `terminal` is
+  `completed`, at an expected exit code (`0`), with no provider error. Exit code 0 alone never succeeds, and exit 0
+  with any other `terminal` value ends `FAILED`.
+- **Unknown records are never success.** Any other `kind`, a record with no string `kind`, or a known kind missing its
+  field is an `unknown` event: counted, clipped, and never a result or a session, so a stream of unknown records at
+  exit 0 fails.
+- Fail closed (Delegated): any record after the first `run_terminal`, a session id that is not a uuid and a session id
+  that changes mid-run end `OUTPUT_PROTOCOL_ERROR`. No native error, rate-limit, permission or sandbox record is
+  sourced, so a failed terminal or an unexpected exit is `TOOL_FAILURE`, never a narrower code. No usage is recorded.
+
+Tests: "muse parser and result (T4.73; ...)" in `src/adapters/muse/muse.test.ts`, among them "terminal success: deltas
+joined, session id from run_started only, the other SDK kinds dropped", "exit code 0 with a failed terminal record ends
+FAILED, never success", "unknown kinds fail closed: counted and clipped, never a result or a session, so an
+unknown-only exit 0 fails", "stream anomaly %s is OUTPUT_PROTOCOL_ERROR, never success" and "a session id is taken from
+structured output only, never from assistant or terminal text", over the synthetic fixtures in
+`src/adapters/muse/fixtures/`.
+
+The conformance suite (T4.75; "muse conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.75)") replays those
+synthetic fixtures (`museConformanceCases` in `fixtures/cases.ts`) through the replay dialect
+`src/adapters/fixtures/replay-dialects/muse.mjs`, which refuses any argv the adapter would not emit ("the replay
+refuses an argv Muse Code would not be given (%s), so a wrong compile cannot pass", 13 edits, each ending exit 64 or
+65). "covers every FR-ADP-11 kind and passes the full suite" runs in CI with no `muse` installed. A missing login is
+`AUTH_REQUIRED` naming `muse login` at the preflight only; a logged-out run is `TOOL_FAILURE`, because no logged-out
+`muse exec --json` record is sourced.
+
+### Git and commits
+
+`list_capabilities` reports `gitWriteControl` **`none-documented`** (`remainingControls` `FR-GIT-03`, `FR-GIT-06`): no
+per-command Git deny control is documented, and the read-only `.git` inside Muse's writable workspace is a sandbox
+property, unverified for a worktree whose `.git` is a file (`MUSE_GIT_WRITE_CONTROL`, `GIT_WRITE_CONTROL_DETAIL`).
+Shell allowlist entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01) before any
+other check, including on an approved bypass scope. `commitChannel` is **`finalize-only`**: no tool is injected,
+because the `-c` form for an MCP server block is unverified (`MUSE_GIT_CAPABILITIES`). To publish work, set
+`finalize_commit` on the project's primary context ([How commits reach Git](#how-commits-reach-git)). Tests: "muse Git
+declaration (T4.77, FR-GIT-01, FR-GIT-02, FR-GIT-09)" in `src/adapters/muse/muse.test.ts`, including "a replayed
+write run in a finalize-only project gets the controller commit at FINALIZING". What a commit attempt does in a real
+run is unverified.
+
+### Open gaps
+
+- **Record spellings are Assumptions until the operator capture (T4.71).** Only the `kind` field and the
+  `run_terminal` shape are reported, by a third party; the other record kinds, the `session_id` and `text` fields and
+  the `muse auth status` command and replies are Assumption spellings, so T4.73 stays `Partial`.
+- **The malicious-fixture leg (T4.76) is blocked.** The parser emits no `tool_call` event, so Switchboard's tool-call
+  guard never sees a command and a synthetic Git write in a Muse command or tool record at exit 0 ends in success
+  rather than `PERMISSION_BLOCKED`; closing it needs a parser change that reads commands out of those records, whose
+  field names are unsourced.
+- **Not runnable by default.** With no `muse` installed the provider is `BINARY_MISSING`, and with one installed it is
+  `ADAPTER_VERSION_UNVERIFIED` until `adapters validate` passes a version (T4.78).
+- Live smoke, live malicious leg and `adapters validate` are operator work that needs Meta access (T4.71, T4.78, Q-27).
+
+T4.72, T4.74, T4.75 and T4.77 are `Done` against their Done-when on synthetic fixtures; T4.73 stays `Partial` and T4.76
+is `Planned` (blocked as above). No run through Switchboard against a real `muse` has been recorded.
+
 ## Trust profiles
 
 A trust profile says what a delegated agent may do ([ADR-0004](docs/adr/0004-trust-profiles-no-bypass-flags.md)). Each
@@ -2402,6 +2649,12 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   `Ineligible`. The malicious-fixture leg (T4.66) replays the approved bypass cell only: a credential read, outside
   write or network call without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg
   is operator work. See [Kimi Code CLI](#kimi-code-cli-milestone-4).
+- **Muse Code is built on synthetic fixtures only and does not run (ROADMAP T4.72 to T4.79).** No `muse` has been
+  installed or run, and Meta access (Q-27) is not verified. The `--json` record spellings and the `muse auth status`
+  probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) is blocked because the
+  parser emits no tool-call event for the guard to check. The provider is `BINARY_MISSING` without a `muse` on `PATH`
+  and `ADAPTER_VERSION_UNVERIFIED` with one, and only an approved `privileged` bypass scope compiles. See
+  [Muse Code CLI](#muse-code-cli-milestone-4).
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
   Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may

@@ -259,7 +259,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Retrieval index (M12) | Deterministic fake embedding backend, hostile-content fixtures, planted-secret scan, isolation and import-boundary tests; details in [§3.13](#313-retrieval-index) | No | FR-RAG-01..14 |
 | Telemetry export (M8) | Fake-adapter runs through `RunLifecycle` into an in-process loopback OTLP/HTTP collector fixture (`src/telemetry/fixtures/collector.ts`): span names, derived parent links, exact-key allowlist, forbidden-category scan of attributes and raw OTLP bodies with planted canaries and positive controls; lazy load and no startup import of OTel ([LLD §7](LLD.md#7-telemetry-spans)) | No | FR-TEL-02, FR-TEL-03, NFR-SEC-01, NFR-PRIV-01 |
 | Version bump (M8) | Injected version strings through the preflight cache's binary-identity invalidation, the manifest gate and the version-canary store; routing excludes the provider until validation records the version (`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`) | No | FR-ADP-03, NFR-PERF-02 |
-| Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
+| Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references, task status markers) | No | NFR-MAINT-02 |
 
 **Shared suite plumbing (T4.3).** A provider supplies cases and small data files; the shared code is not edited.
 Replay: one helper, `src/adapters/fixtures/replay.mjs`, replays a recorded or synthetic fixture for any provider, with
@@ -1430,7 +1430,7 @@ T7.17 (all `Done` 2026-10-17, on fakes; T6.11 is the operator capture).
 
 ### 3.16 Switchboard-controlled skills (Proposed)
 
-*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: T16.1
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); built: T16.1
 implemented the store module below, T16.3 the configuration keys and loader, T16.2 the operator CLI, T16.9 the
 read-only MCP tools with the §19.5 steps 2 to 4 resolver, T16.4 admission (`src/skills/admission.ts`) with the
 import-boundary test, and T16.5 the prompt-prefix renderer (`renderSkillBlock` in `src/adapters/prompt.ts`, the
@@ -1441,7 +1441,9 @@ conformance check (`checkSkillDelivery` in `src/adapters/conformance.ts`), Deleg
 T16.10 built continuity across handoff and resume (the bundle `skills` facts in
 `src/continuity/bundle-schema.ts` and `src/continuity/bundle.ts`, re-delivery in the receiving provider's way in
 `src/lifecycle/lifecycle.ts`; `src/continuity/skill-continuity.test.ts`), Delegated,
-not owner-approved; per-provider native (T16.8) stays Proposed).
+not owner-approved; T16.11 built the malicious-fixture leg (`test/malicious/skills-leg.test.ts`) and T16.12 the M16
+acceptance test on fakes (`src/mcp/m16-acceptance.test.ts`), Delegated, not owner-approved;
+per-provider native (T16.8) stays Proposed).
 Delegated, not owner-approved beyond the direction.* Contract: [LLD §19](LLD.md#19-switchboard-controlled-skills-m16-proposed).
 Tasks: ROADMAP T16.0 to T16.12.
 
