@@ -156,3 +156,18 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
 - Left unchanged: the LLD/SDD wording is the design owner's call, and the gap is disclosed in the T7.12 row. The M7
   `Done` reconciliation (PR #682) neither introduces nor worsens it: T7.12 has been `Done` since 2026-10-14 and the
   acceptance evidence (`src/mcp/m7-acceptance.test.ts`, `src/routing/model-pin.test.ts`) is cited in-row.
+
+## 13. Design "(Proposed)" labels vs M6/M7/M15 Done (pre-existing, not from PR #682)
+
+- [HLD COMP-RTE](design/HLD.md) still tags the pacing mechanism "Proposed (owner decision 57, [ADR-0055](adr/0055-model-groups-and-usage-pacing.md);
+  built on fakes ...)" and the scheduler tick "M15 (Proposed)"; [LLD §16.9](design/LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10),
+  [LLD §17.7](design/LLD.md#177-model-groups-fr-rte-10-fr-rte-11) and [LLD §18](design/LLD.md#18-project-queue-schedules-and-ci-triggers-m15-proposed-t150)
+  keep "(Proposed)" headers; [ADR-0050](adr/0050-ci-status-via-operator-gh-cli.md) and [ADR-0055](adr/0055-model-groups-and-usage-pacing.md)
+  stay Proposed.
+- The labels mark design/ADR review state, not build state: ADR-0055's own status line already records every wave-C
+  task `Done` 2026-10-17, and the M16 `Done` reconciliation (PR #683, on `main`) likewise left its LLD/TDD "(Proposed)"
+  headers in place while flipping the milestone. Neither M6/M7 nor M15 lists ADR acceptance as a verification clause
+  (contrast M14, which stays `Partial` pending ADR-0047/ADR-0048).
+- Left unchanged: rewording design review-state labels is the design owner's call. PR #682 neither introduces nor
+  worsens it (every §6.11/§6.12/§6.14 task was already `Done`; only the milestone rows flip). It does not block
+  PR #682.
