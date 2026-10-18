@@ -274,10 +274,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#455](https://github.com/zemdregon/switchboard/pull/455)), a malicious-fixture leg (partial: T4.66,
   [#459](https://github.com/zemdregon/switchboard/pull/459)) and a Git declaration (T4.67,
   [#464](https://github.com/zemdregon/switchboard/pull/464)), all on synthetic fixtures except the T4.64 probe's
-  2026-10-18 live final-verify (auth `OK`; still `Partial` pending a scrubbed capture, ROADMAP T4.64) (README
-  [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke, live malicious leg and
-  `adapters validate` remain operator work (T4.68). Manifests still admit no version until
-  `switchboard adapters validate` passes a real CLI (operator tasks). M4 stays `Partial` (T4.90 closure, 2026-10-17,
+  2026-10-18 live final-verify (auth `OK`; still `Partial` pending a scrubbed capture, ROADMAP T4.64) and the
+  T4.68 live `adapters validate` pass on 2026-10-18 (CLI 2.1.1, manifest range `>=2.1.1 <2.2.0`) (README
+  [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke and the live malicious leg
+  remain operator work (T4.68). The Grok Build, Antigravity, Cursor, OpenCode and Muse Code manifests still admit
+  no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex and
+  Kimi Code already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
   Delegated). Open items, by blocker: operator live legs (T4.12 on a Mac, T4.28, T4.38, T4.48, T4.58, T4.68; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
   and OpenCode cannot run by design; owner decision 59 lets Grok Build, Cursor and Kimi Code reach the smoke step
@@ -350,7 +352,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | Antigravity | Launch **`agy`** without arguments (the adapter returns `AUTH_REQUIRED` naming `agy`; the CLI's stderr also says to launch without arguments to sign in) | Auth preflight runs `agy models` and keys on exit code and stderr (`<slug>\t<name>` lines at exit 0 vs `Error: Please sign in` at exit 1 on the 2026-10-14 live check, `agy` 1.3.4; [`docs/research/live-checks-2026-10-14-antigravity.md`](docs/research/live-checks-2026-10-14-antigravity.md)); check Google's Antigravity documentation for the login step |
 | Cursor CLI | `cursor-agent login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `cursor-agent status --format json` and keys on `isAuthenticated` (exit 0 both logged in and logged out on the 2026-10-14 live check; [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)); check Cursor's documentation for the login step |
 | OpenCode | `opencode auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `opencode auth list --format json --standalone` and treats any non-environment connection type as logged in (exit 0 in every state on the 2026-10-14 live check, `opencode v2.0.23`; [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md)); check OpenCode's documentation for the login step |
-| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe ran live once through Switchboard on 2026-10-18 (final-verify `validate kimi` on the fixed probe: `[ok] auth: OK`, ROADMAP T4.64); full validation is still T4.68; check Moonshot's Kimi Code documentation for the login step |
+| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe ran live once through Switchboard on 2026-10-18 (final-verify `validate kimi` on the fixed probe: `[ok] auth: OK`, ROADMAP T4.64), and `adapters validate kimi` has since passed live on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68); the remaining live cells are still T4.68; check Moonshot's Kimi Code documentation for the login step |
 
 Do not copy credential files between machines or users. Do not put API keys or tokens in the Switchboard config; it has
 no place for them and rejects unknown keys.
@@ -2197,9 +2199,10 @@ invocation has an empty environment with an allowlist of `PATH` and `HOME`; `KIM
 configuration, sessions and credentials, is never passed. The adapter never reads a Kimi credential or configuration
 file and never writes provider configuration (`src/adapters/kimi/adapter.ts`, `src/adapters/kimi/protocol.ts`).
 
-The compliance manifest range (`src/adapters/manifests/kimi.json`) admits no version until an operator runs
-`switchboard adapters validate kimi-code` and commits the manifest diff (ROADMAP T4.68). Until then `doctor` reports
-`ADAPTER_VERSION_UNVERIFIED` for Kimi Code, and none of the paths below runs against a real `kimi`.
+The compliance manifest range (`src/adapters/manifests/kimi.json`) admits `>=2.1.1 <2.2.0`
+since `switchboard adapters validate kimi` passed on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68).
+Other versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`, and the adapter stays disabled
+until T4.68's remaining operator cells pass (FR-ADP-09).
 
 ### Login
 
@@ -2293,7 +2296,9 @@ outside write or network call **without** a Git write ends `ok` at exit 0 by des
 the guard enforces Git writes only), pinned as `kimiUnguardedStreams`. The live malicious leg is operator work (T4.68).
 
 T4.65 and T4.67 are `Done` against their Done-when on synthetic fixtures; T4.62 to T4.64 and T4.66 stay `Partial`.
-No end-to-end run through Switchboard against a logged-in `kimi` has been recorded yet (T4.68).
+One live smoke call through Switchboard against a logged-in `kimi` has been recorded (`adapters validate kimi`
+passed on CLI 2.1.1 on 2026-10-18, T4.68); the full live smoke, the live malicious leg and the other operator cells
+are still open.
 
 ## Muse Code CLI (milestone 4)
 
@@ -2665,8 +2670,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   compiled scope because repository configuration is `enabled` and `opencode.json` and `AGENTS.md` load with no approval
   (live check rows 10a, 10c). Closing the remaining gap needs operator capture of native refusal fields (T4.58) or an
   owner decision on classifying `status` `error`. See ROADMAP T4.56 for the full gap list.
-- **Kimi Code is validated on synthetic fixtures only (ROADMAP T4.62 to T4.68), except the auth probe.**
-  The parser rests on one scrubbed
+- **Kimi Code was validated on synthetic fixtures only (ROADMAP T4.62 to T4.67) until `adapters validate kimi`
+  passed live on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68: manifest, probe, auth `OK`, static conformance and one
+  structured-output smoke call). The parser still rests on one scrubbed
   `stream-json` capture of a successful run plus synthetic lines; tool-call and error record fields, exit codes, the
   `--prompt=` one-word form and the `kimi acp` permission round trip in `default` mode
   are Assumptions until the operator capture (T4.68). The auth probe's stdin timing is no longer an Assumption: the
@@ -2691,9 +2697,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
-- `adapters validate` is implemented for every registered provider, but only Claude Code and Codex have a manifest
-  range on `main` today. Grok Build, Antigravity, Cursor, OpenCode, Kimi Code and the other M4 adapters still need
-  operator captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58, T4.68 and §6.8.2).
+- `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex and Kimi Code
+  manifests admit a version on `main` today. Grok Build, Antigravity, Cursor, OpenCode and the other M4 adapters
+  still need operator captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58, T4.68 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
   fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the

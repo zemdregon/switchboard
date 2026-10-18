@@ -321,9 +321,10 @@ describe("kimi registry entry and manifest gate (T4.62)", () => {
     expect(entry?.create?.({}).id).toBe("kimi");
   });
 
-  it("fails the version gate for any version until `adapters validate` passes one (ADR-0009, T4.68)", () => {
+  it("passes the version gate for the validated version now that `adapters validate` passed one (ADR-0009, T4.68)", () => {
     const registry = new AdapterRegistry();
-    for (const v of ["2.1.1", "2.2.0", "0.0.0", null]) {
+    expect(registry.gate("kimi", "2.1.1").eligible).toBe(true);
+    for (const v of ["2.2.0", "0.0.0", null]) {
       expect(registry.gate("kimi", v).eligible, String(v)).toBe(false);
     }
   });

@@ -2710,11 +2710,12 @@ the version and help text, the ACP surface, the logged-out behaviour, the permis
 per-session MCP acceptance are observed ([live checks](../research/live-checks-2026-10-15-kimi.md)); the transport and
 the bypass class are decided ([ADR-0049](../adr/0049-kimi-code-transport-and-bypass-class.md)); the absent sandbox is
 recorded and its profiles are `Ineligible`. Still `Unverified: T4.68` (they need a model call and do not block T4.62,
-whose manifest admits no version): `stream-json` record shapes, `-p` exit codes, the ACP permission round trip, Git-write
+whose manifest admitted no version until the live `adapters validate` pass on 2026-10-18, T4.68):
+`stream-json` record shapes, `-p` exit codes, the ACP permission round trip, Git-write
 denial and MCP tool exposure. The earlier T4.60 text above is superseded by this paragraph. *Update 2026-10-16 (T4.68
 follow-up 2, Delegated):* the `stream-json` tool-call and tool records and the exit code of a turn whose tool call
-failed (0) are now observed; the ACP permission round trip, Git-write denial, MCP tool exposure, the live malicious leg
-and `adapters validate kimi` remain operator cells.
+failed (0) are now observed; the ACP permission round trip, Git-write denial, MCP tool exposure and the live malicious leg
+remain operator cells (`adapters validate kimi` passed live on 2026-10-18 and is struck from this list).
 
 ### 4.8 Muse Code (M4)
 

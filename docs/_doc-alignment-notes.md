@@ -185,3 +185,20 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   changing what `compile` receives. Left unchanged: restating the pinning behaviour in the SDD and Q-90 is the
   docs-lane update the T7.12 row already defers, not this PR's. It does not block PR #684 (the fix's own evidence
   is `src/mcp/envelope-model.test.ts`, cited in LLD §17.7 and the T7.14 row).
+
+## 15. `kimi.json` manifest notes still read "admits no version" (from PR #694, out of gate scope)
+
+- PR #694 updates `src/adapters/manifests/kimi.json` to
+  `validated_cli_version` `2.1.1`, range `>=2.1.1 <2.2.0`, with a dated
+  `Evidence (adapters validate, 2026-10-18)` line appended to `notes`.
+- The same `notes` string still opens with the T4.62 sentence "The range admits
+  no version (ADR-0009, FR-ADP-09): the adapter fails the version gate with
+  ADAPTER_VERSION_UNVERIFIED until T4.68 runs `switchboard adapters validate
+  kimi` against a live CLI, so nothing here is a claim that any Kimi Code
+  version is validated." That condition is now satisfied, so the sentence is
+  stale against the range in the same file.
+- Left unchanged: the manifest is `src/**`, and this gate edits documentation
+  only (`*.md`, `docs/**`). Refreshing that sentence needs a one-line manifest
+  edit by the PR author (or a code-touching follow-up), not an owner decision.
+  It does not block PR #694 (the range fields and the evidence line, which are
+  what the gate and the version check read, are correct).
