@@ -181,7 +181,11 @@ Pre-release. The package is private and is not published to any registry; you bu
  owner-approved): the labelled block (`renderSkillBlock` in `src/adapters/prompt.ts`) travels in the prompt text before
  constraints and the task, and after the fixed preamble in a handoff prompt; every adapter cell delivers
  `prompt_prefix`; dispatch records `run_skill.delivery` and `delivered_at` with one `skill_delivered` event, and a run
- whose pinned skill cannot be read fails closed before spawn. Native delivery is still `Planned`. Design:
+ whose pinned skill cannot be read fails closed before spawn. The native-delivery framework and leak prevention are
+ built (T16.6, Delegated, not owner-approved): the per-cell `skillDelivery` declaration, fresh-path exclusive writes,
+ exclusion from the commit tool, checkpoints, diff artifacts and `changed_files`, `push` refusal while a skill file
+ exists, removal before `VERIFYING`, at terminal states, at reconciliation and by GC, and the `skill_cleanup_failed`
+ needs-attention reason; only the fake adapter declares a native location, in tests. Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
