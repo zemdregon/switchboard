@@ -51,6 +51,7 @@ import {
   DEFAULT_RETENTION_INTERVAL,
   DEFAULT_SKILL_DELIVERY,
   DEFAULT_TOOL_PROFILE,
+  memberProviderIds,
   type PrivilegedApprovalMode,
   type SkillDelivery,
   type SwitchboardConfig,
@@ -318,13 +319,18 @@ export interface ResolveEnv {
  * Config validator over {@link currentConfigSchema} (T4.1): compiled once for the built-in provider ids, and again,
  * with a fresh Ajv (the schema `$id` is fixed), only when a provider is registered or removed at runtime.
  */
-let compiled: { readonly generation: number; readonly validate: ValidateFunction<SwitchboardConfig> } | undefined;
-function validator(): ValidateFunction<SwitchboardConfig> {
-  const { generation, schema } = currentConfigSchema();
-  if (compiled?.generation !== generation) {
-    compiled = { generation, validate: new Ajv({ allErrors: true, strict: true }).compile<SwitchboardConfig>(schema) };
+const compiled = new Map<
+  boolean,
+  { readonly generation: number; readonly validate: ValidateFunction<SwitchboardConfig> }
+>();
+function validator(testFakeAdapter: boolean): ValidateFunction<SwitchboardConfig> {
+  const { generation, schema } = currentConfigSchema({ testFakeAdapter });
+  let entry = compiled.get(testFakeAdapter);
+  if (entry?.generation !== generation) {
+    entry = { generation, validate: new Ajv({ allErrors: true, strict: true }).compile<SwitchboardConfig>(schema) };
+    compiled.set(testFakeAdapter, entry);
   }
-  return compiled.validate;
+  return entry.validate;
 }
 
 /** Resolution order: --config, SWITCHBOARD_CONFIG, $XDG_CONFIG_HOME/switchboard/config.json (TDD §3.1). */
@@ -382,8 +388,12 @@ function describe(e: ErrorObject): string {
 }
 
 /** Validate parsed JSON; throws ConfigError listing every violation with its JSON path (NFR-SEC-05, NFR-SEC-06). */
-export function validateConfig(value: unknown, source = "config"): SwitchboardConfig {
-  const validate = validator();
+export function validateConfig(
+  value: unknown,
+  source = "config",
+  opts: { readonly testFakeAdapter?: boolean } = {},
+): SwitchboardConfig {
+  const validate = validator(opts.testFakeAdapter === true);
   if (validate(value)) return value;
   const lines = (validate.errors ?? []).map(describe);
   throw new ConfigError(`Invalid ${source}:\n${lines.map((l) => `  ${l}`).join("\n")}`);
@@ -402,7 +412,15 @@ function canonical(p: string, label: string, baseDir: string): string {
 
 /** Load, validate and canonicalize the config. Fails closed on any problem (NFR-SEC-06). */
 export function loadConfig(
-  opts: ResolveEnv & { configPath?: string; confinedVerification?: boolean } = {},
+  opts: ResolveEnv & {
+    configPath?: string;
+    confinedVerification?: boolean;
+    /**
+     * The test-only fake adapter is registered (`serve`'s fake switch, TDD §3.6): `model_groups` members and
+     * `capacity.subscriptions.<s>.providers[]` may then also name `fake`. Default false: no config file can name it.
+     */
+    testFakeAdapter?: boolean;
+  } = {},
 ): ResolvedConfig {
   const configPath = opts.configPath ? path.resolve(opts.configPath) : resolveConfigPath(opts);
   let text: string;
@@ -417,7 +435,8 @@ export function loadConfig(
   } catch (err) {
     throw new ConfigError(`Config file ${configPath} is not valid JSON: ${(err as Error).message}`);
   }
-  const cfg = validateConfig(parsed, `config file ${configPath}`);
+  const testFakeAdapter = opts.testFakeAdapter === true;
+  const cfg = validateConfig(parsed, `config file ${configPath}`, { testFakeAdapter });
   const baseDir = path.dirname(configPath);
 
   const allowedRoots = cfg.allowed_roots.map((r, i) => canonical(r, `$.allowed_roots[${i}]`, baseDir));
@@ -551,7 +570,7 @@ export function loadConfig(
   if (routingErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${routingErrors.map((l) => `  ${l}`).join("\n")}`);
   }
-  const capacityErrors = checkCapacity(cfg.capacity);
+  const capacityErrors = checkCapacity(cfg.capacity, memberProviderIds(testFakeAdapter));
   if (capacityErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${capacityErrors.map((l) => `  ${l}`).join("\n")}`);
   }

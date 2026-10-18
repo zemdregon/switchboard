@@ -44,10 +44,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   It is not `Done`: no run of a real Claude Code and Codex pair has been made (the opt-in `npm run test:live:pair`
   script exists and has not been run), and resume for the providers of milestone 4 is not built. See
   [ROADMAP §6.9](docs/ROADMAP.md#69-m5-continuity-tasks).
-- **Milestone 6 (capacity and resilience) is `Partial`.** `get_capacity` and `switchboard capacity` show per-provider
+- **Milestone 6 (capacity and resilience) is `Done` on fake providers** (2026-10-18, Delegated agent work, not
+  owner-approved; acceptance in `src/mcp/m6-acceptance.test.ts`). `get_capacity` and `switchboard capacity` show per-provider
   estimates with their sources, a circuit breaker holds a failing provider back, retryable failures are retried
   automatically as linked successor runs, and quota exhaustion fails over to another provider or returns. All of this
-  is tested on fake providers. It is not `Done`: real limit output is captured in text mode for five
+  is tested on fake providers. Limits: real limit output is captured in text mode for five
   providers with the remaining cells `NOT_CHECKED` (operator task T6.11, `Done` 2026-10-17;
   [limit captures](docs/research/limit-captures-2026-10-17.md)), and no provider is known to publish an
   enforceable rate limit, so there is no token-bucket gate; the pacing gate paces usage per subscription window
@@ -59,7 +60,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   (ROADMAP T6.16, `Done` 2026-10-17, `src/mcp/m6-pacing-acceptance.test.ts`). Pacing estimates are lower bounds from
   Switchboard's own dispatches, and pacing never creates a run (see [Model groups and pacing](#model-groups-and-pacing)).
   See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
-- **Milestone 7 (routing) is `Partial`.** Eligible providers are scored from Switchboard's own records, every route
+- **Milestone 7 (routing) is `Done` on fake providers** (2026-10-18, Delegated agent work, not owner-approved;
+  acceptance in `src/mcp/m7-acceptance.test.ts`). Eligible providers are scored from Switchboard's own records, every route
   decision is stored and replays exactly, `explain_route` shows why a run went where it did, a project stays on its
   provider until a listed reason moves it (`switchboard affinity list|reset`), and `minimum_capability` is enforced
   against operator-declared model capabilities in the model registry (`src/routing/minimum-capability.test.ts`). All
@@ -148,7 +150,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#559](https://github.com/zemdregon/switchboard/pull/559)). ADR-0047 and ADR-0048 remain Proposed. See
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
-- **Milestone 15 (project queue, schedules and CI triggers) is `Partial`.** The durable per-project work queue
+- **Milestone 15 (project queue, schedules and CI triggers) is `Done` on fakes** (2026-10-18, Delegated agent work,
+  not owner-approved; the `serve` low-water wiring below is a separate open fix). The durable per-project work queue
   (T15.1, [#527](https://github.com/zemdregon/switchboard/pull/527)) and the CI-failure trigger (T15.3,
   [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
@@ -389,7 +392,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
 | `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape; `projects validate` checks runtime, image and the no-Git-client probe for `container` projects when configured (see [Container environments](#container-environments-milestone-10)). Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` (default `false`; needs `identity`, primary writable context only) makes the controller sign each published commit with the operator's own global Git signing configuration; a signing failure, a repository whose own configuration sets `gpg.*` or `user.signingkey`, or a run whose agent could reach the key (the `push` rule) returns `SIGNING_FAILED` and commits nothing; `projects validate` makes a test signature. Only GnuPG has been tried, with a throwaway key; SSH, X.509, passphrase-protected and hardware keys are untested. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
 | `routing` | no | `{ "weights"?: { "success", "latency", "capacity", "security", "handoff", "cost", "pacing" }, "affinity"?: { "enabled", "low_water_mark", "min_confidence", "idle_ttl" } }`. Each weight 0 to 100, default 1; all 0 means configured order. The seventh weight `pacing` (T7.13) is accepted and resolved, and since T7.15 (`Done` 2026-10-17) the scorer reads it: a candidate whose provider is in a configured subscription gets the `pacing` term after the six terms in [Routing and affinity](#routing-and-affinity), otherwise the score still uses those six. `affinity.enabled` defaults to `true`; `low_water_mark` and `min_confidence` (0 to 1) are set together or both left `null` (the default, which leaves the estimate trigger off); `idle_ttl` accepts only `null` (no expiry). Unknown keys stop startup. See [Routing and affinity](#routing-and-affinity) and LLD section 17.1. |
-| `model_groups` | no | Operator-named groups of models across providers (T7.13, FR-RTE-10): `{ "<name>": { "members": [{ "provider": "<config provider id>", "model": "<model id or alias>" }] } }`. Names match `^[a-z][a-z0-9_-]{0,31}$`, at most 32 groups; each group lists 1 to 32 members in order (order is the last tie-break). Startup refuses an unknown provider id, a duplicate pair, an empty group, a malformed name or model, and unknown keys. A member whose model the registry cannot resolve is accepted and reported by `doctor` (below), not refused. Names and members are configuration only. Full shape: [LLD §17.7](docs/design/LLD.md#177-model-groups-fr-rte-10-fr-rte-11). |
+| `model_groups` | no | Operator-named groups of models across providers (T7.13, FR-RTE-10): `{ "<name>": { "members": [{ "provider": "<config provider id>", "model": "<model id or alias>" }] } }`. Names match `^[a-z][a-z0-9_-]{0,31}$`, at most 32 groups; each group lists 1 to 32 members in order (order is the last tie-break). Startup refuses an unknown provider id, a duplicate pair, an empty group, a malformed name or model, and unknown keys; the one exception is the test-only `fake` adapter id, accepted as a member `provider` (and in `capacity.subscriptions.<name>.providers`) only when that adapter is registered (`serve` with the test-only fake switch, TDD §3.6), and refused as before otherwise. A member whose model the registry cannot resolve is accepted and reported by `doctor` (below), not refused. Names and members are configuration only. Full shape: [LLD §17.7](docs/design/LLD.md#177-model-groups-fr-rte-10-fr-rte-11). |
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `telemetry.otlp_endpoint` | no | `http` or `https` URL for OTLP/HTTP trace export. When omitted or empty, Switchboard does not load OpenTelemetry at startup and makes no outbound telemetry connection. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [LLD §7](docs/design/LLD.md#7-telemetry-spans). |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
@@ -973,7 +976,9 @@ without them (`src/routing/group-selection.test.ts`, `src/capacity/pacing-projec
 `model_groups` (see [Configure](#configure)). It is configuration only. Switchboard ships no group, tier or model name,
 and a group's name or a member's place in it is never a claim about quality, capability or price: a group called
 `flagship` is just a label. `minimum_capability` still uses only the capabilities you declared for each model, and
-member order is used only as the last tie-break.
+member order is used only as the last tie-break. A member's `provider` is a config provider id; the test-only fake
+adapter id `fake` is accepted there and in `capacity.subscriptions.<name>.providers` only when that adapter is
+registered (`serve` with the test-only fake switch, TDD §3.6), and is refused as before otherwise.
 
 **How to request one.** `delegate_task` and `enqueue_work` accept two optional routing fields; give at most one:
 

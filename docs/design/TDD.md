@@ -88,8 +88,8 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `providers.claude-code.git_channel` | Boolean, default `false`; `claude-code` only. Operator opt-in for the Claude Code tool channel through a controller-written `--mcp-config` file; implemented (T9.4b, [ADR-0029](../adr/0029-claude-code-receives-tool-shim-via-mcp-config.md)) and supported, bypass-only (owner decision 2026-10-16) ([LLD §11.1](LLD.md#111-configuration-shape), §12.2); only approved bypass runs get the channel, without `--safe-mode` ([ADR-0033](../adr/0033-claude-channel-bypass-only-without-safe-mode.md)) | FR-GIT-02, FR-POL-08 |
 | `routing.weights.{success, latency, capacity, security, handoff, cost, pacing}`, `routing.affinity.{enabled, low_water_mark, min_confidence, idle_ttl}` | Static score weights (each 0 to 100, default 1) and the affinity keys (thresholds default `null`, `idle_ttl` only `null`); defaults are Assumptions (Q-80, Q-81). The seventh weight `routing.weights.pacing` (0 to 100, default 1) is accepted by the schema and resolved by `resolveRouting` (T7.13, Done 2026-10-17, `src/config/model-groups.test.ts`); since T7.15 (Done 2026-10-17) the scorer adds the `pacing` term after the six when a candidate's provider is in a configured subscription, and still sums the six terms above otherwise ([LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11)). Shape in [LLD §17.1](LLD.md#171-configuration) (T7.0; the earlier placeholder `routing.minimum_capability_defaults` is not specified, T7.8 owns `minimum_capability`) | FR-RTE-02, 06, 07 |
 | `capacity.window_seconds`, `capacity.confidence_runs`, `capacity.queue_horizon_seconds`, `capacity.breaker.{failure_threshold, open_seconds}`, `capacity.retry.{max_attempts, base_ms, cap_ms}`, `providers.<id>.concurrency` | Estimator window and confidence scale, the BR-9 wait for a known reset (default 0: never wait), breaker thresholds, retry backoff, per-provider slot limit; defaults are Assumptions (Q-69 to Q-72). Shape and ranges in [LLD §16.1](LLD.md#161-configuration) (T6.1; the earlier placeholder name was `capacity.queue_horizon`) | FR-CAP-02, 04 to 06, NFR-PERF-03 |
-| `model_groups.<name>.members[{provider, model}]` | Operator-named groups of models across providers; names and members are configuration only. *As built (T7.13, Done 2026-10-17, `src/config/model-groups.test.ts`):* the strict schema, the resolved groups, the seventh weight `routing.weights.pacing`, and the `doctor` listing of each member's resolution. The `pacing` score term that consumes these groups is built by T7.15 (Done 2026-10-17, `src/routing/score.ts`, `src/routing/group-selection.test.ts`). Shape in [LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11) | FR-RTE-10, 11 |
-| `capacity.subscriptions.<name>.{providers, windows[{id, length_seconds, reset, budget}]}`, `capacity.pacing.{mode, target_fraction, burst_fraction, min_confidence}` | Subscription windows (reset `provider_reported`, `fixed` or `rolling`; optional operator-declared budget) and the pacing parameters (default `gate`, 0.95, 0.10, 0.5; Assumptions, Q-98); **built on fakes:** the configuration keys and the per-window figures are built (T6.13, `Done` 2026-10-17, `src/capacity/usage-window.ts`); the projection `pacing` block is built (T6.14, `Done` 2026-10-17, `src/capacity/projection.ts`); the pacing gate is built (T6.8, `Done` 2026-10-17, `src/capacity/pacing-gate.ts`); the acceptance test is T6.16 (`Done` 2026-10-17, `src/mcp/m6-pacing-acceptance.test.ts`). No window, reset or budget is ever supplied by Switchboard. Shape in [LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10) | FR-CAP-09, 10 |
+| `model_groups.<name>.members[{provider, model}]` | Operator-named groups of models across providers; names and members are configuration only. *As built (T7.13, Done 2026-10-17, `src/config/model-groups.test.ts`):* the strict schema, the resolved groups, the seventh weight `routing.weights.pacing`, and the `doctor` listing of each member's resolution. The T7.13 fix (2026-10-18, `src/config/schema.ts` `memberProviderIds`, `src/config/fake-model-groups.test.ts`) also accepts the test-only `fake` adapter id as a member `provider` when that adapter is registered (`serve`'s test-only switch; §3.6), and refuses it as before otherwise. The `pacing` score term that consumes these groups is built by T7.15 (Done 2026-10-17, `src/routing/score.ts`, `src/routing/group-selection.test.ts`). Shape in [LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11) | FR-RTE-10, 11 |
+| `capacity.subscriptions.<name>.{providers, windows[{id, length_seconds, reset, budget}]}`, `capacity.pacing.{mode, target_fraction, burst_fraction, min_confidence}` | Subscription windows (reset `provider_reported`, `fixed` or `rolling`; optional operator-declared budget) and the pacing parameters (default `gate`, 0.95, 0.10, 0.5; Assumptions, Q-98); **built on fakes:** the configuration keys and the per-window figures are built (T6.13, `Done` 2026-10-17, `src/capacity/usage-window.ts`); the projection `pacing` block is built (T6.14, `Done` 2026-10-17, `src/capacity/projection.ts`); the pacing gate is built (T6.8, `Done` 2026-10-17, `src/capacity/pacing-gate.ts`); the acceptance test is T6.16 (`Done` 2026-10-17, `src/mcp/m6-pacing-acceptance.test.ts`). The T7.13 fix (2026-10-18, `src/config/capacity.ts` via `loadConfig({ testFakeAdapter })`, `src/config/fake-model-groups.test.ts`) also accepts the test-only `fake` adapter id in `providers` when that adapter is registered (`serve`'s test-only switch; §3.6), and refuses it as before otherwise. No window, reset or budget is ever supplied by Switchboard. Shape in [LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10) | FR-CAP-09, 10 |
 | `skills.enabled`, `skills.defaults[]`, `skills.roles.<role>[]`, `skills.delivery`, `skills.allow_draft_in_trusted`, `skills.max_body_bytes`, `skills.max_per_run`, `skills.max_run_bytes`, `skills.max_names`, `projects[].skills.{defaults, roles}`, `mcp_clients[].skills` | Switchboard-controlled skills: off by default; global, per-role and per-project default skill names, delivery mode, the draft switch, limits and per-client visibility; **Built** (T16.3, 2026-10-17, Delegated, not owner-approved; ranges in [LLD §19.3](LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08); [ADR-0056](../adr/0056-switchboard-controlled-skills.md)) | FR-SKL-03, FR-SKL-04, FR-SKL-08 |
 | `telemetry.otlp_endpoint` | Optional export target | FR-TEL-02, NFR-PRIV-01 |
 | `log.level` | Logging threshold | §3.3 |
@@ -259,7 +259,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Retrieval index (M12) | Deterministic fake embedding backend, hostile-content fixtures, planted-secret scan, isolation and import-boundary tests; details in [§3.13](#313-retrieval-index) | No | FR-RAG-01..14 |
 | Telemetry export (M8) | Fake-adapter runs through `RunLifecycle` into an in-process loopback OTLP/HTTP collector fixture (`src/telemetry/fixtures/collector.ts`): span names, derived parent links, exact-key allowlist, forbidden-category scan of attributes and raw OTLP bodies with planted canaries and positive controls; lazy load and no startup import of OTel ([LLD §7](LLD.md#7-telemetry-spans)) | No | FR-TEL-02, FR-TEL-03, NFR-SEC-01, NFR-PRIV-01 |
 | Version bump (M8) | Injected version strings through the preflight cache's binary-identity invalidation, the manifest gate and the version-canary store; routing excludes the provider until validation records the version (`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`) | No | FR-ADP-03, NFR-PERF-02 |
-| Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
+| Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references, task status markers) | No | NFR-MAINT-02 |
 
 **Shared suite plumbing (T4.3).** A provider supplies cases and small data files; the shared code is not edited.
 Replay: one helper, `src/adapters/fixtures/replay.mjs`, replays a recorded or synthetic fixture for any provider, with
@@ -306,8 +306,12 @@ Principles: tests pass with no provider CLI installed or logged in; secret-patte
 **Test-only fake adapter in `serve` (Proposed, T2.6).** `serve` registers the fake adapter only when the environment
 variable `SWITCHBOARD_TEST_FAKE_ADAPTER` equals the exact sentinel `enable-test-only-fake-adapter` (scenario from
 `SWITCHBOARD_TEST_FAKE_SCENARIO`, default `success`). Any other non-empty value refuses to start, the config schema has
-no key or provider id that can enable it, and `serve` logs a warning on stderr when it is on. Production registers
-`claude` and `codex` only. With the switch on, `SWITCHBOARD_TEST_CLOCK_OFFSET_MS` (an integer) shifts the daemon's clock
+no key that can enable it, and `serve` logs a warning on stderr when it is on. The one exception is the `fake`
+adapter id itself: `loadConfig({ testFakeAdapter })` accepts it as a `model_groups` member `provider` and in
+`capacity.subscriptions.<name>.providers` only when the switch is on (T7.13 fix, 2026-10-18; [LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11),
+[LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10)); without the switch it is refused as before.
+Production registers `claude` and `codex` only.
+With the switch on, `SWITCHBOARD_TEST_CLOCK_OFFSET_MS` (an integer) shifts the daemon's clock
 so a process test can show that a run waiting for approval does not expire (T3.4); set without the switch, or to a
 non-integer, it refuses to start.
 
@@ -1410,7 +1414,13 @@ T7.17 (all `Done` 2026-10-17, on fakes; T6.11 is the operator capture).
   narrowing via `groupMembersFor` (`src/config/routing.ts`); group expansion
   and the `pacing` term (T7.15, `Done` 2026-10-17) live in `src/routing/` (`groups.ts` member
   expansion, `score.ts`, `affinity.ts`, `decision.ts` version 3 record and replay, `explain.ts`);
-  the T7.13 configuration resolution lives in `src/config/routing.ts`. The hold
+  the T7.13 configuration resolution lives in `src/config/routing.ts`. The T7.13 fix (2026-10-18) accepts the test-only
+  `fake` adapter id, which has no config id, as a member `provider` and in `capacity.subscriptions.<name>.providers`
+  only when that adapter is registered: `memberProviderIds` (`src/config/schema.ts`) widens the accepted ids,
+  `loadConfig({ testFakeAdapter })` (`src/config/load.ts`) threads it from `serve`'s test-only switch
+  (`src/cli/serve.ts`) and from the same environment sentinel in `doctor` (`src/cli/doctor.ts`), and `checkCapacity`
+  takes the same id list; without the switch every message is as before (`src/config/fake-model-groups.test.ts`,
+  `src/routing/provider-id-audit.test.ts`). The hold
   reuses the breaker's single wake timer in the lifecycle. Adapters change only in
   T6.15, to map a structured limit signal or declare a sourced usage key.
 - **Fake adapters, injected clock.** Every test drives scripted fake providers placed in operator-declared subscriptions
@@ -2900,28 +2910,33 @@ which scans the non-test, non-fixture `.ts` and `.json` files under `src/adapter
 version or tier word and for context-window-sized numbers (a heuristic: it can miss a name it does not know, so
 reviewers still read new adapter code for model names).
 
-**State of automation (2026-10-13).** The T4.1 scratch adapter (`src/adapters/fixtures/scratch-provider.ts`, exercised
-by `src/adapters/providers.test.ts` and `src/adapters/bypass-forms.test.ts`) wraps the fake adapter. Against the
-checklist it automates:
+**State of automation (2026-10-18).** The T4.1 scratch adapter (`src/adapters/fixtures/scratch-provider.ts`) meets
+every item. `src/adapters/checklist.test.ts` holds one named test per item against it, so "meets every item" is a CI
+fact; the T4.1 tests (`src/adapters/providers.test.ts`, `src/adapters/bypass-forms.test.ts`) still cover its runtime
+registration, `doctor`, `list_capabilities` and config validation. It wraps the fake adapter's probe, parser and
+failure mapping, adds a SYNTHETIC isolation flag and bypass forms, and replays SYNTHETIC fixtures through the shared
+helper. Scratch is not a real provider, so it has no operator task, no capture to replace its fixtures and no live leg.
+Three items do not apply as written to a test-only adapter; each says why here and in its test name.
 
-- item 13 (model-literal ban, heuristic): `src/models/models.test.ts` scans adapter source;
-- items 1 and 12 (registry entry only): it is registered at runtime from a fixture module with no other source edit and
-  appears in `doctor`, `list_capabilities` and config validation;
-- item 3 in part: `doctor` probes it through the fake adapter's `probe`;
-- item 10 in part: `gitWriteControl.kind` is asserted `none-documented`;
-- item 11: long flag, short flag and flag value are refused before spawn except in the approved bypass case, and the
-  scratch adapter emits its flag only in that case (item 4 in part: only the `privileged` cells).
+| Item | Test in `src/adapters/checklist.test.ts` | What it checks, and what does not apply |
+| --- | --- | --- |
+| 1 | "item 1, module" | Every `ProviderAdapter` member; no non-test source imports the module. **Does not apply as written:** the module lives under `src/adapters/fixtures/`, not `src/adapters/<id>/`, because it is test-only and the build excludes fixtures (`tsconfig.build.json`, asserted) |
+| 2 | "item 2, manifest" | `src/adapters/fixtures/scratch/manifests/scratch.json` validates, its range is `<0.0.0` and the version gate reports `ADAPTER_VERSION_UNVERIFIED`. **Does not apply as written:** it is not in `src/adapters/manifests/` (asserted absent there), so the build never ships a manifest for a provider that does not exist; `doctor` and `list_capabilities` still report `NO_MANIFEST` for it |
+| 3 | "item 3, probe and auth preflight" | All six probe steps through the supplied `ProbeRunner` only; a missing binary fails the `binary` step; auth is `OK` or `AUTH_REQUIRED` naming the login; no argv names a login or credential path |
+| 4 | "item 4, compile matrix" | `compile` is deterministic; four profiles compile; `privileged` without an approved bypass scope is `Ineligible` with a reason; with one it compiles and carries the scratch bypass flag |
+| 5 | "item 5, stream parser and failure mapping" | Structured lines parse; unknown kinds are `unknown`; malformed and free-text lines yield nothing; no result is never success; `classifyFailure` maps every outcome, event set and exit code to an [LLD §4](LLD.md#4-failure-taxonomy) code |
+| 6 | "item 6, resume" | Its own binding resumes with the session id in the request cwd; other providers' bindings are `Ineligible` with a reason; `resumeCwd` equals its registry entry; `src/adapters/resume-conformance.test.ts` registers it, so the registry-wide check runs on it |
+| 7 | "item 7, replay fixtures" | Every fixture in `src/adapters/fixtures/scratch/` is marked SYNTHETIC; the run replays through the shared `replay.mjs` with the dialect `replay-dialects/scratch.mjs`; no per-adapter copy |
+| 8 | "item 8, conformance cases" | `scratchConformanceCases` (`src/adapters/fixtures/scratch/cases.ts`) covers `REQUIRED_CASE_KINDS` plus `rate_limit` and passes `runConformanceSuite` |
+| 9 | "item 9, malicious-fixture leg" | `test/malicious/adapters/scratch.case.ts` exists and covers every hostile category with a blocked code; `test/malicious/adapter-leg.test.ts` discovers it and replays every stream |
+| 10 | "item 10, Git declarations" | `gitWriteControl.kind` `none-documented`, `commitChannel` `finalize-only`, no channel arguments |
+| 11 | "item 11, bypass-class flags" | Long flag, short flag and flag value are declared as data and refused except for an approved bypass scope; no non-privileged compile carries one |
+| 12 | "item 12, registry entry" | One entry with `id`, `configId`, `kind`, `label` and `create`, registered at runtime and absent from `BUILTIN_PROVIDERS`. **Does not apply:** the README login row, because scratch is a synthetic test adapter, not a provider a user logs in to (NFR-MAINT-03 documents user-facing providers); the test asserts the login table has no scratch row |
+| 13 | "item 13, no model names" | The scratch module, dialect, manifest and cases hold no model-like literal or context limit (the shared detector, `src/adapters/fixtures/model-literals.ts`, also used by `src/models/models.test.ts`); the probe lists no models, as the synthetic CLI documents no listing command |
 
-**Not yet automated** (no test or lint checks it today; reviewers check it by hand):
-
-- item 2: the scratch adapter has no manifest (`doctor` reports `NO_MANIFEST`);
-- item 4: the `Ineligible` reason for each of the five profile cells (only `privileged` is asserted);
-- item 5: `parseEvent`, `extractResult` and `classifyFailure` are the fake's; no scratch-specific parser test exists;
-- items 6, 7, 8 and 9: no test runs resume, replay fixtures, `runConformanceSuite` or a malicious-fixture leg for the
-  scratch adapter, and the shared replay helper and per-adapter malicious leg are T4.3 work;
-- item 10 in part: `gitCapabilities` is not asserted for the scratch adapter;
-- item 12 in part: nothing checks the README login row;
-- the model-literal ban is automated only as the heuristic scan above; the family-name list is hand-kept.
+Limits that remain: the model-literal scan is the heuristic described above (the family-name list is hand-kept), and a
+test proves the checklist for the scratch adapter only; reviewers still tick the list for each real provider's pull
+request.
 
 ### 4.10 Native-resume inventory (T5.0)
 

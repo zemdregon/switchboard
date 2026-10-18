@@ -51,7 +51,7 @@ state machine or schema.
 - Requirement IDs are stable: never renumber or reuse them. Withdraw a requirement by setting its priority to
   `Withdrawn`.
 - Run `node scripts/check-docs.mjs` before committing documentation changes. It checks links, anchors, requirement IDs,
-  roadmap coverage and SDD traceability.
+  roadmap coverage, SDD traceability and §6 task status markers.
 
 ## Conflicts, assumptions and superseded material
 

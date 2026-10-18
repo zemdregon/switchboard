@@ -325,7 +325,12 @@ export async function serve(io0: CliIo, opts: ServeOptions): Promise<number> {
   const base = io0.now ?? (() => new Date());
   const io: CliIo = offset === 0 ? io0 : { ...io0, now: () => new Date(base().getTime() + offset) };
   const log = stderrLogger(io);
-  const config = loadConfig({ argv: opts.loaderArgv, env: io.env, ...(io.homedir ? { homedir: io.homedir } : {}) });
+  const config = loadConfig({
+    argv: opts.loaderArgv,
+    env: io.env,
+    testFakeAdapter: fake.enabled,
+    ...(io.homedir ? { homedir: io.homedir } : {}),
+  });
   if (!config.mcpClients.has(opts.clientId)) {
     const known = [...config.mcpClients.keys()];
     throw new ConfigError(

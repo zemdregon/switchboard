@@ -1,0 +1,4 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written in the fake CLI event shapes (src/adapters/fake/cli.mjs); scratch is not a real provider","exit":1}}
+{"type":"session","session_id":"scratch-session-0001"}
+{"type":"message","text":"The tests still fail."}
+{"type":"result","ok":false,"summary":"Tests still fail."}
