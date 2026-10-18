@@ -2706,7 +2706,9 @@ export class RunLifecycle {
       const cap =
         this.opts.loopBreaker?.maxSuccessorsPerMetaSession ?? DEFAULT_LOOP_BREAKER.maxSuccessorsPerMetaSession;
       // Same rule as the T14.2 derivation (`needs-attention.ts`): at the cap, or parked.
-      if (failedRun.attempt >= cap || parked) this.attention({ runId: failedRun.id, projectId, reason: "failed_after_retry" });
+      if (failedRun.attempt >= cap || parked) {
+        this.attention({ runId: failedRun.id, projectId, reason: "failed_after_retry" });
+      }
     }
     // T6.6 (BR-6 step 2 and 3, BR-8, BR-9): after the terminal transaction, because a failover builds a bundle.
     if (outcome.kind === "failure" && outcome.code === "QUOTA_EXHAUSTED") await this.quotaLadder(runId);
