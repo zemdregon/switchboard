@@ -216,14 +216,16 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#354](https://github.com/zemdregon/switchboard/pull/354),
   [#372](https://github.com/zemdregon/switchboard/pull/372)) leave the parser unchanged; none of them validate the
   live CLI or close T4.23's or T4.26's gaps. Antigravity has a
-  parser (partial: T4.33; unrecorded-shape, fallback and own-property hardening pins plus structured
+  parser (Done against its Done-when under owner decision 65 (a): T4.33; unrecorded-shape, fallback and own-property
+  hardening pins plus structured
   `backing_provider`/`model` on `session_bound`, all synthetic,
   [#272](https://github.com/zemdregon/switchboard/pull/272),
   [#276](https://github.com/zemdregon/switchboard/pull/276),
   [#297](https://github.com/zemdregon/switchboard/pull/297)),
   a conformance suite (partial: native resume, T4.35; replay dialect edge cases
   [#281](https://github.com/zemdregon/switchboard/pull/281) and Go `flag`-boundary walking
-  [#292](https://github.com/zemdregon/switchboard/pull/292)), a malicious-fixture leg (partial: synthetic refusal,
+  [#292](https://github.com/zemdregon/switchboard/pull/292)), a malicious-fixture leg (Done against its Done-when
+  under owner decision 65 (b): synthetic refusal,
   guard-blocked and trailing-tool fail-closed replay streams, hostile repository entries and FR-POL-04, T4.36;
   [#257](https://github.com/zemdregon/switchboard/pull/257),
   [#262](https://github.com/zemdregon/switchboard/pull/262),
@@ -1787,7 +1789,7 @@ null `denied_actions` and partial streams cut before, inside and after the hosti
 ([#368](https://github.com/zemdregon/switchboard/pull/368)). In an approved bypass run the guard still enforces Git
 writes only: the same hostile call without a Git write still ends `ok` (pinned), as does a Git write on a step that
 is not a `tool` step (above); live blocked outcomes and FR-POL-04
-need operator work (ROADMAP T4.36, T4.38).
+need operator work (ROADMAP T4.38).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
 flag is documented). In the only compiled scope, repository `.agents/mcp_config.json`, `.agents/hooks.json`, `GEMINI.md`
@@ -1815,7 +1817,8 @@ resume-refusal matrices ([#297](https://github.com/zemdregon/switchboard/pull/29
 `backing_provider.jsonl` and the unrecorded-shape pins `agy_error_exit3.jsonl`,
 `sandbox_violation_unrecorded.jsonl` and `usage_unrecorded.jsonl`; CI also runs
 `test/malicious/adapters/antigravity.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg:
-antigravity", T4.36 partial — see [Known limitations](#known-limitations); guard-blocked streams
+antigravity", T4.36 Done against its Done-when under owner decision 65 (b) — see [Known limitations](#known-limitations);
+guard-blocked streams
 [#257](https://github.com/zemdregon/switchboard/pull/257), trailing-tool streams
 [#262](https://github.com/zemdregon/switchboard/pull/262), exit-code and hostile-repository-entry coverage
 [#280](https://github.com/zemdregon/switchboard/pull/280), widened malicious matrix
@@ -2744,7 +2747,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   blocked by the bypass guard. Scrubbed native `tool_call` and `tool_call_update` command/target and status fields, live
   blocked outcomes and `adapters validate` remain operator work (T4.21 extension / T4.28). See ROADMAP T4.26 for the
   full gap list.
-- **Antigravity malicious-fixture leg is partial (ROADMAP T4.36).** CI runs `test/malicious/adapter-leg.test.ts` with
+- **Antigravity malicious-fixture leg is Done against its Done-when (ROADMAP T4.36, owner decision 65 (b)).** CI runs
+  `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/antigravity.case.ts` on synthetic `stream-json` streams (no `agy` installed; no `replayGap`).
   Compile, isolation-flag and argv checks pass for the approved bypass cell; hostile replay blocking covers every
   hostile category with both recorded soft-denial shapes (shell `run_command` without bypass, live check C7) and
