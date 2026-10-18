@@ -2717,7 +2717,11 @@ channel ([live-checks-2026-10-17-opencode.md](../research/live-checks-2026-10-17
 
 **Verdict: a tool-free one-shot is not available on v2.0.23.** The `cli` kind stays **`Ineligible`** ([§3.12](#312-inner-agent),
 FR-INN-04, Q-26) and `CLI_TOOL_FREE_VERIFICATION` stays `null`. A later OpenCode version needs this check run again
-before T11.13 can attach a backend.
+before T11.13 can attach a backend. *Update 2026-10-18 (Delegated, owner decision 66):* the upstream `run` options were
+re-checked at tag `v2.0.32` (2026-10-16) and `dev` (`packages/cli/src/commands/handlers/run.ts` and the `run` Spec in
+`packages/cli/src/commands/commands.ts` are identical at both: `server`, `standalone`, `continue`, `session`, `fork`,
+`model`, `agent`, `format`, `file`, `title`, `thinking`, `auto`, with no tools or `--pure` flag), so no release through
+v2.0.32 changes this verdict; the shipped `cli` backend stays `Ineligible` and T11.13 is Done on its gate.
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
