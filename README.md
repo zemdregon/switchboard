@@ -48,9 +48,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   owner-approved; acceptance in `src/mcp/m6-acceptance.test.ts`). `get_capacity` and `switchboard capacity` show per-provider
   estimates with their sources, a circuit breaker holds a failing provider back, retryable failures are retried
   automatically as linked successor runs, and quota exhaustion fails over to another provider or returns. All of this
-  is tested on fake providers. Limits: real limit output is captured in text mode for five
-  providers with the remaining cells `NOT_CHECKED` (operator task T6.11, `Done` 2026-10-17;
-  [limit captures](docs/research/limit-captures-2026-10-17.md)), and no provider is known to publish an
+  is tested on fake providers. Limits: real limit output is captured in text mode for six
+  providers with the remaining cells `NOT_CHECKED` (operator task T6.11, `Done` 2026-10-17 with a 2026-10-18 follow-up;
+  [limit captures](docs/research/limit-captures-2026-10-17.md) and the
+  [follow-up](docs/research/limit-captures-2026-10-18.md)), and no provider is known to publish an
   enforceable rate limit, so there is no token-bucket gate; the pacing gate paces usage per subscription window
   from observed usage instead (ROADMAP T6.8, `Done` 2026-10-17). The subscription/pacing configuration keys and the
   per-window figure computation exist (ROADMAP T6.13, `Done` 2026-10-17), and capacity output shows one `pacing` entry
@@ -2710,7 +2711,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - Capacity figures are controller estimates. No provider is known to report remaining quota, and the rate-limit and
   quota output shapes of Claude Code and Codex come from synthetic fixtures; the operator has captured their
   text-mode limit output but the `stream-json` shapes are still `NOT_CHECKED` (ROADMAP
-  T6.11, `Done` 2026-10-17; [limit captures](docs/research/limit-captures-2026-10-17.md)). There is no token-bucket
+  T6.11, `Done` 2026-10-17 with a 2026-10-18 follow-up; [limit captures](docs/research/limit-captures-2026-10-17.md)
+  and the [follow-up](docs/research/limit-captures-2026-10-18.md)). There is no token-bucket
   rate gate: no provider publishes an enforceable limit for the logins used, so the pacing gate
   paces usage per subscription window from observed usage instead (ROADMAP T6.8, `Done` 2026-10-17).
 - Retrieval is tested with a deterministic in-process fake embedder and scripted HTTP fixtures; no live embedding model

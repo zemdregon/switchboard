@@ -5850,7 +5850,10 @@ Q-101), and Claude Code's `rate_limit_event` `resetsAt` (a synthetic fixture sha
 already mapped, Antigravity's stderr line `AGY_ERROR: {...}` at exit 3. Its `status` `RESOURCE_EXHAUSTED` maps to
 `QUOTA_EXHAUSTED` in the adapter's `classifyFailure` from the stderr tail (`src/adapters/antigravity/protocol.ts`,
 `AGY_ERROR_STATUS_CATEGORIES`; the structured fields only, FR-ADP-04), and its reset is free text inside `short_error`,
-so no reset key is declared (Q-100). Every other captured limit was free text. `USAGE_KEYS` stays empty and frozen until
+so no reset key is declared (Q-100). Every other captured limit was free text. A 2026-10-18 follow-up
+([limit captures 2026-10-18](../research/limit-captures-2026-10-18.md)) adds one T6.15 candidate, Grok Build's
+`http_status` 402 in its text-mode `Internal error:` object (usage balance exhausted, no reset key); not wired.
+`USAGE_KEYS` stays empty and frozen until
 a capture shows a structured used or remaining fraction or reset time. The adapter contract gives `extractResult` no
 stderr (§2), so the mapping is reached only by a caller that passes the tail `startAdapterRun` captures; the lifecycle
 does not yet (pinned in `src/adapters/antigravity/limit-signals.test.ts`).
