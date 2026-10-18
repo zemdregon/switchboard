@@ -31,8 +31,11 @@ built, and the discovery note recommended this one for the same reason.
    cited from ntfy's documentation in T14.0. Other channels (email, a native chat push) are not built; each would need
    its own review. Email is not first because it needs mail credentials, which
    Switchboard does not handle (ADR-0003).
-3. **Closed payload.** A payload carries only: the project ID, one event kind from a closed list, one reason code from
-   the closed list of FR-CTL-03 (or the approval kind for ADR-0047 events, or `queue_low` for FR-QUE-04), the run ID
+3. **Closed payload.** A payload carries only: the project ID (a configured id, `-` for a run admitted without a
+   project, or `*` for an event that applies to every project), one event kind from a closed list, one reason code from
+   the closed list for that kind (`SUCCEEDED`/`FAILED`/`CANCELLED` for `run_terminal`; the closed list of FR-CTL-03
+   for `needs_attention`; the approval kind for `approval_pending` and `approval_decided` (ADR-0047 events);
+   `project_paused`/`global_paused` for `project_paused`; `budget_exhausted`; `queue_low` for FR-QUE-04), the run ID
    and a link. It never carries code, prompts, diffs, objectives, repository content, log lines or agent-written text,
    of any length. The payload is built from fields, not by filtering a free-text message, so there is no text to redact.
    The closed event-kind list is: `run_terminal`, `needs_attention`, `approval_pending`, `approval_decided`,
@@ -42,7 +45,8 @@ built, and the discovery note recommended this one for the same reason.
 5. **Links carry no secret.** A link points to the digest or the consent page. It holds no token, no approval
    digest and no passphrase; opening it requires the operator's normal authentication (FR-MCP-17 or the CLI).
 6. **Delivery never affects a run.** A sink call is best effort, runs outside the admission and execution path, and has
-   a bounded timeout. A failure is recorded as a count and a reason code in the ledger, never with the payload.
+   a bounded timeout. A failure is logged, and is recorded as `sink_delivery_failed` in the ledger only when the
+   event has a run, never with the payload.
 7. **Transport.** HTTPS only, with certificate verification on. A webhook URL, optional webhook authorization
    (FR-CTL-12), ntfy topic or ntfy access token is operator configuration; it is redacted from logs and telemetry
    (NFR-SEC-01, FR-TEL-03). The controller holds no provider credential (ADR-0003).
