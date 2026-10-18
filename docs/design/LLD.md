@@ -6257,6 +6257,10 @@ fixed template.
 **Run fields.** The chosen member's resolved model goes into `request_json.model` and `CompileRequest.model`, as for
 T7.12 pinning. The envelope's `provider.model` reports what the native session reported, as today.
 
+*As built (T7.14 fix, 2026-10-18, Delegated):* `run.model` is recorded at admission from `request_json.model`
+(`null` when no model was requested, so the adapter default applies); a `WAITING_CAPACITY` successor keeps the
+failed run's model. The envelope's `provider.model` therefore reports the requested/resolved model the run used.
+
 *As built (T7.15, 2026-10-17, Delegated):* `src/routing/groups.ts` (member candidates), `src/routing/score.ts` (the
 seventh term and member selection), `src/routing/affinity.ts`, `src/routing/decision.ts` (version 3 record, replay,
 `collectPacingInputs`), `src/routing/explain.ts`, and the `delegate_task` and `enqueue_work` admission paths

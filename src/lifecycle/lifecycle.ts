@@ -1062,6 +1062,9 @@ export class RunLifecycle {
         clientId: req.clientId,
         idempotencyKey: req.idempotencyKey ?? null,
         provider: req.provider,
+        // T7.14 fix (LLD §17.7 Run fields): the requested/resolved model the run uses, so the
+        // envelope's `provider.model` reports it; null when none was requested (adapter default).
+        model: stored.model ?? null,
         priority: PRIORITY_VALUES[stored.priority],
         ...(req.successorOf ? { parentRunId: req.successorOf.runId, attempt: req.successorOf.attempt + 1 } : {}),
       });
@@ -3470,6 +3473,8 @@ export class RunLifecycle {
       requestHash: failed.request_hash,
       clientId: failed.client_id,
       provider: failed.provider,
+      // T7.14 fix: a `WAITING_CAPACITY` successor runs with the failed run's model, as its request does.
+      model: failed.model,
       priority: failed.priority,
       projectId: failed.project_id ?? null,
       parentRunId: failed.id,
