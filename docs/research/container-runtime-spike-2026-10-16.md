@@ -233,8 +233,9 @@ operator checklist.
 ## 5. Operator login runbook (2026-10-18, documentation only)
 
 Status: research input (Delegated agent work, not owner-approved). Nothing below was executed: no provider
-CLI was invoked, no login was attempted, no credential was read, mounted or copied. Muse Code is skipped by
-owner decision, so the seven providers below are Claude Code, Codex, Grok Build, Antigravity, Cursor CLI,
+CLI was invoked, no login was attempted, no credential was read, mounted or copied. Muse Code is skipped
+(Should per owner decision 16; Q-27 on Meta access stays open), so the seven providers below are
+Claude Code, Codex, Grok Build, Antigravity, Cursor CLI,
 OpenCode and Kimi Code. Every per-provider cell is still `Unverified: operator (T10.0 live)`; no provider
 is marked `host`-only.
 
@@ -242,10 +243,11 @@ is marked `host`-only.
 
 The 2026-10-17 login-state check ([live checks](live-checks-2026-10-17-claude-codex.md) §4) ran five
 providers and recorded `Cursor, Kimi Code | not run | No standalone binary to mount without a package
-install`. The reason is that the check never included them, not a failure: `c_login_state` in
-`~/operator-runs/live-run-ext.sh` builds bind-mount and probe entries only for `claude`, `codex`,
-`opencode`, `grok` and `agy`, then prints `not covered (no binary that runs standalone in this image, or
-interactive-only login): cursor-agent, kimi`. The channel therefore does not cover them now either, so the
+install`. The reason is that the check never included them, not a failure: per the channel,
+`c_login_state` in `~/operator-runs/live-run-ext.sh` builds bind-mount and probe entries only for `claude`,
+`codex`, `opencode`, `grok` and `agy` (unverified here: the script is outside this repository), then prints
+`not covered (no binary that runs standalone in this image, or interactive-only login): cursor-agent, kimi`.
+The channel therefore does not cover them now either, so the
 conditional live run was **not** performed (on exit 75 do not retry; not reached).
 
 Host-only observation on 2026-10-18 (directory listings and `readlink`/`file`, nothing executed): a
@@ -261,7 +263,7 @@ login, no credential, `--network none` is inside the check):
 
 ```sh
 ~/operator-runs/live-usage.sh
-~/operator-runs/live-run-ext.sh login-state --task-id w944-m10-t100-agent-part-composer --reason "T10.0 login-state coverage for cursor and kimi"
+~/operator-runs/live-run-ext.sh login-state --task-id <operator-task-id> --reason "T10.0 login-state coverage for cursor and kimi"
 ```
 
 ### Operator steps (common skeleton; per-provider differences are in the table)
@@ -291,7 +293,7 @@ terminal state, confirm no Git write occurred, then remove the project and the c
 login cannot complete in the volume, or whose CLI refuses to start without `git`/`gh` on `PATH`, is marked
 `host`-only in that operator note and in R-13 / R-40, not before.
 
-| Provider | Login env (export inside step 1) | Native login in the volume (TDD §4) | State probe and Git-free check (step 2) | Step 4 Switchboard task | What to record | Evidence on 2026-10-18 | Remaining operator cell |
+| Provider | Login env (export inside step 1) | Native login in the volume (TDD §4) | State probe and Git-free check (step 2) | Step 4 Switchboard task | What to record | Prior evidence (still standing on 2026-10-18) | Remaining operator cell |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code | `CLAUDE_CONFIG_DIR=/root/.claude` (or default `~/.claude`) | `claude auth login` ([TDD §4.1](../design/TDD.md#41-claude-code-m2): `claude auth --help` lists `login`, `logout`, `status`; [README](../../README.md#log-in-to-the-providers-natively)) | `claude auth status` (exit code; `OK` vs `AUTH_REQUIRED`), then `command -v git` empty | Step 4 (common) with `claude` | `login works`, or `fails` → `host`-only | 2026-10-17: 2.1.294, `--version` exit 0, logged out (`loggedIn: false`) in a fresh volume with no `git` on `PATH` | In-volume native login and container task: `Unverified: operator (T10.0 live)` |
 | Codex | `CODEX_HOME=/root/.codex` (or default `~/.codex`) | `codex login` ([TDD §4.2](../design/TDD.md#42-codex-m2): status is `codex login status`; [README](../../README.md#log-in-to-the-providers-natively)) | `codex login status` (exit 0 logged in, 1 logged out), then `command -v git` empty | Step 4 (common) with `codex` | `login works`, or `fails` → `host`-only | 2026-10-17: codex-cli 0.162.0, `--version` exit 0, `Not logged in` in a fresh volume with no `git` on `PATH` | In-volume native login and container task: `Unverified: operator (T10.0 live)` |
