@@ -321,9 +321,10 @@ Compile matrix and transport are in [TDD §4.5](TDD.md#45-cursor-cli-m4); parser
 §4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443). Task status: [ROADMAP
 §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.42`, `T4.43`).
 
-#### T4.43 — parser, result, failure classification and resume (`Partial`)
+#### T4.43 — parser, result, failure classification and resume (Done against its Done-when)
 
-**Evidence (`Partial`, synthetic lines in the shapes of the T4.41 live check).** FR-ADP-04, FR-SES-03 (`--resume` through
+**Evidence (Done against its Done-when under owner decision 65 (a); synthetic lines in the shapes of the T4.41 live
+check).** FR-ADP-04, FR-SES-03 (`--resume` through
 the compile matrix), FR-ADP-10 (`backingProvider` unset: no vendor field was recorded).
 
 - **Tests:** `src/adapters/cursor/cursor.test.ts` ("cursor parser and result (T4.43)", "cursor parser hardening (T4.43,
@@ -342,8 +343,10 @@ the compile matrix), FR-ADP-10 (`backingProvider` unset: no vendor field was rec
   parser unchanged).** `src/adapters/cursor/parser-residual.test.ts` and `idless_guard.jsonl` (supervisor replay) extend
   the T4.43 evidence listed in [TDD §4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443).
 
-**Gaps (remain `Partial`, not `Done`).** No recorded rate-limit or sandbox stream shape; T4.6 backing-vendor fixture cannot
-be written without a vendor field (Q-65). Operator capture: T4.48 / T4.41 extension.
+**Gaps (carried by T4.48 under owner decision 65 (a); this section is Done).** No recorded `stream-json` quota-stop
+shape (quota stops are captured as stderr tails, T6.11) or sandbox event shape; no native backing-vendor field was
+observed (live check row 102; TDD §4.5 forbids inferring one, so the structured `backing_provider` support and
+`backing_provider.jsonl` meet T4.6). Operator capture: T4.48 / T4.41 extension.
 
 ### 2.4 COMP-ADP OpenCode implementation evidence (M4, T4.52, T4.53)
 

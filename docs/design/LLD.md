@@ -757,7 +757,8 @@ Transport `subprocess-jsonl` with prompt on stdin. Every non-`privileged` profil
   (ADR-0035, ADR-0037)`, `cursor probe and auth preflight (T4.42, T4.44)`, `cursor registry entry and manifest gate
   (T4.42)`).
 
-**As built (T4.43, Partial).** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `adapter.ts`;
+**As built (T4.43, Done against its Done-when under owner decision 65 (a)).** `parseEvent`, `extractResult`,
+`classifyFailure` and `resumeArgs` in `adapter.ts`;
 stream-json fields in `protocol.ts`. Success needs a terminal `result` with `subtype` `success`, refused tools read
 `rejected` / `permissionDenied` as `PERMISSION_BLOCKED` at exit 0 (Q-65). Hardening ([#228](https://github.com/zemdregon/switchboard/pull/228)):
 a second `result` line or changed `session_id` ends `OUTPUT_PROTOCOL_ERROR`; `apiKeySource` other than the string
@@ -770,7 +771,7 @@ even when `result` is `success` at exit 0). `backingProvider` stays unset (no ve
   synthetic shapes)`, `cursor parser residual branches (T4.43, synthetic)`); `src/adapters/cursor/parser-residual.test.ts`
   ([#360](https://github.com/zemdregon/switchboard/pull/360)); fixture `fixtures/idless_guard.jsonl`.
 - **Design sourcing:** [TDD §4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443); HLD [§2.3
-  T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-partial).
+  T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 **Not covered here:** conformance (T4.45 Done), malicious leg (T4.46 Done), Git declaration (T4.47 Done), operator live
 validate (T4.48 Partial).
