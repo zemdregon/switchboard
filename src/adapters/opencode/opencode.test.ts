@@ -329,9 +329,10 @@ describe("opencode registry entry and manifest gate (T4.52)", () => {
     expect(entry?.create?.({}).id).toBe("opencode");
   });
 
-  it("fails the version gate for any version until `adapters validate` passes one (ADR-0009)", () => {
+  it("passes the version gate for the validated version now that `adapters validate` passed one (ADR-0009, T4.58)", () => {
     const registry = new AdapterRegistry();
-    for (const v of ["2.0.23", "1.0.0", "0.0.0", null]) {
+    expect(registry.gate("opencode", "2.0.23").eligible).toBe(true);
+    for (const v of ["2.1.0", "1.0.0", "0.0.0", null]) {
       expect(registry.gate("opencode", v).eligible, String(v)).toBe(false);
     }
   });
