@@ -163,7 +163,7 @@ export const OPERATOR_POLL_MS = 1000;
 /** Upper bound on waiting for a retrieval build to stop at shutdown (Assumption, Delegated, T12.4). */
 const RAG_STOP_WAIT_MS = 2000;
 /** Node clamps a timer delay above 2^31-1 ms (about 24.8 days) to 1 ms, so a longer `retention.interval` is capped. */
-const MAX_TIMER_MS = 2 ** 31 - 1;
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 /** Test-only clock offset in milliseconds; honoured only with the fake switch on (T3.4 process tests). */
 export const TEST_CLOCK_OFFSET_ENV = "SWITCHBOARD_TEST_CLOCK_OFFSET_MS";
 
@@ -311,6 +311,42 @@ export function defaultShimCommand(): string[] {
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "";
+
+/** Injectable timer surface for the retention GC schedule (T3.12); defaults to the real globals. */
+export interface RetentionGcTimers {
+  readonly setInterval: typeof setInterval;
+  readonly clearInterval: typeof clearInterval;
+}
+
+/**
+ * T3.12: start the retention GC interval pass. Returns the capped delay and a `stop` for shutdown. The pass never
+ * runs at scheduling time: the startup pass is the explicit `await gcPass("startup")` in `runDaemon` before the
+ * lifecycle starts. A `run` that throws or rejects is logged (first line only, like every other `serve` error log)
+ * and never stops later passes; the handle is unref'd so an idle daemon still exits when stdin closes.
+ */
+export function scheduleRetentionGc(
+  intervalMs: number,
+  run: () => unknown,
+  timers?: RetentionGcTimers,
+  log?: Pick<Logger, "error">,
+): { readonly delayMs: number; stop: () => void } {
+  const set = timers?.setInterval ?? setInterval;
+  const clear = timers?.clearInterval ?? clearInterval;
+  const delayMs = Math.min(intervalMs, MAX_TIMER_MS);
+  const report = (err: unknown): void => {
+    log?.error("retention gc failed", { when: "interval", error: message(err) });
+  };
+  const timer = set(() => {
+    try {
+      const result = run();
+      if (result instanceof Promise) result.catch(report);
+    } catch (err) {
+      report(err);
+    }
+  }, delayMs);
+  timer.unref();
+  return { delayMs, stop: () => clear(timer) };
+}
 
 /**
  * Run the daemon until shutdown. Resolves with the exit code; 1 without touching anything when running as root
@@ -1198,9 +1234,8 @@ async function runDaemon(
     sweepConsentLinks();
   }, OPERATOR_POLL_MS);
   const gcTimer = config.retentionEnabled
-    ? setInterval(() => void gcPass("interval"), Math.min(config.retention.intervalMs, MAX_TIMER_MS))
+    ? scheduleRetentionGc(config.retention.intervalMs, () => void gcPass("interval"), undefined, log)
     : undefined;
-  gcTimer?.unref();
 
   let code = 0;
   try {
@@ -1349,7 +1384,7 @@ async function runDaemon(
     process.stdin.off("end", onStdinEnd);
     process.stdin.off("close", onStdinEnd);
     clearInterval(timer);
-    if (gcTimer) clearInterval(gcTimer);
+    gcTimer?.stop();
     // Abort a running build (each committed batch is already consistent). A scan in progress is not interruptible, so
     // shutdown waits for it at most RAG_STOP_WAIT_MS; the ledger write of a late result then fails and is only logged.
     if (rag !== undefined)
