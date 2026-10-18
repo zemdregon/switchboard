@@ -2853,8 +2853,9 @@ list. `Done` also needs:
    T4.79 is final after T4.78. FR-ADP-12 is not in the M4 acceptance criteria, so M4 can be `Done` without it
    (Delegated reading).
 7. **macOS:** T4.10 is `Done`; T4.12 needs a Mac and is optional for the criterion "the test suite passes on macOS".
-8. **Shared groundwork:** T4.2's row text is `Partial` (the T4.1 scratch adapter does not meet every item of
-   [TDD §4.9](design/TDD.md#49-adapter-addition-checklist-t42)).
+8. **Shared groundwork:** none open. T4.2 is `Done` (2026-10-18): the T4.1 scratch adapter meets every item of
+   [TDD §4.9](design/TDD.md#49-adapter-addition-checklist-t42), one named test per item in
+   `src/adapters/checklist.test.ts`.
 
 Later milestones without a task table are broken into tasks under §9.1 step 2 when work is ready; M8's is [§6.15](#615-m8-hardening-tasks)
 (2026-10-16, Delegated). M4's breakdown (§6.8) was written early, on 2026-10-13, while M3 and M9 were `Partial`,
