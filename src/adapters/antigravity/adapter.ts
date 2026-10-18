@@ -229,7 +229,8 @@ export class AntigravityAdapter implements ProviderAdapter {
 
     const help = await run(HELP_FLAG);
     const commandOk = help.spawnError === undefined && !help.timedOut && help.exitCode === 0;
-    const flags = new Set(commandOk ? (help.stdout.match(/--[a-z][a-z0-9-]*/g) ?? []) : []);
+    const helpText = `${help.stdout}\n${help.stderr}`;
+    const flags = new Set(commandOk ? (helpText.match(/--[a-z][a-z0-9-]*/g) ?? []) : []);
 
     // Delegated (T4.32): agy 1.4.0 no longer lists --output-format in --help (observed 2026-10-17, live checks §5).
     // If --help lists it, accept it as before. Otherwise, verify via a no-model check (OUTPUT_FORMAT_PROBE_ARGS) that

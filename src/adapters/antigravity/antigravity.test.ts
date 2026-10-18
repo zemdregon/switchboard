@@ -334,7 +334,7 @@ describe("antigravity probe (T4.32)", () => {
   });
 
   describe("fake binary probe assertions (T4.32)", () => {
-    function makeFakeAgy(behavior: "1.3.4" | "1.4-accepted" | "1.4-rejected"): {
+    function makeFakeAgy(behavior: "1.3.4" | "1.4-accepted" | "1.4-rejected" | "1.4-stderr"): {
       dir: string;
       exe: string;
       logFile: string;
@@ -362,6 +362,8 @@ fi
 if [ "$1" = "--help" ]; then
   if [ "${behavior}" = "1.3.4" ]; then
     printf "Usage of agy:\\n  --conversation string\\n  --dangerously-skip-permissions\\n  --output-format string\\n  --prompt string\\n"
+  elif [ "${behavior}" = "1.4-stderr" ]; then
+    printf "Usage of agy:\\n  --conversation string\\n  --dangerously-skip-permissions\\n  --prompt string\\n" >&2
   else
     printf "Usage of agy:\\n  --conversation string\\n  --dangerously-skip-permissions\\n  --prompt string\\n"
   fi
@@ -400,6 +402,19 @@ exit 1
 
     it("1.4-style fake binary (flag not in help, flag accepted) passes and never spawns a model call", async () => {
       const fake = makeFakeAgy("1.4-accepted");
+      try {
+        const adp = new AntigravityAdapter({ executable: fake.exe });
+        const res = await adp.probe(createProbeRunner(["PATH", "HOME"]));
+        expect(res.steps.every((s) => s.ok)).toBe(true);
+        const calls = readFileSync(fake.logFile, "utf8").trim().split("\n");
+        expect(calls).toEqual(["--version", "--help", "--output-format json --help"]);
+      } finally {
+        fake.cleanup();
+      }
+    });
+
+    it("1.4-style fake binary with help on stderr passes and never spawns a model call", async () => {
+      const fake = makeFakeAgy("1.4-stderr");
       try {
         const adp = new AntigravityAdapter({ executable: fake.exe });
         const res = await adp.probe(createProbeRunner(["PATH", "HOME"]));
