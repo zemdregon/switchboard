@@ -6174,11 +6174,13 @@ term), **Affinity**, **Decision record, version 3** and **Run fields** subsectio
 ```
 
 Startup refuses an unknown provider id, a duplicate `{ provider, model }` pair, an empty `members` list and a malformed
-name or model. Whether the model resolves is checked at routing time, not at startup, because the registry's listing
-changes with each probe (§2.1). `loadConfig` resolves `model_groups` once into `ResolvedConfig.modelGroups`
-(`src/config/load.ts`); `serve` passes that table to the MCP server and to queue admission (`src/cli/serve.ts`), and
-both validate through `modelGroupsOf` (`src/config/routing.ts`): the resolved table when present, else the raw
-`model_groups`, else the file at `configPath`, else none.
+name or model. The test-only fake adapter id `fake` is accepted as a member `provider` (and in
+`capacity.subscriptions.<name>.providers`, §16.9) only when that adapter is registered (`serve`'s test-only switch,
+`loadConfig({ testFakeAdapter })`); otherwise the messages are unchanged. Whether the model resolves is checked at
+routing time, not at startup, because the registry's listing changes with each probe (§2.1). `loadConfig` resolves
+`model_groups` once into `ResolvedConfig.modelGroups` (`src/config/load.ts`); `serve` passes that table to the MCP
+server and to queue admission (`src/cli/serve.ts`), and both validate through `modelGroupsOf` (`src/config/routing.ts`):
+the resolved table when present, else the raw `model_groups`, else the file at `configPath`, else none.
 
 **Request** (`routing.model_group`, `routing.model`; §3.0). Validation, before any side effect (FRD V14):
 

@@ -877,7 +877,9 @@ without them (`src/routing/group-selection.test.ts`, `src/capacity/pacing-projec
 `model_groups` (see [Configure](#configure)). It is configuration only. Switchboard ships no group, tier or model name,
 and a group's name or a member's place in it is never a claim about quality, capability or price: a group called
 `flagship` is just a label. `minimum_capability` still uses only the capabilities you declared for each model, and
-member order is used only as the last tie-break.
+member order is used only as the last tie-break. A member's `provider` is a config provider id; the test-only fake
+adapter id `fake` is accepted there and in `capacity.subscriptions.<name>.providers` only when that adapter is
+registered (`serve` with the test-only fake switch, TDD §3.6), and is refused as before otherwise.
 
 **How to request one.** `delegate_task` and `enqueue_work` accept two optional routing fields; give at most one:
 

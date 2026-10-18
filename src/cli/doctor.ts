@@ -51,6 +51,7 @@ import { pacingDoctorLine, projectCapacity } from "./capacity.js";
 import { type InnerDoctorSection, innerDoctorSection, renderInnerDoctor } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { type RagDoctorSection, ragDoctorSection, renderRagDoctor } from "./rag-index.js";
+import { TEST_FAKE_ADAPTER_ENV, TEST_FAKE_ADAPTER_VALUE } from "./serve.js";
 import { skillsDoctorCheck } from "./skills.js";
 import { checkUnprivileged } from "./unprivileged.js";
 
@@ -560,7 +561,14 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
 
   let cfg: ResolvedConfig | undefined;
   try {
-    cfg = loadConfig({ argv, env: io.env, ...(io.homedir !== undefined ? { homedir: io.homedir } : {}) });
+    cfg = loadConfig({
+      argv,
+      env: io.env,
+      // The config `serve` would accept under the same environment: `fake` in model groups and subscriptions only
+      // with the test-only fake switch (TDD §3.6).
+      testFakeAdapter: io.env[TEST_FAKE_ADAPTER_ENV] === TEST_FAKE_ADAPTER_VALUE,
+      ...(io.homedir !== undefined ? { homedir: io.homedir } : {}),
+    });
     checks.push(check("config", "Config", "ok", cfg.configPath));
     const overrides = checkProfileOverrides(cfg);
     if (overrides) checks.push(overrides);
@@ -664,12 +672,9 @@ export function resolveGroupMemberForDoctor(
     };
   }
 
-  // 2. Is adapter registered?
-  const adapterId = adapterIdForConfigId(member.provider);
-  const adapter =
-    adapterId !== undefined && adapters.has(adapterId as ProviderId)
-      ? adapters.get(adapterId as ProviderId)
-      : undefined;
+  // 2. Is adapter registered? A member names a config id, or the test-only fake (no config id) as is.
+  const adapterId = adapterIdForConfigId(member.provider) ?? member.provider;
+  const adapter = adapters.has(adapterId as ProviderId) ? adapters.get(adapterId as ProviderId) : undefined;
   if (adapter === undefined) {
     return {
       provider: member.provider,
