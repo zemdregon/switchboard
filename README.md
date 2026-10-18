@@ -34,7 +34,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
   `host` environments on a fake provider with real Git in temporary repositories. It is not `Done`: nothing has run
   against a live provider through Switchboard's own tool channel, signing was tried only with a throwaway GnuPG key,
-  pushing from dynamic projects is not wired, and the `container` clauses stay **Partial** until milestone 10 is `Done`
+  pushing from dynamic projects is refused by design (`CONTEXT_UNKNOWN`, owner decision 62; Q-46 answered), and
+  the `container` clauses stay **Partial** until milestone 10 is `Done`
   (mounting and MCP admission are on fakes; T10.0 live and opt-in Docker remain open — see milestone 10 below). The
   exceptions are listed in
   [ROADMAP §6.3](docs/ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
@@ -391,7 +392,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `mcp_clients` | yes | Entries `{ "id", "max_trust_profile", "privileged_approval"?, "projects"? }`. `id` matches `^[a-z0-9][a-z0-9_-]{0,63}$` and must be unique. `serve --client <id>` binds a session to one entry. |
 | `mcp_clients[].projects` | no | Ids of the configured `projects` this client may use with `delegate_task`'s `project` input and see in `list_projects`. An id that names no project stops startup. A client without the list can use no project (workspace paths still work). |
 | `mcp_clients[].manage_projects` | no | `true` gives this client the `create_project`, `update_project` and `delete_project` tools for its own *dynamic projects* (see [Dynamic projects](#dynamic-projects)). Default `false`: the tools do not exist for it. |
-| `mcp_clients[].max_push_policy` | no | `"none"` (default) or `"branch"`: the widest push policy a dynamic project of this client may declare. Only with `manage_projects: true`. A push-enabled project still waits for `projects approve`. |
+| `mcp_clients[].max_push_policy` | no | `"none"` (default) or `"branch"`: the widest push policy a dynamic project of this client may declare. Only with `manage_projects: true`. A push-enabled project still waits for `projects approve` (which enables runs, not push targets: a push from an approved dynamic project is refused `CONTEXT_UNKNOWN` by design, owner decision 62; Q-46 answered). |
 | `mcp_clients[].privileged_approval` | no | `"required"` (default) or `"not_required"`. With `not_required`, that client's `privileged` requests run without `switchboard approve` (see [Trust profiles](#trust-profiles)). Allowed only when the client's `max_trust_profile` is `privileged`; `doctor` warns for every client that sets it. |
 | `data_dir` | no | Where the ledger, artifacts and worktrees live. Default `$XDG_DATA_HOME/switchboard` (`~/.local/share/switchboard`). |
 | `limits.global_concurrency` | no | Integer 1 to 64. Default 4. |
@@ -1257,9 +1258,11 @@ A revision with a `container` environment, a push policy other than `none`, a co
 wider trust ceiling or provider set than the revision in force is stored as `PENDING_APPROVAL` and cannot start runs
 until you approve it; until then the previous revision stays in force. Review it with `switchboard projects show <id>`,
 then run `switchboard projects approve <id>` (add `--revision <n>` once the project has more than one revision, and
-`--reject` to refuse it). There is no way to approve over MCP. `approve` works while `serve` runs. Deleting a project
-is refused while one of its runs is still going; its history stays. Not yet: pushing from a dynamic project (a push is
-refused even after approval). Approved `container` dynamic projects can run when `serve` composes placement (milestone 10,
+`--reject` to refuse it). Over MCP, only a client the operator marked `approval_proxy` may decide through
+`decide_approval` (FR-CTL-08). `approve` works while `serve` runs. Deleting a project
+is refused while one of its runs is still going; its history stays. By design a push from a dynamic project
+is refused (`CONTEXT_UNKNOWN`) even after approval (owner decision 62; Q-46 answered). Approved `container`
+dynamic projects can run when `serve` composes placement (milestone 10,
 [PR #554](https://github.com/zemdregon/switchboard/pull/554)); operator live login (T10.0) is still open.
 
 `gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than

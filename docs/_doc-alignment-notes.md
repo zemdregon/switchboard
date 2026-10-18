@@ -239,3 +239,40 @@ as history.
   itself (owner decisions 59 and 60, `COMPILED_CELL_FALLBACK` in
   `src/cli/adapters-validate.ts`, built 2026-10-18), so no fact about the
   code is wrong. It does not block PR #698.
+
+## 18. ROADMAP §4.2 has no entry for owner decision 62 (pre-existing gap widened by PR #697)
+
+- The [§4.2 Owner decisions](ROADMAP.md#42-owner-decisions) list runs to
+  decision 60 (2026-10-18; entries 42 onward use escaped `42\.` numbering, so a
+  naive grep for `^42.` misses them — the earlier wording of this note wrongly
+  said the list ends at 41). No §4.2 entry exists for owner decision 62 (or 61,
+  which nothing cites). The §5 document table says owner decisions are
+  "Listed in §4.2 only".
+- Left unchanged: writing a §4.2 entry for decision 62 would mean restating
+  zemdregon's words, which this gate cannot verify and must not invent. The
+  substance of decision 62 is recorded where it is cited, with identical wording
+  in all 11 spots (the T9.9 block, the M9 row, E4 and the Q-46 row in the
+  ROADMAP; the BR-32 and FR-PRJ-10 notes; LLD; TDD; three README spots), each
+  naming the refused-by-design outcome and its pin
+  `src/git/push-dynamic-refused.test.ts`. Recording the missing §4.2 entry is the
+  roadmap owner's call.
+- It does not block PR #697: the Q-46 row in §7.3 records the answer with the
+  same wording the PR uses everywhere else, and
+  `node scripts/check-docs.mjs` does not validate the §4.2 numbering.
+
+## 19. ADR-0030 still cites open Q-46 / "cannot push yet" (accepted ADR, left untouched)
+
+- [ADR-0030](adr/0030-dynamic-project-revisions-and-approval.md) says wiring push
+  targets for approved dynamic projects was "not done in T9.9" and that
+  "Dynamic projects with push cannot push yet (Q-46)". Since PR #697, Q-46 is
+  answered (refused by design, owner decision 62) and the refusal is pinned by
+  `src/git/push-dynamic-refused.test.ts`.
+- Left unchanged on purpose: ADR-0030 is Accepted, and AGENTS.md forbids editing
+  an accepted ADR's decision (a change needs a superseding ADR). No edit is
+  needed for correctness: the ADR's operative statements — push contexts resolve
+  from the configuration only, so an approved push-enabled dynamic project is
+  refused at push time (`CONTEXT_UNKNOWN`), fail closed — still match the code
+  (`pushContextResolver(config.projects)` in `src/cli/serve.ts`, `CONTEXT_UNKNOWN`
+  in `src/git/push.ts` and `src/cli/git-push.ts`); only the "yet" and the
+  open-Q-46 parenthetical are overtaken, and the Q-46 row now records the answer.
+- It does not block PR #697.
