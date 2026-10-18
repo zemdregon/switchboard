@@ -81,6 +81,8 @@ import {
   BudgetEvaluator,
   ConsentLinkStore,
   createConsentApprovalSource,
+  NO_PROJECT_ID,
+  OnceGate,
   SinkDispatcher,
   sinkOutcomeRecorder,
   transitionNotifier,
@@ -118,6 +120,7 @@ import {
   startHttpTransport,
   startStdioServer,
 } from "../mcp/index.js";
+import type { PendingRevisionAnnouncement } from "../mcp/project-tools.js";
 import type { SearchContextDeps } from "../mcp/search-context.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
@@ -810,6 +813,9 @@ async function runDaemon(
         });
   if (sinks) log.info("notification sinks configured", { sinks: sinks.sinkIds });
   const notifySinks = sinks ? transitionNotifier(sinks, (runId) => ledger.getRunRecord(runId)?.project_id) : undefined;
+  // T14.9 (FR-CTL-10, ADR-0048): `needs_attention` emits once per (run, reason) in this process; keys name only the
+  // run id and the closed reason code.
+  const attentionGate = new OnceGate();
   // T15.4 (FR-QUE-04, LLD §18.8, ADR-0048): one queue low-water tracker for this process, on the real ledger and the
   // same dispatcher as the other sink events. It recomputes on every work-queue state change the ledger notifies
   // (MCP enqueue/cancel, the scheduler tick's dequeue and admission outcomes, run-terminal transitions); the mark comes
@@ -951,6 +957,36 @@ async function runDaemon(
     },
     budgets,
     onBudgetRefused,
+    // T14.9 (FR-CTL-10, ADR-0048): pending and attention announcements on the same dispatcher as the transition hook.
+    // `needs_attention` emits once per (run, reason) through the gate; a sink failure never reaches the run.
+    onApprovalPending: (n) => {
+      if (!sinks) return;
+      sinks.emit({
+        projectId: n.projectId ?? NO_PROJECT_ID,
+        eventKind: "approval_pending",
+        reasonCode: "privileged_scope",
+        runId: n.runId,
+      });
+      if (attentionGate.claim(`needs_attention|${n.runId}|awaiting_approval`)) {
+        sinks.emit({
+          projectId: n.projectId ?? NO_PROJECT_ID,
+          eventKind: "needs_attention",
+          reasonCode: "awaiting_approval",
+          runId: n.runId,
+        });
+      }
+    },
+    onNeedsAttention: (n) => {
+      if (!sinks) return;
+      if (attentionGate.claim(`needs_attention|${n.runId}|${n.reason}`)) {
+        sinks.emit({
+          projectId: n.projectId ?? NO_PROJECT_ID,
+          eventKind: "needs_attention",
+          reasonCode: n.reason,
+          runId: n.runId,
+        });
+      }
+    },
     ...(environments !== undefined ? { environments } : {}),
     ...(now ? { now } : {}),
   });
@@ -1082,6 +1118,22 @@ async function runDaemon(
             return project === undefined ? undefined : resolveGithubRemote(primaryContext(project).path, remote);
           },
           maxItemsPerProject: queueSettings.maxItemsPerProject,
+          // T14.9 (FR-CTL-10, ADR-0048): a ref newly reaching the stuck flag reaches the sinks as `needs_attention`
+          // (`ci_fix_stuck`, no run; the project carries it). The poller announces the 0→1 transition only.
+          ...(sinks === undefined
+            ? {}
+            : {
+                onStuck: (info: { projectId: string; publishRef: string }) => {
+                  if (attentionGate.claim(`needs_attention|${info.projectId}|${info.publishRef}|ci_fix_stuck`)) {
+                    sinks.emit({
+                      projectId: info.projectId,
+                      eventKind: "needs_attention",
+                      reasonCode: "ci_fix_stuck",
+                      runId: null,
+                    });
+                  }
+                },
+              }),
         },
         () => (now ? now() : new Date()).getTime(),
       )
@@ -1192,6 +1244,15 @@ async function runDaemon(
                 });
               }
             },
+            // T14.9 (FR-CTL-10, ADR-0048): a revision waiting for the operator reaches the sinks as `approval_pending`
+            // (a revision has no run; the project carries it). One revision row emits once.
+            announcePendingRevision: (a: PendingRevisionAnnouncement) =>
+              sinks.emit({
+                projectId: a.projectId,
+                eventKind: "approval_pending",
+                reasonCode: a.kind,
+                runId: null,
+              }),
           }
         : {}),
       // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.

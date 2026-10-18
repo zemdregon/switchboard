@@ -1170,4 +1170,60 @@ describe("CI-fix cap per FR-QUE-05 and ADR-0050 (T15.5)", () => {
     });
     expect(isCiFixStuck(f.db, "app")).toBe(false);
   });
+
+  it("announces ci_fix_stuck once at the 0-to-1 flag; a reset re-arms it (T14.9)", async () => {
+    f = openFixture();
+    const port = new FakeCiStatusPort();
+    const stuck: { projectId: string; publishRef: string }[] = [];
+    const d = deps(f, port, {
+      settings: settings({ maxConsecutiveFixes: 1, projects: [trigger({ maxConsecutiveFixes: 1 })] }),
+      onStuck: (info) => stuck.push(info),
+    });
+    recordPush(f, { sha: "1".repeat(40) });
+    port.set(REF, obs("30001", "failure", REF, "1".repeat(40)));
+    await pollCiTriggers(d);
+    expect(isCiFixStuck(f.db, "app")).toBe(false);
+    expect(stuck).toEqual([]);
+    recordPush(f, { sha: "2".repeat(40) });
+    port.set(REF, obs("30002", "failure", REF, "2".repeat(40)));
+    const r = await pollCiTriggers(d);
+    expect(r.recordedOnly).toHaveLength(1);
+    expect(isCiFixStuck(f.db, "app")).toBe(true);
+    expect(stuck).toEqual([{ projectId: "app", publishRef: REF }]);
+    // A further failing head while stuck announces nothing new.
+    recordPush(f, { sha: "3".repeat(40) });
+    port.set(REF, obs("30003", "failure", REF, "3".repeat(40)));
+    await pollCiTriggers(d);
+    expect(stuck).toHaveLength(1);
+    // A reset re-arms the next 0-to-1 transition.
+    resetCiFixCounter(f.db, { projectId: "app", publishRef: REF });
+    recordPush(f, { sha: "4".repeat(40) });
+    port.set(REF, obs("30004", "failure", REF, "4".repeat(40)));
+    await pollCiTriggers(d);
+    expect(stuck).toHaveLength(1);
+    recordPush(f, { sha: "5".repeat(40) });
+    port.set(REF, obs("30005", "failure", REF, "5".repeat(40)));
+    const r5 = await pollCiTriggers(d);
+    expect(r5.recordedOnly).toHaveLength(1);
+    expect(stuck).toHaveLength(2);
+  });
+
+  it("a failing onStuck never fails the poll (T14.9, ADR-0048 item 6)", async () => {
+    f = openFixture();
+    const port = new FakeCiStatusPort();
+    const d = deps(f, port, {
+      settings: settings({ maxConsecutiveFixes: 1, projects: [trigger({ maxConsecutiveFixes: 1 })] }),
+      onStuck: () => {
+        throw new Error("observer boom");
+      },
+    });
+    recordPush(f, { sha: "1".repeat(40) });
+    port.set(REF, obs("31001", "failure", REF, "1".repeat(40)));
+    await pollCiTriggers(d);
+    recordPush(f, { sha: "2".repeat(40) });
+    port.set(REF, obs("31002", "failure", REF, "2".repeat(40)));
+    const r = await pollCiTriggers(d);
+    expect(r.recordedOnly).toHaveLength(1);
+    expect(isCiFixStuck(f.db, "app")).toBe(true);
+  });
 });

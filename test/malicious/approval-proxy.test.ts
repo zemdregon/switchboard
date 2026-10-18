@@ -6,7 +6,8 @@
  *
  * Clients: `root` and `other` (privileged ceilings) raise approvals; `bot` is marked `approval_proxy` with targets
  * `[root]`; `plain` has no flag. Every requested objective, project name and scope string carries a planted
- * instruction, and no listed field or description may repeat it.
+ * instruction, and no listed field or description may repeat it. The T14.9 announcements for a privileged admission
+ * (`approval_pending`, `needs_attention`) are wired as in `serve` and carry only closed fields.
  *
  * ROADMAP T14.8 legs: a missing, stale or mismatched digest refuses and writes nothing; a client not in the target list
  * is refused; a client without the flag has no approval tools in `tools/list`; no listed description contains agent
@@ -33,6 +34,7 @@ import {
   type ApprovalAnnouncement,
   approvalDigest,
   MCP_PROXY_DECIDER_PREFIX,
+  NO_PROJECT_ID,
   SinkDispatcher,
   type SinkRequest,
   transitionNotifier,
@@ -139,6 +141,21 @@ beforeEach(async () => {
     },
   });
   const notify = transitionNotifier(sinks, (runId) => ledger.getRunRecord(runId)?.project_id);
+  // T14.9 wiring as in `serve`: a privileged admission announces `approval_pending` and `needs_attention`.
+  const announcePending = (runId: string) =>
+    sinks.emit({
+      projectId: ledger.getRunRecord(runId)?.project_id ?? NO_PROJECT_ID,
+      eventKind: "approval_pending",
+      reasonCode: "privileged_scope",
+      runId,
+    });
+  const announceAwaiting = (runId: string) =>
+    sinks.emit({
+      projectId: ledger.getRunRecord(runId)?.project_id ?? NO_PROJECT_ID,
+      eventKind: "needs_attention",
+      reasonCode: "awaiting_approval",
+      runId,
+    });
   lifecycle = new RunLifecycle({
     ledger,
     workspace,
@@ -156,6 +173,12 @@ beforeEach(async () => {
       }),
     },
     onTransition: (n) => notify(n),
+    // T14.9 wiring as in `serve`: the admission of a privileged run reaches the sinks as `approval_pending` and
+    // `needs_attention`, with only closed ids and codes.
+    onApprovalPending: (n) => {
+      announcePending(n.runId);
+      announceAwaiting(n.runId);
+    },
   });
   // Not started: an approved run stays QUEUED, so assertions see the decision's own transition.
   const mcpClients = new Map(CLIENTS.map((c) => [c.id, c]));
@@ -374,7 +397,25 @@ describe("T14.8 approval proxy: fail closed, nothing written", () => {
     expect(ledgerDump(db)).toBe(before);
     expect(ledger.getRunRecord(runId)?.state).toBe("AWAITING_APPROVAL");
     await settleSinks();
-    expect(captured).toEqual([]);
+    // The refused attempts wrote nothing and announced nothing, but the admission itself announced the pending
+    // approval (closed fields only, never the planted text).
+    expect(captured.map((c) => c.body)).toEqual([
+      {
+        project_id: "-",
+        event_kind: "approval_pending",
+        reason_code: "privileged_scope",
+        run_id: runId,
+        link: `switchboard://run/${runId}`,
+      },
+      {
+        project_id: "-",
+        event_kind: "needs_attention",
+        reason_code: "awaiting_approval",
+        run_id: runId,
+        link: `switchboard://run/${runId}`,
+      },
+    ]);
+    expect(JSON.stringify(captured)).not.toContain("CANARY-T148-7f3a");
 
     // Stale: the same id and digest after the approval was decided are refused, and nothing more is written.
     await ok("bot", "decide_approval", {
@@ -466,6 +507,20 @@ describe("T14.8 approval proxy: decisions are recorded and announced", () => {
     expect(captured.map((c) => c.body)).toEqual([
       {
         project_id: "-",
+        event_kind: "approval_pending",
+        reason_code: "privileged_scope",
+        run_id: runId,
+        link: `switchboard://run/${runId}`,
+      },
+      {
+        project_id: "-",
+        event_kind: "needs_attention",
+        reason_code: "awaiting_approval",
+        run_id: runId,
+        link: `switchboard://run/${runId}`,
+      },
+      {
+        project_id: "-",
         event_kind: "approval_decided",
         reason_code: "privileged_scope",
         run_id: runId,
@@ -495,7 +550,12 @@ describe("T14.8 approval proxy: decisions are recorded and announced", () => {
     expect(ledger.getRunRecord(runId)?.state).toBe("CANCELLED");
     await settleSinks();
     const kinds = captured.map((c) => `${c.body.event_kind}:${c.body.reason_code}`).sort();
-    expect(kinds).toEqual(["approval_decided:privileged_scope", "run_terminal:CANCELLED"]);
+    expect(kinds).toEqual([
+      "approval_decided:privileged_scope",
+      "approval_pending:privileged_scope",
+      "needs_attention:awaiting_approval",
+      "run_terminal:CANCELLED",
+    ]);
   });
 
   it("a dynamic project revision decided through the proxy is recorded as mcp_proxy:bot and announced", async () => {

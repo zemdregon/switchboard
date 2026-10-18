@@ -42,8 +42,11 @@ built, and the discovery note recommended this one for the same reason.
    `budget_exhausted`, `project_paused`, and `queue_low` (T15.4, FR-QUE-04; reason code `queue_low`, `run_id` null).
 4. **Filter and rate limit.** Each sink names the event kinds it receives and a maximum rate. Events beyond the rate
    are dropped and counted, not queued without bound.
-5. **Links carry no secret.** A link points to the digest or the consent page. It holds no token, no approval
-   digest and no passphrase; opening it requires the operator's normal authentication (FR-MCP-17 or the CLI).
+5. **Links carry no secret and name only served routes.** A link is the configured MCP HTTP resource URL itself, a
+   route this server serves. There is no per-run or digest page, so the link never encodes one; it holds no token, no
+   approval digest and no passphrase, and the consent-page token never reaches a sink payload. With no HTTP transport
+   configured there is no served route, so the link is a `switchboard://run/<run_id>` or `switchboard://digest`
+   placeholder. Opening a served link still requires the operator's normal authentication (FR-MCP-17 or the CLI).
 6. **Delivery never affects a run.** A sink call is best effort, runs outside the admission and execution path, and has
    a bounded timeout. A failure is logged, and is recorded as `sink_delivery_failed` in the ledger only when the
    event has a run, never with the payload.

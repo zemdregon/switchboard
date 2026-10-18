@@ -24,12 +24,14 @@ import { createLedger, type Ledger, openLedger, type RunState, type TrustProfile
 import { canonicalScopeJson, parsePrivilegedScope, privilegedScopeHash } from "../policy/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import {
+  type ApprovalPendingNotice,
   ApprovalRefusedError,
   assertTransition,
   bypassApprovedFor,
   evaluateBypass,
   IllegalTransitionError,
   LifecycleError,
+  type NeedsAttentionNotice,
   RUN_STATES,
   RunLifecycle,
   type RunLifecycleOptions,
@@ -1141,6 +1143,76 @@ emit({ type: "result", ok: true, summary: "recorded" });
     await expect(submit("success", { ...cont, idempotencyKey: "key-abcdefgh" })).rejects.toMatchObject({
       code: "INVALID_REQUEST",
     });
+  });
+});
+
+describe("sink-event hooks (T14.9, FR-CTL-10, ADR-0048)", () => {
+  it("announces a privileged approval entering pending once; never on replay or for other admissions", async () => {
+    const pending: ApprovalPendingNotice[] = [];
+    lifecycle = makeLifecycle({ onApprovalPending: (n) => pending.push(n) });
+    const key = "pend-key-0001";
+    const privilegedSubmit = { trustProfile: "privileged", privileged: { scope: SCOPE }, idempotencyKey: key } as {
+      trustProfile: TrustProfile;
+      privileged: { scope: typeof SCOPE };
+      idempotencyKey: string;
+    };
+    const r = await submit("success", privilegedSubmit);
+    expect(r.state).toBe("AWAITING_APPROVAL");
+    expect(pending).toEqual([{ runId: r.runId, projectId: null }]);
+    const again = await submit("success", privilegedSubmit);
+    expect(again).toMatchObject({ runId: r.runId, replayed: true });
+    expect(pending).toHaveLength(1);
+    await submit("writer");
+    expect(pending).toHaveLength(1);
+  });
+
+  it("announces parked_loop once when the Nth identical failure parks the meta-session", async () => {
+    const attention: NeedsAttentionNotice[] = [];
+    lifecycle = makeLifecycle({
+      loopBreaker: { identicalFailureThreshold: 2, stallMinutes: 30, maxSuccessorsPerMetaSession: 8 },
+      onNeedsAttention: (n) => attention.push(n),
+    });
+    lifecycle.start();
+    const first = await submit("task_failure");
+    await lifecycle.waitForTerminal(first.runId);
+    expect(attention).toEqual([]);
+    const second = await submit("task_failure", { metaSessionId: first.metaSessionId, workspace: undefined });
+    const done = await lifecycle.waitForTerminal(second.runId);
+    expect(done.state).toBe("FAILED");
+    // A parked failure also matches `failed_after_retry` in the T14.2 derivation, so both reasons are announced.
+    expect(attention).toEqual([
+      { runId: second.runId, projectId: null, reason: "parked_loop" },
+      { runId: second.runId, projectId: null, reason: "failed_after_retry" },
+    ]);
+  });
+
+  it("announces failed_after_retry once when a run fails at the successor cap", async () => {
+    const attention: NeedsAttentionNotice[] = [];
+    lifecycle = makeLifecycle({
+      loopBreaker: { identicalFailureThreshold: 8, stallMinutes: 30, maxSuccessorsPerMetaSession: 1 },
+      retry: { maxAttempts: 1, baseMs: 50, capMs: 200 },
+      random: () => 0.999,
+      onNeedsAttention: (n) => attention.push(n),
+    });
+    lifecycle.start();
+    const r = await submit("task_failure");
+    const done = await lifecycle.waitForTerminal(r.runId);
+    expect(done).toMatchObject({ state: "FAILED", attempt: 1 });
+    expect(attention).toEqual([{ runId: r.runId, projectId: null, reason: "failed_after_retry" }]);
+  });
+
+  it("a failing observer never fails admission or the run", async () => {
+    lifecycle = makeLifecycle({
+      onApprovalPending: () => {
+        throw new Error("observer boom");
+      },
+      onNeedsAttention: () => {
+        throw new Error("observer boom");
+      },
+    });
+    const r = await submit("success", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+    expect(r.state).toBe("AWAITING_APPROVAL");
+    expect(ledger.listApprovals()).toHaveLength(1);
   });
 });
 

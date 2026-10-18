@@ -39,6 +39,7 @@ import {
   TOOL_NAMES,
   WORK_QUEUE_TOOL_NAMES,
 } from "./index.js";
+import type { PendingRevisionAnnouncement } from "./project-tools.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -104,7 +105,14 @@ interface ClientSpec {
   projects?: string[];
 }
 
-async function setup(clients: ClientSpec[], opts: { projects?: ResolvedProject[]; disabled?: string[] } = {}) {
+async function setup(
+  clients: ClientSpec[],
+  opts: {
+    projects?: ResolvedProject[];
+    disabled?: string[];
+    announcePendingRevision?: (a: PendingRevisionAnnouncement) => void;
+  } = {},
+) {
   const registry = new AdapterRegistry();
   const fake = new FakeAdapter({ script: path.join(root, "writer-cli.mjs"), timeouts: SHORT });
   registry.register({
@@ -151,7 +159,11 @@ async function setup(clients: ClientSpec[], opts: { projects?: ResolvedProject[]
 
 async function connect(
   clients: ClientSpec[],
-  opts: { projects?: ResolvedProject[]; disabled?: string[] },
+  opts: {
+    projects?: ResolvedProject[];
+    disabled?: string[];
+    announcePendingRevision?: (a: PendingRevisionAnnouncement) => void;
+  },
   registry: AdapterRegistry,
   artifacts: ArtifactStore,
 ) {
@@ -182,6 +194,7 @@ async function connect(
       config,
       clientId: c.id,
       projectStore: store,
+      ...(opts.announcePendingRevision !== undefined ? { announcePendingRevision: opts.announcePendingRevision } : {}),
     });
     const client = new Client({ name: `test-${c.id}`, version: "0.0.0" });
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
@@ -790,5 +803,43 @@ describe("delete, history and events", () => {
     await call("create_project", { project: definition({ id: "next-app" }) }, 1);
     expect((await call("list_projects", {}, 1)).body.projects.map((p: Json) => p.id)).toEqual(["next-app"]);
     expect(store.state("dyn-app")?.deleted).toBe(true);
+  });
+});
+
+describe("pending revision announcement (T14.9, FR-CTL-10, ADR-0048)", () => {
+  it("announces push_revision and dynamic_project once each; silent for ACTIVE writes", async () => {
+    const announced: PendingRevisionAnnouncement[] = [];
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true, maxPush: "branch" }], {
+      announcePendingRevision: (a) => announced.push(a),
+    });
+    const push = await call("create_project", { project: definition({}, BRANCH) });
+    expect(push.body).toMatchObject({ id: "dyn-app", revision: 1, status: "PENDING_APPROVAL" });
+    const box = await call("create_project", {
+      project: definition({
+        id: "box-app",
+        environment: { kind: "container", image_digest: `sha256:${"b".repeat(64)}` },
+      }),
+    });
+    expect(box.body).toMatchObject({ id: "box-app", revision: 1, status: "PENDING_APPROVAL" });
+    const active = await call("create_project", { project: definition({ id: "plain-app" }) });
+    expect(active.body).toMatchObject({ id: "plain-app", revision: 1, status: "ACTIVE" });
+    // A refused write announces nothing.
+    const refused = await call("create_project", { project: definition({ id: "plain-app" }) });
+    expect(refused.isError).toBe(true);
+    expect(announced).toEqual([
+      { projectId: "dyn-app", revision: 1, kind: "push_revision" },
+      { projectId: "box-app", revision: 1, kind: "dynamic_project" },
+    ]);
+  });
+
+  it("a failing announcement never undoes the revision write", async () => {
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true, maxPush: "branch" }], {
+      announcePendingRevision: () => {
+        throw new Error("observer boom");
+      },
+    });
+    const c = await call("create_project", { project: definition({}, BRANCH) });
+    expect(c.body).toMatchObject({ id: "dyn-app", revision: 1, status: "PENDING_APPROVAL" });
+    expect(store.state("dyn-app")?.pending?.revision).toBe(1);
   });
 });

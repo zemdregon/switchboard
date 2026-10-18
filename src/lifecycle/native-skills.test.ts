@@ -22,6 +22,7 @@ import {
 import type { PromptSkill } from "../adapters/prompt.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import { needsAttentionOf } from "../control/needs-attention.js";
+import { OnceGate } from "../control/sinks.js";
 import { ChannelOpenError, GitToolService } from "../git/channel.js";
 import { GitPublisher, publishRefFor } from "../git/index.js";
 import { GitPusher } from "../git/push.js";
@@ -29,7 +30,7 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
 import type { ProjectSnapshot } from "../policy/index.js";
 import { runRetentionGc, WorkspaceManager } from "../workspace/index.js";
-import { RunLifecycle, type SkillAdmissionPort, type SkillDeliveryPort } from "./index.js";
+import { type NeedsAttentionNotice, RunLifecycle, type SkillAdmissionPort, type SkillDeliveryPort } from "./index.js";
 
 const SHORT_TMP = process.platform === "darwin" ? "/tmp" : tmpdir();
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -140,6 +141,7 @@ interface Make {
   mode?: "native_preferred" | "prefix_only";
   failUnlinks?: number;
   gitTools?: "service" | "none" | "broken";
+  onNeedsAttention?: (n: NeedsAttentionNotice) => void;
 }
 
 function makeLifecycle(o: Make = {}): RunLifecycle {
@@ -191,6 +193,7 @@ function makeLifecycle(o: Make = {}): RunLifecycle {
     resolveProfile: () => PROFILE,
     skillDelivery: port,
     ...(o.mode ? { skillDeliveryMode: o.mode } : {}),
+    ...(o.onNeedsAttention ? { onNeedsAttention: o.onNeedsAttention } : {}),
     ...tools,
   });
   lc.start();
@@ -505,6 +508,30 @@ describe("native skill delivery and leak prevention (T16.6)", () => {
     });
     const after = await pusher.push({ metaSessionId, requestedBy: "operator" });
     expect(after.reason).not.toBe("SKILL_PATH_PRESENT");
+    expectNoCanary(runId);
+  }, 90_000);
+
+  it("a failed removal pass announces skill_cleanup_failed; the serve gate emits it once (T14.9)", async () => {
+    const attention: NeedsAttentionNotice[] = [];
+    const lc = makeLifecycle({ gitTools: "none", failUnlinks: 1_000, onNeedsAttention: (n) => attention.push(n) });
+    const { runId, done } = await runPlan(
+      lc,
+      plan([
+        { op: "add", path: ALPHA },
+        { op: "write", path: "work.txt", content: "work\n" },
+      ]),
+    );
+    expect(done.state).toBe("SUCCEEDED");
+    await lifecycle?.shutdown();
+    lifecycle = undefined;
+    // before_verifying and terminal both failed, so the hook fired twice; the serve gate emits once per run.
+    expect(attention).toEqual([
+      { runId, projectId: "web", reason: "skill_cleanup_failed" },
+      { runId, projectId: "web", reason: "skill_cleanup_failed" },
+    ]);
+    const gate = new OnceGate();
+    const emitted = attention.filter((n) => gate.claim(`needs_attention|${n.runId}|${n.reason}`));
+    expect(emitted).toHaveLength(1);
     expectNoCanary(runId);
   }, 90_000);
 });
