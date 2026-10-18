@@ -835,8 +835,9 @@ the table above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.5](LLD.
   `src/git/ref-guard.test.ts` covers the cap (3000 and 6000 refs; tail digest), other runs' controller moves,
   idempotence, `check_failed`, `snapshot_missing`, a privileged bypass run, and the ref list hidden from `get_run`.
   `src/reconcile/reconcile.test.ts` SIGKILLs a controller child between LEASED and FINALIZING and shows reconciliation
-  using the stored snapshot. No test escapes the worktree, reads credentials or uses the network (adversarial cases are
-  T3.8b).
+  using the stored snapshot. No test escapes the worktree (CF-1 to CF-3 hold on the fake provider, T3.8b, TDD §3.6.2);
+  reads of credentials and network use are not enforced on the fake by design (CF-5, CF-6) and stay with the live leg
+  (T3.9).
 - **Still open.** The same attempts through Claude Code and Codex (live checks C-G2 and X-G1), per-worktree refs, Git
   versions other than 2.43.0, and whether a push should be refused after a violation (Q-44).
 
