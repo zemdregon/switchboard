@@ -20,11 +20,11 @@ it if you have them.
 
 ## Scope
 
-This repository holds the specification set and application code: the M1 foundation
-is done, M2 and M3 are `Partial`, and parts of M9 are implemented (see the
-[roadmap](docs/ROADMAP.md#6-milestones)). Relevant reports include guidance or code that
-would weaken credential handling, permission boundaries, or sandboxing, and
-exposed secrets or credentials in the repository history.
+This repository holds the specification set and application code. Milestone status lives in
+[ROADMAP §6](docs/ROADMAP.md#6-milestones): several milestones are `Done` and the rest are `Partial` or earlier,
+each with its evidence; read that section, not this file, for the current states. Relevant reports include guidance
+or code that would weaken credential handling, permission boundaries, or sandboxing, and exposed secrets or
+credentials in the repository history.
 
 ## Response times
 
