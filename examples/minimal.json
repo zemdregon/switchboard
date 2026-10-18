@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "allowed_roots": ["/home/you/projects"],
+  "mcp_clients": [{ "id": "orchestrator", "max_trust_profile": "edit-untrusted" }]
+}

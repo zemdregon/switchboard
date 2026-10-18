@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "allowed_roots": ["/home/you/projects"],
+  "mcp_clients": [{ "id": "orchestrator", "max_trust_profile": "edit-untrusted", "projects": ["acme-api"] }],
+  "projects": [
+    {
+      "id": "acme-api",
+      "name": "Acme API",
+      "contexts": [
+        {
+          "id": "main",
+          "kind": "repository",
+          "path": "/home/you/projects/acme-api",
+          "base_ref": "main",
+          "primary": true,
+          "writable": true,
+          "push": { "policy": "branch", "remote": "origin", "branch_prefix": "switchboard/" },
+          "identity": { "name": "You", "email": "you@example.test" },
+          "sign": false
+        }
+      ]
+    }
+  ]
+}

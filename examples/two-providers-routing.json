@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "allowed_roots": ["/home/you/projects"],
+  "mcp_clients": [{ "id": "orchestrator", "max_trust_profile": "edit-untrusted" }],
+  "providers": {
+    "claude-code": { "enabled": true, "weight": 0.7 },
+    "codex": { "enabled": true, "weight": 0.3 }
+  },
+  "model_groups": {
+    "general": {
+      "members": [{ "provider": "claude-code", "model": "default" }, { "provider": "codex", "model": "default" }]
+    }
+  },
+  "routing": {
+    "weights": { "success": 2, "cost": 1, "pacing": 1 }
+  },
+  "capacity": {
+    "subscriptions": {
+      "pro": {
+        "providers": ["claude-code"],
+        "windows": [
+          {
+            "id": "weekly",
+            "length_seconds": 604800,
+            "reset": { "kind": "rolling" },
+            "budget": { "unit": "runs", "value": 100 }
+          }
+        ]
+      }
+    },
+    "pacing": { "mode": "gate", "target_fraction": 0.8, "burst_fraction": 0.1, "min_confidence": 0.5 }
+  }
+}
