@@ -47,6 +47,7 @@ import {
   OPENCODE_GIT_WRITE_CONTROL,
   OPENCODE_PRIVILEGED_NEEDS_BYPASS,
   OpenCodeAdapter,
+  TEXT_ONLY_RESULT_SUMMARY,
 } from "./adapter.js";
 import {
   DEFAULT_SESSION_ID,
@@ -513,14 +514,11 @@ describe("opencode parser and result (T4.53)", () => {
     });
   });
 
-  it("a run that exits 0 with text but no step_finish stop is not a success (Q-85)", () => {
-    for (const lines of [
-      [START, TEXT("ok")],
-      [START, TEXT("x"), FINISH("tool-calls")],
-    ]) {
-      const { a, events } = parse(lines);
-      expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
-    }
+  it("a run that exits 0 with text and a non-stop step_finish is not a success (Q-85); text only is (owner decision 68)", () => {
+    const { a, events } = parse([START, TEXT("x"), FINISH("tool-calls")]);
+    expect(a.extractResult(events, EXIT0)).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    const textOnly = parse([START, TEXT("ok")]);
+    expect(textOnly.a.extractResult(textOnly.events, EXIT0)).toMatchObject({ ok: true, summary: "ok" });
   });
 
   it("only an exact string stop reason emits a result (Q-85; mirrors Grok T4.23)", () => {
@@ -544,8 +542,9 @@ describe("opencode parser and result (T4.53)", () => {
         TEXT("stop: completed successfully"),
         line("step_finish", { reason }),
       ]);
+      // The text before it emits the owner-decision-68 text-only result; the step_finish adds none and cancels it.
       expect(
-        events.filter((e) => e.kind === "result"),
+        events.filter((e) => e.kind === "result" && e.summary !== TEXT_ONLY_RESULT_SUMMARY),
         JSON.stringify(reason),
       ).toEqual([]);
       expect(state.unknownEvents).toBe(typeof reason === "string" ? 0 : 1);
@@ -2191,11 +2190,10 @@ describe("opencode parser and result (T4.53)", () => {
       expect(report.result).toMatchObject({ unknownEventCount: 1, summary: "SYNTHETIC: apparent success." });
     });
 
-    it("fixture no_stop (row 4a, Q-85) replays text at exit 0 without a stop step to OUTPUT_PROTOCOL_ERROR", async () => {
+    it("fixture no_stop (row 4a, Q-85 narrowed by owner decision 68) replays text at exit 0 without a stop step to success", async () => {
       const report = await runConformanceCase(
-        replayCase("no_stop", "malformed_output", {
-          ok: false,
-          failureCode: "OUTPUT_PROTOCOL_ERROR",
+        replayCase("no_stop", "success", {
+          ok: true,
           nativeSessionId: DEFAULT_SESSION_ID,
         }),
       );

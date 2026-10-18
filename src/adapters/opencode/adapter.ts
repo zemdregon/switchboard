@@ -17,7 +17,7 @@
  *   (Q-83). OpenCode confines nothing in that run; what remains is the controller's worktree, the tool-call guard
  *   (ADR-0039), FR-GIT-03 and FR-GIT-06;
  * - the parser (T4.53) reads only the `--format json` fields the 2026-10-14 live check recorded; success needs a
- *   `step_finish` with reason `stop` (Q-85); resume is `--session <id>` through the same matrix. The auth preflight
+ *   `step_finish` with reason `stop`, or a text-only run without one (Q-85 as narrowed by owner decision 68); resume is `--session <id>` through the same matrix. The auth preflight
  *   (T4.54) reads the connection types of `auth list --format json --standalone`. The manifest range admits no version, so none of this runs before `adapters validate`
  *   passes a version.
  */
@@ -148,6 +148,10 @@ const ownProp = (o: Json | undefined, key: string): unknown =>
   o !== undefined && Object.hasOwn(o, key) ? o[key] : undefined;
 /** Part ids already counted per run, so a repeated `step_finish` is not recorded twice (TDD §4.6, Proposed). */
 const seenParts = new WeakMap<ParseState, Set<string>>();
+/** Per-run stream facts for the text-only rule (owner decision 68): a tool event or a `step_finish` seen so far. */
+const streamFacts = new WeakMap<ParseState, { tool: boolean; finish: boolean; textOnlyLast: boolean }>();
+/** `summary` of the `result` a text-only reply emits (owner decision 68), so the order check can name it. */
+export const TEXT_ONLY_RESULT_SUMMARY = "text-only reply without step_finish (owner decision 68)";
 /** Category of a stream anomaly (session id changed mid-run); classified OUTPUT_PROTOCOL_ERROR. */
 const PROTOCOL_CATEGORY = "protocol";
 const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
@@ -385,9 +389,12 @@ export class OpenCodeAdapter implements ProviderAdapter {
 
   /**
    * One `--format json` line -> normalized events (T4.53). Structured fields only (FR-ADP-04): the session id is the
-   * `sessionID` of the first event that carries one, and only if resume could pass it as one argument. The run's result comes only from a `step_finish` whose
-   * `part.reason` is `stop` (Q-85): a run that exits 0 without one is not a success, although the live check saw such
-   * runs answer correctly ([LIVE] 4a). Events do not name the provider or model used in native captures ([LIVE] 4c);
+   * `sessionID` of the first event that carries one, and only if resume could pass it as one argument. The `result`
+   * event comes from a `step_finish` whose `part.reason` is `stop` (Q-85) or, under owner decision 68 (Q-85 narrowed;
+   * [LIVE] 4a), from a non-empty `text` while no tool event and no `step_finish` has been seen: v2.0.23 often ends a
+   * short reply with no `step_finish`. A later tool call without a `stop` fails the order check in
+   * {@link extractResult}, and a non-`stop` `step_finish` right after a text-only reply is a protocol error, so a run
+   * with a tool event keeps the `stop` requirement. Events do not name the provider or model used in native captures ([LIVE] 4c);
    * structured backing_provider and model fields are supported for fronted harnesses (T4.6, FR-ADP-10) and stay unset
    * when not reported.
    */
@@ -404,6 +411,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const type = str(ownProp(e, "type"));
     if (e === undefined || type === undefined) return this.#unknown(state, "none");
     const out: NormalizedEvent[] = [];
+    const facts = streamFacts.get(state) ?? { tool: false, finish: false, textOnlyLast: false };
+    streamFacts.set(state, facts);
     const part = obj(ownProp(e, "part"));
     const rawBacking =
       ownProp(e, "backing_provider") ??
@@ -444,11 +453,17 @@ export class OpenCodeAdapter implements ProviderAdapter {
       case EVENT.text: {
         const text = str(ownProp(part, "text"));
         if (text === undefined) return [...out, ...this.#unknown(state, type)];
-        return text === ""
-          ? out
-          : [...out, { kind: "message", role: "assistant", text: clip(text, MAX_SUMMARY_CHARS) }];
+        if (text === "") return out;
+        out.push({ kind: "message", role: "assistant", text: clip(text, MAX_SUMMARY_CHARS) });
+        if (!facts.tool && !facts.finish) {
+          facts.textOnlyLast = true;
+          out.push({ kind: "result", ok: true, summary: TEXT_ONLY_RESULT_SUMMARY });
+        }
+        return out;
       }
       case EVENT.toolUse: {
+        facts.tool = true;
+        facts.textOnlyLast = false;
         const name = str(ownProp(part, "tool"));
         if (name === undefined) return [...out, ...this.#unknown(state, type)];
         const partState = obj(ownProp(part, "state"));
@@ -476,8 +491,16 @@ export class OpenCodeAdapter implements ProviderAdapter {
         ];
       }
       case EVENT.stepFinish: {
+        const afterTextOnly = facts.textOnlyLast;
+        facts.finish = true;
+        facts.textOnlyLast = false;
         const reason = str(ownProp(part, "reason"));
         if (reason === undefined) return [...out, ...this.#unknown(state, type)];
+        if (afterTextOnly && reason !== REASON_STOP) {
+          // Owner decision 68: the text-only rule covers a run with no `step_finish` only; a step that ends any other
+          // way than `stop` straight after a text-only reply is not a success (fail closed).
+          out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "step finished without stop" });
+        }
         const partId = str(ownProp(part, "id"));
         const seen = seenParts.get(state) ?? new Set<string>();
         seenParts.set(state, seen);
@@ -536,10 +559,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
 
   /**
-   * Success needs a clean expected exit, a `step_finish` with reason `stop` (Q-85) and no `provider_error`,
+   * Success needs a clean expected exit, a final `result` (a `step_finish` with reason `stop`, Q-85, or a text-only
+   * reply, owner decision 68; see {@link parseEvent}) and no `provider_error`,
    * `permission_denied`, `sandbox_violation` or `rate_limit` event and no `tool_call` the tool-call guard flagged with a
    * `violation` (fail closed; a guard verdict ends the run in every run, bypass included, ADR-0039), no `tool_use`
-   * line, read or not, after the last `stop`, and no `unknown` event anywhere in the stream. The summary is the joined
+   * line, read or not, after the last result, and no `unknown` event anywhere in the stream. The summary is the joined
    * assistant text, last {@link MAX_SUMMARY_CHARS} characters.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
@@ -550,7 +574,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const summary = text === "" ? undefined : text.slice(-MAX_SUMMARY_CHARS);
     const finalAt = events.findLastIndex((e) => e.kind === "result");
     const final = events[finalAt];
-    // Proposed (fail closed, Q-85): a tool call after the last `stop` step means the run did not end on that step. A
+    // Proposed (fail closed, Q-85): a tool call after the last result (a `stop` step or a text-only reply) means the run did not end there. A
     // `tool_use` line the parser could not read (no string `part.tool`) counts too: it parses as `unknown`, as Grok.
     const trailingTool =
       finalAt >= 0 &&
@@ -592,7 +616,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
       c.code !== "OUTPUT_PROTOCOL_ERROR"
         ? c.detail
         : trailingTool
-          ? "tool call after the final stop step"
+          ? final?.kind === "result" && final.summary === TEXT_ONLY_RESULT_SUMMARY
+            ? "tool call after a text-only reply without a stop step"
+            : "tool call after the final stop step"
           : unknownEventCount > 0 && final?.kind === "result" && final.ok
             ? `${unknownEventCount} unreadable event(s) in the stream`
             : c.detail;

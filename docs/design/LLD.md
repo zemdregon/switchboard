@@ -796,7 +796,8 @@ profile is `Ineligible: PROFILE_UNSUPPORTED` (Q-64); the sole compiled shape is 
 
 **As built (T4.53, Done against its Done-when under owner decision 65 (a)).** `parseEvent`, `extractResult`,
 `classifyFailure` and `resumeArgs` in `adapter.ts`;
-`--format json` fields in `protocol.ts`. Success needs a `step_finish` with `reason` `stop` (Q-85). Hardening
+`--format json` fields in `protocol.ts`. Success needs a `step_finish` with `reason` `stop` (Q-85), or a text-only reply at exit 0 with no tool event, no
+`error`, no `step_finish` and no unknown event (owner decision 68). Hardening
 ([#229](https://github.com/zemdregon/switchboard/pull/229)): finite non-negative usage only; unknown `type` clipped to
 64 characters; changed `sessionID` ends `OUTPUT_PROTOCOL_ERROR`; non-object roots and unstructured errors fail closed.
 Nested tests `cases with no recorded native shape (live check rows 7, 11, 14c)` pin row 11 (out-of-worktree denial not

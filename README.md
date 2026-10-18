@@ -2131,7 +2131,8 @@ are refused with reasons, and resume preserves the request's working directory a
 ([#290](https://github.com/zemdregon/switchboard/pull/290)). A `sessionID` that resume could not pass as one safe
 argument (matching `^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`, refusing leading dashes or flag syntax) is never bound
 (`OUTPUT_PROTOCOL_ERROR`; [#245](https://github.com/zemdregon/switchboard/pull/245)). Only an exact string `"stop"`
-reason on `step_finish` emits a result (case, whitespace, alternate reasons or non-string values never emit a result
+reason on `step_finish`, or a non-empty `text` before any tool event or `step_finish` (owner decision 68), emits a
+result (on `step_finish`, case, whitespace, alternate reasons or non-string values never emit a result
 and fail closed as `OUTPUT_PROTOCOL_ERROR`; Q-85, [#328](https://github.com/zemdregon/switchboard/pull/328)). A
 `tool_use` line after the final `step_finish` `stop` is not a success (fail closed; a guard-flagged trailing call keeps
 `PERMISSION_BLOCKED` per ADR-0039). A trailing `tool_use` the parser cannot read still ends `OUTPUT_PROTOCOL_ERROR`
@@ -2195,7 +2196,8 @@ native fields
 at exit 0 with `state.status` `error` and is not detected as a denial (gap pinned); `rate_limit` (row 14c, never
 reached) is an empty stream at exit 1 → `TOOL_FAILURE`; `rate_limit_error` is an unmapped error type at exit 0 →
 `TOOL_FAILURE`; `unknown_events` ends `OUTPUT_PROTOCOL_ERROR` with every unreadable line counted;
-`no_stop` (row 4a, Q-85) and `trailing_tool` (Q-85) end `OUTPUT_PROTOCOL_ERROR`; `session_changed` ends
+`no_stop` (row 4a) is a success under owner decision 68 (Q-85 narrowed: text only, no tool, error, `step_finish` or
+unknown event) and `trailing_tool` (Q-85) ends `OUTPUT_PROTOCOL_ERROR`; `session_changed` ends
 `OUTPUT_PROTOCOL_ERROR` with the first session id still bound; `git_write_guard` (ADR-0039) replays a guard-flagged
 Git write under a `stop` finish at exit 0 to `PERMISSION_BLOCKED`; `unsafe_session_id` replays an unsafe session id to
 `OUTPUT_PROTOCOL_ERROR` without binding; `sandbox_violation` replays unrecorded sandbox error text at exit 0 to a
