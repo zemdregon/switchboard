@@ -10,12 +10,7 @@
  * this runs everywhere (no darwin skip, unlike the spawned-daemon suites).
  */
 import { describe, expect, it, vi } from "vitest";
-import {
-  MAX_TIMER_MS,
-  type Logger,
-  type RetentionGcTimers,
-  scheduleRetentionGc,
-} from "./serve.js";
+import { type Logger, MAX_TIMER_MS, type RetentionGcTimers, scheduleRetentionGc } from "./serve.js";
 
 interface StubEntry {
   callback: () => void;
