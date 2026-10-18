@@ -2350,7 +2350,7 @@ directories first, then `git worktree prune`, then `switchboard/*` branches. Rem
 unknown is still reported. GC marks first (R-42, decision 28): one transaction re-checks idleness, sets the
 meta-session `ARCHIVED` and appends the intent event, and admission refuses an `ARCHIVED` meta-session with
 `INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward.
-*As built (T3.12 interval-timer test, Delegated):* the interval pass runs through `scheduleRetentionGc` in
+*As built (T3.12 interval-timer test, #707, Delegated):* the interval pass runs through `scheduleRetentionGc` in
 `src/cli/serve.ts` (`RetentionGcTimers` seam, delay capped at `MAX_TIMER_MS`, never runs at scheduling time, a
 throwing or rejecting pass is logged first-line-only and never stops later passes, `stop` on shutdown; wired into
 `runDaemon` with no behaviour change), covered by `src/cli/serve-retention-timer.test.ts` ("serve retention GC
