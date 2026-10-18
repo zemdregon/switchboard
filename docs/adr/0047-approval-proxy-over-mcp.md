@@ -8,9 +8,11 @@
   for everything outside bypass mode) and are not owner-approved line by line.
 - Amends: the "never through MCP" rule of FR-MCP-06, FR-MCP-14, FR-POL-09 and FR-PRJ-10, for clients marked
   `approval_proxy` only (dated notes added to those rows; their text is unchanged).
-- Supersedes in part, once this ADR is accepted: item 6 of [ADR-0017](0017-approved-privileged-scope-bypass.md) ("No MCP
-  tool approves") and the statement in item 6 of [ADR-0041](0041-http-transport-with-oauth-2-1.md) that approval stays
-  with the operator CLI. Both status lines point here. Until acceptance they stand unchanged.
+- Supersedes in part, once this ADR is accepted: items 5 and 6 of
+  [ADR-0017](0017-approved-privileged-scope-bypass.md) (item 6's "No MCP tool approves"; item 5's "`APPROVED` by the
+  operator CLI", since a proxied approval satisfies it) and the statement in item 6 of
+  [ADR-0041](0041-http-transport-with-oauth-2-1.md) that approval stays with the operator CLI. Both status lines point
+  here. Until acceptance they stand unchanged.
 - Not affected: [ADR-0019](0019-per-client-privileged-approval.md). Its `privileged_approval` setting is an operator
   configuration value that stands in for the CLI approval; it is not an MCP approval and this ADR does not change it.
 - Builds on: [ADR-0003](0003-no-credential-handling.md), [ADR-0004](0004-trust-profiles-no-bypass-flags.md),
@@ -36,7 +38,8 @@ stop a proxy client from approving (R-65).
 ## Decision
 
 1. **Scope.** An MCP client whose operator configuration entry sets `approval_proxy` may list pending approvals and
-   decide them through two MCP tools (names fixed in T14.8). The approval kinds it may decide are the ones already
+   decide them through two MCP tools, `list_pending_approvals` and `decide_approval` (names fixed in T14.8). The
+   approval kinds it may decide are the ones already
    human-approved on the CLI: `privileged` scopes (including bypass, ADR-0017), dynamic project revisions (FR-PRJ-10)
    and push-enabled or identity-bearing revisions. Clients without the flag get no approval tools; they are absent from
    the tool list, not refused at call time.
@@ -46,14 +49,15 @@ stop a proxy client from approving (R-65).
    b. **Listed targets only.** A proxy client may decide only approvals raised for the MCP clients the operator lists
       for it (`approval_proxy` targets; default: the client itself). It cannot decide approvals of another client.
    c. **Exact binding.** A decision names the exact `approval_id` and the `approval_digest` that was returned when that
-      approval was listed. The digest covers the frozen scope shown (the scope hash of ADR-0017, or the revision hash of
-      ADR-0030). A missing, stale or mismatched digest refuses the decision and writes nothing.
+      approval was listed. The digest covers the frozen scope shown (the scope hash of ADR-0017, or the Delegated
+      `revision_hash` constructed for ADR-0030 revisions, which ADR-0030 itself does not store). A missing, stale or
+      mismatched digest refuses the decision and writes nothing.
    d. **Controller-generated text only.** A listed approval shows only controller-generated fields (kind, run or
       revision ID, project, client, scope summary, requested time). It never shows agent text, prompts, diffs or
       repository content.
-   e. **Audit.** Each proxied decision is recorded with `decided_via: mcp_proxy` and the proxy client's ID, in the same
-      approval record that the CLI writes (FR-POL-09 timestamp and scope unchanged). This adds one value to an
-      existing field of the approval record; the persistence change is covered by this ADR.
+   e. **Audit.** Each proxied decision is recorded with `approval.decided_by = mcp_proxy:<client_id>` (no separate
+      `decided_via` column). A `privileged` decision goes through the same transitions as the CLI path; a revision
+      decision goes through the project store's `decide` into revision and event rows (FR-POL-09 timestamp and scope unchanged).
    f. **Announced.** Each proxied decision is announced to the configured notification sinks (ADR-0048), with no
       scope text beyond the metadata those sinks carry.
    g. **Unchanged rules.** A proxied approval grants exactly the frozen scope that was listed. It does not widen the
@@ -74,11 +78,14 @@ stop a proxy client from approving (R-65).
   by zemdregon through owner decision 50 as a Delegated reading). Its mitigations are the controls in Decision 2.
 - A token for a proxy client is a credential Switchboard issues (ADR-0041); it is not a provider credential, so
   ADR-0003 is not engaged. Tokens stay hashed and revocable as in ADR-0041.
-- The approval record gains a `decided_via` value, and the list output gains a digest. Both are specified in [LLD
+- The approval record gains an `approval.decided_by = mcp_proxy:<client_id>` value (no separate `decided_via`
+  column), and the list output gains a digest. Both are specified in [LLD
   §3.4.8](../design/LLD.md#348-approval-proxy-tools-fr-ctl-08-adr-0047) before any code (AGENTS.md: a persistence change
   needs an ADR, which this is).
 - Bypass runs keep their existing limits: approval never widens scope, and Git-write denial and worktree isolation
   still apply (decisions 22 and 46).
+- Revocation (ROADMAP Q-30) is still open and unanswered here: a durable approval cannot be revoked, and that holds
+  for proxied approvals, bypass ones included (R-65).
 - Nothing changes for deployments that do not set `approval_proxy`.
 
 ## Alternatives considered
