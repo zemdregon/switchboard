@@ -158,8 +158,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   admissible count (`READY` items, or `PENDING` items whose dependencies can still be met) drops below the mark, one
   `queue_low` sink event fires, re-armed only when the count rises back to the mark. The detector is covered on fakes
   (unit tests in `src/queue/low-water.test.ts`; end to end through the sink dispatcher with a capturing sink in
-  `src/mcp/work-queue.test.ts`); `serve` does not attach it yet,
-  so a production run emits no `queue_low`.
+  `src/mcp/work-queue.test.ts`); `serve` attaches one tracker per daemon process on the real ledger and the
+  sink dispatcher when notification sinks exist, seeding the armed state from the level at startup (`src/cli/serve.ts`;
+  end-to-end serve test `src/cli/serve-queue-low-water.test.ts`, [PR #678](https://github.com/zemdregon/switchboard/pull/678)).
+  Not built: the MCP server attaches no tracker, so only a `serve` run emits `queue_low` in production.
   Schedules (T15.2, [#561](https://github.com/zemdregon/switchboard/pull/561))
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See

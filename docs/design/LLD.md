@@ -6603,9 +6603,10 @@ or `FAILED_ADMISSION`, or is an `ADMITTED` item whose run already ended `FAILED`
 **As built (T15.4, Delegated, not owner-approved).** The detector attaches to the ledger through `attachQueueLowWater`
 (`setQueueChangeListener` in `src/ledger/work-queue.ts`); emission is demonstrated in tests directly with a capturing
 emit (`src/queue/low-water.test.ts`) and through the sink dispatcher with a capturing sink
-(`src/mcp/work-queue.test.ts`). Neither `serve` nor
-the MCP server attaches the tracker, so a production run currently emits no `queue_low` event (not in the T15.4
-Done-when).
+(`src/mcp/work-queue.test.ts`). `serve` attaches one tracker per daemon process on the real ledger and the sink
+dispatcher when notification sinks exist, seeding the armed state from the level at startup (`src/cli/serve.ts`;
+end-to-end serve test `src/cli/serve-queue-low-water.test.ts`, [PR #678](https://github.com/zemdregon/switchboard/pull/678)).
+The MCP server attaches no tracker, so only a `serve` run emits `queue_low` in production.
 
 ## 19. Switchboard-controlled skills (M16, Proposed)
 
