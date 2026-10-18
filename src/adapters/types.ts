@@ -37,6 +37,8 @@ export interface ProbeOutput {
   readonly timedOut: boolean;
   /** Set when the process could not be started (binary missing). */
   readonly spawnError?: string;
+  /** Set only with `holdStdinUntil`: whether stdin was still held open when the process ended. */
+  readonly stdinOpenAtEnd?: boolean;
 }
 
 /** Supervisor-provided way to execute a provider binary for probe/authPreflight (LLD §2). Tests inject fakes. */
@@ -45,8 +47,14 @@ export type ProbeRunner = (
   opts?: {
     readonly cwd?: string;
     readonly timeoutMs?: number;
-    /** Proposed (T4.64): written to the probe's stdin, which is then closed. Without it stdin is not connected. */
+    /** Proposed (T4.64): written to the probe's stdin, which is then closed (see `holdStdinUntil`). Without it stdin is not connected. */
     readonly stdinText?: string;
+    /**
+     * Proposed (T4.64 fix): with `stdinText`, stdin stays open after the text is written and is closed only once this
+     * returns true for a JSON object read from stdout, or when the process ends or times out. For a probe whose
+     * process exits at stdin end-of-file before it has answered every request.
+     */
+    readonly holdStdinUntil?: (message: unknown) => boolean;
   },
 ) => Promise<ProbeOutput>;
 

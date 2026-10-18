@@ -17,7 +17,7 @@ import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner } from "../run.js";
 import type { CompileRequest, Invocation, ProbeOutput, ProbeRunner, ResolvedProfile, TrustProfile } from "../types.js";
 import { isIneligible } from "../types.js";
-import { KimiAdapter } from "./adapter.js";
+import { KimiAdapter, scrubStderrLine } from "./adapter.js";
 import {
   DEFAULT_SESSION_ID,
   kimiConformanceCases,
@@ -452,6 +452,34 @@ describe("kimi auth preflight (T4.64, ADR-0049 item 4; SYNTHETIC ACP replies)", 
     expect(dir).toBeDefined();
     expect(existsSync(dir ?? "")).toBe(false);
   });
+
+  it("holds stdin until a reply for both request ids has arrived (T4.64 fix); notifications do not count", async () => {
+    let until: ((m: unknown) => boolean) | undefined;
+    await adapter().authPreflight(async (_argv, opts) => {
+      until = opts?.holdStdinUntil;
+      return { stdout: "", stderr: "", exitCode: 0, timedOut: false };
+    });
+    expect(until).toBeDefined();
+    const hold = until ?? (() => true);
+    expect(hold(INIT_OK)).toBe(false);
+    expect(hold(UPDATE)).toBe(false);
+    expect(hold({ jsonrpc: "2.0", id: 2, method: "session/request_permission" })).toBe(false);
+    expect(hold("not an object")).toBe(false);
+    expect(hold(NEW_AUTH)).toBe(true);
+  });
+
+  it("names the exit and stdin state in an UNKNOWN reason when the runner reports it", async () => {
+    expect(await adapter().authPreflight(out(lines(INIT_OK), { stdinOpenAtEnd: false }))).toEqual({
+      state: "UNKNOWN",
+      reason: "Kimi Code ACP auth probe was inconclusive (session/new missing, exit 0, stdin closed)",
+    });
+    expect(
+      await adapter().authPreflight(out(lines(INIT_OK), { exitCode: null, timedOut: true, stdinOpenAtEnd: true })),
+    ).toEqual({
+      state: "UNKNOWN",
+      reason: "Kimi Code ACP auth probe was inconclusive (session/new missing, timed out, stdin still open)",
+    });
+  });
 });
 
 describe("kimi auth preflight through the real probe runner (T4.64; SYNTHETIC `kimi acp` stand-in)", () => {
@@ -468,6 +496,67 @@ describe("kimi auth preflight through the real probe runner (T4.64; SYNTHETIC `k
       state: "UNKNOWN",
       reason: expect.stringContaining("initialize missing"),
     });
+  });
+
+  it("a `kimi acp` that exits 0 at stdin end-of-file before answering session/new is OK: stdin is held (T4.64 fix)", async () => {
+    expect(await via("exit-on-eof")).toEqual({ state: "OK" });
+    // The 2026-10-17 failure: closing stdin straight after writing loses the race (what origin/main did).
+    const closeAtOnce: ProbeRunner = (argv, opts) => {
+      const { holdStdinUntil: _held, ...rest } = opts ?? {};
+      return createProbeRunner()(argv, rest);
+    };
+    expect(
+      await new KimiAdapter({
+        executable: process.execPath,
+        launcherArgs: [SCRIPT, "--scenario=exit-on-eof"],
+      }).authPreflight(closeAtOnce),
+    ).toEqual({ state: "UNKNOWN", reason: "Kimi Code ACP auth probe was inconclusive (session/new missing, exit 0)" });
+  });
+
+  it("an UNKNOWN reason names the exit, whether stdin was still open and a scrubbed first stderr line", async () => {
+    const r = await via("silent");
+    expect(r).toEqual({
+      state: "UNKNOWN",
+      reason:
+        'Kimi Code ACP auth probe was inconclusive (initialize missing, exit 0, stdin still open, stderr: "{\\"level\\":\\"error\\",\\"msg\\":\\"acp: auth readiness probe failed\\",\\"file\\":\\"<path>\\",\\"token\\":\\"[REDACTED]\\"}")',
+    });
+  });
+});
+
+describe("kimi auth probe stderr scrubbing (T4.64 diagnostics)", () => {
+  it("keeps only the first non-blank line, clipped, with no path under HOME, token, account id or e-mail", () => {
+    expect(scrubStderrLine("")).toBeUndefined();
+    expect(scrubStderrLine("\n  \nfirst line\nsecond line")).toBe("first line");
+    const s =
+      scrubStderrLine(
+        "error at /home/op/.kimi/credentials/kimi-code.json for user 123456789 (op@example.com) " +
+          "session 0b8a4c1e-2f3d-4e5a-9b6c-7d8e9f0a1b2c key sk-abcdefghijklmnopqrstuvwxyz012345 " +
+          "tok AbCdEfGhIjKlMnOp1234567 hash deadbeefdeadbeefdeadbeef Bearer abcdefgh12345678 ~/x C:\\Users\\op\\y",
+        "/home/op",
+      ) ?? "";
+    for (const leak of [
+      "/home",
+      "op@",
+      ".kimi",
+      "credentials",
+      "123456789",
+      "0b8a4c1e",
+      "sk-",
+      "AbCdEf",
+      "deadbeef",
+      "abcdefgh12345678",
+      "Users",
+    ]) {
+      expect(s, leak).not.toContain(leak);
+    }
+    expect(s).toContain("<path>");
+    expect(s).toContain("<email>");
+    expect(s).toContain("<n>");
+    expect(s).toContain("<id>");
+    expect(s).toContain("[REDACTED]");
+    expect(s).toContain("<token>");
+    expect(scrubStderrLine(`${"word ".repeat(100)}`)?.length).toBeLessThanOrEqual(163);
+    expect(scrubStderrLine("bell\u0007 and \u001b[31mcolour")).not.toMatch(/\p{Cc}/u);
   });
 });
 

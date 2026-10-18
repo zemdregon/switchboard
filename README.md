@@ -2197,13 +2197,16 @@ The compliance manifest range (`src/adapters/manifests/kimi.json`) admits no ver
 
 See the [login table](#log-in-to-the-providers-natively) above. Switchboard never runs `kimi login` or
 `kimi acp --login`. Kimi Code has no auth status command, so the auth preflight (T4.64) runs `kimi acp` in a fresh
-private scratch directory and writes ACP `initialize` and `session/new` (that directory, no `mcpServers`) on stdin; it
-never sends `authenticate` or a prompt, so no model call is made. Only the JSON-RPC replies decide, whatever the exit
-code: a `session/new` result with a safe `sessionId` is `OK`, a `session/new` error `-32000` is `AUTH_REQUIRED` naming
-`kimi login` (live check rows 8 to 10), and anything else is `UNKNOWN` (fail closed). The reason carries codes only,
-never provider text. The probe session is persisted in Kimi's own data directory (live check row 12), so the preflight
-cache bounds it to once per window. The `doctor` probe runs `kimi --version` and `kimi --help`, which must list
-`--prompt`, `--output-format`, `--model`, `--session` and the `acp` subcommand.
+private scratch directory and writes ACP `initialize` and `session/new` (that directory, no `mcpServers`) on stdin,
+which stays open until both replies arrive or the 15 s bound ends the probe (Kimi Code 2.1.1 can exit at stdin
+end-of-file before it answers `session/new`); it never sends `authenticate` or a prompt, so no model call is made. Only
+the JSON-RPC replies decide, whatever the exit code: a `session/new` result with a safe `sessionId` is `OK`, a
+`session/new` error `-32000` is `AUTH_REQUIRED` naming `kimi login` (live check rows 8 to 10), and anything else is
+`UNKNOWN` (fail closed). The reason carries codes, the exit, whether stdin was still open and at most one clipped stderr
+line scrubbed of paths, secrets and ids; never the provider's JSON-RPC message text. The probe session is persisted in
+Kimi's own data directory (live check row 12), so the preflight cache bounds it to once per window. The `doctor`
+probe runs `kimi --version` and `kimi --help`, which must list `--prompt`, `--output-format`, `--model`, `--session`
+and the `acp` subcommand.
 
 ### Trust profiles
 
