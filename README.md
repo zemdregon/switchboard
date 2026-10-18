@@ -232,7 +232,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#272](https://github.com/zemdregon/switchboard/pull/272),
   [#276](https://github.com/zemdregon/switchboard/pull/276),
   [#297](https://github.com/zemdregon/switchboard/pull/297)),
-  a conformance suite (partial: native resume, T4.35; replay dialect edge cases
+  a conformance suite (T4.35, `Done` on synthetic fixtures: native resume `--conversation <id>` fails closed when the
+  returned `conversation_id` differs or is missing, owner decision 67; replay dialect edge cases
   [#281](https://github.com/zemdregon/switchboard/pull/281) and Go `flag`-boundary walking
   [#292](https://github.com/zemdregon/switchboard/pull/292)), a malicious-fixture leg (Done against its Done-when
   under owner decision 65 (b): synthetic refusal,

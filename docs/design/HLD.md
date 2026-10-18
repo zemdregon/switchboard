@@ -265,8 +265,8 @@ every profile and binding).
   a denial, denial over envelope error and non-zero exit, guard over all). Sourcing: [TDD
   §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433).
 
-**Gaps (carried by T4.38 under owner decision 65 (a); this subsection is Done).** Resume is not compiled (Q-86).
-Rate-limit and sandbox-violation shapes were not
+**Gaps (carried by T4.38 under owner decision 65 (a); this subsection is Done).** Resume now compiles with a fail-closed
+`conversation_id` check (T4.35, owner decision 67; was not compiled, Q-86). Rate-limit and sandbox-violation shapes were not
 observed in the live check, so those failures end `TOOL_FAILURE` rather than dedicated taxonomy codes. The stderr
 `AGY_ERROR` shape has since been observed for real (seven quota stops at exit 3, T6.11
 [limit captures](../research/limit-captures-2026-10-17.md)) and mapped in `classifyFailure` to `QUOTA_EXHAUSTED` (T6.15,
