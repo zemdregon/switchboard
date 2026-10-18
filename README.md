@@ -2245,9 +2245,12 @@ one scrubbed 2.1.1 capture (`src/adapters/kimi/fixtures/captured_success.jsonl`,
 `session.resume_hint` binds `session_id` and ends the turn. Success also needs exit 0, so exit 0 without the hint ends
 `OUTPUT_PROTOCOL_ERROR` and a non-zero exit `TOOL_FAILURE`. A second hint, a changed or unsafe session id, an
 `assistant` or `tool` record after the hint, and a tool call whose name or arguments cannot be read all end
-`OUTPUT_PROTOCOL_ERROR`. ACP messages use the shared mapping, with `-32000` as `AUTH_REQUIRED`. The `tool_calls` and
-`tool` field names, the error record and its `Authentication required` text in `-p`, the exit codes and the usage and
-model fields are **Assumptions** until the operator capture (T4.68), so T4.63 stays `Partial`; no model is recorded
+`OUTPUT_PROTOCOL_ERROR`. ACP messages use the shared mapping, with `-32000` as `AUTH_REQUIRED`. The `tool_calls`
+item and `tool` record fields are **Observed** since the T4.68 follow-up-2 `live-run.sh` capture (CLI 2.1.1;
+`src/adapters/kimi/fixtures/captured_tool_call.jsonl` and `captured_tool_error.jsonl`, replayed by
+`src/adapters/kimi/live-capture.test.ts`); the error record and its `Authentication required` text in `-p`, the exit
+codes and the usage and
+model fields stay **Assumptions** until the operator capture (T4.68), so T4.63 stays `Partial`; no model is recorded
 from a Kimi run (`reportedModelFlag` `not_accepted`). Tests: `src/adapters/kimi/parser-residual.test.ts` and the
 "kimi compile matrix (T4.62)", "kimi probe", "kimi registry entry and manifest gate (T4.62)" and "kimi auth preflight
 (T4.64, ...)" suites in `src/adapters/kimi/kimi.test.ts` ([#429](https://github.com/zemdregon/switchboard/pull/429),
