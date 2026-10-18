@@ -279,8 +279,10 @@ predecessors are unaffected (BR-11, BR-17).
 resume reuses the worktree directory of the run that created the native session. That earlier run's state stays on its
 branch, its checkpoint and its diff artifact until GC, but its directory then holds the resuming run's work.
 
-*Proposed, not accepted (FR-WS-09, owner decision 42):* a concurrent run's worktree of a project may be removed when its
-changes are merged or its meta-session is abandoned (ARCHIVED or an explicit operator command, Delegated); its branch and
+*Proposed, not accepted (FR-WS-09, owner decision 42; Q-55 answered 2026-10-18 by owner decision 62: no merge
+detection, abandon-only removal; the amendment follow-up builds it):* a concurrent run's worktree of a project may be
+removed when its changes are merged or its meta-session is abandoned (ARCHIVED or an explicit operator command,
+Delegated); its branch and
 diff artifact stay to retention GC. Until accepted, the rows above apply unchanged.
 
 Garbage collection deletes artifacts, worktrees and controller branches together (NFR-DATA-01). The operator's
