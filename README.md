@@ -426,9 +426,9 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `outer_sandbox.required_profiles` | no | List of distinct non-privileged profile names (default empty, which changes nothing). A listed profile is refused with `ELIGIBILITY_NONE` unless bubblewrap and `prlimit` work on the host; because this build does not yet wrap the provider process, a listed profile is refused even when both work (`OUTER_SANDBOX_NOT_ENFORCED`). `doctor` reports the check. See [Trust profiles](#trust-profiles) and LLD section 8.4. |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`, `muse-code`. Only
-`claude-code`, `codex` and `kimi-code` pass the version gate on `main` today; the other ids name registered M4
-adapters whose manifests admit no version until `switchboard adapters validate` passes a live CLI (ROADMAP §6.8.2).
-`<id>` is the *config* id. The *provider* id used in
+`claude-code`, `codex`, `kimi-code` and `antigravity` pass the version gate on `main` today; the other ids name
+registered M4 adapters whose manifests admit no version until `switchboard adapters validate` passes a live CLI
+(ROADMAP §6.8.2). `<id>` is the *config* id. The *provider* id used in
 `routing.provider_preference` of `delegate_task` is the adapter id: `claude`
 for Claude Code (config id `claude-code`), `codex` for Codex. `max_trust_profile` accepts any of the five profile
 names, but see [Trust profiles](#trust-profiles).
