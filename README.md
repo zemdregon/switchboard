@@ -279,7 +279,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   `switchboard adapters validate` passes a real CLI (operator tasks). M4 stays `Partial` (T4.90 closure, 2026-10-17,
   Delegated). Open items, by blocker: operator live legs (T4.12 on a Mac, T4.28, T4.38, T4.48, T4.58, T4.68; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
-  and OpenCode cannot run by design, so as built it cannot pass for them); rows waiting on uncaptured live shapes
+  and OpenCode cannot run by design; owner decision 59 lets Grok Build, Cursor and Kimi Code reach the smoke step
+  in the adapter's only compiled cell instead (T4.4), while OpenCode and Antigravity still stop at `compiles`);
+   rows waiting on uncaptured live shapes
   (T4.23, T4.26, T4.33, T4.35, T4.36, T4.43, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66); README rows final after their
   live legs
   (T4.29, T4.39, T4.49, T4.59, T4.69, T4.79); Muse Code (Should) has module, compile matrix, auth preflight,
@@ -1092,7 +1094,12 @@ subset that ends
 with a structured-output smoke test, and **that smoke step makes one real provider call** (a trivial read-only prompt in
 a throwaway repository; it may use your subscription quota). It never logs in: if the CLI is not logged in (`AUTH_REQUIRED`)
 or its login state cannot be determined (`UNKNOWN`) it fails, and you log in natively and run it again. It passes no
-bypass flag. Only when everything passes does it edit the provider's manifest file in your source checkout
+bypass flag under `inspect-untrusted`. Grok Build, Cursor and Kimi Code compile nothing under `inspect-untrusted`, so
+for those three only (owner decision 59) the same smoke task runs in the adapter's only compiled cell instead: an
+approved `privileged` bypass scope, approved in memory for that one call and never recorded, with exactly the one bypass
+flag that cell declares (`--always-approve`, `--force` or `--prompt`); the step output and the evidence line name that
+cell, and `--json` reports it as `smoke_profile`. Only when everything passes does it edit the provider's manifest file
+in your source checkout
 (`src/adapters/manifests/<provider>.json`): `validated_cli_version`, `validated_on`, `validated_version_range` (the same
 minor series, for example `>=2.1.296 <2.2.0`; an assumption, not a provider statement) and a dated evidence sentence
 appended to `notes`. It does not commit: review the diff and commit the manifest change yourself, then rebuild and
