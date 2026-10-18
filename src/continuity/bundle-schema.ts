@@ -1,6 +1,10 @@
 /**
- * Handoff bundle, schema version 1 (T5.4; LLD §15.1 to §15.4, ADR-0038 items 1, 2, 5.5 and 7; FR-SES-04, FR-SES-05).
- * Types, constants and the one failure type. PURE: no I/O and no imports.
+ * Handoff bundle, schema version 2 (T5.4, T16.10; LLD §15.1 to §15.4, ADR-0038 items 1, 2, 5.5 and 7, ADR-0056 item 14;
+ * FR-SES-04, FR-SES-05, FR-SKL-03). Types, constants and the one failure type. PURE: no I/O and no imports.
+ *
+ * Version 2 adds `skills` (the previous run's pinned skills as controller facts: name, version, hash; never text) and is
+ * otherwise version 1. Version 1 stays buildable and readable (ADR-0038 "Regenerability"; FR-SES-05): a view stored as
+ * version 1 regenerates byte-identically as version 1 ({@link BundleVersion}).
  *
  * Every field is always present; an empty list or `null` means "none". Text classes (LLD §15.1): `controller` (ids,
  * codes, counts, SHAs, timestamps, decision templates), `orchestrator` (goal, constraints, instructions, verification
@@ -9,8 +13,12 @@
  */
 
 export const BUNDLE_SCHEMA = "switchboard.handoff_bundle";
-export const BUNDLE_VERSION = 1;
-export const BUILDER_VERSION = 1;
+/** The version a new bundle is built with; `version` and `builder_version` move together. */
+export const BUNDLE_VERSION = 2;
+export const BUILDER_VERSION = 2;
+/** Every version this builder can build and the renderer can read. */
+export const BUNDLE_VERSIONS = [1, 2] as const;
+export type BundleVersion = (typeof BUNDLE_VERSIONS)[number];
 
 /** The three configurable bounds (ADR-0038 item 5.5; every default is an **Assumption**, no measurement exists). */
 export interface BundleBounds {
@@ -45,6 +53,8 @@ export const BUNDLE_LIMITS = Object.freeze({
   diagnosticsCommands: 8,
   diffExcerptFileBytes: 4096,
   reportedRuns: 10,
+  /** T16.10: the highest `skills.max_per_run` (LLD §19.3), so admission can never pin more than this. */
+  skills: 64,
 });
 
 export interface AsOfRun {
@@ -150,6 +160,17 @@ export interface BundleReported {
   readonly text: string;
 }
 
+/**
+ * One pinned skill of the previous run (T16.10, ADR-0056 item 14): controller facts only. The body, the description and
+ * the delivery mode are never in the bundle; the successor re-delivers from its own `run_skill` rows (LLD §19.5 step 1).
+ */
+export interface BundleSkill {
+  readonly run_id: string;
+  readonly name: string;
+  readonly version: number;
+  readonly sha256: string;
+}
+
 /** One cut or drop (LLD §15.4). `dropped` counts items, code points or bytes, as `reason` says. */
 export interface BundleTruncation {
   readonly field: string;
@@ -161,8 +182,8 @@ export type TruncationReason = "item_limit" | "text_chars" | "diff_file_bytes" |
 
 export interface HandoffBundle {
   readonly schema: typeof BUNDLE_SCHEMA;
-  readonly version: typeof BUNDLE_VERSION;
-  readonly builder_version: typeof BUILDER_VERSION;
+  readonly version: BundleVersion;
+  readonly builder_version: BundleVersion;
   readonly as_of: AsOf;
   readonly bounds: BundleBounds;
   readonly goal: string;
@@ -178,6 +199,8 @@ export interface HandoffBundle {
   readonly diagnostics: BundleDiagnostics | null;
   readonly diff_excerpts: readonly BundleDiffExcerpt[];
   readonly reported: readonly BundleReported[];
+  /** Version 2 only (always present there, empty for a previous run without skills); absent in version 1. */
+  readonly skills?: readonly BundleSkill[];
   readonly truncation: readonly BundleTruncation[];
 }
 
@@ -196,7 +219,7 @@ export const FR_SES_04_FIELDS = [
 ] as const;
 
 /** Every top-level field of version 1 (LLD §15.1). */
-export const BUNDLE_FIELDS = [
+export const BUNDLE_FIELDS_V1 = [
   "schema",
   "version",
   "builder_version",
@@ -217,6 +240,13 @@ export const BUNDLE_FIELDS = [
   "reported",
   "truncation",
 ] as const;
+
+/** Every top-level field of version 2 (LLD §15.1): version 1 plus `skills`. */
+export const BUNDLE_FIELDS = [...BUNDLE_FIELDS_V1, "skills"] as const;
+
+/** The top-level fields of `version`. */
+export const bundleFieldsOf = (version: BundleVersion): readonly string[] =>
+  version === 1 ? BUNDLE_FIELDS_V1 : BUNDLE_FIELDS;
 
 export const HANDOFF_BUNDLE_UNAVAILABLE = "HANDOFF_BUNDLE_UNAVAILABLE";
 /** ADR-0038 item 7: one fixed message; the cause stays in `cause` for the operator log, never in the envelope. */

@@ -1,5 +1,5 @@
 /**
- * Synthetic version 1 handoff bundles for tests (T5.5). TEST-ONLY: the ids, hashes and text are made up. `HOSTILE` is
+ * Synthetic version 2 handoff bundles for tests (T5.5). TEST-ONLY: the ids, hashes and text are made up. `HOSTILE` is
  * provider-reported or repository text that tries everything R-63 worries about: a fake `system:` line, lines that try
  * to close an untrusted block or forge a header, section or the instruction marker, bidi and control characters, CR and
  * Unicode line separators, and a secret split by a control character.
@@ -121,6 +121,7 @@ export function syntheticBundle(over: Partial<HandoffBundle> = {}): HandoffBundl
       { run_id: runId, provider: "fake", field: "summary", text: HOSTILE },
       { run_id: runId, provider: "fake", field: "failure_detail", text: "tests failed\r\nsee above" },
     ],
+    skills: [{ run_id: runId, name: "security-review", version: 3, sha256: "d".repeat(64) }],
     truncation: [],
     ...over,
   };

@@ -125,6 +125,7 @@ import {
   buildAndPutHandoffView,
   DEFAULT_BUNDLE_BOUNDS,
   HANDOFF_BUNDLE_UNAVAILABLE,
+  type HandoffBundle,
   HandoffBundleError,
   MAX_INSTRUCTION_CHARS,
   parseHandoffBundle,
@@ -1765,7 +1766,9 @@ export class RunLifecycle {
     }
     // T5.5 (LLD §15.5): a handoff run's prompt is rendered from its stored view before anything is probed, leased or
     // spawned; a view that cannot be read, verified or rendered fails the run here (fail closed).
-    let handoffPrompt: { prompt: string; ref: { bundleArtifactId: string; bundleSha256: string } } | undefined;
+    let handoffPrompt:
+      | { prompt: string; ref: { bundleArtifactId: string; bundleSha256: string }; bundle: HandoffBundle }
+      | undefined;
     if (req.handoff !== undefined) {
       try {
         handoffPrompt = await this.renderHandoff(runId, req.objective, req.handoff, renderSkillBlock(skills));
@@ -1860,26 +1863,40 @@ export class RunLifecycle {
     };
     // T16.6 (LLD §19.6 steps 1 and 2): a cell that declares `native` gets each entry written as a fresh file in the
     // worktree, unless `skills.delivery` is `prefix_only`; an entry whose path is taken or whose write fails falls back
-    // to the prefix. A handoff run already carries every entry in its rendered prompt (T16.10 owns continuity).
+    // to the prefix. T16.10 (ADR-0056 item 14): a handoff run and a native resume deliver the same way, in the
+    // receiving provider's own way; the previous run removed its files, so the new run writes and removes its own.
     let delivery: SkillDeliveryEntry[] = skills.map((s) => ({
       name: s.name,
       version: s.version,
       delivery: "prompt_prefix",
     }));
-    if (
-      skills.length > 0 &&
-      ws.mode === "worktree" &&
-      !handoffPrompt &&
-      this.opts.skillDeliveryMode !== "prefix_only"
-    ) {
+    if (skills.length > 0 && ws.mode === "worktree" && this.opts.skillDeliveryMode !== "prefix_only") {
       const declared = skillDeliveryOf(adapter, compileBase, profile);
       if (declared !== "prompt_prefix") {
         delivery = await this.opts.workspace.writeNativeSkills(runId, declared.native, skills);
       }
     }
     const prefixSkills = skills.filter((_, i) => delivery[i]?.delivery !== "native");
+    // T16.10: a handoff prompt was rendered above with every entry in its block; entries delivered natively leave it, so
+    // it is rendered again from the same verified bundle with the remaining ones (LLD §19.7 placement unchanged).
+    let handoffObjective: string | undefined;
+    if (handoffPrompt && prefixSkills.length !== skills.length) {
+      try {
+        const block = renderSkillBlock(prefixSkills);
+        handoffObjective = renderHandoffPrompt({
+          bundle: handoffPrompt.bundle,
+          instruction: req.objective,
+          ...(block !== "" ? { skillBlock: block } : {}),
+        }).prompt;
+      } catch {
+        return this.fail(runId, "TOOL_FAILURE", "the handoff view could not be read or rendered", {
+          reason: HANDOFF_BUNDLE_UNAVAILABLE,
+        });
+      }
+    }
     const compileReq = {
       ...compileBase,
+      ...(handoffObjective !== undefined ? { objective: handoffObjective } : {}),
       // T16.5 (LLD §19.7): rendered by the adapter before `Constraints:` and the task text; never part of `objective`.
       // A handoff run already carries the block in its rendered prompt. T16.6: native entries are not in the block.
       ...(prefixSkills.length > 0 && !handoffPrompt ? { skills: prefixSkills } : {}),
@@ -2780,7 +2797,7 @@ export class RunLifecycle {
     instruction: string,
     h: StoredHandoff,
     skillBlock: string,
-  ): Promise<{ prompt: string; ref: { bundleArtifactId: string; bundleSha256: string } }> {
+  ): Promise<{ prompt: string; ref: { bundleArtifactId: string; bundleSha256: string }; bundle: HandoffBundle }> {
     const row = this.ledger.getArtifact(h.bundle_artifact_id);
     if (
       row?.kind !== "handoff_view" ||
@@ -2794,7 +2811,7 @@ export class RunLifecycle {
     const bundle = parseHandoffBundle(await this.opts.artifacts.get(row.sha256));
     if (requestHash(bundle.as_of) !== h.as_of_sha256) throw new HandoffBundleError("the view's as_of does not match");
     const { prompt } = renderHandoffPrompt({ bundle, instruction, ...(skillBlock !== "" ? { skillBlock } : {}) });
-    return { prompt, ref: { bundleArtifactId: row.id, bundleSha256: row.sha256 } };
+    return { prompt, ref: { bundleArtifactId: row.id, bundleSha256: row.sha256 }, bundle };
   }
 
   /**
