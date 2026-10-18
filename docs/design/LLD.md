@@ -5400,11 +5400,10 @@ Tests: `src/continuity/render.test.ts`, `src/continuity/render-lifecycle.test.ts
 ### 15.6 Working directory of a native resume
 
 Adapter declaration (static data on the adapter, like `gitWriteControl`, T5.7): `resumeCwd: 'bound' | 'independent' |
-'unverified'`. Values from [TDD §4.10](TDD.md#410-native-resume-inventory-t50): Antigravity and Muse Code `bound`
-(sourced); Codex, Grok Build, Cursor, OpenCode and Kimi Code `unverified`; the fakes set either for tests.
-Claude Code was observed `independent`-like on 2.1.294 (T5.12 Partial, 2026-10-17: the session was found from a second
-worktree and from an unrelated directory), but its adapter still declares `unverified` until the separate code task
-flips it ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks) T5.12). `unverified` is handled as `bound` (NFR-SEC-06).
+'unverified'`. Values from [TDD §4.10](TDD.md#410-native-resume-inventory-t50): Claude Code `independent` (T5.12 cell 2
+live evidence, 2026-10-17, 2.1.294; declared 2026-10-18); Antigravity and Muse Code `bound` (sourced); Codex,
+Grok Build, Cursor, OpenCode and Kimi Code `unverified`; the fakes set either for tests. `unverified` is handled as
+`bound` (NFR-SEC-06).
 
 For a resume (`resumeCwd` not `independent`):
 
@@ -5426,7 +5425,8 @@ provider's M4 operator item, for the validated version range), a resume uses a f
 
 *As built (T5.7, 2026-10-14, Delegated, not owner-approved).* `ProviderAdapter.resumeCwd` is required static data
 (`src/adapters/types.ts`); the lifecycle treats every value but `independent`, including a missing one, as `bound`
-(`resumeMayChangeDirectory`). Claude Code and Codex declare `unverified`, the fake `bound` by default (an option makes
+(`resumeMayChangeDirectory`). Codex declares `unverified` and Claude Code declares `independent` (2026-10-18, from
+the T5.12 cell 2 live evidence); the fake `bound` by default (an option makes
 the test variants). The provider table (`src/adapters/providers.ts`) also names TDD §4.10's value for every provider,
 reserved ones included (Antigravity `bound`; Grok Build, Cursor, OpenCode, Kimi Code `unverified`; Muse Code `bound`,
 T4.72), and a registry test requires each adapter to declare its entry's value. The origin lookup and the
@@ -5457,8 +5457,9 @@ Decisions taken here:
   `run.worktree_path` is its origin's path, so GC (which de-duplicates recorded paths) and the orphan sweep are
   unchanged.
 
-Tests: `src/lifecycle/resume-directory.test.ts`, the T5.7 case in `src/mcp/mcp.test.ts` and the `resumeCwd` cases in
-`src/adapters/providers.test.ts`.
+Tests: `src/lifecycle/resume-directory.test.ts`, the T5.7 case in `src/mcp/mcp.test.ts`, the `resumeCwd` cases in
+`src/adapters/providers.test.ts` and the T5.12 declaration and second-worktree cases in
+`src/adapters/claude/claude.test.ts`.
 
 ### 15.7 `continue_task` with handoff
 

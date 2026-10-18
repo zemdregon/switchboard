@@ -471,10 +471,11 @@ sequenceDiagram
   and checkpoints, unless the adapter declares `resumeCwd: 'independent'` from a recorded capture, in which case it
   gets a fresh worktree path `<data>/worktrees/<sess>/<run>` from the head checkpoint (Proposed, Delegated,
   [ADR-0038](../adr/0038-handoff-bundle-and-continuity.md) item 6; as built in T5.7,
-  [LLD §15.6](../design/LLD.md#156-working-directory-of-a-native-resume)). Every adapter except the test fake declares
-  `unverified` or `bound` today, handled as `bound`, because whether a native resume is tied to its directory is
-  verified for no provider in [TDD §4.10](../design/TDD.md#410-native-resume-inventory-t50) except Antigravity and
-  Muse Code (both tied). A missing origin directory is re-created at the same path. The new native session ID, if
+  [LLD §15.6](../design/LLD.md#156-working-directory-of-a-native-resume)). Every adapter except the test fake and
+  Claude Code declares `unverified` or `bound` today, handled as `bound`; Claude Code declares `independent` from the
+  recorded T5.12 cell 2 capture (2026-10-17, 2.1.294) and gets a fresh worktree path. Whether a native resume is tied
+  to its directory is otherwise verified for no provider in [TDD §4.10](../design/TDD.md#410-native-resume-inventory-t50)
+  except Antigravity and Muse Code (both tied). A missing origin directory is re-created at the same path. The new native session ID, if
   changed, updates the binding. *Superseded text (2026-10-14):* this workflow used to say the new run takes a lease on
   "the meta-session's worktree" or else a fresh one; the code before T5.7 gave every continuation a new path.
 - **Directory unusable (T5.7, Delegated):** if the origin run cannot be found, or its path is not a clean, unlocked
