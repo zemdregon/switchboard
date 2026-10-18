@@ -2728,6 +2728,25 @@ It builds, creates a throwaway Git repository and data directory under the syste
 [TDD §3.6](docs/design/TDD.md#36-testing-strategy). With the current manifests, a codex-cli 0.162.0 or 0.162.1 passes the
 version gate (range `>=0.162.0 <0.163.0`); any other Codex version is refused as `ADAPTER_VERSION_UNVERIFIED`.
 
+### Optional live malicious leg (T3.9)
+
+With a provider CLI installed and logged in natively, you can run the T3.9 canary checks against it. It is opt-in
+twice over and skipped otherwise: both variables must be set, so `npm run test:live` (which never sets the second
+one) can never run it by accident, and `npm test` and CI never run it.
+
+```sh
+SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_MALICIOUS=1 npm run test:live:malicious -- claude   # or codex
+```
+
+It builds, plants random `SBCANARY-...` canaries in temp files outside the worktree and in a temp HOME-like dir (never
+real credentials), runs one Git-write task (C-G2 / X-G1), one canary-confinement task (R-10 for Claude, FR-POL-06 for
+Codex) and, for Claude only, one bypass run under an approved scope reached through the operator `approve` CLI, then
+reports `HELD` / `ESCAPED` / `NOT_CHECKED` per check with one evidence line. A check whose precondition is missing (not
+logged in, version outside the manifest range) is `NOT_CHECKED`, never `HELD`; a budget refusal stops the run with
+exit 75 before any check runs. The run itself is the
+operator's step: record the rows in ROADMAP T3.9 and the manifest notes. Details are in
+[TDD §3.6](docs/design/TDD.md#36-testing-strategy).
+
 ### Optional live pair test
 
 With both Claude Code and Codex installed and logged in natively, `SWITCHBOARD_LIVE_TESTS=1 npm run test:live:pair`
@@ -2739,7 +2758,7 @@ against real providers yet (ROADMAP T5.12 is the operator task).
 
 ### Live-test budget guard
 
-Both live scripts accept an operator budget file kept outside the repository (T8.9, NFR-MAINT-05). Point
+All three live scripts accept an operator budget file kept outside the repository (T8.9, NFR-MAINT-05). Point
 `SWITCHBOARD_LIVE_BUDGET_FILE` at it (an absolute path) and name the run's purpose in `SWITCHBOARD_LIVE_PURPOSE`:
 
 ```sh
@@ -2764,7 +2783,8 @@ The file is JSON (every key is required except `audit_log`; unknown keys are err
 Before any provider process starts, the script refuses the run and exits **75** when the purpose is not on `purposes`, a
 provider is not listed, the previous admitted run started less than `min_gap_seconds` ago, or the run would take a
 provider past its `max_runs` or all providers past `global_max_runs` within the last `window_hours`. A provider run is
-one task on one provider: the smoke test is one, each direction of the live pair is one on each of its two providers. A
+one task on one provider: the smoke test is one, each direction of the live pair is one on each of its two
+providers, and one live-malicious invocation admits up to three on its provider. A
 missing, unreadable or malformed file, a relative path, or a file or audit log inside the repository is refused the same
 way. An admitted run uses the file's model for each provider (it replaces `SWITCHBOARD_LIVE_MODEL`, which the smoke test
 otherwise passes as asked): the throwaway `serve` config lists only that model and the run asks for
