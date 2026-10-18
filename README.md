@@ -185,10 +185,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
   client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
-  and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (partial: T4.23; every Done-when
-  case has a supervisor-replayed JSONL fixture on `main` ([#260](https://github.com/zemdregon/switchboard/pull/260))),
-  auth-preflight, conformance suite (T4.25), malicious-fixture leg (partial: T4.26; synthetic command fields,
-  readable native login and repository configuration gaps;
+  and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (T4.23, `Done` against its
+  Done-when on synthetic fixtures under owner decision 65; every Done-when case has a supervisor-replayed JSONL fixture
+  on `main` ([#260](https://github.com/zemdregon/switchboard/pull/260)); native shapes are T4.28's work),
+  auth-preflight, conformance suite (T4.25), malicious-fixture leg (T4.26, `Done` against its Done-when on fixtures
+  under owner decision 65; synthetic command fields, readable native login and repository configuration gaps stay;
   [#291](https://github.com/zemdregon/switchboard/pull/291),
   [#302](https://github.com/zemdregon/switchboard/pull/302),
   [#308](https://github.com/zemdregon/switchboard/pull/308),
@@ -201,7 +202,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#422](https://github.com/zemdregon/switchboard/pull/422),
   [#449](https://github.com/zemdregon/switchboard/pull/449)) and Git declaration fixture tests on
   synthetic fixtures (README [Grok Build CLI](#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
-  malicious leg and `adapters validate` remain operator work (T4.28).
+  malicious leg and `adapters validate` remain operator work (T4.28: the 2026-10-18 `adapters validate grok` run
+  passed probe, auth and conformance but stopped at the smoke step on a provider usage limit, so the manifest range
+  still admits no version).
   [#302](https://github.com/zemdregon/switchboard/pull/302) through
   [#449](https://github.com/zemdregon/switchboard/pull/449) extend synthetic malicious replay and compile pins only (including
   completing both cut-line positions across categories and exits, parser fall-through paths at exit `2` and `137`,
@@ -287,9 +290,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
   Antigravity reach the smoke step in the adapter's only compiled cell instead (T4.4));
    rows waiting on uncaptured live shapes
-  (T4.23, T4.26, T4.33, T4.35, T4.36, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66); README rows final after their
+  (T4.33, T4.35, T4.36, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66; owner decision 65 sets when parser, CI
+  malicious-leg and README rows are `Done` against their Done-when); README rows final after their
   live legs
-  (T4.29, T4.39, T4.49, T4.59, T4.69, T4.79); Muse Code (Should) has module, compile matrix, auth preflight,
+  (T4.39, T4.59, T4.69, T4.79; T4.29 and T4.49 are `Done` except the post-T4.n8 update); Muse Code (Should) has module,
+  compile matrix, auth preflight,
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
   [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
   is partial until the T4.71 capture; T4.76 is blocked because the adapter has no denial or tool-call record to end a
@@ -1377,6 +1382,10 @@ sandbox profile is always an explicit `--sandbox` flag so the audit sees it).
 
 The compliance manifest range admits no version until an operator runs `switchboard adapters validate grok-build` and
 commits the manifest diff (ROADMAP T4.28). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Grok Build.
+Live state on 2026-10-18 (operator run through the budgeted channel, `grok 1.0.50`): probe, auth (`OK`) and the
+conformance step passed in the adapter's only compiled cell (owner decision 59), and the smoke step stopped on a
+`streaming-json` error line carrying a provider usage-limit message (classified `TOOL_FAILURE`), so nothing was written
+and the range still admits no version. No end-to-end run, live malicious leg or native tool-call capture exists yet.
 
 ### Login
 
@@ -1398,7 +1407,7 @@ readable from inside the sandbox, and no per-run MCP-definition flag exists in h
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one of three scope shapes: `grok --no-auto-update --single=<prompt> --output-format streaming-json` with `--sandbox <profile>` and `--always-approve` together (never one without the other), shell `broad`, repository configuration `enabled`, and either worktree file access (with network `on` for sandbox profile `workspace`, or network `off` with `--disable-web-search` for `strict`) or `read-only` file access (with network `off` with `--disable-web-search` for `read-only`) (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express (read-only files with network `on` because `read-only` blocks child network on Linux only, shell allowlist or `none`, network `allowlist`, repository configuration `disabled` or `approved`, or model overrides), is refused before spawn (`Ineligible`). No `--allow` or `--deny` rules are emitted (prefix matches are not a Git-write control). |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one of three scope shapes: `grok --no-auto-update --single=<prompt> --output-format streaming-json` with `--sandbox <profile>` and `--always-approve` together (never one without the other), shell `broad`, repository configuration `enabled`, and either worktree file access (with network `on` for sandbox profile `workspace`, or network `off` with `--disable-web-search` for `strict`) or `read-only` file access or a read-only workspace request (with network `off` with `--disable-web-search` for `read-only`) (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express (read-only files with network `on` because `read-only` blocks child network on Linux only, shell allowlist or `none`, network `allowlist`, repository configuration `disabled` or `approved`, or model overrides), is refused before spawn (`Ineligible`). No `--allow` or `--deny` rules are emitted (prefix matches are not a Git-write control). |
 
 Resume continues the native session with `-r <session_id>` through the same matrix when the provider is eligible
 (synthetic fixtures in `src/adapters/grok/grok.test.ts`, T4.23). `resumeArgs` mirrors `compile` across every structured
@@ -2675,7 +2684,13 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   `--version` and the flags in `--help` (`docs/research/live-checks-2026-10-13.md`), not by a conformance suite. Any
   other Codex version fails the version gate. The `codex login status` exit codes were observed on that version only;
   its output format is undocumented.
-- **Grok Build malicious-fixture leg is partial (ROADMAP T4.26).** CI runs `test/malicious/adapter-leg.test.ts` with
+- **Grok Build parser shapes are synthetic (ROADMAP T4.23, `Done` against its Done-when on synthetic fixtures, owner
+  decision 65).** The field names of `tool_call` and `tool_call_update` lines, and the rate-limit, permission-denial
+  and sandbox-violation shapes, are Assumptions no capture has confirmed (T4.28). An 8c rule denial and a 7g sandbox
+  violation end `end_turn` success at exit 0, because the CLI gives no structured signal for them; a rate limit ends
+  `TOOL_FAILURE`, never `RATE_LIMIT_TRANSIENT`.
+- **Grok Build malicious-fixture leg is fixtures only (ROADMAP T4.26, `Done` against its Done-when, owner decision
+  65; live refusal evidence is T4.28).** CI runs `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/grok.case.ts` on synthetic `streaming-json` streams (no `grok` installed; no `replayGap`).
   Compile, isolation-flag and argv checks pass for each compiled bypass cell; hostile replay blocking streams test Git
   writes blocked by Switchboard's tool-call guard per ADR-0039.

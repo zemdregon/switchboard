@@ -1905,7 +1905,8 @@ OpenCode `opencode Git declaration (T4.57)`:
   finalize-only lifecycle leg.
 
 **Out of scope for T4.27 (other tasks).** Operator live Git-write and bypass cells (T4.28), README final status after
-live validate (T4.29), and parsing `tool_call` lines for the Switchboard tool-call guard while T4.23 stays `Partial`.
+live validate (T4.29), and the native `tool_call` line shapes the Switchboard tool-call guard reads (T4.28; T4.23 is
+`Done` against its Done-when on synthetic lines, ROADMAP owner decision 65).
 
 ### 4.4 Antigravity (`agy`, M4)
 
