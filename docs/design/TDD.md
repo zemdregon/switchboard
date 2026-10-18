@@ -2898,28 +2898,33 @@ which scans the non-test, non-fixture `.ts` and `.json` files under `src/adapter
 version or tier word and for context-window-sized numbers (a heuristic: it can miss a name it does not know, so
 reviewers still read new adapter code for model names).
 
-**State of automation (2026-10-13).** The T4.1 scratch adapter (`src/adapters/fixtures/scratch-provider.ts`, exercised
-by `src/adapters/providers.test.ts` and `src/adapters/bypass-forms.test.ts`) wraps the fake adapter. Against the
-checklist it automates:
+**State of automation (2026-10-18).** The T4.1 scratch adapter (`src/adapters/fixtures/scratch-provider.ts`) meets
+every item. `src/adapters/checklist.test.ts` holds one named test per item against it, so "meets every item" is a CI
+fact; the T4.1 tests (`src/adapters/providers.test.ts`, `src/adapters/bypass-forms.test.ts`) still cover its runtime
+registration, `doctor`, `list_capabilities` and config validation. It wraps the fake adapter's probe, parser and
+failure mapping, adds a SYNTHETIC isolation flag and bypass forms, and replays SYNTHETIC fixtures through the shared
+helper. Scratch is not a real provider, so it has no operator task, no capture to replace its fixtures and no live leg.
+Three items do not apply as written to a test-only adapter; each says why here and in its test name.
 
-- item 13 (model-literal ban, heuristic): `src/models/models.test.ts` scans adapter source;
-- items 1 and 12 (registry entry only): it is registered at runtime from a fixture module with no other source edit and
-  appears in `doctor`, `list_capabilities` and config validation;
-- item 3 in part: `doctor` probes it through the fake adapter's `probe`;
-- item 10 in part: `gitWriteControl.kind` is asserted `none-documented`;
-- item 11: long flag, short flag and flag value are refused before spawn except in the approved bypass case, and the
-  scratch adapter emits its flag only in that case (item 4 in part: only the `privileged` cells).
+| Item | Test in `src/adapters/checklist.test.ts` | What it checks, and what does not apply |
+| --- | --- | --- |
+| 1 | "item 1, module" | Every `ProviderAdapter` member; no non-test source imports the module. **Does not apply as written:** the module lives under `src/adapters/fixtures/`, not `src/adapters/<id>/`, because it is test-only and the build excludes fixtures (`tsconfig.build.json`, asserted) |
+| 2 | "item 2, manifest" | `src/adapters/fixtures/scratch/manifests/scratch.json` validates, its range is `<0.0.0` and the version gate reports `ADAPTER_VERSION_UNVERIFIED`. **Does not apply as written:** it is not in `src/adapters/manifests/` (asserted absent there), so the build never ships a manifest for a provider that does not exist; `doctor` and `list_capabilities` still report `NO_MANIFEST` for it |
+| 3 | "item 3, probe and auth preflight" | All six probe steps through the supplied `ProbeRunner` only; a missing binary fails the `binary` step; auth is `OK` or `AUTH_REQUIRED` naming the login; no argv names a login or credential path |
+| 4 | "item 4, compile matrix" | `compile` is deterministic; four profiles compile; `privileged` without an approved bypass scope is `Ineligible` with a reason; with one it compiles and carries the scratch bypass flag |
+| 5 | "item 5, stream parser and failure mapping" | Structured lines parse; unknown kinds are `unknown`; malformed and free-text lines yield nothing; no result is never success; `classifyFailure` maps every outcome, event set and exit code to an [LLD §4](LLD.md#4-failure-taxonomy) code |
+| 6 | "item 6, resume" | Its own binding resumes with the session id in the request cwd; other providers' bindings are `Ineligible` with a reason; `resumeCwd` equals its registry entry; `src/adapters/resume-conformance.test.ts` registers it, so the registry-wide check runs on it |
+| 7 | "item 7, replay fixtures" | Every fixture in `src/adapters/fixtures/scratch/` is marked SYNTHETIC; the run replays through the shared `replay.mjs` with the dialect `replay-dialects/scratch.mjs`; no per-adapter copy |
+| 8 | "item 8, conformance cases" | `scratchConformanceCases` (`src/adapters/fixtures/scratch/cases.ts`) covers `REQUIRED_CASE_KINDS` plus `rate_limit` and passes `runConformanceSuite` |
+| 9 | "item 9, malicious-fixture leg" | `test/malicious/adapters/scratch.case.ts` exists and covers every hostile category with a blocked code; `test/malicious/adapter-leg.test.ts` discovers it and replays every stream |
+| 10 | "item 10, Git declarations" | `gitWriteControl.kind` `none-documented`, `commitChannel` `finalize-only`, no channel arguments |
+| 11 | "item 11, bypass-class flags" | Long flag, short flag and flag value are declared as data and refused except for an approved bypass scope; no non-privileged compile carries one |
+| 12 | "item 12, registry entry" | One entry with `id`, `configId`, `kind`, `label` and `create`, registered at runtime and absent from `BUILTIN_PROVIDERS`. **Does not apply:** the README login row, because scratch is a synthetic test adapter, not a provider a user logs in to (NFR-MAINT-03 documents user-facing providers); the test asserts the login table has no scratch row |
+| 13 | "item 13, no model names" | The scratch module, dialect, manifest and cases hold no model-like literal or context limit (the shared detector, `src/adapters/fixtures/model-literals.ts`, also used by `src/models/models.test.ts`); the probe lists no models, as the synthetic CLI documents no listing command |
 
-**Not yet automated** (no test or lint checks it today; reviewers check it by hand):
-
-- item 2: the scratch adapter has no manifest (`doctor` reports `NO_MANIFEST`);
-- item 4: the `Ineligible` reason for each of the five profile cells (only `privileged` is asserted);
-- item 5: `parseEvent`, `extractResult` and `classifyFailure` are the fake's; no scratch-specific parser test exists;
-- items 6, 7, 8 and 9: no test runs resume, replay fixtures, `runConformanceSuite` or a malicious-fixture leg for the
-  scratch adapter, and the shared replay helper and per-adapter malicious leg are T4.3 work;
-- item 10 in part: `gitCapabilities` is not asserted for the scratch adapter;
-- item 12 in part: nothing checks the README login row;
-- the model-literal ban is automated only as the heuristic scan above; the family-name list is hand-kept.
+Limits that remain: the model-literal scan is the heuristic described above (the family-name list is hand-kept), and a
+test proves the checklist for the scratch adapter only; reviewers still tick the list for each real provider's pull
+request.
 
 ### 4.10 Native-resume inventory (T5.0)
 
