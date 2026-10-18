@@ -836,7 +836,9 @@ whole is not built, but its store step is (T16.1: validation, canonicalisation, 
 and `mcp_clients[].skills` in the schema and loader), its operator-CLI step is (T16.2), its MCP-tools step is
 (T16.9), its admission step is (T16.4), its prompt-prefix step is (T16.5) and its native-delivery framework and
 leak-prevention step is (T16.6: writer and cleaner in `src/workspace/native-skills.ts`, exclusions, push refusal,
-four removal points and `skill_cleanup_failed`).*
+four removal points and `skill_cleanup_failed`), and its continuity step is (T16.10: the handoff bundle lists the
+previous run's pinned skills as controller facts and the successor re-delivers the same versions in its own
+provider's way, with a native resume re-delivering the files for the new run).*
 
 - **Actors:** Operator, Orchestrator, COMP-OPS, COMP-MCP, COMP-SKL, COMP-WS, COMP-GIT, COMP-EXE, COMP-LED.
 - **Preconditions:** `skills.enabled`; the operator added and approved the skills (`switchboard skills add`, `approve`)
