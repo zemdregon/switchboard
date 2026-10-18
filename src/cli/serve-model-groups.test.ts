@@ -199,6 +199,8 @@ const DEV_FAKE = {
     pacing: { mode: "score" },
   },
 };
+// The fake's compile matrix verifies `edit-untrusted` on linux only (NFR-PORT-02); `inspect-untrusted` runs everywhere.
+const INSPECT = { objective: "Look", trust_profile: "inspect-untrusted" };
 
 describe("serve accepts the test-only fake in model_groups and capacity.subscriptions (T7.13, T6.13)", () => {
   beforeEach(() => {
@@ -221,7 +223,7 @@ describe("serve accepts the test-only fake in model_groups and capacity.subscrip
     };
 
     const delegated = await call(c, "delegate_task", {
-      ...TASK,
+      ...INSPECT,
       workspace_path: repo,
       routing: { model_group: "dev-fake" },
     });
@@ -247,7 +249,7 @@ describe("serve accepts the test-only fake in model_groups and capacity.subscrip
 
     const queued = await call(c, "enqueue_work", {
       project_id: "web",
-      request: { ...TASK, routing: { model_group: "dev-fake" } },
+      request: { ...INSPECT, routing: { model_group: "dev-fake" } },
     });
     expect(queued.isError, JSON.stringify(queued.body)).toBe(false);
     const deadline = Date.now() + 30_000;
