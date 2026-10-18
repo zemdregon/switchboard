@@ -199,10 +199,12 @@ const DEV_FAKE = {
     pacing: { mode: "score" },
   },
 };
-// The fake's compile matrix verifies `edit-untrusted` on linux only (NFR-PORT-02); `inspect-untrusted` runs everywhere.
 const INSPECT = { objective: "Look", trust_profile: "inspect-untrusted" };
+// A run on the fake needs its compile matrix, verified on linux only (Q-35, NFR-PORT-02): on darwin every profile is
+// PROFILE_PLATFORM_UNVERIFIED, so this suite runs on linux only, like the real-run suites in `serve.test.ts`.
+const describeLinuxVerified = process.platform === "darwin" ? describe.skip : describe;
 
-describe("serve accepts the test-only fake in model_groups and capacity.subscriptions (T7.13, T6.13)", () => {
+describeLinuxVerified("serve accepts the test-only fake in model_groups and capacity.subscriptions (T7.13, T6.13)", () => {
   beforeEach(() => {
     const cfg = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
     writeFileSync(configPath, JSON.stringify({ ...cfg, ...DEV_FAKE }));
