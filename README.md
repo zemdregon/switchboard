@@ -185,7 +185,12 @@ Pre-release. The package is private and is not published to any registry; you bu
  built (T16.6, Delegated, not owner-approved): the per-cell `skillDelivery` declaration, fresh-path exclusive writes,
  exclusion from the commit tool, checkpoints, diff artifacts and `changed_files`, `push` refusal while a skill file
  exists, removal before `VERIFYING`, at terminal states, at reconciliation and by GC, and the `skill_cleanup_failed`
- needs-attention reason; only the fake adapter declares a native location, in tests. Design:
+ needs-attention reason; only the fake adapter declares a native location, in tests. Adapter declarations are built
+(T16.7, Delegated, not owner-approved): each of the eight provider adapters declares `skillDelivery()` =
+`prompt_prefix` as its own method, and the conformance suite (`checkSkillDelivery` in `src/adapters/conformance.ts`,
+run by `checkAdapterStatics` for every case) fails a `native` declaration without a T16.8 evidence id and a cell whose
+argv, environment or policy flags the skills change beyond the prompt text
+(`src/adapters/skill-delivery-conformance.test.ts`). Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
