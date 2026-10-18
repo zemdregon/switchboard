@@ -2602,6 +2602,13 @@ Record the version first; all results are valid for that version only (ADR-0009)
 Done when each row's result, with the OpenCode version and date, replaces its `Unverified: T4.51` cell or is recorded
 as not possible (then the cell becomes `Ineligible` with that reason).
 
+Rows 7 to 9, 2026-10-18 (`opencode v2.0.23`, `opencode-go/deepseek-v4.1-flash`, project `opencode.json`, `run
+--standalone`; [live-checks-2026-10-18-opencode.md](../research/live-checks-2026-10-18-opencode.md), Delegated): row 7
+**ESCAPED** (`git add -A && git commit` and `git push` denied; `git -C . commit`, `env git commit` and `sh -c 'git
+commit'` created commits); row 8 **HELD** (wrong order denies nothing: last matching rule wins); row 9 **ESCAPED** (an
+inline `OPENCODE_CONFIG_CONTENT` `mcp` entry was not listed by `opencode mcp list`; the tool allow and deny parts were
+moot and not run).
+
 #### 4.6.4 Note 2026-10-14: contradictions found by the T4.51 live checks (Delegated; cells above not edited)
 
 Source: [live-checks-2026-10-14-opencode.md](../research/live-checks-2026-10-14-opencode.md), `opencode v2.0.23` on
@@ -2621,6 +2628,22 @@ Ampere. Decision: [Q-64](../ROADMAP.md#73-open-questions-for-zemdregon-not-block
 - **Isolation**: a scratch `HOME` collides with the host's background `opencode serve --service` unless
   `--standalone`; env-based per-run config is read by the client and not applied by the service.
 - **Resume**: `--session` resumes from another directory; `--continue` is per project.
+
+Update 2026-10-18 ([live-checks-2026-10-18-opencode.md](../research/live-checks-2026-10-18-opencode.md), same
+version; Delegated, cells above still not edited). Where it and the cells above disagree, this update holds for v2.0.23:
+
+- **Permission compile target**: a deny in a project `opencode.json` **does** take effect with the `opencode-go` login;
+  the 403 `provider.auth` error (row 14d) did not recur. The `bash` key governs the `shell` tool. Environment-carried
+  config (`OPENCODE_PERMISSION`, `OPENCODE_CONFIG_CONTENT`) stays ignored.
+- **Git-write denial**: the `git commit *` and `git push *` deny patterns match the command text: plain `git commit`
+  (after `git add -A &&`) and `git push` were denied, while `git -C . commit`, `env git commit` and `sh -c 'git
+  commit'` committed (row 7 ESCAPED; the class of [R-43](../ROADMAP.md#7-risks-blockers-and-open-questions) and
+  [Q-62](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted), backstops
+  [ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md) and FR-GIT-03). Denial does not hold for every form, so
+  `gitWriteControl` stays `none-documented` (Delegated reading of the rule in "Git writes and injected tools").
+- **Ordering**: deny rules placed before `"*": "allow"` deny nothing (row 8): last matching rule wins.
+- **Per-run MCP**: an inline `OPENCODE_CONFIG_CONTENT` `mcp` entry was not listed by `opencode mcp list` (row 9
+  ESCAPED, through the host service); a repository `opencode.json` `mcp` entry is (row 10c). R-18 applies.
 
 #### 4.6.5 OpenCode parser implementation evidence (M4, T4.53)
 
