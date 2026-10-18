@@ -183,6 +183,12 @@ const acpResults = new WeakSet<NormalizedEvent>();
 /** Category of a stream anomaly (two resume hints, a changed or unsafe id, a record after the hint, an unreadable tool call). */
 const PROTOCOL_CATEGORY = "protocol";
 const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
+/**
+ * T6.15 quota-stop phrases (`kimiQuotaClassification`): the `403` status is matched on word boundaries on one
+ * stderr line, `usage limit` case-insensitively on the same line (the captured `5-hour usage limit` keeps its case).
+ */
+const KIMI_QUOTA_STATUS_RE = /\b403\b/;
+const KIMI_QUOTA_USAGE_RE = /usage limit/i;
 const protocolError = (message: string): NormalizedEvent => ({
   kind: "provider_error",
   category: PROTOCOL_CATEGORY,
@@ -670,7 +676,10 @@ export class KimiAdapter implements ProviderAdapter {
    * `rate_limit` event and no `tool_call` the tool-call guard flagged with a `violation` (a guard verdict ends the run
    * in every run, bypass included, ADR-0039). A `stream-json` run also needs a clean expected exit (the resume hint
    * alone is an Assumption, [CAP]); an ACP run needs the client to have ended the turn (`acpRunSucceeded`, ADR-0036
-   * item 8.3). The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS} characters.
+   * item 8.3). The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS} characters. The failed
+   * path below passes no stderr tail (the adapter contract passes none), so the T6.15 `403`/`usage limit` quota
+   * mapping is not reached here either: it lives in `classifyFailure`, which a caller reaches with the stderr tail
+   * `startAdapterRun` (`src/adapters/run.ts`) already captures.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -712,14 +721,45 @@ export class KimiAdapter implements ProviderAdapter {
   }
 
   /**
-   * Shared precedence (failure.ts). Error text is already mapped to the shared categories (`auth` from the observed
-   * `Authentication required` prefix or ACP `-32000`), and a stream anomaly (category `protocol`) is
-   * OUTPUT_PROTOCOL_ERROR. A non-zero `-p` exit with no other evidence is TOOL_FAILURE (K7: failed turns exit
-   * non-zero; the codes are `Unverified: T4.68`; [K2] goal codes 3 and 6 included).
+   * Shared precedence (failure.ts), then the T6.15 limit mapping: error text is already mapped to the shared
+   * categories (`auth` from the observed `Authentication required` prefix or ACP `-32000`), and a stream anomaly
+   * (category `protocol`) is OUTPUT_PROTOCOL_ERROR. A non-zero `-p` exit with no other evidence is TOOL_FAILURE
+   * (K7: failed turns exit non-zero; the codes are `Unverified: T4.68`; [K2] goal codes 3 and 6 included). When the
+   * common verdict is `TOOL_FAILURE` or `AUTH_REQUIRED`, the 5-hour usage-limit stderr signal
+   * (`kimiQuotaClassification`) is checked next: the CLI labels that quota stop `provider.auth_error`, so without
+   * this a usage stop reads as a logged-out provider. Every more specific verdict stands.
    */
   classifyFailure(evidence: FailureEvidence): FailureClassification {
-    return classifyCommon(evidence, CATEGORY_CODES);
+    const common = classifyCommon(evidence, CATEGORY_CODES);
+    if (common.code !== "TOOL_FAILURE" && common.code !== "AUTH_REQUIRED") return common;
+    return kimiQuotaClassification(evidence) ?? common;
   }
+}
+
+/**
+ * T6.15 (FR-CAP-11, FR-ADP-04): the Kimi Code 5-hour usage-limit stop of the 2026-10-15 T6.11 capture
+ * (exit 1, stderr `provider.auth_error: 403 ... 5-hour usage limit ...`; capture file name in ROADMAP T6.15). A non-zero
+ * exited run whose stderr tail holds a line with both `403` and `usage limit` maps to `QUOTA_EXHAUSTED`. The quota
+ * signal is checked before the auth mapping: the CLI labels this quota stop `provider.auth_error`, and a stream
+ * event for it would land in the `auth` or `unknown` category (today `AUTH_REQUIRED` or `TOOL_FAILURE`), which
+ * would make the router treat a usage stop as a logged-out provider. A `403` without `usage limit` maps nothing,
+ * so its current verdict stands. Requires an unexpected exit, so exit 0 never maps; a cancelled run never maps.
+ * Every verdict more specific than `TOOL_FAILURE`/`AUTH_REQUIRED` (timeout, crash, the tool-call guard, a denial,
+ * another provider error, a protocol anomaly, a rate limit) stands. Reached only through
+ * `FailureEvidence.stderrTail`, which `extractResult` cannot supply (same gap as Antigravity's
+ * `agyErrorClassification`).
+ */
+export function kimiQuotaClassification(evidence: FailureEvidence): FailureClassification | undefined {
+  const { exit } = evidence;
+  if (evidence.cancelled) return undefined;
+  if (exit.outcome !== "exited" || exit.exitCode === null || exit.expectedExitCodes.includes(exit.exitCode)) {
+    return undefined;
+  }
+  const hit = evidence.stderrTail
+    .split("\n")
+    .some((line) => KIMI_QUOTA_STATUS_RE.test(line) && KIMI_QUOTA_USAGE_RE.test(line));
+  if (!hit) return undefined;
+  return { code: "QUOTA_EXHAUSTED", detail: "quota: 403 usage limit" };
 }
 
 /** Text of an assistant `content`: a string, or the `text` of `{type:"text"}` parts (Assumption); else undefined. */
