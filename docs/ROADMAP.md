@@ -3322,8 +3322,10 @@ per-feature `source`), [LLD §16](design/LLD.md#16-capacity-and-resilience-m6) (
 
 #### 6.12.2 Blocks Done: what needs the operator or zemdregon
 
-M7 can reach `Done` on fakes; no task needs a provider login (Delegated reading: the acceptance criteria are all
-replay, property and fault-injection tests). Open items that do not block it:
+M7 reached `Done` on fakes at the 2026-10-18 reconciliation: the scorer, persisted decisions with replay,
+`explain_route`, affinity with the closed reason list, `affinity reset`, minimum-capability enforcement (T7.8),
+model pinning (T7.12) and model groups (T7.13 to T7.17) are all `Done`, with the acceptance tests T7.10 and T7.16
+passing on fakes. No task needed a provider login. What `Done` needed (history):
 
 1. **zemdregon, optional:** Q-51 (stay on the new provider after a capacity switch) and Q-52 (no idle expiry) are
    Delegated defaults that M7 implements as written; zemdregon may revise them. The default weights and the
@@ -3331,7 +3333,9 @@ replay, property and fault-injection tests). Open items that do not block it:
    run may do: affinity never moves a `privileged` meta-session to another provider (the Q-61 rule stays in force).
 2. **Sources for provider facts:** a price, model ranking or sandbox-strength order per provider. Without one the
    matching term stays neutral and `minimum_capability` needs an operator-declared capability (T7.8).
-3. **Another lane:** T7.9 and T7.12 wait for `src/adapters/**` (T7.12: Q-90).
+3. **Another lane (history):** T7.9 and T7.12 depended on an adapter-contract field in `src/adapters/**` (the M4
+   lane); both are `Done` on fakes (T7.9 2026-10-16, T7.12 2026-10-14). The remaining wording gap (LLD §17.6, SDD
+   FR-RTE-08 and Q-90 still describe the T7.5 state) is disclosed in the T7.12 row and does not block acceptance.
 
 ### 6.13 M14 Control plane: tasks
 
@@ -3788,10 +3792,10 @@ Notes carried from M2:
   T6.11 is
   `Done` (2026-10-17) with `NOT_CHECKED` cells the operator's capture hook fills in a follow-up note (§6.11.2).
   Unknown capacity is shown as unknown, never as headroom.
-- **M7 has a Proposed task breakdown** (§6.12, 2026-10-14, Delegated). Its wave A (§6.12.1) needs no provider CLI:
-  T7.0 (routing design and ADR) gates the code, then the scorer, persisted decisions with a replay test,
-  `explain_route`, the affinity store and selection step, the affinity replay property test and `affinity reset`. No
-  provider login blocks it (§6.12.2).
+- **M7 is `Done`** on fakes (2026-10-18 reconciliation, Delegated). T7.0 to T7.17 are done on fakes (§6.12; T7.17
+  `Done` 2026-10-17): the routing design and ADR, the scorer, persisted decisions with replay, `explain_route`,
+  affinity with the closed reason list, minimum-capability enforcement, model pinning (T7.12) and model groups, with
+  the acceptance tests T7.10 and T7.16. No provider login was needed (§6.12.2).
 
 ### 9.1 How an agent picks up work
 

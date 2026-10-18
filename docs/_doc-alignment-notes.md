@@ -121,6 +121,12 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   restating other tasks' sequencing, which is the roadmap owner's call. It does not block PR #645 (T7.13's own
   evidence is the T7.13 status block, cited directly).
 
+  **Update 2026-10-18 (PR #682, M7 `Done` reconciliation):** the §6.12.2 "Blocks Done" instances of this gap are
+  reconciled in the same change that flips the M7 row to `Done` (the header now reads "M7 reached `Done` on fakes"
+  with "What `Done` needed (history)", and item 3 records T7.9/T7.12 `Done` with the remaining wording gap
+  disclosed), because that section directly restates the milestone status. The §6.12.1 wave-planning notes ("Wave B
+  ... T7.8 is blocked on T7.12", "Waits for another lane") remain as planning history per the decision above.
+
 ## 11. LLD §18.3 `CANCELLED` predecessor: Proposed fail-closed vs implemented unblock (pre-existing, not from PR #660)
 
 - [LLD §18.3](design/LLD.md#183-priority-and-dependencies-fr-que-01) says a predecessor in `CANCELLED` or
