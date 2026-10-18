@@ -231,8 +231,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.32 to
   T4.37); [#295](https://github.com/zemdregon/switchboard/pull/295) through
   [#373](https://github.com/zemdregon/switchboard/pull/373) extend synthetic parser, conformance and malicious replay
-  only and do not validate the live CLI.
-  Live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor has
+  only and do not validate the live CLI; the T4.38 live `adapters validate` pass followed on 2026-10-18 (CLI 1.4.2,
+  manifest range `>=1.4.2 <1.5.0`).
+  Live smoke and the live malicious leg for Antigravity remain operator work (T4.38). Cursor has
   module, compile-matrix, parser (Done against its Done-when under owner decision 65 (a): T4.43;
   supervisor-replayed JSONL fixtures,
   [#283](https://github.com/zemdregon/switchboard/pull/283),
@@ -283,9 +284,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   2026-10-18 live final-verify (auth `OK`; still `Partial` pending a scrubbed capture, ROADMAP T4.64) and the
   T4.68 live `adapters validate` pass on 2026-10-18 (CLI 2.1.1, manifest range `>=2.1.1 <2.2.0`) (README
   [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke and the live malicious leg
-  remain operator work (T4.68). The Grok Build, Antigravity, Cursor, OpenCode and Muse Code manifests still admit
-  no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex and
-  Kimi Code already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
+  remain operator work (T4.68). The Grok Build, Cursor, OpenCode and Muse Code manifests still admit
+  no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex,
+  Kimi Code and Antigravity already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
   Delegated). Open items, by blocker: operator live legs (T4.12 on a Mac, T4.28, T4.38, T4.48, T4.58, T4.68; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
@@ -2747,13 +2748,16 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   [#368](https://github.com/zemdregon/switchboard/pull/368) adds conversation-id and `total_tokens` anomalies, empty
   or null `denied_actions` and cuts inside the hostile line. Fields other than the recorded and Assumption shapes
   remain hypothetical, a Git write on a step whose `step_type` is not `tool` is not seen by the guard (pinned,
-  [#344](https://github.com/zemdregon/switchboard/pull/344)), and no live CLI validation is implied. FR-POL-04
+  [#344](https://github.com/zemdregon/switchboard/pull/344)); besides the live `adapters validate` pass on
+  CLI 1.4.2 on 2026-10-18 (ROADMAP T4.38: manifest, probe, auth `OK`, static conformance and one
+  structured-output smoke call), no further live CLI validation is implied. FR-POL-04
   cannot hold in the only
   compiled scope because repository configuration is `enabled` and `GEMINI.md`, `AGENTS.md` and the `.agents` MCP server
   and hooks load with no approval (live check C11). The blocked streams still rest on unrecorded
   `tool_info.parameters` keys — the parser's accepted key set is pinned on synthetic fixtures, and a command under none
   of those keys stays invisible to the guard; a hostile call without a Git write still ends `ok` in bypass runs
-  (pinned). Live blocked outcomes need T4.38. See ROADMAP T4.36 for the full gap list.
+  (pinned). Live blocked outcomes need the T4.38 live malicious leg (operator work).
+  See ROADMAP T4.36 for the full gap list.
 - **OpenCode malicious-fixture leg is partial (ROADMAP T4.56).** CI runs `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/opencode.case.ts` on synthetic `--format json` streams (no `opencode` installed; no
   `replayGap`). Compile, isolation-flag and hostile replay blocking checks pass for the approved bypass cell: every
@@ -2815,9 +2819,10 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
-- `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex and Kimi Code
-  manifests admit a version on `main` today. Grok Build, Antigravity, Cursor, OpenCode and the other M4 adapters
-  still need operator captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58, T4.68 and §6.8.2).
+- `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex, Kimi Code
+  and Antigravity manifests admit a version on `main` today. Grok Build, Cursor, OpenCode and the other M4
+  adapters still need operator captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58,
+  T4.68 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
   fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the

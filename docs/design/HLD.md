@@ -226,8 +226,9 @@ shared adapter port is in [SDD §5](SDD.md#5-requirements-to-design-traceability
 #### T4.32 — module, manifest, probe, registry entry and compile matrix
 
 **Evidence (implemented on `origin/main`).** FR-ADP-07, FR-ADP-01, FR-ADP-02 (five-step probe on synthetic
-`--version`/`--help` shapes only; no `agy` in CI), FR-ADP-03 (manifest range admits no version until operator
-`adapters validate`), FR-POL-02, FR-POL-03, FR-POL-08; Git behaviour is declared (`gitWriteControl`
+`--version`/`--help` shapes only; no `agy` in CI), FR-ADP-03 (manifest range admitted no version until operator
+`adapters validate`; `>=1.4.2 <1.5.0` since the T4.38 live pass on 2026-10-18), FR-POL-02, FR-POL-03, FR-POL-08;
+Git behaviour is declared (`gitWriteControl`
 `none-documented`, `commitChannel` `finalize-only`, `resumeCwd` `bound`) per TDD §4.4, not exercised here.
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("antigravity compile matrix (T4.32)", "antigravity

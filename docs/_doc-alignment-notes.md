@@ -304,3 +304,20 @@ as history.
   to the abandon-only form and accepting it) is the SRS owner's call and
   is the queued amendment follow-up that closes E7's FR-WS-09 part. It
   does not block PR #712 (no code change; docs agree with the code).
+
+## 21. `antigravity.json` manifest notes still read "admits no version" (from PR #703, out of gate scope)
+
+- PR #703 updates `src/adapters/manifests/antigravity.json` to
+  `validated_cli_version` `1.4.2`, range `>=1.4.2 <1.5.0`, with a dated
+  `Evidence (adapters validate, 2026-10-18)` line appended to `notes`.
+- The same `notes` string still opens with the T4.32 sentence "The range admits
+  no version (ADR-0009, ROADMAP 6.8 conventions): the adapter fails the version
+  gate with ADAPTER_VERSION_UNVERIFIED until `switchboard adapters validate
+  antigravity` passes a version, so nothing here is a claim that any agy version
+  is validated." That condition is now satisfied, so the sentence is
+  stale against the range in the same file.
+- Left unchanged: the manifest is `src/**`, and this gate edits documentation
+  only (`*.md`, `docs/**`). Refreshing that sentence needs a one-line manifest
+  edit by the PR author (or a code-touching follow-up), not an owner decision.
+  It does not block PR #703 (the range fields and the evidence line, which are
+  what the gate and the version check read, are correct).
