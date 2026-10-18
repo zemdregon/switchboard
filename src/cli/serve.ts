@@ -122,7 +122,7 @@ import type { SearchContextDeps } from "../mcp/search-context.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { DynamicProjectStore, innerSettingResolver, toResolved } from "../projects/index.js";
-import { queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
+import { attachQueueLowWater, queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { pruneRagStores } from "../retrieval/store.js";
 import { fireDueSchedules } from "../schedule/index.js";
@@ -810,6 +810,20 @@ async function runDaemon(
         });
   if (sinks) log.info("notification sinks configured", { sinks: sinks.sinkIds });
   const notifySinks = sinks ? transitionNotifier(sinks, (runId) => ledger.getRunRecord(runId)?.project_id) : undefined;
+  // T15.4 (FR-QUE-04, LLD §18.8, ADR-0048): one queue low-water tracker for this process, on the real ledger and the
+  // same dispatcher as the other sink events. It recomputes on every work-queue state change the ledger notifies
+  // (MCP enqueue/cancel, the scheduler tick's dequeue and admission outcomes, run-terminal transitions); the mark comes
+  // from the resolved project config, an unset mark emits nothing. Only attached when a sink exists, or the events have
+  // nowhere to go (the same rule as T14.9 above). `init` seeds the armed state from the level at startup, so a queue
+  // opening at or above its mark emits exactly once when it first drains below, and re-arms only by refilling to the mark.
+  if (sinks) {
+    const lowWaterTracker = attachQueueLowWater({
+      ledger,
+      getLowWaterMark: (pid) => config.projects.find((p) => p.id === pid)?.queue?.lowWater,
+      dispatcher: sinks,
+    });
+    for (const project of config.projects) lowWaterTracker.init(project.id);
+  }
   // T14.4 (FR-CTL-06, LLD §3.4.6): operator budget caps (`control_plane.budgets`); with none configured, admission
   // never queries the ledger for them. A refusal is logged with the cap (operator values only) and, once per
   // exhausted window and scope, sent to the sinks as `budget_exhausted` (no run id: nothing was written).
