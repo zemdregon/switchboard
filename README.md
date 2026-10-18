@@ -2093,10 +2093,11 @@ invocation sets `OPENCODE_DISABLE_AUTOUPDATE=1` with an environment allowlist of
 sets `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` (env/inline config ignored on that version in the live
 checks, reconfirmed 2026-10-18).
 
-The compliance manifest range admits no version until an operator runs `switchboard adapters validate opencode` and
-commits the manifest diff (ROADMAP T4.58). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for OpenCode. The
-2026-10-18 operator run (owner decision 60) passed the probe (`opencode v2.0.23`), auth (`OK`) and 11 static conformance
-checks and stopped at the smoke with `OUTPUT_PROTOCOL_ERROR (no result event)`, so nothing was written; T11.0's
+The compliance manifest range (`src/adapters/manifests/opencode.json`) admits `>=2.0.23 <2.1.0` since
+`switchboard adapters validate opencode` passed on CLI v2.0.23 on 2026-10-18 (ROADMAP T4.58, owner decisions 60 and
+68; [`docs/research/live-checks-2026-10-18-opencode.md`](docs/research/live-checks-2026-10-18-opencode.md)). Other
+versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`. The live smoke and the live malicious leg of T4.58
+remain operator-only. T11.0's
 2026-10-17 run found no tool-free control on that version
 ([TDD §4.6.7](docs/design/TDD.md#467-t110-live-result-2026-10-17)).
 

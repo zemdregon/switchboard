@@ -107,3 +107,129 @@ repository write) or a different surface (R-18).
 The check's hermetic test is `~/operator-runs/live-ext/opencode-deny.test.sh` (fake `opencode`, temp `HOME`); the
 wrapper's allowance of exactly `opencode mcp list` is covered by `~/operator-runs/live-ext/pin-wrap.test.sh`. Both are
 operator scripts, not part of this repository.
+
+# Live checks on the operator's machine, 2026-10-18: `adapters validate opencode` under owner decisions 60 and 68 (T4.58)
+
+Status: research input (historical record once written). Run by an agent (Claude Opus 5.5, then Claude Fable 5.1 after
+a host reboot, Delegated) on the operator's Ampere server (Ubuntu 26.04.1, aarch64), with the installed, logged-in
+OpenCode, through the operator's `live-run-ext.sh` channel. The channel uses a fresh clone of the branch under test,
+the operator's cheapest OpenCode model (`opencode-go/deepseek-v4.1-flash`), and scrubs captured output before writing
+it. Everything here was **observed** on 2026-10-18. The roadmap owns status ([ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks));
+the decisions are [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions) entries 60 and 68. Verdicts are Delegated findings,
+not owner decisions. Earlier OpenCode captures: [live-checks-2026-10-14-opencode.md](live-checks-2026-10-14-opencode.md)
+and [live-checks-2026-10-17-opencode.md](live-checks-2026-10-17-opencode.md).
+
+## 1. The first run under owner decision 60 (12:47Z, `main`): smoke failed
+
+Command (the channel's `validate` check on `main`, one run, task `w976-m4-t458-opencode-validate-live-opencode`):
+
+```text
+~/operator-runs/live-run-ext.sh validate opencode --task-id w976-m4-t458-opencode-validate-live-opencode \
+  --reason "T4.58 adapters validate opencode under owner decision 60"
+```
+
+Step lines (verbatim from the scrubbed log `20261018-124703-ext-validate-opencode-w976-m4-t458-opencode-validate-live-opencode.log`):
+
+```text
+[ok]   probe: steps binary, version, command, output_format, flags ok; version opencode v2.0.23
+[ok]   auth: OK
+[ok]   conformance: 11 static checks ok (approved privileged bypass cell, owner decision 60; inspect-untrusted is Ineligible)
+[FAIL] smoke: structured-output smoke test failed: OUTPUT_PROTOCOL_ERROR (no result event)
+```
+
+One model call was made (the wrapper's `MODEL` line: `opencode run -m opencode-go/deepseek-v4.1-flash --format json
+--standalone -- Reply with the single word ok. …`). Nothing was written. **Reading (Delegated):** the parser of that
+commit emitted a `result` only on a `step_finish` with `part.reason` `stop` (Q-85 as answered on 2026-10-14), and
+v2.0.23 often ends a one-word reply with `step_start` and `text` only (2026-10-14 row 4a) or a single `text` line
+(2026-10-17 §1, one-shot 1), so the smoke's structured output had no result event. The raw stream of this smoke call
+was not captured (the `validate` check logs the command's output, not the provider's events), so the exact event shape
+of this reply is an inference from those two earlier captures, not an observation.
+
+## 2. Owner decision 68 and the parser change
+
+Owner decision 68 (2026-10-18, relayed by the orchestrator, ROADMAP §4.2 entry 68) narrowed Q-85: a run that exits 0,
+emits at least one `text` event and emits no `error`, no `tool_use` and no unknown event is a success without a
+`step_finish`; any run with a tool event keeps the `step_finish`/`stop` requirement; everything else stays fail closed.
+The branch `sb/2026-10-18-m4-t458-opencode-q85-validate-d68` builds it in `src/adapters/opencode/adapter.ts` with
+synthetic fixtures only (no provider CLI was run for the tests): commit `b703ccc` (rebased onto `main` as `d850b5b`
+before the pull request; the clone the channel validated is `b703ccc`).
+
+## 3. `switchboard adapters validate opencode` on the branch: passed (23:17Z)
+
+Three starts were needed to get one execution; the channel's ledger (`live-runs.jsonl`) records all three under task
+`w1148-m4-t458-opencode-q85-validate-d68-opus`, and none of the first two reached the provider:
+
+| Start (UTC) | What happened | Model calls |
+| --- | --- | --- |
+| 22:22:20 | The host rebooted while the channel was building its fresh clone; the log stops at the clone header | 0 |
+| 22:54:18 | Another queue item rewrote `live-run-ext.sh` at 22:57:13 while bash was still reading it; the script died with a syntax error at the clone step (log stops at the clone header) | 0 |
+| 23:17:57 | Executed; the run below | 1 |
+
+Command (the third start; `--ref` points the channel at the branch):
+
+```text
+~/operator-runs/live-run-ext.sh validate opencode --ref sb/2026-10-18-m4-t458-opencode-q85-validate-d68 \
+  --task-id w1148-m4-t458-opencode-q85-validate-d68-opus --reason "T4.58 validate opencode after Q-85 decision 68"
+```
+
+**Version.** `opencode --version` printed `opencode v2.0.23`, exit 0 (the probe step below).
+
+Step lines (verbatim from the scrubbed log
+`20261018-231757-ext-validate-opencode-w1148-m4-t458-opencode-q85-validate-d68-opus.log`; the clone line is
+`# clone: b703ccc feat(opencode): text-only reply without step_finish is a success (owner decision 68, Q-85 narrowed)`):
+
+```text
+[ok]   manifest: ~/operator-runs/live-ext/work/20261018-231757-validate-opencode/switchboard/src/adapters/manifests/opencode.json
+[ok]   probe: steps binary, version, command, output_format, flags ok; version opencode v2.0.23
+[ok]   auth: OK
+[ok]   conformance: 11 static checks ok (approved privileged bypass cell, owner decision 60; inspect-untrusted is Ineligible)
+[ok]   smoke: one provider call; a successful structured result was parsed (approved privileged bypass cell, owner decision 60; inspect-untrusted is Ineligible)
+[ok]   write: ~/operator-runs/live-ext/work/20261018-231757-validate-opencode/switchboard/src/adapters/manifests/opencode.json updated; review and commit it
+
+Recorded validated_cli_version 2.0.23, validated_on 2026-10-18, validated_version_range ">=2.0.23 <2.1.0" and an evidence line in notes.
+Review the change and commit the manifest file yourself; nothing was committed.
+Result: OK
+exit: 0
+```
+
+Provider CLI invocations seen by the channel's model-pin wrapper (verbatim; the prompt is clipped by the wrapper):
+
+```text
+1792365788 opencode PASS --version
+1792365788 opencode PASS run --help
+1792365788 opencode PASS auth list --format json --standalone
+1792365792 opencode MODEL run -m opencode-go/deepseek-v4.1-flash --format json --standalone -- Reply with the single word ok. Do not us…(80c)
+```
+
+Exactly one `MODEL` line; the wrapper summary was `outcome=ok exit=0 11s model_calls=1 refused=0`. No usage or limit
+text appeared. The `-m` flag is the channel's model pin, added by the operator's wrapper, not by Switchboard (the adapter
+never emits `--model`).
+
+**Manifest diff written by the command** (committed on the branch exactly as the channel captured it):
+
+```diff
+-  "validated_cli_version": "unverified-on-this-host",
+-  "validated_version_range": "<0.0.0",
+-  "validated_on": "2026-10-14",
++  "validated_cli_version": "2.0.23",
++  "validated_version_range": ">=2.0.23 <2.1.0",
++  "validated_on": "2026-10-18",
+```
+
+plus one evidence sentence appended to `notes`: "Evidence (adapters validate, 2026-10-18): `switchboard adapters
+validate opencode` passed on version opencode v2.0.23: probe steps binary, version, command, output_format, flags ok,
+auth OK, static conformance checks ok and one structured-output smoke call ok (approved privileged bypass cell, owner
+decision 60; inspect-untrusted is Ineligible). The range is the same minor series (Q-12 convention, an Assumption, not a
+provider statement)."
+
+## 4. What this does and does not show (Delegated reading)
+
+- The `adapters validate` cell of T4.58 is closed: the command passed end to end on v2.0.23 with one smoke call in the
+  adapter's only compiled cell (owner decision 60), and the manifest range `>=2.0.23 <2.1.0` is set by the command.
+- The smoke reply was accepted by the decision-68 rule or by a `step_finish` `stop`; the channel does not record which,
+  because it captures the command's output and not the provider's event stream. The 12:47Z failure on the previous
+  parser (§1) is the evidence that the text-only rule was what the smoke needed.
+- Still open for T4.58, operator-only: the live smoke of a routed run and the live malicious leg (NFR-SEC-03). Nothing
+  here is a claim about either.
+- No bypass effect: decision 68 changes what counts as a finished run, not what a run may do. The residual risk is
+  ROADMAP R-71 (a text-only reply cut short at exit 0 is accepted).
