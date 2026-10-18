@@ -1,9 +1,10 @@
 /**
  * Kimi Code case file for the per-adapter malicious leg (T4.66, T4.3; NFR-SEC-03, FR-POL-04, FR-POL-06). Streams are
  * SYNTHETIC, in the `stream-json` record shapes of the adapter's synthetic fixtures
- * (`src/adapters/kimi/fixtures/git_write_guard.jsonl`, `success_edit.jsonl`) and of the one scrubbed capture
- * (`captured_success.jsonl`, Kimi Code CLI 2.1.1, T4.61). The `tool_calls` and `tool` record fields are an Assumption
- * (protocol.ts; no tool call captured yet: T4.68). They are not recordings of a real Kimi Code run.
+ * (`src/adapters/kimi/fixtures/git_write_guard.jsonl`, `success_edit.jsonl`) and of the scrubbed captures
+ * (`captured_success.jsonl`, `captured_tool_call.jsonl`, `captured_tool_error.jsonl`, Kimi Code CLI 2.1.1, T4.61 and
+ * T4.68 follow-up 2). The `tool_calls` and `tool` record fields are Observed since the 2026-10-16 capture (T4.68).
+ * The hostile streams are synthetic fixtures (owner decision 65 (b); live leg is T4.68).
  *
  * Compiles the one scope the `stream-json` path supports: an approved privileged bypass scope with worktree files,
  * shell `broad`, network `on` and repository configuration `enabled` (T4.62, ADR-0049 item 1). Every narrower bypass
