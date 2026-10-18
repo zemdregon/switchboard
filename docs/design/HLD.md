@@ -355,9 +355,9 @@ Compile matrix and transport are in [TDD §4.6](TDD.md#46-opencode-m4); parser a
 §4.6.5](TDD.md#465-opencode-parser-implementation-evidence-m4-t453). Task status: [ROADMAP
 §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.52`, `T4.53`).
 
-#### T4.53 — parser, result, failure classification and resume (`Partial`)
+#### T4.53 — parser, result, failure classification and resume (Done against its Done-when)
 
-**Evidence (`Partial`, synthetic lines in the shapes of the T4.51 live check).** FR-ADP-04, FR-SES-03 (`--session`
+**Evidence (Done against its Done-when under owner decision 65 (a); synthetic lines in the shapes of the T4.51 live check).** FR-ADP-04, FR-SES-03 (`--session`
 through the compile matrix), FR-ADP-10 (`backingProvider` unset: events name no vendor).
 
 - **Tests:** `src/adapters/opencode/opencode.test.ts` ("opencode parser and result (T4.53)", including nested
@@ -370,8 +370,11 @@ through the compile matrix), FR-ADP-10 (`backingProvider` unset: events name no 
   detected), row 14c (rate limit `TOOL_FAILURE`) and missing tool input keys. Sourcing: [TDD
   §4.6.5](TDD.md#465-opencode-parser-implementation-evidence-m4-t453).
 
-**Gaps (remain `Partial`, not `Done`).** No permission-denial or rate-limit event shape recorded; tool input key names
-are Assumptions; T4.6 backing-vendor fixture cannot be written. Operator capture: T4.58 / T4.51 extension.
+**Gaps (carried by T4.58 under owner decision 65 (a); this section is Done).** No recorded permission-denial,
+rate-limit or sandbox event shape; `tool_use` input key names are Assumptions; native captures report no provider or
+model (live check row 4c), so without an explicit structured `backing_provider`/`model` those stay unset (the
+structured support and `backing_provider.jsonl`, [#290](https://github.com/zemdregon/switchboard/pull/290), meet T4.6).
+Operator capture: T4.58 / T4.51 extension.
 
 ### 2.5 COMP-INN implementation evidence (M11, T11.1–T11.12, Done on fakes)
 

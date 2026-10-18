@@ -2586,7 +2586,7 @@ Ampere. Decision: [Q-64](../ROADMAP.md#73-open-questions-for-zemdregon-not-block
 Live-check context: [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited).
 Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.53`, Done against its Done-when under
 owner decision 65 (a) on 2026-10-18; native limit and tool-input shapes carried by T4.58). Requirements: FR-ADP-04,
-FR-SES-03, FR-ADP-10 (`backingProvider` unset). HLD: [§2.4 T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-partial).
+FR-SES-03, FR-ADP-10 (`backingProvider` unset). HLD: [§2.4 T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-done-against-its-done-when).
 LLD as-built: [§2.0.2](LLD.md#202-opencode-adapter-implementation-evidence-m4-t452-t453).
 
 **Implementation evidence (on `origin/main`, [#229](https://github.com/zemdregon/switchboard/pull/229); Delegated agent

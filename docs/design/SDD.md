@@ -226,14 +226,14 @@ provider-specific as-built detail in [LLD §2.0](LLD.md#20-antigravity-adapter-i
 and [§4.6.5](TDD.md#465-opencode-parser-implementation-evidence-m4-t453). HLD component evidence: [§2.2
 T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-partial), [§2.3
 T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-done-against-its-done-when), [§2.4
-T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-partial).
+T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 | Task | Requirements (primary) | Tests (parser suites) |
 | --- | --- | --- |
 | T4.23 Grok Build (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-EXE-03 | `src/adapters/grok/grok.test.ts` (`grok parser to resume round trip (T4.23 residual; SYNTHETIC lines, parser unchanged)`); `src/adapters/grok/protocol.ts` EVENT comment ([#384](https://github.com/zemdregon/switchboard/pull/384)); [ROADMAP T4.23](../ROADMAP.md#68-m4-adapter-expansion-tasks) ([#385](https://github.com/zemdregon/switchboard/pull/385)) |
 | T4.33 Antigravity (`Partial`) | FR-ADP-04, FR-CAP-01, FR-SES-03 | `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`, `antigravity parser hardening (T4.33, synthetic shapes)`) |
 | T4.43 Cursor (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/cursor/cursor.test.ts` (`cursor parser and result (T4.43)`, `cursor parser hardening (T4.43, synthetic shapes)`, `cursor parser residual branches (T4.43, synthetic)`); `src/adapters/cursor/parser-residual.test.ts` and `fixtures/idless_guard.jsonl` ([#360](https://github.com/zemdregon/switchboard/pull/360)) |
-| T4.53 OpenCode (`Partial`) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/opencode/opencode.test.ts` (`opencode parser and result (T4.53)`, nested `cases with no recorded native shape (live check rows 7, 11, 14c)`) |
+| T4.53 OpenCode (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/opencode/opencode.test.ts` (`opencode parser and result (T4.53)`, nested `cases with no recorded native shape (live check rows 7, 11, 14c)`) |
 
 Grok T4.23: parser-to-resume and session-id/`resumeArgs` boundary pins landed in
 [#384](https://github.com/zemdregon/switchboard/pull/384); Done against its Done-when under owner decision 65 (a):
@@ -243,6 +243,10 @@ Cursor T4.43: ADR-0039 `extractResult` guard over a flagged `tool_call` landed i
 [#238](https://github.com/zemdregon/switchboard/pull/238); Done against its Done-when under owner decision 65 (a):
 the recorded `stream-json` quota-stop and sandbox shapes and any native backing-vendor field remain open under
 (ROADMAP T4.48).
+
+OpenCode T4.53: Done against its Done-when under owner decision 65 (a): the recorded permission-denial and
+rate-limit event shapes, the `tool_use` input key names and any native backing-vendor field remain open under
+(ROADMAP T4.58).
 
 ### 4.3 COMP-INN implementation evidence (M11, T11.1–T11.12, Done on fakes)
 
@@ -306,7 +310,7 @@ M12 retrieval through T12.3 (FR-RAG-01–04 on fakes) lists primary tests and mo
 T12.5 admission pack design for FR-RAG-05, FR-RAG-07 and FR-RAG-08 is in [LLD
 §14.11](LLD.md#1411-admission-context-pack-t125) and [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14);
 implementation evidence is in [§4.1](#t125--admission-context-pack-design-intent). M4 adapter parser hardening on
-synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode; each task stays `Partial`) is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial).
+synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode; T4.43 and T4.53 are Done against their Done-when under owner decision 65 (a), the rest stay `Partial`) is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial).
 
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
 | --- | --- | --- | --- | --- |

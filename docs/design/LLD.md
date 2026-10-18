@@ -791,7 +791,7 @@ profile is `Ineligible: PROFILE_UNSUPPORTED` (Q-64); the sole compiled shape is 
   declaration (ADR-0035)`, `opencode probe and auth preflight (T4.52, T4.54)`, `opencode registry entry and manifest
   gate (T4.52)`).
 
-**As built (T4.53, Partial).** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `adapter.ts`;
+**As built (T4.53, Done against its Done-when under owner decision 65 (a)).** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `adapter.ts`;
 `--format json` fields in `protocol.ts`. Success needs a `step_finish` with `reason` `stop` (Q-85). Hardening
 ([#229](https://github.com/zemdregon/switchboard/pull/229)): finite non-negative usage only; unknown `type` clipped to
 64 characters; changed `sessionID` ends `OUTPUT_PROTOCOL_ERROR`; non-object roots and unstructured errors fail closed.
@@ -801,9 +801,9 @@ detected at exit 0), row 14c (rate limit `TOOL_FAILURE`) and omitted tool input 
 - **Tests:** `src/adapters/opencode/opencode.test.ts` (`opencode parser and result (T4.53)`, including nested `cases with
   no recorded native shape (live check rows 7, 11, 14c)`).
 - **Design sourcing:** [TDD §4.6.5](TDD.md#465-opencode-parser-implementation-evidence-m4-t453); HLD [§2.4
-  T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-partial).
+  T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
-**Not covered here:** conformance (T4.55 Done), malicious leg (T4.56 Partial), Git declaration (T4.57 Done), operator
+**Not covered here:** conformance (T4.55 Done), malicious leg (T4.56 Done against its Done-when under owner decision 65 (b)), Git declaration (T4.57 Done), operator
 live validate (T4.58).
 
 ### 2.1 Model registry (M4, T4.5)
