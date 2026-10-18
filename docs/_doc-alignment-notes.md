@@ -138,3 +138,15 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   (called from `casRunState` in `src/ledger/repo.ts`) stamps `terminal_at` on an `ADMITTED` item whose run ends
   `FAILED`/`CANCELLED`, and LLD §18.2–18.3/§18.8 plus the ROADMAP T15.1 row describe the new behaviour. Code and
   documents agree; no owner decision remains open on this item.
+
+## 12. T7.12 model-pinning docs lane: LLD §17.6, SDD FR-RTE-08 and Q-90 still describe T7.5 (pre-existing, not from PR #682)
+
+- The T7.12 row in [ROADMAP §6.12](ROADMAP.md#612-m7-routing-tasks) is `Done on fakes` (2026-10-14): a held decision
+  on a declaring adapter compiles with the remembered model (`planModelPin`, `withModelPin`, `pinModel`,
+  `src/routing/model-pin.test.ts`).
+- [LLD §17.6](design/LLD.md#176-affinity-details-fills-32), the SDD FR-RTE-08 row and [Q-90](ROADMAP.md#7-risks-blockers-and-open-questions)
+  still describe the T7.5 state (model remembered but not pinned); the T7.12 row itself says their update is left to
+  the docs lane. The README [Routing and affinity](../README.md#routing-and-affinity) section does describe pinning.
+- Left unchanged: the LLD/SDD wording is the design owner's call, and the gap is disclosed in the T7.12 row. The M7
+  `Done` reconciliation (PR #682) neither introduces nor worsens it: T7.12 has been `Done` since 2026-10-14 and the
+  acceptance evidence (`src/mcp/m7-acceptance.test.ts`, `src/routing/model-pin.test.ts`) is cited in-row.
