@@ -125,8 +125,8 @@ export const BUILTIN_PROVIDERS = [
     // Same source: the `--permission-mode` choice `bypassPermissions` (which `--restricted` "refuses"). The adapter
     // never emits it; before ADR-0037 only its compile tests said so, now the pre-spawn audit refuses it too.
     bypassValues: [{ flag: "--permission-mode", value: "bypassPermissions" }],
-    // TDD §4.10: "Tied to the working directory" is `Unverified: T5.12`.
-    resumeCwd: "unverified",
+    // TDD §4.10: "Tied to the working directory" is `No` (T5.12 cell 2, 2.1.294; docs/research/live-checks-2026-10-17-claude.md).
+    resumeCwd: "independent",
     create: (o: ProviderFactoryOptions): ProviderAdapter =>
       new ClaudeAdapter({ gitChannel: o.claudeGitChannel === true }),
   },

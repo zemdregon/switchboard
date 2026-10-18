@@ -18,6 +18,7 @@ import {
   gitWriteRisks,
 } from "../git-write.js";
 import { evaluateVersionGate, tryLoadManifest } from "../manifest/index.js";
+import { providerEntry } from "../providers.js";
 import { startAdapterRun } from "../run.js";
 import {
   type CompileRequest,
@@ -276,6 +277,26 @@ describe("claude compile: argv policy", () => {
       EDIT_UNTRUSTED,
     );
     if (isIneligible(inv)) throw new Error(inv.detail);
+    expect(valuesAfter(inv.argv, "--resume")).toEqual([RESUMED_SESSION_ID]);
+  });
+
+  it("declares resumeCwd as independent and matches the registry entry (T5.12, live cell 2)", () => {
+    const a = new ClaudeAdapter({ binaryPath: CLAUDE });
+    expect(a.resumeCwd).toBe("independent");
+    expect(providerEntry("claude")?.resumeCwd).toBe("independent");
+  });
+
+  it("resume from a second worktree compiles for Claude (T5.12 cell 2; resumeCwd independent)", () => {
+    const a = new ClaudeAdapter({ binaryPath: CLAUDE });
+    expect(a.resumeCwd).toBe("independent");
+    const secondWorktree = "/path/to/second/worktree";
+    const req: CompileRequest = {
+      ...request,
+      workspace: { cwd: secondWorktree, writable: true },
+    };
+    const inv = a.resumeArgs({ provider: "claude", nativeSessionId: RESUMED_SESSION_ID }, req, EDIT_UNTRUSTED);
+    if (isIneligible(inv)) throw new Error(inv.detail);
+    expect(inv.cwd).toBe(secondWorktree);
     expect(valuesAfter(inv.argv, "--resume")).toEqual([RESUMED_SESSION_ID]);
   });
 
