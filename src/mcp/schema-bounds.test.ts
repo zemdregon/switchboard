@@ -7,11 +7,15 @@
  *
  * Project-tool inputs (`create/update/delete_project`) live in `./schemas.ts` (`PROJECT_INPUTS`, validated by
  * `./project-tools.ts` via `inputSchema`), so they are walked here like every other tool: there is no known gap.
+ * Approval-proxy inputs (`list_pending_approvals`, `decide_approval`) live in `../control/approval-proxy.ts`
+ * (`APPROVAL_PROXY_INPUTS`, validated by `./server.ts`) and are walked too: every input schema the router validates
+ * against is covered.
  */
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { APPROVAL_PROXY_INPUTS, APPROVAL_PROXY_TOOL_NAMES } from "../control/approval-proxy.js";
 import { type Harness, startHarness } from "../routing/fixtures/harness.js";
 import {
   inputSchema,
@@ -97,6 +101,9 @@ describe("MCP input-schema bounds (FR-MCP-09, NFR-SEC-05)", () => {
     expect(names.length).toBeGreaterThan(0);
     const violations: Violation[] = [];
     for (const name of names) collectViolations(name, inputSchema(name), "#", violations);
+    for (const name of APPROVAL_PROXY_TOOL_NAMES) {
+      collectViolations(name, APPROVAL_PROXY_INPUTS[name], "#", violations);
+    }
     expect(
       violations.map((v) => `${v.tool} ${v.pointer}: ${v.what}`),
       "unbounded input schema nodes (tool JSON-pointer: reason)",
