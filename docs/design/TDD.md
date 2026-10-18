@@ -1414,7 +1414,13 @@ T7.17 (all `Done` 2026-10-17, on fakes; T6.11 is the operator capture).
   narrowing via `groupMembersFor` (`src/config/routing.ts`); group expansion
   and the `pacing` term (T7.15, `Done` 2026-10-17) live in `src/routing/` (`groups.ts` member
   expansion, `score.ts`, `affinity.ts`, `decision.ts` version 3 record and replay, `explain.ts`);
-  the T7.13 configuration resolution lives in `src/config/routing.ts`. The hold
+  the T7.13 configuration resolution lives in `src/config/routing.ts`. The T7.13 fix (2026-10-18) accepts the test-only
+  `fake` adapter id, which has no config id, as a member `provider` and in `capacity.subscriptions.<name>.providers`
+  only when that adapter is registered: `memberProviderIds` (`src/config/schema.ts`) widens the accepted ids,
+  `loadConfig({ testFakeAdapter })` (`src/config/load.ts`) threads it from `serve`'s test-only switch
+  (`src/cli/serve.ts`) and from the same environment sentinel in `doctor` (`src/cli/doctor.ts`), and `checkCapacity`
+  takes the same id list; without the switch every message is as before (`src/config/fake-model-groups.test.ts`,
+  `src/routing/provider-id-audit.test.ts`). The hold
   reuses the breaker's single wake timer in the lifecycle. Adapters change only in
   T6.15, to map a structured limit signal or declare a sourced usage key.
 - **Fake adapters, injected clock.** Every test drives scripted fake providers placed in operator-declared subscriptions

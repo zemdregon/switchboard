@@ -69,6 +69,9 @@ All Proposed and Delegated except the direction itself; every number is an Assum
 1. **Groups are operator configuration only.** `model_groups.<name>.members` is an ordered list of `{ provider, model }`
    pairs, where `provider` is a config provider id and `model` an id or alias that the model registry resolves (LLD
    §2.1). No group name, member, tier or model name appears in code, defaults or fixtures; examples use placeholders.
+   The test-only `fake` adapter id, which has no config id, is accepted as a member `provider` (and in
+   `capacity.subscriptions.<name>.providers`) only when that adapter is registered via `serve`'s test-only switch
+   (TDD §3.6; T7.13 fix, 2026-10-18, `src/config/fake-model-groups.test.ts`).
    The groups in owner decision 57 are the operator's example configuration, not facts about any provider. A group is not
    a capability claim: `minimum_capability` still uses the operator's declared `capabilities` (T7.8).
 2. **The request names a group or a model, never both.** `routing.model_group` (a configured group name) and
