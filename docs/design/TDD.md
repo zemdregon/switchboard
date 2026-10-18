@@ -1496,8 +1496,10 @@ handoff diff or `changed_files` includes a recorded native path, including after
 exists (fault injection on unlink sets `removal = 'failed'` and needs-attention); (6) no event, span, log, artifact or
 sink capture contains a planted canary string from a skill body; (7) `add` refuses each fixture in the LLD §19.1
 refusal table; (8) the resolver is deterministic: same config, store and request give the same ordered set. The
-malicious-fixture leg (T16.11) adds a repository with its own `.claude/skills`, `.cursor/rules`, `AGENTS.md` and a
-pre-existing `switchboard-` path.
+malicious-fixture leg (T16.11, `test/malicious/skills-leg.test.ts`) adds a repository with its own `.claude/skills`,
+`.cursor/rules`, `AGENTS.md`, a pre-existing `switchboard-` path and a committed `.claude` symlink leaving the
+worktree; skill bodies carry a canary for property 6, and a fake agent copies its skill file elsewhere and commits
+(R-69: the copy is not detected, the recorded path is still excluded).
 
 ## 4. Provider adapter strategy
 

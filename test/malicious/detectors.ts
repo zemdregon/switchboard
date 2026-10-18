@@ -119,6 +119,29 @@ export function ledgerDump(db: Database.Database): string {
 }
 
 /**
+ * T16.11 (TDD §3.16.2 property 6): the names of the captured surfaces (event, span, log, artifact, sink, ...) whose
+ * text contains `needle`. Empty means the needle reached none of them.
+ */
+export function surfacesContaining(capture: Readonly<Record<string, string>>, needle: string): string[] {
+  return Object.entries(capture)
+    .filter(([, text]) => text.includes(needle))
+    .map(([surface]) => surface);
+}
+
+/** Every stored artifact of the runs (diff, patch, changed_files, logs, handoff views, ...), as UTF-8 text. */
+export async function runArtifactsText(
+  ledger: { listArtifactsForRun(runId: string): readonly { sha256: string }[] },
+  store: { get(sha256: string): Promise<Buffer> },
+  runIds: readonly string[],
+): Promise<string> {
+  const parts: string[] = [];
+  for (const runId of runIds) {
+    for (const a of ledger.listArtifactsForRun(runId)) parts.push((await store.get(a.sha256)).toString("utf8"));
+  }
+  return parts.join("\n");
+}
+
+/**
  * Environment names a child reported (fake `env_report` scenario output on stdout) that are outside `allowed`.
  * Returns undefined when the output holds no report (so a missing report cannot pass silently).
  */

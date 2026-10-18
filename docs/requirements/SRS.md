@@ -452,11 +452,14 @@ prevention that T16.6 built (the `native` declaration with its evidence id in `s
 adapter's `.fake/skills/` location, the writer and cleaner in `src/workspace/native-skills.ts`, exclusions in the
 commit tool, checkpoints and artifacts, the `SKILL_PATH_PRESENT` push refusal, the four removal points and the
 `skill_cleanup_failed` reason of FR-CTL-03; T16.7 confirms every shipped provider cell is `prompt_prefix`
-(`src/adapters/skill-delivery-conformance.test.ts`); no cell goes native before T16.8), and the
+(`src/adapters/skill-delivery-conformance.test.ts`); no cell goes native before T16.8), the
 FR-SKL-03, FR-SKL-05 continuity aspect that T16.10 built (the previous run's pinned skills as `skills` controller
 facts in the handoff bundle, `src/continuity/bundle-schema.ts`, `src/continuity/bundle.ts`, and re-delivery of the
 same versions in the receiving provider's way with a native resume re-delivering the files for the new run,
-`src/lifecycle/lifecycle.ts`; `src/continuity/skill-continuity.test.ts`, `src/continuity/bundle.test.ts`); the four limit
+`src/lifecycle/lifecycle.ts`; `src/continuity/skill-continuity.test.ts`, `src/continuity/bundle.test.ts`), and the
+malicious-fixture leg that T16.11 built (`test/malicious/skills-leg.test.ts` over the production store, admission and
+delivery ports: untrusted runs load no repository skill, the canary reaches no event, span, log, artifact or sink,
+and the R-69 copy behaves as recorded); the four limit
 defaults stay Assumptions and their ranges are Delegated (LLD §19.3).
 
 | ID | Requirement | Priority | Source | Verify | Milestone |

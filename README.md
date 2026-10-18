@@ -193,7 +193,11 @@ argv, environment or policy flags the skills change beyond the prompt text
 (`src/adapters/skill-delivery-conformance.test.ts`). Continuity is built (T16.10, Delegated, not owner-approved):
 the handoff bundle carries the previous run's pinned skills as controller facts (name, version, hash; never text)
 and the successor re-delivers the same versions in its own provider's way, with a native resume re-delivering the
-files for the new run (`src/continuity/`, `src/lifecycle/lifecycle.ts`). Design:
+files for the new run (`src/continuity/`, `src/lifecycle/lifecycle.ts`). The malicious-fixture leg is built (T16.11,
+Delegated, not owner-approved): `test/malicious/skills-leg.test.ts` runs the hostile skill repository (its own
+`.claude/skills`, `.cursor/rules`, `AGENTS.md`, a pre-existing `switchboard-` path and a symlinked `.claude`)
+against the production store and delivery ports; untrusted runs load no repository skill, the canary reaches no
+event, span, log, artifact or sink, and the R-69 copy behaves as recorded. Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
