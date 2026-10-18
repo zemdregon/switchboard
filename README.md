@@ -1454,7 +1454,9 @@ the run total), and dropped event kinds (`available_commands`, `thought`, standa
 shape without incrementing unknown event counts ([#313](https://github.com/zemdregon/switchboard/pull/313)).
 `ParseState` instances isolate `seenEnds` and `seenToolCalls` state across runs
 ([#313](https://github.com/zemdregon/switchboard/pull/313)). Rate-limit, permission-denial and sandbox-violation event
-shapes and native `tool_call` / `tool_call_update` parameter fields remain unrecorded (T4.23 is `Done` against its Done-when on synthetic fixtures, owner decision 65 (a); the native shapes are T4.28's work). Supervisor-replayed JSONL fixtures pin today's gaps without inventing native fields
+shapes and native `tool_call` / `tool_call_update` parameter fields remain unrecorded (T4.23 is `Done` against its
+Done-when on synthetic fixtures, owner decision 65 (a); the native shapes are T4.28's work). Supervisor-replayed
+JSONL fixtures pin today's gaps without inventing native fields
 ([#260](https://github.com/zemdregon/switchboard/pull/260),
 [#313](https://github.com/zemdregon/switchboard/pull/313),
 [#319](https://github.com/zemdregon/switchboard/pull/319)): `sandbox_violation` and `permission_denied_rule` (live
@@ -1516,7 +1518,8 @@ Tool kind maps to `shell` when a command is present or tool name is `run_termina
 and `other` otherwise. In an approved bypass run
 the guard enforces Git
 writes only: a credential read, outside write or network call chained with a parsed Git write is blocked because of the
-Git write, not because those other actions were refused. Native command/target fields remain unrecorded (ROADMAP T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` text, a hostile
+Git write, not because those other actions were refused. Native command/target fields remain unrecorded
+(ROADMAP T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` text, a hostile
 lower-precedence argument key shadowed by a benign higher one, and a command in a container shadowed by an earlier
 object container without one remain invisible to the guard. A shell call carrying its command only in a target key now
 hands the whole target to the guard (the kept target is still clipped to 512 characters), and a nameless target-only
