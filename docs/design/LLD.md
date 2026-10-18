@@ -2349,9 +2349,7 @@ directories first, then `git worktree prune`, then `switchboard/*` branches. Rem
 (`refs/heads/<prefix><sess>`, §12.3) of a meta-session that has a ledger row as an orphan; one whose session is
 unknown is still reported. GC marks first (R-42, decision 28): one transaction re-checks idleness, sets the
 meta-session `ARCHIVED` and appends the intent event, and admission refuses an `ARCHIVED` meta-session with
-`INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward. *Not built (no claim):* a test
-of the `serve` interval timer itself (each pass runs the same function as the tested startup pass); a process-level
-`SIGKILL` mid-GC test (in-process crash injection after every step, for sessions and orphans, covers the order).
+`INVALID_REQUEST`; a marked, unfinished session is a candidate again and rolls forward. *As built (T3.12 interval-timer test, Delegated):* the interval pass runs through `scheduleRetentionGc` in `src/cli/serve.ts` (`RetentionGcTimers` seam, delay capped at `MAX_TIMER_MS`, never runs at scheduling time, a throwing or rejecting pass is logged first-line-only and never stops later passes, `stop` on shutdown; wired into `runDaemon` with no behaviour change), covered by `src/cli/serve-retention-timer.test.ts` ("serve retention GC interval timer (T3.12)"). *Not built (no claim):* a process-level test waiting for a real interval pass (the shortest configurable `retention.interval` is `1m`); a process-level `SIGKILL` mid-GC test (in-process crash injection after every step, for sessions and orphans, covers the order).
 
 *Free-disk floor (T3.23, FR-WS-11, BR-51; Delegated under owner decision 25, not owner-approved).* `limits.min_free_disk_mb`
 is off when absent: no probe, no new event, `limits` resolved as before. When set, the disk-probe port
