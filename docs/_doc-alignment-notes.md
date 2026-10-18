@@ -217,7 +217,7 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   PR #695 neither introduces nor worsens it (FR-CTL-03 was amended after T14.9; the PR only rewords the ADR-0048
   citation). It does not block PR #695.
 
-*Resolved by PR #702 (2026-10-18, Delegated, not owner-approved):* the gap-closing code change above landed here.
+<*Resolved by PR #702 (2026-10-18, Delegated, not owner-approved):* the gap-closing code change above landed here.
 `NEEDS_ATTENTION_REASONS` in `src/control/sinks.ts` now lists all seven FR-CTL-03 reasons (the comment cites
 `skill_cleanup_failed` from T16.6), `SINK_REASON_CODES.needs_attention` references that list, and production
 producers of `needs_attention` now exist (lifecycle `onApprovalPending`/`onNeedsAttention`, CI `onStuck`,
@@ -239,3 +239,21 @@ as history.
   itself (owner decisions 59 and 60, `COMPILED_CELL_FALLBACK` in
   `src/cli/adapters-validate.ts`, built 2026-10-18), so no fact about the
   code is wrong. It does not block PR #698.
+
+## 18. ROADMAP §4.2 stops at owner decision 41 (pre-existing; PR #697 cites decision 62)
+
+- The [§4.2 Owner decisions](ROADMAP.md#42-owner-decisions) list ends at
+  decision 41 (2026-10-13), while the documents cite owner decisions 42 and
+  above inline throughout (42, 44–51, 54, 56–59 before this PR; 62 added by
+  PR #697 for the Q-46 refused-by-design answer). The §4.2 table header says
+  owner decisions are "Listed in §4.2 only".
+- Left unchanged: reconstructing §4.2 entries for decisions 42–62 would mean
+  restating zemdregon's words from inline citations, which this gate cannot
+  verify and must not invent. The substance of each cited decision is recorded
+  where it is cited (for decision 62: the T9.9 block, the M9 row, E4, BR-32,
+  FR-PRJ-10, the README and the Q-46 row, all naming the refused-by-design
+  outcome and its test pin). Recording the missing §4.2 entries is the
+  roadmap owner's call.
+- It does not block PR #697: the Q-46 row in §7.3 now records the answer
+  with the same wording the PR uses everywhere else, and
+  `node scripts/check-docs.mjs` does not validate the §4.2 numbering.
