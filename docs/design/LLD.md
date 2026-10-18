@@ -3251,8 +3251,9 @@ latest revision only when it is `PENDING_APPROVAL` and undecided, needs `--revis
 revision, and writes a `project_revision_decision` row and a `project_event` row instead of `approved_at`
 (`src/cli/projects-dynamic.ts`). `projects list|show` show dynamic projects (`source`, `creator`, `revision`, `state`,
 `in_force_revision`, `pending_revision`, `approval_needed`; `show` lists the revisions). Push targets of approved
-dynamic projects are not resolved yet: the `push` tool and `switchboard git push` read push contexts from configuration
-only, so such a push is refused (`CONTEXT_UNKNOWN`, fails closed; ROADMAP Q-46).
+dynamic projects are refused by design (2026-10-18, owner decision 62; ROADMAP Q-46 answered): the `push` tool and
+`switchboard git push` read push contexts from configuration only, so such a push is refused (`CONTEXT_UNKNOWN`);
+no task will wire in-force-revision targets. Pinned by `src/git/push-dynamic-refused.test.ts`.
 
 *As built (2026-10-13, Delegated, T9.2; configured `host` projects only, no dynamic revisions, no step 5a, no push or
 identity in step 6):* the steps run in `resolveProject` and `projectCandidates` (`src/mcp/server.ts`) in this order:
