@@ -229,7 +229,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#373](https://github.com/zemdregon/switchboard/pull/373) extend synthetic parser, conformance and malicious replay
   only and do not validate the live CLI.
   Live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor has
-  module, compile-matrix, parser (partial: T4.43 until operator capture; supervisor-replayed JSONL fixtures,
+  module, compile-matrix, parser (Done against its Done-when under owner decision 65 (a): T4.43;
+  supervisor-replayed JSONL fixtures,
   [#283](https://github.com/zemdregon/switchboard/pull/283),
   [#287](https://github.com/zemdregon/switchboard/pull/287),
   [#299](https://github.com/zemdregon/switchboard/pull/299),
@@ -1819,7 +1820,9 @@ environment, ADR-0003), `CURSOR_CONFIG_DIR` or `XDG_CONFIG_HOME` (which would al
 these are refused by the dialect.
 
 The compliance manifest range admits no version until an operator runs `switchboard adapters validate cursor` and
-commits the manifest diff (ROADMAP T4.48). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Cursor.
+commits the manifest diff (ROADMAP T4.48). On 2026-10-18 `adapters validate cursor` reached the smoke step
+(probe and auth `OK`, 11 static conformance checks) and failed there because the account was out of usage (ROADMAP
+T4.48); the manifest still admits no version. Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Cursor.
 
 ### Login
 
@@ -1883,7 +1886,8 @@ resolution across `init` and `result` (when `init` is omitted; model from `model
 `Object.prototype` members omitted, strings clipped to 128 characters) are in
 [#299](https://github.com/zemdregon/switchboard/pull/299); native CLI captures report only a model display name and no
 vendor, so without an explicit structured `backing_provider` (supported for fronted harnesses, T4.6) `backingProvider`
-stays unset (never inferred from model display name; T4.43 stays `Partial` on the roadmap).
+stays unset (never inferred from model display name; T4.43 is Done against its Done-when under owner decision
+65 (a), remaining native shapes carried by T4.48).
 
 Usage deduplication suppresses reporting on a second `result` line so the run total is reported once (FR-CAP-01;
 [#299](https://github.com/zemdregon/switchboard/pull/299)); usage metrics admit snake_case keys and `totalTokens`
@@ -1967,10 +1971,12 @@ the run after `result`) ([#348](https://github.com/zemdregon/switchboard/pull/34
 tool-parameter fall-through, id-less `tool_call` correlation, provider_error categories, `resumeArgs` refusals) and
 supervisor replay of `idless_guard.jsonl` (id-less Git write under `success` at exit 0 → `PERMISSION_BLOCKED`) are on
 `main` ([#360](https://github.com/zemdregon/switchboard/pull/360); ROADMAP T4.43, [TDD §4.5.5](docs/design/TDD.md#455-cursor-parser-implementation-evidence-m4-t443)).
-Closing the remaining gaps needs operator captures of a rate-limited or quota-stopped run and of any native
-backing-vendor field (ROADMAP T4.48).
-T4.43 stays `Partial` on that operator capture; T4.45 to T4.47 are `Done` against their Done-when on synthetic
-fixtures.
+A quota-stopped run has since been captured as stderr tails (T6.11 limit captures `cursor-*.txt`, newest
+2026-10-18T16:23Z: empty stdout, exit 1, `ActionRequiredError` with `out of usage`) and maps to `QUOTA_EXHAUSTED`
+in `classifyFailure` from the stderr tail (open PR #700, T6.15, ADR-0058); the `stream-json` shape of a quota stop
+is still unrecorded, so the stream-parser path still ends `TOOL_FAILURE`. T4.43 is Done against its Done-when under
+owner decision 65 (a); T4.45 to T4.47 are `Done` against their Done-when on synthetic fixtures. Still open, carried
+by T4.48: a recorded `stream-json` quota-stop shape and any native backing-vendor field.
 
 ### Git and commits
 

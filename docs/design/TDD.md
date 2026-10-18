@@ -2376,7 +2376,8 @@ on Ampere. Decision: [Q-65](../ROADMAP.md#73-open-questions-for-zemdregon-not-bl
 #### 4.5.5 Cursor parser implementation evidence (M4, T4.43)
 
 Live-check context: [§4.5.4](#454-note-2026-10-14-contradictions-found-by-the-t441-live-checks-delegated-cells-above-not-edited).
-Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.43`, `Partial`). Requirements: FR-ADP-04,
+Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.43`, Done against its Done-when
+under owner decision 65 (a); remaining native shapes carried by T4.48). Requirements: FR-ADP-04,
 FR-SES-03, FR-ADP-10 (`backingProvider` unset). HLD: [§2.3 T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-partial).
 LLD as-built: [§2.0.1](LLD.md#201-cursor-adapter-implementation-evidence-m4-t442-t443).
 
@@ -2403,8 +2404,12 @@ work, not owner-approved; synthetic `stream-json` lines only; no `cursor-agent` 
   shell-allowlist and missing-executable cases. Fixture `src/adapters/cursor/fixtures/idless_guard.jsonl` replays an
   id-less Git write under a `success` `result` at exit 0 to `PERMISSION_BLOCKED`.
 
-**Out of scope (stay `Partial`).** Recorded rate-limit or sandbox event shapes; T4.6 fixture with a backing vendor unlike
-the harness.
+**Out of scope (carried by T4.48 under owner decision 65 (a)).** A recorded `stream-json` quota-stop shape
+(quota stops are captured as stderr tails in `~/operator-runs/limit-captures/cursor-*.txt`, newest 2026-10-18T16:23Z,
+and classified `QUOTA_EXHAUSTED` by the mapping owned by open PR #700, T6.15 / ADR-0058; the stream-parser path still
+ends `TOOL_FAILURE`) and a recorded sandbox event shape (`--sandbox enabled` fails to start on this host, live check
+row 9, and no compiled cell emits it); any native backing-vendor field (live check row 102 observes none; TDD §4.5
+forbids inferring one, so the structured `backing_provider` support and the T4.6 fixture meet the Done-when).
 
 ### 4.6 OpenCode (M4)
 
