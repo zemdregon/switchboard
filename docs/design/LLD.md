@@ -3339,7 +3339,8 @@ section was silent or the build differs:
   `container` (`src/cli/serve.ts`); MCP and work-queue admission refuse a `container` project only when placement is
   missing (`TOOL_FAILURE`, `ENVIRONMENT_NOT_IMPLEMENTED`, `src/mcp/server.ts`, `src/queue/admission.ts`). A passing
   container run through MCP is therefore reachable on fakes when `serve` wires placement; live provider CLIs in the
-  image remain on the operator's T10.0 checklist.
+  image were checked by the operator (T10.0 Done 2026-10-18, spike §6). A Switchboard container run that uses a login
+  volume is still open under M10.
 - **Still open after T10.1:** the injected Git tool channel is not reachable from inside a container (host-side socket
   and shim only). Tests: `src/environment/container.test.ts`, `src/environment/docker-runtime.test.ts`,
   `src/lifecycle/environment.test.ts`, opt-in `src/environment/container-docker.test.ts`.

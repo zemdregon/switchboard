@@ -98,15 +98,17 @@ Delegated agent work, not owner-approved. No provider CLI was installed or run.
   tested on named volumes.
 - **Image without a Git client (ADR-0020).** `node:22-bookworm-slim` (already present; not built) has no `git` and
   no `gh` on `PATH`. `command -v git` / `command -v gh` plus a `PATH` directory scan, with `--network none` and
-  `--read-only`, is a workable refusal check. Whether each provider CLI *runs* without a Git client is
-  **Unverified: operator (T10.0 live)**. No provider is marked `host`-only.
+  `--read-only`, is a workable refusal check. Whether each provider CLI *runs* without a Git client was, on
+  2026-10-16, **Unverified: operator (T10.0 live)** (Observed 2026-10-18 for all seven providers; see [Operator live
+  findings](#operator-live-findings-2026-10-18-t100)). No provider is marked `host`-only.
 - **Mounts and limits.** A rw worktree bind, a read-only context bind (write → `Read-only file system`),
   `--network none` (DNS `EAI_AGAIN`, TCP `ENETUNREACH`), `--memory 128m` / `--pids-limit 64` (inspect:
   `Memory=134217728`, `PidsLimit=64`), and `docker rm` at the end all behaved as specified. Spike-prefixed
   containers and the login-stand-in volume were removed. The public slim image was not removed (this spike did
   not create it).
-- **In-volume native login.** Documentation-only table in the research note. Every provider cell is
-  **Unverified: operator (T10.0 live)**. File-based stores (Claude `CLAUDE_CONFIG_DIR` / `~/.claude`, Codex
+- **In-volume native login.** Documentation-only table in the research note. On 2026-10-16 every provider cell was
+  **Unverified: operator (T10.0 live)** (Observed 2026-10-18; see [Operator live
+  findings](#operator-live-findings-2026-10-18-t100)). File-based stores (Claude `CLAUDE_CONFIG_DIR` / `~/.claude`, Codex
   `CODEX_HOME` / `~/.codex/auth.json`, Grok `GROK_HOME` / `~/.grok`, Antigravity token file under `$HOME` or
   `--gemini_dir`, Cursor under `HOME` not `CURSOR_CONFIG_DIR` alone, Kimi `KIMI_CODE_HOME/credentials/`, Muse
   `~/.config/muse/auth.json`) look compatible with a volume *if* the operator can complete native login as uid 0
