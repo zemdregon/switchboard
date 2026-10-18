@@ -9,6 +9,12 @@
  *
  * Proposed (not fixed by LLD §3, Delegated): provider-name pattern; `constraints` item length; `verification_commands`
  * bounds; `reason` length; `get_artifacts.max_inline_bytes` maximum (1 MiB); `get_run.include_events.limit` default 50;
+ * Y8 input bounds (Delegated, FR-MCP-09/NFR-SEC-05): every input string carries an explicit `maxLength`
+ * (run/art/evt/que ids 30, sess ids 31, project ids 41, provider/model-group/role 32, skill names 48, skill refs 55,
+ * model ids 128; paths and free text keep their LLD lengths), every input array carries `maxItems`
+ * (`get_artifacts.kinds` at most the 7 known kinds), every input object is closed; `boundedSchema` derives the same
+ * for MCP-supplied project definitions (strings 4096, pattern-bounded ids their pattern length, arrays 32).
+ * `schema-bounds.test.ts` walks every published input schema and fails on any unbounded string, array or object.
  * output-only fields `failure_detail`, `replayed`, `events`, `client_max_profile`, `status_detail`, `schema_dialect`.
  * T9.2: `delegate_task.project` (a configured project id; exactly one of it and `workspace_path`, enforced by `oneOf`),
  * `project_id` in the envelope and the `list_projects` tool (Proposed output additions: `primary`, `effective_max_profile`).
@@ -121,7 +127,123 @@ export type SkillToolName = (typeof SKILL_TOOL_NAMES)[number];
 export const MAX_DEFINITION_STRING = 4096;
 export const MAX_DEFINITION_ITEMS = 32;
 
-/** A deep copy of `schema` in which every string without `maxLength` and every array without `maxItems` gets one. */
+/**
+ * An upper bound on the length of any string matching `pattern`, or `undefined` when the pattern uses a construct
+ * this helper does not model. Only fully-anchored patterns (`^...$`) built from literals, escapes, character
+ * classes, plain groups and bounded quantifiers (`{n}`, `{n,m}`, `?`) qualify; anything with `*`, `+`, an open
+ * `{n,}`, a lookaround, a backreference or an inner anchor is refused, so a returned number never under-approximates
+ * (an over-long value is still rejected by the pattern itself; the `maxLength` only makes the rejection cheaper and
+ * lets the schema-walk test see an explicit bound).
+ */
+export function patternMaxLength(pattern: string): number | undefined {
+  if (!pattern.startsWith("^") || !pattern.endsWith("$")) return undefined;
+  const src = pattern.slice(1, -1);
+  let i = 0;
+  const fail = (): undefined => undefined;
+  function parseSequence(inGroup: boolean): number | undefined {
+    let total = 0;
+    let best = 0;
+    let hasAlt = false;
+    for (;;) {
+      if (i >= src.length) {
+        if (inGroup) return undefined;
+        break;
+      }
+      const c = src[i];
+      if (c === ")") {
+        if (!inGroup) return undefined;
+        break;
+      }
+      if (c === "|") {
+        hasAlt = true;
+        if (total > best) best = total;
+        total = 0;
+        i++;
+        continue;
+      }
+      const width = parseElement();
+      if (width === undefined) return fail();
+      total += width;
+    }
+    if (hasAlt && total > best) best = total;
+    return hasAlt ? best : total;
+  }
+  function parseQuantifier(): number | undefined {
+    if (i >= src.length) return 1;
+    const c = src[i];
+    if (c === "?") {
+      i++;
+      return 1;
+    }
+    if (c === "*" || c === "+") return undefined;
+    if (c !== "{") return 1;
+    const m = /^\{([0-9]+)(,([0-9]*))?\}/.exec(src.slice(i));
+    if (m === null) return undefined;
+    if (m[2] !== undefined && m[3] === "") return undefined; // open {n,}
+    i += m[0].length;
+    return m[2] === undefined ? Number(m[1]) : Number(m[3]);
+  }
+  function parseElement(): number | undefined {
+    if (i >= src.length) return undefined;
+    const c = src[i];
+    if (c === "\\") {
+      if (i + 1 >= src.length) return undefined;
+      const e = src[i + 1];
+      i += 2;
+      if (e === "b" || e === "B") return 0; // zero-width assertion
+      const q = parseQuantifier();
+      return q === undefined ? undefined : q; // any other escape matches one character
+    }
+    if (c === "[") {
+      i++;
+      if (src[i] === "^") i++;
+      if (src[i] === "]") i++;
+      let closed = false;
+      while (i < src.length) {
+        if (src[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (src[i] === "]") {
+          closed = true;
+          i++;
+          break;
+        }
+        i++;
+      }
+      if (!closed) return undefined;
+      const q = parseQuantifier();
+      return q === undefined ? undefined : q;
+    }
+    if (c === "(") {
+      if (src.startsWith("(?:", i)) {
+        i += 3;
+      } else if (src[i + 1] === "?") {
+        return undefined; // lookaround, named group or flag: not modelled
+      } else {
+        i++;
+      }
+      const inner = parseSequence(true);
+      if (inner === undefined || src[i] !== ")") return undefined;
+      i++;
+      const q = parseQuantifier();
+      return q === undefined ? undefined : inner * q;
+    }
+    if (c === "^" || c === "$" || c === ")" || c === "|" || c === "{" || c === "}" || c === "]") return undefined;
+    i++; // a literal character, or `.` (exactly one character)
+    const q = parseQuantifier();
+    return q === undefined ? undefined : q;
+  }
+  const total = parseSequence(false);
+  if (total === undefined || i !== src.length) return undefined;
+  return total;
+}
+
+/**
+ * A deep copy of `schema` in which every string without `maxLength` and every array without `maxItems` gets one.
+ * Strings with an anchored pattern whose maximum length is computable get exactly that length; every other string
+ * gets `MAX_DEFINITION_STRING`.
+ */
 export function boundedSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(boundedSchema);
   if (schema === null || typeof schema !== "object") return schema;
@@ -130,12 +252,16 @@ export function boundedSchema(schema: unknown): unknown {
   if (out.type === "string" && out.maxLength === undefined && out.pattern === undefined) {
     out.maxLength = MAX_DEFINITION_STRING;
   }
+  if (out.type === "string" && out.maxLength === undefined && typeof out.pattern === "string") {
+    const bound = patternMaxLength(out.pattern);
+    if (bound !== undefined) out.maxLength = bound;
+  }
   if (out.type === "array" && out.maxItems === undefined) out.maxItems = MAX_DEFINITION_ITEMS;
   return out;
 }
 
 const PROJECT_DEFINITION = boundedSchema(projectSchema) as Record<string, unknown>;
-const PROJECT_REF = { type: "string", pattern: PROJECT_ID_PATTERN } as const;
+const PROJECT_REF = { type: "string", pattern: PROJECT_ID_PATTERN, maxLength: 41 } as const;
 
 /** Artifact kinds an MCP client may read; `provider_stdout`/`provider_stderr` are operator-CLI only (LLD §3). */
 export const MCP_ARTIFACT_KINDS = [
@@ -168,10 +294,10 @@ const STATUS = {
     "CANCELLED",
   ],
 } as const;
-const RUN_ID = { type: "string", pattern: "^run_[0-9A-HJKMNP-TV-Z]{26}$" } as const;
-const SESSION_ID = { type: "string", pattern: "^sess_[0-9A-HJKMNP-TV-Z]{26}$" } as const;
-const ARTIFACT_ID = { type: "string", pattern: "^art_[0-9A-HJKMNP-TV-Z]{26}$" } as const;
-const PROVIDER = { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" } as const;
+const RUN_ID = { type: "string", pattern: "^run_[0-9A-HJKMNP-TV-Z]{26}$", maxLength: 30 } as const;
+const SESSION_ID = { type: "string", pattern: "^sess_[0-9A-HJKMNP-TV-Z]{26}$", maxLength: 31 } as const;
+const ARTIFACT_ID = { type: "string", pattern: "^art_[0-9A-HJKMNP-TV-Z]{26}$", maxLength: 30 } as const;
+const PROVIDER = { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$", maxLength: 32 } as const;
 const WAIT_SECONDS = { type: "integer", minimum: 0, maximum: 60, default: 0 } as const;
 const ROUTING = {
   type: "object",
@@ -182,8 +308,8 @@ const ROUTING = {
     minimum_capability: { type: "string", enum: ["low", "medium", "high"] },
   },
 } as const;
-const MODEL_GROUP = { type: "string", pattern: MODEL_GROUP_NAME_PATTERN } as const;
-const MODEL = { type: "string", pattern: MODEL_ID_PATTERN } as const;
+const MODEL_GROUP = { type: "string", pattern: MODEL_GROUP_NAME_PATTERN, maxLength: 32 } as const;
+const MODEL = { type: "string", pattern: MODEL_ID_PATTERN, maxLength: 128 } as const;
 /**
  * T7.14 (FR-RTE-11, LLD §3.0, §17.7, ADR-0055): `delegate_task` and `enqueue_work` routing block.
  * Closed; gains optional `model_group` and `model`. Mutual exclusion is enforced by the handlers (FRD V14).
@@ -202,8 +328,13 @@ const DELEGATE_ROUTING = {
 const NULLABLE_STRING = { type: ["string", "null"] } as const;
 /** T16.4 (LLD §19.4): the three request fields, shared by delegate_task, continue_task and enqueue_work. */
 const SKILL_FIELDS = {
-  skills: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", pattern: SKILL_REF_PATTERN } },
-  role: { type: "string", pattern: SKILL_ROLE_PATTERN },
+  skills: {
+    type: "array",
+    maxItems: 8,
+    uniqueItems: true,
+    items: { type: "string", pattern: SKILL_REF_PATTERN, maxLength: 55 },
+  },
+  role: { type: "string", pattern: SKILL_ROLE_PATTERN, maxLength: 32 },
   skill_defaults: { enum: ["apply", "omit"] },
 } as const;
 /** T14.1: an ISO-8601 date-time with seconds and a zone; the handler also rejects one that is not a real instant. */
@@ -336,7 +467,7 @@ const ENVELOPE = {
 } as const;
 
 /** T14.3 (LLD §3.4.1): a `run_event.id`. */
-const DIGEST_CURSOR = { type: "string", pattern: "^evt_[0-9A-HJKMNP-TV-Z]{26}$" } as const;
+const DIGEST_CURSOR = { type: "string", pattern: "^evt_[0-9A-HJKMNP-TV-Z]{26}$", maxLength: 30 } as const;
 
 /** T14.6 (LLD §3.4.4): `pause_project` / `resume_project` input and output, as the LLD writes them. */
 const PAUSE_INPUT = {
@@ -495,7 +626,7 @@ const INPUTS = {
       objective: { type: "string", minLength: 1, maxLength: 32768 },
       workspace_path: { type: "string", minLength: 1, maxLength: 4096 },
       // A configured project the calling client may use (FR-PRJ-03, LLD §3 project additions).
-      project: { type: "string", pattern: PROJECT_ID_PATTERN },
+      project: { type: "string", pattern: PROJECT_ID_PATTERN, maxLength: 41 },
       constraints: { type: "array", maxItems: 64, items: { type: "string", maxLength: 4096 }, default: [] },
       trust_profile: TRUST_PROFILE,
       verification_commands: {
@@ -554,7 +685,12 @@ const INPUTS = {
     required: ["run_id"],
     properties: {
       run_id: RUN_ID,
-      kinds: { type: "array", uniqueItems: true, items: { type: "string", enum: [...MCP_ARTIFACT_KINDS] } },
+      kinds: {
+        type: "array",
+        uniqueItems: true,
+        maxItems: MCP_ARTIFACT_KINDS.length,
+        items: { type: "string", enum: [...MCP_ARTIFACT_KINDS] },
+      },
       max_inline_bytes: { type: "integer", minimum: 0, maximum: 1_048_576, default: 65_536 },
     },
   },
@@ -607,7 +743,7 @@ const INPUTS = {
 } as const;
 
 /** T15.1 (LLD §18.2): the work-item id, `que_` plus 26 Crockford base32 characters. */
-const WORK_ITEM_ID = { type: "string", pattern: "^que_[0-9A-HJKMNP-TV-Z]{26}$" } as const;
+const WORK_ITEM_ID = { type: "string", pattern: "^que_[0-9A-HJKMNP-TV-Z]{26}$", maxLength: 30 } as const;
 const WORK_STATE = {
   type: "string",
   enum: ["PENDING", "READY", "ADMITTING", "ADMITTED", "DONE", "CANCELLED", "FAILED_ADMISSION"],
@@ -1133,7 +1269,7 @@ const SEARCH_INPUT = {
   additionalProperties: false,
   required: ["project", "query"],
   properties: {
-    project: { type: "string", pattern: PROJECT_ID_PATTERN },
+    project: { type: "string", pattern: PROJECT_ID_PATTERN, maxLength: 41 },
     query: { type: "string", minLength: 1, maxLength: 2000 },
     limit: { type: "integer", minimum: 1, maximum: 32 },
     scope: { type: "string", enum: ["project", "global", "both"], default: "project" },
@@ -1249,7 +1385,7 @@ const SKILL_INPUTS = {
     additionalProperties: false,
     properties: {
       project: PROJECT_REF,
-      role: { type: "string", pattern: SKILL_ROLE_PATTERN },
+      role: { type: "string", pattern: SKILL_ROLE_PATTERN, maxLength: 32 },
       trust_profile: TRUST_PROFILE,
     },
   },
@@ -1258,7 +1394,7 @@ const SKILL_INPUTS = {
     additionalProperties: false,
     required: ["name"],
     properties: {
-      name: { type: "string", pattern: SKILL_NAME_PATTERN },
+      name: { type: "string", pattern: SKILL_NAME_PATTERN, maxLength: 48 },
       version: { type: "integer", minimum: 1, maximum: 999_999 },
     },
   },
