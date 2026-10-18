@@ -59,11 +59,30 @@ export interface ProjectToolsDeps {
   /** Number of `delegate_task`/`continue_task` calls for the project currently between resolution and admission. */
   readonly admitting: (projectId: string) => number;
   /**
+   * T14.9 (FR-CTL-10, ADR-0048): called after a `create_project`/`update_project` write leaves a revision waiting for
+   * the operator's approval. Serve announces it as `approval_pending`. Must not throw; never undoes the write.
+   */
+  readonly onPendingRevision?: (a: PendingRevisionAnnouncement) => void;
+  /**
    * T12.1 (FR-RAG-03): called after a delete is written, to remove the project's retrieval store. A failure here does
    * not undo the delete; `serve` prunes stores of deleted projects again at its next start.
    */
   readonly onDeleted?: (projectId: string) => void;
 }
+
+/**
+ * T14.9 (FR-CTL-10, ADR-0048): what {@link ProjectToolsDeps.onPendingRevision} receives after the revision row was
+ * written. Kind follows the approval proxy's rule (LLD §3.4.8): a push approval need is `push_revision`, any other
+ * approval need is `dynamic_project`. Ids and closed codes only.
+ */
+export interface PendingRevisionAnnouncement {
+  readonly projectId: string;
+  readonly revision: number;
+  readonly kind: "dynamic_project" | "push_revision";
+}
+
+/** Approval reasons that make a revision a `push_revision` (mirrors the approval proxy's kind rule, LLD §3.4.8). */
+const PUSH_APPROVAL_REASONS: ReadonlySet<string> = new Set(["push_policy", "commit_identity", "commit_signing"]);
 
 export interface DynamicResolution {
   readonly project: ResolvedProject;
@@ -189,6 +208,19 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
       },
     );
     const inForce = store.state(def.id)?.inForce?.revision;
+    if (status === "PENDING_APPROVAL") {
+      // T14.9 (FR-CTL-10, ADR-0048): the revision waits for the operator; announced off the tool path, best effort
+      // (ADR-0048 item 6). A failure here never undoes the write above.
+      try {
+        deps.onPendingRevision?.({
+          projectId: def.id,
+          revision: row.revision,
+          kind: reasons.some((r) => PUSH_APPROVAL_REASONS.has(r)) ? "push_revision" : "dynamic_project",
+        });
+      } catch {
+        // Best effort: the announcement must not change the tool result.
+      }
+    }
     return {
       id: def.id,
       revision: row.revision,

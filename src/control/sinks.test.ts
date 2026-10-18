@@ -37,6 +37,7 @@ import {
   buildNotificationPayload,
   httpsPost,
   NO_PROJECT_ID,
+  OnceGate,
   SINK_REASON_CODES,
   SinkDispatcher,
   type SinkEvent,
@@ -47,6 +48,7 @@ import {
   sinkOutcomeRecorder,
   transitionNotifier,
 } from "./index.js";
+import { NEEDS_ATTENTION_PRIORITY } from "./needs-attention.js";
 
 // ---- planted values -------------------------------------------------------------------------------------------------
 
@@ -174,9 +176,52 @@ describe("closed payload (ADR-0048 item 3)", () => {
       "stalled",
       "budget_exhausted",
       "ci_fix_stuck",
+      "skill_cleanup_failed",
     ]);
+    // The sink filter and the T14.2 derivation agree as a set (FR-CTL-03); a reason added to one must reach the other.
+    expect([...SINK_REASON_CODES.needs_attention].sort()).toEqual([...NEEDS_ATTENTION_PRIORITY].sort());
     expect(SINK_REASON_CODES.approval_decided).toEqual(["privileged_scope", "dynamic_project", "push_revision"]);
     expect(SINK_REASON_CODES.queue_low).toEqual(["queue_low"]);
+  });
+
+  it("builds a closed five-field payload for every sink_event_kind", () => {
+    const runless = new Set(["budget_exhausted", "project_paused", "queue_low"]);
+    for (const kind of SINK_EVENT_KINDS) {
+      const reason = SINK_REASON_CODES[kind][0] as string;
+      const runId = runless.has(kind) ? null : RUN_ID;
+      const p = buildNotificationPayload(
+        terminal({ eventKind: kind, reasonCode: reason, runId }),
+        "https://sb.example.test/mcp",
+      );
+      expect(p, kind).toEqual({
+        project_id: "acme-api",
+        event_kind: kind,
+        reason_code: reason,
+        run_id: runId,
+        link: "https://sb.example.test/mcp",
+      });
+      expect(Object.keys(p ?? {}).sort()).toEqual(PAYLOAD_KEYS);
+    }
+    expect(
+      buildNotificationPayload(
+        terminal({ eventKind: "needs_attention", reasonCode: "skill_cleanup_failed" }),
+        undefined,
+      ),
+    ).toEqual({
+      project_id: "acme-api",
+      event_kind: "needs_attention",
+      reason_code: "skill_cleanup_failed",
+      run_id: RUN_ID,
+      link: `switchboard://run/${RUN_ID}`,
+    });
+  });
+
+  it("claims each key once (T14.9 once-per-(run, reason) gate)", () => {
+    const gate = new OnceGate();
+    expect(gate.claim("needs_attention|run_1|stalled")).toBe(true);
+    expect(gate.claim("needs_attention|run_1|stalled")).toBe(false);
+    expect(gate.claim("needs_attention|run_1|parked_loop")).toBe(true);
+    expect(gate.claim("needs_attention|run_2|stalled")).toBe(true);
   });
 
   it("builds queue_low payload with run_id: null and closed reason queue_low (T15.4, FR-QUE-04)", () => {
@@ -201,6 +246,12 @@ describe("closed payload (ADR-0048 item 3)", () => {
     ["free-text reason", terminal({ reasonCode: PLANTED_AGENT })],
     ["reason of another kind", terminal({ reasonCode: "stalled" })],
     ["secret as reason", terminal({ eventKind: "needs_attention", reasonCode: PLANTED_SECRET })],
+    ["secret as approval_pending reason", terminal({ eventKind: "approval_pending", reasonCode: PLANTED_SECRET })],
+    ["needs_attention reason as approval reason", terminal({ eventKind: "approval_pending", reasonCode: "stalled" })],
+    [
+      "approval kind as needs_attention reason",
+      terminal({ eventKind: "needs_attention", reasonCode: "privileged_scope" }),
+    ],
     ["free-text project", terminal({ projectId: PLANTED_PROMPT })],
     ["secret as run id", terminal({ runId: PLANTED_SECRET })],
     ["unknown event kind", terminal({ eventKind: "run_started" as never })],
@@ -208,9 +259,9 @@ describe("closed payload (ADR-0048 item 3)", () => {
     expect(buildNotificationPayload(event, undefined)).toBeUndefined();
   });
 
-  it("builds links from the public_url origin and never from its path", () => {
-    expect(sinkLink("https://sb.example.test/mcp", RUN_ID)).toBe(`https://sb.example.test/runs/${RUN_ID}`);
-    expect(sinkLink("https://sb.example.test/mcp", null)).toBe("https://sb.example.test/digest");
+  it("builds links from the configured MCP resource itself, never a per-run or digest page", () => {
+    expect(sinkLink("https://sb.example.test/mcp", RUN_ID)).toBe("https://sb.example.test/mcp");
+    expect(sinkLink("https://sb.example.test/mcp", null)).toBe("https://sb.example.test/mcp");
     expect(sinkLink(undefined, null)).toBe("switchboard://digest");
   });
 
@@ -291,11 +342,95 @@ describe("delivery to a local capture server", () => {
       topic: TOPIC_CANARY,
       title: "Switchboard: needs_attention",
       message: `project_id=acme-api reason_code=stalled run_id=${RUN_ID}`,
-      click: `https://sb.example.test/runs/${RUN_ID}`,
+      click: `https://sb.example.test/mcp`,
       tags: ["switchboard"],
     });
   });
 
+  it("pending and attention events reach a capture sink once with only closed fields", async () => {
+    const d = new SinkDispatcher({ sinks: sinksOf(webhook()), post: loopbackPost });
+    d.emit({ projectId: "acme-api", eventKind: "approval_pending", reasonCode: "privileged_scope", runId: RUN_ID });
+    d.emit({ projectId: "acme-api", eventKind: "needs_attention", reasonCode: "awaiting_approval", runId: RUN_ID });
+    d.emit({ projectId: "acme-api", eventKind: "needs_attention", reasonCode: "parked_loop", runId: RUN_ID });
+    d.emit({ projectId: "acme-api", eventKind: "needs_attention", reasonCode: "failed_after_retry", runId: RUN_ID });
+    d.emit({ projectId: "acme-api", eventKind: "needs_attention", reasonCode: "skill_cleanup_failed", runId: RUN_ID });
+    d.emit({ projectId: "acme-api", eventKind: "needs_attention", reasonCode: "ci_fix_stuck", runId: null });
+    d.emit({ projectId: "acme-api", eventKind: "approval_pending", reasonCode: "push_revision", runId: null });
+    await d.drain();
+    expect(captured).toHaveLength(7);
+    expect(captured.map((c) => JSON.parse(c.body))).toEqual([
+      {
+        project_id: "acme-api",
+        event_kind: "approval_pending",
+        reason_code: "privileged_scope",
+        run_id: RUN_ID,
+        link: `switchboard://run/${RUN_ID}`,
+      },
+      {
+        project_id: "acme-api",
+        event_kind: "needs_attention",
+        reason_code: "awaiting_approval",
+        run_id: RUN_ID,
+        link: `switchboard://run/${RUN_ID}`,
+      },
+      {
+        project_id: "acme-api",
+        event_kind: "needs_attention",
+        reason_code: "parked_loop",
+        run_id: RUN_ID,
+        link: `switchboard://run/${RUN_ID}`,
+      },
+      {
+        project_id: "acme-api",
+        event_kind: "needs_attention",
+        reason_code: "failed_after_retry",
+        run_id: RUN_ID,
+        link: `switchboard://run/${RUN_ID}`,
+      },
+      {
+        project_id: "acme-api",
+        event_kind: "needs_attention",
+        reason_code: "skill_cleanup_failed",
+        run_id: RUN_ID,
+        link: `switchboard://run/${RUN_ID}`,
+      },
+      {
+        project_id: "acme-api",
+        event_kind: "needs_attention",
+        reason_code: "ci_fix_stuck",
+        run_id: null,
+        link: "switchboard://digest",
+      },
+      {
+        project_id: "acme-api",
+        event_kind: "approval_pending",
+        reason_code: "push_revision",
+        run_id: null,
+        link: "switchboard://digest",
+      },
+    ]);
+    const sent = allSent();
+    for (const planted of [PLANTED_SECRET, "PLANTED", "sk-ant-", "ignore previous"]) {
+      expect(sent).not.toContain(planted);
+    }
+  });
+
+  it("a sink filtered to only approval_pending drops run_terminal and accepts approval_pending", async () => {
+    const d = new SinkDispatcher({
+      sinks: sinksOf(webhook("ok", { events: ["approval_pending"] })),
+      post: loopbackPost,
+    });
+    d.emit(terminal());
+    await d.drain();
+    expect(captured).toHaveLength(0);
+    d.emit({ projectId: "acme-api", eventKind: "approval_pending", reasonCode: "dynamic_project", runId: null });
+    await d.drain();
+    expect(captured).toHaveLength(1);
+    expect(JSON.parse(captured[0]?.body ?? "")).toMatchObject({
+      event_kind: "approval_pending",
+      reason_code: "dynamic_project",
+    });
+  });
   it("makes no request when no sink is configured or no sink's filter accepts the event", async () => {
     let calls = 0;
     const counting: SinkPost = (r) => {

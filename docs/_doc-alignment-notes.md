@@ -216,3 +216,12 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
 - Left unchanged: closing the gap needs a code change (extend the sink closed list) or an SRS/ADR owner note, and
   PR #695 neither introduces nor worsens it (FR-CTL-03 was amended after T14.9; the PR only rewords the ADR-0048
   citation). It does not block PR #695.
+
+*Resolved by PR #702 (2026-10-18, Delegated, not owner-approved):* the gap-closing code change above landed here.
+`NEEDS_ATTENTION_REASONS` in `src/control/sinks.ts` now lists all seven FR-CTL-03 reasons (the comment cites
+`skill_cleanup_failed` from T16.6), `SINK_REASON_CODES.needs_attention` references that list, and production
+producers of `needs_attention` now exist (lifecycle `onApprovalPending`/`onNeedsAttention`, CI `onStuck`,
+project-tools `onPendingRevision`, all announced through the T14.9 dispatcher in `src/cli/serve.ts`; [LLD
+§3.4.9](design/LLD.md#349-notification-sinks-fr-ctl-10-adr-0048) lists them). A `needs_attention` /
+`skill_cleanup_failed` event is therefore no longer dropped as `invalidEvents`. No owner decision needed; item kept
+as history.

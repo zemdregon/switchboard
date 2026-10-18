@@ -234,7 +234,12 @@ import { assembleDigest } from "./digest.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
 import type { SubjectBindings } from "./http-subjects.js";
-import { createProjectTools, dynamicListItem, type ProjectTools } from "./project-tools.js";
+import {
+  createProjectTools,
+  dynamicListItem,
+  type PendingRevisionAnnouncement,
+  type ProjectTools,
+} from "./project-tools.js";
 import {
   inputSchema,
   MCP_ARTIFACT_KINDS,
@@ -325,6 +330,12 @@ export interface McpServerDeps {
    * off the tool's write path). Absent means no sink is configured.
    */
   readonly announcePause?: (a: PauseAnnouncement) => void;
+  /**
+   * T14.9 (FR-CTL-10, ADR-0048): announces a `create_project` / `update_project` revision that waits for the
+   * operator's approval to the notification sinks (`approval_pending`, off the tool's write path). Absent means no
+   * sink is configured.
+   */
+  readonly announcePendingRevision?: (a: PendingRevisionAnnouncement) => void;
 }
 
 /** T16.9: what the skill tools read. Nothing here is written. */
@@ -450,6 +461,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
                   void deleteRagStore(deps.config.dataDir as string, { kind: "project", projectId: id }),
               }
             : {}),
+          // T14.9 (FR-CTL-10, ADR-0048): a revision waiting for the operator reaches the sinks as `approval_pending`.
+          ...(deps.announcePendingRevision !== undefined ? { onPendingRevision: deps.announcePendingRevision } : {}),
         });
   // T14.8 (FR-CTL-08, ADR-0047): only for a client the operator marked approval_proxy; otherwise the tools do not exist.
   const approvalProxy =

@@ -556,6 +556,26 @@ export interface TransitionNotice {
   readonly rule: string;
 }
 
+/**
+ * T14.9 (FR-CTL-10, ADR-0048): a privileged approval entered pending at admission (FRD T2). Serve announces it as
+ * `approval_pending` (`privileged_scope`) and `needs_attention` (`awaiting_approval`). Ids and closed codes only.
+ */
+export interface ApprovalPendingNotice {
+  readonly runId: string;
+  readonly projectId: string | null;
+}
+
+/**
+ * T14.9 (FR-CTL-10, ADR-0048): a `needs_attention` reason set at an event-time hook (the loop-breaker park, a
+ * successor-cap failure, a skill cleanup failure). Serve announces it once per (run, reason). Ids and a closed
+ * reason only.
+ */
+export interface NeedsAttentionNotice {
+  readonly runId: string;
+  readonly projectId: string | null;
+  readonly reason: "parked_loop" | "failed_after_retry" | "skill_cleanup_failed";
+}
+
 export interface RunLifecycleOptions {
   readonly ledger: Ledger;
   /** Must share the ledger's database handle. */
@@ -640,6 +660,17 @@ export interface RunLifecycleOptions {
   readonly budgets?: BudgetAdmission;
   /** T14.4: observer for every budget refusal (operator log, `budget_exhausted` sink event). Must not throw. */
   readonly onBudgetRefused?: (notice: BudgetRefusalNotice) => void;
+  /**
+   * T14.9 (FR-CTL-10, ADR-0048): observer for a privileged approval entering pending at admission (FRD T2).
+   * Fires once per admitted run, never for an idempotent replay (no new row) and never for a client-policy approval
+   * (decided in the admission transaction). Must not throw.
+   */
+  readonly onApprovalPending?: (notice: ApprovalPendingNotice) => void;
+  /**
+   * T14.9 (FR-CTL-10, ADR-0048): observer for a `needs_attention` reason set where the controller already acts (the
+   * loop-breaker park, a successor-cap failure, a failed skill removal pass). Must not throw.
+   */
+  readonly onNeedsAttention?: (notice: NeedsAttentionNotice) => void;
   /**
    * T14.5 (FR-CTL-07, LLD §3.4.6): `control_plane.loop_breaker` (**N**, **T**, successor cap). Unset means the LLD
    * Assumption defaults. The loop breaker cannot be turned off.
@@ -1153,6 +1184,11 @@ export class RunLifecycle {
     if (!result.replayed) {
       this.spans.delegateStarted(result.runId, admittedAt);
       queueMicrotask(() => this.pump());
+    }
+    if (!result.replayed && result.state === "AWAITING_APPROVAL") {
+      // T14.9 (FR-CTL-10, ADR-0048): the PENDING row above stays pending (client-policy approvals decide in the
+      // admission transaction and go QUEUED, so they never reach this state). Announced off the run path.
+      this.approvalPending({ runId: result.runId, projectId: req.project?.id ?? null });
     }
     return result;
   }
@@ -2632,6 +2668,8 @@ export class RunLifecycle {
       ...(verification ? { verification } : {}),
     };
     const finished = this.nowIso();
+    let failedRun: RunRecord | undefined;
+    let parked = false;
     this.ledger.immediate(() => {
       this.opts.workspace.releaseLease(runId);
       const run = this.current(runId);
@@ -2654,11 +2692,24 @@ export class RunLifecycle {
           payload,
         );
         // T14.5 (FR-CTL-07): the Nth identical failure parks the meta-session, before any successor is considered.
-        recordLoopPark(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER);
+        parked = recordLoopPark(this.ledger, failed, this.opts.loopBreaker ?? DEFAULT_LOOP_BREAKER) !== undefined;
+        failedRun = failed;
         // T6.5 (FRD T16, BR-6, BR-7): after the breaker step of the same transition, in the same transaction.
         this.scheduleRetry(failed, outcome.code, retryEligible);
       }
     });
+    if (failedRun !== undefined) {
+      // T14.9 (FR-CTL-10, ADR-0048): the park and a failure at the successor cap are announced off the run path,
+      // once per (run, reason) by the serve gate. A budget refusal is not announced here (already `budget_exhausted`).
+      const projectId = failedRun.project_id;
+      if (parked) this.attention({ runId: failedRun.id, projectId, reason: "parked_loop" });
+      const cap =
+        this.opts.loopBreaker?.maxSuccessorsPerMetaSession ?? DEFAULT_LOOP_BREAKER.maxSuccessorsPerMetaSession;
+      // Same rule as the T14.2 derivation (`needs-attention.ts`): at the cap, or parked.
+      if (failedRun.attempt >= cap || parked) {
+        this.attention({ runId: failedRun.id, projectId, reason: "failed_after_retry" });
+      }
+    }
     // T6.6 (BR-6 step 2 and 3, BR-8, BR-9): after the terminal transaction, because a failover builds a bundle.
     if (outcome.kind === "failure" && outcome.code === "QUOTA_EXHAUSTED") await this.quotaLadder(runId);
   }
@@ -2862,7 +2913,16 @@ export class RunLifecycle {
   private async removeNativeSkills(runId: string, point: "before_verifying" | "terminal"): Promise<void> {
     try {
       if (!this.opts.workspace.hasPendingNativeSkills(runId)) return;
-      await this.opts.workspace.removeNativeSkills(runId, point);
+      const result = await this.opts.workspace.removeNativeSkills(runId, point);
+      // T14.9 (FR-CTL-10, ADR-0048): a failed removal pass flags `skill_cleanup_failed`; serve announces it once per
+      // (run, reason). A later point retries the removal, so the flag clears on read when a pass verifies.
+      if (result.failed > 0) {
+        this.attention({
+          runId,
+          projectId: this.ledger.getRunRecord(runId)?.project_id ?? null,
+          reason: "skill_cleanup_failed",
+        });
+      }
     } catch {
       // A failed pass is recorded by the workspace (`removal = 'failed'`); the next removal point retries.
     }
@@ -3506,6 +3566,24 @@ export class RunLifecycle {
   private budgetRefused(notice: BudgetRefusalNotice): void {
     try {
       this.opts.onBudgetRefused?.(notice);
+    } catch {
+      // Observer errors are the observer's problem (as `onTransition`).
+    }
+  }
+
+  /** T14.9: sink-event observers never fail or delay the run (ADR-0048 item 6). */
+  private approvalPending(notice: ApprovalPendingNotice): void {
+    try {
+      this.opts.onApprovalPending?.(notice);
+    } catch {
+      // Observer errors are the observer's problem (as `onTransition`).
+    }
+  }
+
+  /** T14.9: sink-event observers never fail or delay the run (ADR-0048 item 6). */
+  private attention(notice: NeedsAttentionNotice): void {
+    try {
+      this.opts.onNeedsAttention?.(notice);
     } catch {
       // Observer errors are the observer's problem (as `onTransition`).
     }

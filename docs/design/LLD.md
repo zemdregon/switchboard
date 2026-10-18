@@ -2079,11 +2079,11 @@ Delegated, not owner-approved):**
 | `events` | array of `sink_event_kind` | Filter; default all kinds |
 | `max_per_minute` | integer ≥ 1 | Rate limit; excess dropped and counted |
 
-**Payload** is exactly `notification_payload` (§3.4.1). **Link** is an operator-configured base URL plus stable path
-(`/digest` or `/runs/<run_id>` on the MCP HTTP `public_url` when set, else a placeholder `switchboard://run/<run_id>` for
-stdio-only deployments). Delivery is asynchronous, bounded timeout (proposed target: 5 s), HTTPS with verification;
-failures append `sink_delivery_failed` counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
-or run execution.
+**Payload** is exactly `notification_payload` (§3.4.1). **Link** is the configured MCP HTTP resource URL itself (a
+route this server serves; there is no per-run or digest page, and the consent-page token never reaches a sink payload),
+else a `switchboard://run/<run_id>` or `switchboard://digest` placeholder for stdio-only deployments. Delivery is
+asynchronous, bounded timeout (proposed target: 5 s), HTTPS with verification; failures append `sink_delivery_failed`
+counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission or run execution.
 
 **Implementation (T14.9, T14.14, `src/control/sinks.ts`, `src/config/notification-sinks.ts`; Delegated, not owner-approved):**
 
@@ -2099,8 +2099,9 @@ or run execution.
   `queue_low` the literal `queue_low` (T15.4, FR-QUE-04; `run_id` null). `project_id`
   is a project id, `-` (a run admitted without a project) or `*` (all projects). An event with any other value, or a
   `run_id` that is not `run_` + ULID, is dropped, not sent.
-- Link: the origin of `public_url` plus `/runs/<run_id>` or `/digest`; else `switchboard://run/<run_id>` or
-  `switchboard://digest`.
+- Link: the configured `public_url` resource itself when the HTTP transport is set (`sinkLink` returns it unchanged
+  after validating it is a URL); else `switchboard://run/<run_id>` or `switchboard://digest`. No per-run or digest
+  route exists, so the link never encodes one, and the consent-page token never reaches a sink payload.
 - Webhook: `POST` to `url`, `Content-Type: application/json`, body exactly `notification_payload`, with
   `Authorization: <authorization>` when `authorization` is configured (FR-CTL-12, T14.14). ntfy: JSON publish
   ([ntfy publish](https://docs.ntfy.sh/publish/), "Publish as JSON") to the server root with body `{ topic, title:
@@ -2110,9 +2111,28 @@ or run execution.
   times out after 5 s. Outcome codes: `timeout`, `transport_error`, `http_status` (with the status) and
   `rate_limited`. A failure or drop for an event with a run appends a `sink_delivery_failed` run event `{ sink_id,
   event_kind, reason_code[, status] }` and logs the same fields; an error's own text is never used.
-- Producers in T14.9: a run reaching a terminal state (`run_terminal`) and an operator approval of a privileged run
-  (FRD T3, `approval_decided` / `privileged_scope`), from the lifecycle's existing transition hook in `serve`. The other
-  kinds are emitted by their own tasks (T14.2, T14.4, T14.6, T14.8) through the same dispatcher.
+- Producers (all T14.9, through the same dispatcher, filters and rate limits; every emission is one closed event off
+  the run path, never polled and with no new run state):
+  - `approval_pending` / `privileged_scope` with `needs_attention` / `awaiting_approval`: the lifecycle admits a
+    privileged run (FRD T2), via `RunLifecycleOptions.onApprovalPending` (never on an idempotent replay or a
+    client-policy approval, which never waits).
+  - `approval_pending` / `dynamic_project` or `push_revision` (the approval proxy's kind rule, §3.4.8): a
+    `create_project` / `update_project` write that leaves a revision waiting for the operator, via
+    `announcePendingRevision` (one revision row announces once).
+  - `approval_decided` / `privileged_scope`: the existing transition hook (FRD T3); a privileged deny and every
+    revision decision via `announceApproval` (T14.8, unchanged).
+  - `needs_attention` / `parked_loop` and `failed_after_retry`: the lifecycle's terminal path (the loop-breaker park,
+    a failure at the successor cap or a parked failure, the T14.2 derivation's rule), via `onNeedsAttention`, once
+    per (run, reason) in this process.
+  - `needs_attention` / `skill_cleanup_failed`: a failed native-skill removal pass on the run path
+    (`before_verifying`, terminal entry), via `onNeedsAttention`, once per run in this process. The startup-reconcile
+    and retention-gc passes record the same ledger events (so the envelope and digest still flag the run) but do not
+    emit (the dispatcher does not exist yet at startup reconcile).
+  - `needs_attention` / `ci_fix_stuck`: the CI poller setting the stuck flag (the 0→1 transition only), via `onStuck`.
+  - `budget_exhausted` (T14.4, unchanged): the budget refusal hook already announces it, so it is not announced again
+    as `needs_attention`.
+  - `stalled` has no event-time hook (stall is derived on read only, `findStalledRuns` never acts) and is never
+    emitted; `run_terminal`, `project_paused` / `global_paused` and `queue_low` are unchanged.
 
 #### 3.4.10 `tool_profile` (FR-CTL-11)
 

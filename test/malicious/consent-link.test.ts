@@ -451,7 +451,7 @@ describe("T14.10 consent-page approval link: works once, then expires", () => {
         event_kind: "approval_decided",
         reason_code: "push_revision",
         run_id: null,
-        link: `${ISSUER}/digest`,
+        link: new URL(RESOURCE).href, // ADR-0048 item 5: the served MCP resource, never an unserved route
       },
     ]);
     // The pairing code was spent by the sign-in; the link by the decision.

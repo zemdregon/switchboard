@@ -8,7 +8,8 @@
  * Closed payload (ADR-0048 item 3): {@link buildNotificationPayload} builds the five `notification_payload` fields from
  * controller-generated values only and refuses anything outside the closed lists: the project id (a configured id
  * pattern, {@link NO_PROJECT_ID} or {@link ALL_PROJECTS_ID}), one `sink_event_kind`, a reason code from the closed list
- * for that kind, a run id (`run_` + ULID) or null, and a link built here from a configured base and that id. There is no
+ * for that kind, a run id (`run_` + ULID) or null, and a link to the configured MCP resource (ADR-0048 item 5; a
+ * `switchboard://` placeholder when no HTTP transport is configured). There is no
  * free-text field, so no prompt, objective, summary, diff, log line or agent text can reach a sink.
  *
  * Delivery never affects a run (ADR-0048 item 6): {@link SinkDispatcher.emit} is synchronous, never throws and never
@@ -35,7 +36,7 @@ export const NO_PROJECT_ID = "-";
 /** `project_id` of an event that applies to every project (a global pause, T14.6). Not a valid project id. */
 export const ALL_PROJECTS_ID = "*";
 
-/** FR-CTL-03 / LLD §3.4.1 `needs_attention_reason`. */
+/** FR-CTL-03 / LLD §3.4.1 `needs_attention_reason` (seven values; `skill_cleanup_failed` from T16.6). */
 export const NEEDS_ATTENTION_REASONS = [
   "awaiting_approval",
   "parked_loop",
@@ -43,6 +44,7 @@ export const NEEDS_ATTENTION_REASONS = [
   "stalled",
   "budget_exhausted",
   "ci_fix_stuck",
+  "skill_cleanup_failed",
 ] as const;
 /** ADR-0047 / LLD §3.4.1 `approval_kind`. */
 export const APPROVAL_KINDS = ["privileged_scope", "dynamic_project", "push_revision"] as const;
@@ -79,13 +81,14 @@ const PROJECT_ID_RE = new RegExp(PROJECT_ID_PATTERN);
 const MAX_LINK = 2048;
 
 /**
- * The link of an event (LLD §3.4.9): `<origin of public_url>/runs/<run_id>` or `/digest` when the HTTP transport is
- * configured, else `switchboard://run/<run_id>` or `switchboard://digest`. It carries no token, digest or passphrase.
+ * The link of an event (LLD §3.4.9, ADR-0048 item 5): the configured MCP resource URL itself, which names a route this
+ * server serves, never a per-run or digest page (none exists) and never a consent-page token. Without an HTTP
+ * transport there is no served route, so the link is a `switchboard://run/<run_id>` or `switchboard://digest`
+ * placeholder. It carries no token, digest or passphrase.
  */
 export function sinkLink(linkBase: string | undefined, runId: string | null): string {
   if (linkBase === undefined) return runId === null ? "switchboard://digest" : `switchboard://run/${runId}`;
-  const origin = new URL(linkBase).origin;
-  return runId === null ? `${origin}/digest` : `${origin}/runs/${runId}`;
+  return new URL(linkBase).href;
 }
 
 /** The closed payload of an event, or undefined when any field is outside its closed list (the event is dropped). */
@@ -102,6 +105,21 @@ export function buildNotificationPayload(
   if (link.length > MAX_LINK) return undefined;
   // Fixed key order; built from the checked fields only.
   return { project_id: p, event_kind: event.eventKind, reason_code: event.reasonCode, run_id: event.runId, link };
+}
+
+/**
+ * Once-per-key emission gate (T14.9): `claim` returns true the first time a key is seen and false after, so a repeated
+ * observation (a retried skill removal pass, a second scheduler tick over the same stuck ref) emits once per
+ * (run, reason). Keys name only closed ids and codes (a run id, a reason, a project and ref), never agent or
+ * request text.
+ */
+export class OnceGate {
+  private readonly seen = new Set<string>();
+  claim(key: string): boolean {
+    if (this.seen.has(key)) return false;
+    this.seen.add(key);
+    return true;
+  }
 }
 
 /** One HTTP request a sink makes. */
@@ -353,8 +371,13 @@ const TERMINAL = new Set(["SUCCEEDED", "FAILED", "CANCELLED"]);
 
 /**
  * Sink events for one run transition: `run_terminal` when the run reaches a terminal state, and `approval_decided`
- * (`privileged_scope`) when an operator approval moves it from AWAITING_APPROVAL to QUEUED (FRD T3). The other kinds
- * are produced by their own tasks (T14.2, T14.4, T14.6, T14.8) through {@link SinkDispatcher.emit}.
+ * (`privileged_scope`) when an operator approval moves it from AWAITING_APPROVAL to QUEUED (FRD T3). Pending and
+ * attention events are announced by their own hooks (T14.9, through {@link SinkDispatcher.emit}): `approval_pending`
+ * at admission (FRD T2) and at a dynamic-project revision write, and `needs_attention` at the same admission point
+ * (`awaiting_approval`), at the loop-breaker park (`parked_loop`), at a successor-cap failure (`failed_after_retry`),
+ * at a skill cleanup failure (`skill_cleanup_failed`) and at a fresh CI stuck flag (`ci_fix_stuck`). A budget refusal
+ * is already announced as `budget_exhausted`, so it is not announced again as `needs_attention`; stalled runs have no
+ * event-time hook (stall is derived on read only).
  */
 export function sinkEventsForTransition(t: RunTransition, projectId: string | null | undefined): SinkEvent[] {
   const project = projectId ?? NO_PROJECT_ID;

@@ -58,6 +58,11 @@ export interface CiTriggerDeps {
   readonly untrustedSummary?: (q: { projectId: string; publishRef: string; externalId: string }) => string | undefined;
   /** `queue.max_items_per_project` (LLD §18.1). */
   readonly maxItemsPerProject?: number;
+  /**
+   * T14.9 (FR-CTL-10, ADR-0048): called once when a publish ref newly reaches the stuck flag (the 0→1 transition of
+   * `ci_fix_stuck`). Serve announces it as `needs_attention`. Must not throw; best effort (ADR-0048 item 6).
+   */
+  readonly onStuck?: (info: { projectId: string; publishRef: string }) => void;
 }
 
 export interface CiTriggerPollResult {
@@ -227,6 +232,15 @@ export async function pollCiTriggers(deps: CiTriggerDeps): Promise<CiTriggerPoll
         });
         tx();
         result.recordedOnly.push({ projectId, publishRef: ref.publishRef, externalId: obs.externalId });
+        if (refState?.stuck !== 1) {
+          // T14.9 (FR-CTL-10, ADR-0048): the ref newly reached the stuck flag; announce it once. A later poll sees
+          // stuck already set and announces nothing; a reset re-arms the next 0→1 transition.
+          try {
+            deps.onStuck?.({ projectId, publishRef: ref.publishRef });
+          } catch {
+            // Best effort (ADR-0048 item 6): the announcement never changes the poll result.
+          }
+        }
         continue;
       }
 
