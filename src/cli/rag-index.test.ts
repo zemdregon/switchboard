@@ -319,6 +319,60 @@ describe("global index (T12.7)", () => {
     await daemon();
     expect(existsSync(ragStoreDir(dataDir, { kind: "global" }))).toBe(false);
   });
+
+  it("index clear global deletes the global store at once and records counts (TDD §3.13.9)", async () => {
+    writeConfig({ ...RAG, global: { enabled: true } }, { contribute_to_global: true });
+    await daemon();
+    const dir = ragStoreDir(dataDir, { kind: "global" });
+    expect(existsSync(dir)).toBe(true);
+    const r = await run(["index", "clear", "global", "--json"]);
+    expect(r.code).toBe(0);
+    const j = JSON.parse(r.out);
+    expect(j).toMatchObject({ kind: "clear", daemon_running: false });
+    expect(j.requests).toMatchObject([
+      { project_key: null, status: "applied", cleared: { removed: true, files: 2, chunks: 2 } },
+    ]);
+    expect(existsSync(dir)).toBe(false);
+    const db = openLedger(dataDir);
+    try {
+      const row = db.prepare("SELECT * FROM rag_record WHERE kind = 'clear'").get() as Record<string, unknown>;
+      expect(row).toMatchObject({ project_key: null, outcome: "ok", files: 2, chunks: 2, snippet_ids_json: null });
+      expect(JSON.stringify(row)).not.toContain("alpha");
+      expect(new RagLedger(db).pending()).toEqual([]);
+    } finally {
+      db.close();
+    }
+    expect((await run(["index", "clear", "global"])).out).toContain("global: nothing stored; recorded");
+  });
+
+  it("index status global reports only the global store: off, absent and present (TDD §3.13.9)", async () => {
+    const off = JSON.parse((await run(["index", "status", "global", "--json"])).out);
+    expect(off.stores).toMatchObject([
+      { store: "global", project_key: null, mode: "off", off_reason: "GLOBAL_OFF", exists: false },
+    ]);
+    expect((await run(["index", "status", "global"])).out).toContain("global: off (GLOBAL_OFF); no index yet");
+    writeConfig({ ...RAG, global: { enabled: true } }, { contribute_to_global: true });
+    const absent = JSON.parse((await run(["index", "status", "global", "--json"])).out);
+    expect(absent.stores).toHaveLength(1);
+    expect(absent.stores[0]).toMatchObject({ store: "global", project_key: null, mode: "on", exists: false });
+    expect((await run(["index", "status", "global"])).out).toContain("global: on; no index yet");
+    await daemon();
+    const j = JSON.parse((await run(["index", "status", "global", "--json"])).out);
+    expect(j.stores).toHaveLength(1);
+    expect(j.stores[0]).toMatchObject({
+      store: "global",
+      project_key: null,
+      mode: "on",
+      exists: true,
+      files: 2,
+      chunks: 2,
+      revision: 1,
+      complete: true,
+      stale: false,
+      error: null,
+    });
+    expect((await run(["index", "status", "global"])).out).toMatch(/global: on; revision 1, complete, 2 files/);
+  });
 });
 
 describe("doctor retrieval section", () => {
@@ -356,6 +410,41 @@ describe("doctor retrieval section", () => {
     expect(t.out).toContain("[warn] Retrieval backend: local test-embed, locality remote; refused by the privacy gate");
     expect(t.out).toContain("[skip] Retrieval backend probe: not attempted (REMOTE_NOT_ALLOWED)");
     expect(probed).toBe(false);
+  });
+
+  it("covers the global store: absent, present, stale, off and missing (TDD §3.13.9)", async () => {
+    writeConfig({ ...RAG, global: { enabled: true } }, { contribute_to_global: true });
+    expect((await run(["doctor"])).out).toContain("[warn] Index global: on; no index yet");
+    await daemon();
+    const t = await run(["doctor"]);
+    expect(t.out).toMatch(/\[ok\] {3}Index global: on; revision 1, complete, 2 files/);
+    const j = JSON.parse((await run(["doctor", "--json"])).out);
+    expect(j.retrieval.checks.find((c: { id: string }) => c.id === "rag_index_global")).toMatchObject({
+      status: "ok",
+    });
+    const stale = JSON.parse(
+      (await run(["doctor", "--json"], { now: () => new Date(Date.now() + 48 * 3600 * 1000) })).out,
+    );
+    expect(stale.retrieval.checks.find((c: { id: string }) => c.id === "rag_index_global")).toMatchObject({
+      status: "warn",
+    });
+    expect(stale.retrieval.stores.find((s: { project_key: string | null }) => s.project_key === null)).toMatchObject({
+      stale: true,
+    });
+    writeConfig(RAG);
+    expect((await run(["doctor"])).out).toContain("[skip] Index global: off (GLOBAL_OFF)");
+    expect(
+      JSON.parse((await run(["doctor", "--json"])).out).retrieval.checks.find(
+        (c: { id: string }) => c.id === "rag_index_global",
+      ),
+    ).toMatchObject({ status: "skip" });
+    rmSync(ragStoreDir(dataDir, { kind: "global" }), { recursive: true, force: true });
+    expect((await run(["doctor"])).out).not.toContain("Index global");
+    expect(
+      (JSON.parse((await run(["doctor", "--json"])).out).retrieval.checks as { id: string }[]).some(
+        (c) => c.id === "rag_index_global",
+      ),
+    ).toBe(false);
   });
 });
 

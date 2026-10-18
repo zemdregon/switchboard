@@ -15,7 +15,16 @@ import { fakeVector } from "./fake-embedder.js";
 import { createHttpEmbedder, MAX_TEXTS_PER_REQUEST } from "./http-embedder.js";
 import { scanContext } from "./scan.js";
 
-type Scenario = "ok" | "status500" | "wrong_dim" | "non_number" | "drop" | "redirect" | "shuffled";
+type Scenario =
+  | "ok"
+  | "status500"
+  | "wrong_dim"
+  | "non_number"
+  | "non_finite"
+  | "non_json"
+  | "drop"
+  | "redirect"
+  | "shuffled";
 
 let server: http.Server;
 let port: number;
@@ -43,6 +52,24 @@ beforeEach(async () => {
       if (scenario === "drop") return req.socket.destroy();
       if (scenario === "status500") return void res.writeHead(500).end("boom");
       if (scenario === "redirect") return void res.writeHead(302, { location: "http://example.invalid/" }).end();
+      if (scenario === "non_json")
+        return void res.writeHead(200, { "content-type": "application/json" }).end("this is not json{");
+      if (scenario === "non_finite") {
+        // Raw `1e999`/`-1e999` literals in the body parse to `Infinity`/`-Infinity` (`NaN` is not valid JSON, so the
+        // wire form for a non-finite value is an out-of-range literal); the backend must refuse them (TDD §3.13.3).
+        const lit = ["1e999", "-1e999"];
+        const raw = input
+          .map(
+            (_, index) =>
+              `{"index":${index},"embedding":[${Array(16)
+                .fill(lit[index % 2])
+                .join(",")}]}`,
+          )
+          .join(",");
+        return void res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(`{"model":"served-model","data":[${raw}]}`);
+      }
       const data = input.map((t, index) => ({
         index,
         embedding: Array.from(fakeVector(t, scenario === "wrong_dim" && index === 1 ? 8 : 16)),
@@ -188,6 +215,8 @@ describe("envelope and transport failures fall back, never throw", () => {
     ["status500", "HTTP_STATUS"],
     ["wrong_dim", "BAD_ENVELOPE"],
     ["non_number", "BAD_ENVELOPE"],
+    ["non_finite", "BAD_ENVELOPE"],
+    ["non_json", "NOT_JSON"],
     ["drop", "CONNECT_FAILED"],
     ["redirect", "REDIRECT"],
   ] as const)("%s -> %s", async (s, reason) => {
@@ -211,5 +240,32 @@ describe("envelope and transport failures fall back, never throw", () => {
       /* never answers */
     });
     expect(await embed(settings({ timeoutMs: 200 }), ["alpha"])).toMatchObject({ ok: false, outcome: "failed" });
+  });
+
+  it("a delayed response within the timeout succeeds (TDD §3.13.3)", async () => {
+    scenario = "ok";
+    server.removeAllListeners("request");
+    server.on("request", (req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (c) => {
+        body += c;
+      });
+      req.on("end", () => {
+        bodies.push(body);
+        const input = (JSON.parse(body) as { input: string[] }).input;
+        setTimeout(() => {
+          const data = input.map((t, index) => ({
+            index,
+            embedding: Array.from(fakeVector(t, 16)),
+          }));
+          res
+            .writeHead(200, { "content-type": "application/json" })
+            .end(JSON.stringify({ model: "served-model", data }));
+        }, 150);
+      });
+    });
+    const r = await embed(settings({ timeoutMs: 5000 }), ["alpha", "beta"]);
+    expect(r).toMatchObject({ ok: true, modelId: "served-model", dimension: 16 });
   });
 });

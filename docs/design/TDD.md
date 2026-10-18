@@ -1134,7 +1134,10 @@ All of it runs with no embedding model, provider CLI or network (AGENTS.md); `np
   fixed dimension, so similar text is nearer and identical text gives identical vectors) plus a scripted local HTTP
   server for the `http` kind with scenarios for success, delay, error status, dropped connection, wrong dimension and
   non-finite values. Results are exactly reproducible, so ranking tests assert order, not scores. The dimension and
-  scheme are test fixtures, not claims about any real model.
+  scheme are test fixtures, not claims about any real model. The `http` scenarios are covered in
+  `src/retrieval/http-embedder.test.ts`: the failure-table rows `status500`, `wrong_dim`, `non_number`, `non_finite`
+  (raw `1e999`/`-1e999` bodies, which parse to `Infinity`/`-Infinity`), `non_json`, `drop` and `redirect`, plus "a
+  delayed response within the timeout succeeds" and "a timeout aborts the call".
 - **Scanner and exclusions.** Real temp Git repositories with planted `.env` files, key and certificate files,
   credential-looking names, binary files, files over the size cap, ignored files, a nested repository (ADR-0022) and a
   symlink leaving the root. Asserted: none is chunked, embedded or stored, and a planted credential-shaped string inside
@@ -1362,7 +1365,11 @@ not on `origin/main`).
   excluded by default; removing `contribute_to_global` or `index clear` for a project drops its contributions on the next
   global build. Admission with `use_global: true` merges global hits into the pack with origin labels and the same
   freshness, token budget, ledger shape and authority boundary as T12.5; `use_global: false` matches current T12.5
-  behaviour. CLI: `index rebuild global`, `index clear global`, and a `doctor` global subsection when enabled. Tool:
+  behaviour. CLI (`src/cli/rag-index.test.ts`, "global index (T12.7)" and the doctor retrieval section): `index rebuild
+  global` (the existing rebuild test), `index clear global` ("index clear global deletes the global store at once and
+  records counts"), `index status global` ("index status global reports only the global store: off, absent and
+  present"), and a `doctor` global subsection when enabled ("covers the global store: absent, present, stale, off and
+  missing", asserting the `rag_index_global` check in its present, absent, stale, off and missing states). Tool:
   `global` and `both` read the built global store when the project has `use_global: true`.
 
 ### 3.14 Network MCP transport (M13)
