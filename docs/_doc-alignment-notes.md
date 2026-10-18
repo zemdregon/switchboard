@@ -225,3 +225,17 @@ project-tools `onPendingRevision`, all announced through the T14.9 dispatcher in
 §3.4.9](design/LLD.md#349-notification-sinks-fr-ctl-10-adr-0048) lists them). A `needs_attention` /
 `skill_cleanup_failed` event is therefore no longer dropped as `invalidEvents`. No owner decision needed; item kept
 as history.
+
+## 17. Roadmap "queue item W1" label has no defining row (pre-existing, repeated by PR #698)
+
+- [ROADMAP §4.2](ROADMAP.md#42-owner-decisions) entries 59 and 60, the T4.28,
+  T4.48, T4.58 and T4.68 rows and §6.8.2 all say the `adapters validate`
+  compiled-cell fallback is (or follows) "queue item W1" of the T4.4 change.
+  No `W1` row exists anywhere in the docs: the label is used but never
+  defined. The wording predates this PR (entry 59 in `main` already says
+  "(queue item W1)"), and PR #698 only repeats it.
+- Left unchanged: defining, renumbering or removing a queue label is the
+  roadmap owner's call, and the T4.4 row already documents the fallback
+  itself (owner decisions 59 and 60, `COMPILED_CELL_FALLBACK` in
+  `src/cli/adapters-validate.ts`, built 2026-10-18), so no fact about the
+  code is wrong. It does not block PR #698.

@@ -555,7 +555,8 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
       those worktrees on merge or abandon, with the branch and diff artifact kept until retention GC. The worktree is
       created when the run is leased, not at process spawn (LLD §5). Until FR-WS-09 is accepted, FRD §4.4 applies
       unchanged.
-    - **Task.** T9.11 in §6.3. **Open question:** Q-55. No ADR is needed: the worktree model is ADR-0006's and the
+    - **Task.** T9.11 in §6.3. **Answered question:** Q-55 (owner decision 62, 2026-10-18: no merge detection;
+      the FR-WS-09 abandon-only amendment is queued). No ADR is needed: the worktree model is ADR-0006's and the
       boundary does not change. No numeric caps are set.
 
 43\. Optional agent subscriptions to PR and merge events (2026-10-13). **zemdregon's words, verbatim, are only this:**
@@ -809,35 +810,24 @@ compiled cell under inspect-untrusted for Grok, Cursor and Kimi."
     decision 60; no status flips on the strength of either decision.
 
 60\. `adapters validate` may smoke in the adapter's only compiled cell for OpenCode and Antigravity
-(2026-10-18). **Relayed by the orchestrator with standing authority as an owner direction; the wording below is a
-Delegated paraphrase, not checked against zemdregon's own words:** `adapters validate` may smoke in the adapter's
-only compiled cell for OpenCode and Antigravity, extending the decision-59 fallback (entry 59 above).
+(2026-10-18). **Relayed by the orchestrator (Linus, with standing authority) as an owner direction; the relayed text
+is:** "Decision 59 extended to OpenCode and Antigravity (T4.58, T4.38 validate may smoke the compiled cell)."
+**The wording below is a Delegated paraphrase, not checked against zemdregon's own words:** `adapters validate` may
+smoke in the adapter's only compiled cell for OpenCode and Antigravity, extending the decision-59 fallback
+(entry 59 above).
     *Delegated reading, not his words.* `inspect-untrusted` is still tried first for every adapter, as now. Only for
     `opencode` and `antigravity`, when it is `Ineligible`, the one smoke call runs in the adapter's only compiled cell:
-    the approved `privileged` bypass scope of owner decision 46, with a validate-local approval for that call only, the
-    same trivial read-only smoke objective and the same throwaway Git repository (removed in `finally`, passed writable
-    where the cell refuses a read-only workspace); nothing is persisted but the manifest fields on full success. The
-    OpenCode cell declares no bypass-class flag (Q-83), so its smoke argv must carry no bypass-class flag at all; the
-    Antigravity cell carries exactly `--dangerously-skip-permissions` (Q-84); anything else fails the smoke step. A
-    passing run closes only the "`adapters validate`" part (and "the manifest range is set by the command") of T4.38
-    and T4.58; the live smoke and the live malicious legs stay operator-only. The extension is built in the T4.4 change
-    alongside queue item W1; no status flips on the strength of this decision.
-
-60\. Decision 59 extended to OpenCode and Antigravity (T4.58, T4.38 validate may smoke the compiled cell)
-(2026-10-18). **Relayed by the orchestrator (Linus, with standing authority) as an owner direction; the wording below
-is the relayed text, not checked against zemdregon's own words:** "Decision 59 extended to OpenCode and Antigravity
-(T4.58, T4.38 validate may smoke the compiled cell)."
-    *Delegated reading, not his words.* As decision 59, now also for `opencode` and `antigravity`. `inspect-untrusted`
-    is still tried first. Only when it is `Ineligible`, the one smoke call runs in the adapter's only compiled cell:
-    the approved `privileged` bypass scope of owner decision 46 (OpenCode: worktree files, shell `broad`, network `on`,
-    repository config `enabled`, **no** bypass flag is emitted, Q-83; Antigravity: the same scope with
-    `--dangerously-skip-permissions`, Q-84). It uses a validate-local approval for that call only, the same trivial
-    read-only objective and the same throwaway Git repository; nothing is persisted but the manifest fields on full
-    success. A pass closes only the "`adapters validate`" part (and "the manifest range is set by the command") of
-    T4.58 and T4.38; the live smoke and live malicious legs stay operator-only. The fallback itself is the T4.4
-    change (queue item W1), built for Grok Build, Cursor and Kimi Code and extended to OpenCode and Antigravity in
-    the same change ([PR #696](https://github.com/zemdregon/switchboard/pull/696), now in main; `COMPILED_CELL_FALLBACK`
-    in `src/cli/adapters-validate.ts`, see the T4.4 updates); no status flips on the strength of this decision.
+    the approved `privileged` bypass scope of owner decision 46 (worktree files, shell `broad`, network `on`,
+    repository configuration `enabled`), with a validate-local approval for that call only, the same trivial read-only
+    smoke objective and the same throwaway Git repository (removed in `finally`, passed writable where the cell
+    refuses a read-only workspace); nothing is persisted but the manifest fields on full success. The OpenCode cell
+    declares no bypass-class flag (Q-83), so its smoke argv must carry no bypass-class flag at all; the Antigravity
+    cell carries exactly `--dangerously-skip-permissions` (Q-84); anything else fails the smoke step. A passing run
+    closes only the "`adapters validate`" part (and "the manifest range is set by the command") of T4.38 and T4.58;
+    the live smoke and the live malicious legs stay operator-only. The extension is built in the T4.4 change
+    ([PR #696](https://github.com/zemdregon/switchboard/pull/696), now in main; `COMPILED_CELL_FALLBACK` in
+    `src/cli/adapters-validate.ts`, see the T4.4 updates) alongside queue item W1; no status flips on the strength
+    of this decision.
 
 61\. ADR-0047 and ADR-0048 accepted if the documents are consistent (2026-10-18). **Relayed by the orchestrator (Linus,
 with standing authority) as an owner direction; the wording below is the relayed text, not checked against
@@ -877,7 +867,8 @@ has none beyond the stale-for-TTL window noted in it; decision 30 closes R-44; d
 decision 33's is R-46 (not blocking); decision 34's is R-47 (not blocking); decision 35's are R-48 and R-49 (not
 blocking); decision 36's is R-50 (not blocking); decision 37's is R-51 (accepted by the owner for bypass); decision 38's
 is R-52 (not blocking); decision 39's are R-53 and R-54 (not blocking); decision 40's are R-55 to R-58 (not blocking);
-decision 41's is R-59 (not blocking); decisions 42 and 43 have none, and their open question is Q-55; decision 44 has
+decision 41's is R-59 (not blocking); decisions 42 and 43 have none, and their open question was Q-55 (answered
+2026-10-18 by owner decision 62); decision 44 has
 none beyond R-52; decision 45's is R-61 (accepted by zemdregon for approved bypass runs; open for other deployments);
 decision 46's is R-38 (dated note; accepted by zemdregon for his own bypass runs, not blocking). Decision 49 has none;
 decision 50's is R-65 (accepted by zemdregon through decision 50, a Delegated reading of his answer); decisions 49 and
@@ -1202,7 +1193,7 @@ Each task lists its references and its completion check. Design:
 | T9.8 | Update the README (projects, commit behaviour, push default), roadmap status and any document the work proved wrong | NFR-MAINT-02, NFR-MAINT-03 | T9.1–T9.7, T9.9, T9.10 | §6 shows M9 `Done` with links to the tests **Status: Done (2026-10-13, documentation closure done; §6.3 T9.8 status).** |
 | T9.9 | `manage_projects` client flag, `project_revision` table, `create_project`, `update_project`, `delete_project`, creator-only visibility, `projects approve` | FR-PRJ-10, BR-32, [LLD §3](design/LLD.md#3-mcp-tool-contracts), [LLD §11.1](design/LLD.md#111-configuration-shape) | T9.2 | Tests: tools absent without the flag; configured projects and other clients' projects refused; path outside allowed roots, ceiling, provider and push widening beyond the client rejected; `container` and push revisions stay `PENDING_APPROVAL` until `projects approve`; delete with an active run refused; every call is an event |
 | T9.10 | Optional commit signing: `sign` context option, controller-side signing with the operator's Git configuration, `projects validate` test signature | FR-GIT-10, BR-33, [LLD §12.3.1](design/LLD.md#1231-signing-fr-git-10) | T9.3, T9.6 | A signed commit verifies; failure returns `SIGNING_FAILED` and leaves the publish ref unchanged; the key and agent variables never reach the provider process (environment inspection); refused where BR-31 withholds `push` |
-| T9.11 | Concurrent-run worktrees per project: a lease and worktree per concurrent run, never shared across meta-sessions (FR-WS-08); removal of a concurrent run's worktree on merge or abandon, branches and artifacts kept to GC (FR-WS-09, Proposed; the merge trigger is Q-55) | FR-WS-08, FR-WS-09, FR-WS-02, FR-PRJ-05, [LLD §5](design/LLD.md#5-workspace-and-lease-algorithm) | T9.2, T1.5 | Two concurrent runs in one project get distinct worktrees and leases (fake adapter, real Git in temp dirs); a `container` run mounts only its own worktree; FR-WS-09 tests stay skipped until the owner accepts it |
+| T9.11 | Concurrent-run worktrees per project: a lease and worktree per concurrent run, never shared across meta-sessions (FR-WS-08); removal of a concurrent run's worktree on merge or abandon, branches and artifacts kept to GC (FR-WS-09, Proposed; the merge trigger was Q-55, answered 2026-10-18: no merge detection) | FR-WS-08, FR-WS-09, FR-WS-02, FR-PRJ-05, [LLD §5](design/LLD.md#5-workspace-and-lease-algorithm) | T9.2, T1.5 | Two concurrent runs in one project get distinct worktrees and leases (fake adapter, real Git in temp dirs); a `container` run mounts only its own worktree; FR-WS-09 tests stay skipped until the owner accepts it |
 | T9.12 | *Proposed task (2026-10-17, Delegated agent work, documentation only; not owner-approved).* Dependency seeding design (FR-WS-10): a new ADR (a new persistent store at a trust boundary) and an LLD section for project-declared seeds (lockfile path, produced ignored directory, install command run like a verification command under the project's trust profile on a scratch worktree of the base checkpoint), a store keyed by the lockfile's content hash with an LRU bound, copy-on-write or private-copy population only (Q-103), a read-only mount for `container` environments, and degrade-not-fail behaviour | FR-WS-10, FR-WS-01, FR-WS-08, FR-EXE-07, FR-EXE-08, FR-PRJ-05, [ADR-0006](adr/0006-worktree-checkpoints-no-blind-replay.md), [ADR-0013](adr/0013-projects-environments-and-contexts.md), [ADR-0052](adr/0052-container-environment-docker-backend.md) | T9.11 | The ADR (Proposed) and the LLD section are merged; `node scripts/check-docs.mjs` passes; Q-103 is recorded with its default **Status: Done (2026-10-17, Delegated agent work, not owner-approved).** *Was:* Planned (2026-10-17, Delegated proposal, not owner-approved). Design only, nothing built (T9.13 implements it). Evidence: [ADR-0057](adr/0057-dependency-seed-store.md) (Proposed; indexed in [docs/adr/README.md](adr/README.md)) and [LLD §5.1](design/LLD.md#51-dependency-seeds-fr-ws-10-proposed-t912) (project-declared `dependency_seeds`, key from the lockfile blob's SHA-256 at the base checkpoint plus seed, install argv, build profile and environment; build on a scratch worktree of the base checkpoint like a verification command, profile capped at `trusted-development`; copy-on-write clone or private copy only; one read-only bind mount for `container`; `seed_failed` and an unseeded, admitted run; LRU bound `limits.seed_store_mb` and `limits.seed_entries_per_seed` that never evicts an entry in use; the `SeedStore` port and the `dependency_seeds` reclaimer for the T3.23 early sweep); `node scripts/check-docs.mjs` passes on this change. Q-103 ([§7](#7-risks-blockers-and-open-questions)) already records its Delegated default (no hardlinks under any profile; copy-on-write clone where supported, otherwise a private copy), applied unchanged; the question stays open for Linus or zemdregon. No code or tests changed, so nothing unconfigured can differ from `main` (the byte-identical test is in T9.13's Done-when) |
 | T9.13 | *Proposed task (2026-10-17, Delegated agent work, documentation only; not owner-approved).* Implement dependency seeding per T9.12 (FR-WS-10) | FR-WS-10, T9.12 | T9.12 | Tests on the fake adapter with real Git in temporary repositories and a fake install command: a project with no seed gives byte-identical worktrees to `main`; two runs on one lockfile hash build the store entry once and both worktrees contain the directory; a fake agent that changes the mode of and writes to a seeded file leaves the store and the other worktree unchanged; a changed lockfile builds a new entry; a failing install leaves the run admitted with an unseeded worktree and a `seed_failed` event; LRU eviction never removes an entry in use **Status: Done (2026-10-17, Delegated agent work, not owner-approved).** *Was:* Planned (2026-10-17, Delegated proposal, not owner-approved). Built per [ADR-0057](adr/0057-dependency-seed-store.md) and [LLD §5.1](design/LLD.md#51-dependency-seeds-fr-ws-10-proposed-t912) (as-built note and the Delegated differences there): the seed store `src/workspace/seeds.ts` (key from the lockfile blob at the base checkpoint, build on a scratch worktree through the verification runner, publish checks, copy-on-write clone or private copy, LRU eviction that never takes an entry in use, startup `reconcile`, the `dependency_seeds` reclaimer); the manager seeds a fresh worktree after the `pre` checkpoint (`src/workspace/manager.ts`, `seeding` option); configuration `projects[].dependency_seeds` and `limits.seed_store_mb`/`seed_entries_per_seed` (`src/config/schema.ts`, `src/config/projects.ts`, `src/config/load.ts`; configured projects only); the `container` read-only mount and builder (`src/environment/container.ts` `seedMountPlan`, `src/environment/seed-build.ts`); ledger migration `src/ledger/migrations/0022_dependency_seed.ts`; `serve` composes it only when a project declares a seed and registers the reclaimer first in the T3.23 early sweep (`src/cli/serve.ts` `serveSeeds`). Q-103: the Delegated default recorded in [§7](#7-risks-blockers-and-open-questions) is applied unchanged (no hardlinks under any profile; private copy or copy-on-write clone); the question stays open. Evidence: `src/lifecycle/dependency-seeds.test.ts` (fake adapter, real Git, fake install command: "a project with no seed gives byte-identical worktrees, events and diffs to main", "two runs on one lockfile hash build the store entry once and both worktrees contain the directory", "a fake agent that changes the mode of and writes to a seeded file leaves the store and the other worktree unchanged", "a changed lockfile builds a new entry", "a failing install leaves the run admitted with an unseeded worktree and a seed_failed event", "LRU eviction never removes an entry in use"); `src/workspace/seeds.test.ts` ("a symlink leaving the directory fails the build with unsafe_entry", "a privileged run's build records profile trusted-development and shares that profile's entry", "an entry marked evicting is never used: it is rolled forward and built again", "is one read-only bind mount of the entry, no copy on the host, and no other path under the data directory", "is registered first, removes private copies of idle worktrees (never a leased one), then unused entries", single flight, failure reasons, reconcile); `src/config/dependency-seeds.test.ts`; `src/cli/serve-seeds.test.ts`; `src/ledger/ledger.test.ts` ("0022 keeps every artifact row, adds the seed_log kind and the dependency seed tables (T9.13)"). Docs: [LLD §5.1](design/LLD.md#51-dependency-seeds-fr-ws-10-proposed-t912), [SRS](requirements/SRS.md) notes on FR-WS-10, FR-WS-11 and FR-PRJ-05. Not built: the `projects validate` lockfile and ignore checks; a dynamic project cannot declare seeds |
 
@@ -1600,7 +1591,8 @@ environments (M10); Claude Code and Codex end to end (no live run). Q-56 answere
 signing), R-60.
 
 **T9.11 status (2026-10-13; Delegated, owner decision 42): Done for `host` environments (FR-WS-08); FR-WS-09 not
-started (Proposed, not accepted; Q-55 open).** Finding: the existing model already met FR-WS-08. Worktrees and
+started (Proposed, not accepted; Q-55 answered 2026-10-18 by owner decision 62: no merge detection, abandon-only
+removal; the FR-WS-09 amendment follow-up builds it).** Finding: the existing model already met FR-WS-08. Worktrees and
 controller branches are keyed by meta-session and run, the write lease is one column pair on the `meta_session` row,
 and a meta-session has at most one non-terminal run (FR-SES-06), so concurrent runs of one project are always in
 different meta-sessions with their own worktree, branch and lease; nothing serialises or shares them by project or
@@ -1643,7 +1635,8 @@ than the global limit"): under CPU load both failed in 3 of 3 processes of 15 re
 repository one at a time (T9.11)" (`src/workspace/workspace.test.ts`; a `git` shim records overlapping adds
 deterministically), which fails without the fix. **Not covered:** two controllers with different data directories on
 one repository (outside the one-`serve`-per-data-directory model); Claude Code and
-Codex end to end (no live run); FR-WS-09 and Q-55; retention GC (`git worktree prune`/`remove`) and the push path
+Codex end to end (no live run); FR-WS-09 and its queued amendment follow-up (Q-55 answered 2026-10-18); retention
+GC (`git worktree prune`/`remove`) and the push path
 (`git worktree list`) also enumerate worktrees and are not in the creation queue (no failure observed; not tested).
 
 **T9.8 status (2026-10-13; Delegated): documentation closure done; M9 stays `Partial`, not `Done`.** Done: the README
