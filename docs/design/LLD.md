@@ -5808,6 +5808,7 @@ the operator.
     "subscriptions": {
       "<name>": {                                   // ^[a-z][a-z0-9_-]{0,31}$; operator's own label
         "providers": ["<config provider id>"],      // 1..16; a provider is in at most one subscription
+                                                     // (`fake` only when the test-only fake adapter is registered; §17.7)
         "windows": [ {
           "id": "<window id>",                      // ^[a-z0-9_-]{1,32}$, unique in the subscription
           "length_seconds": 0,                       // 60..2678400; operator-declared
@@ -5898,7 +5899,9 @@ percentage of a plan, and the text view prints "used (estimate, Switchboard-obse
 *As built (T6.13, 2026-10-17, Delegated):* the configuration keys and the per-window figures. The projection block that
 reads them is T6.14 (below); the gate that holds runs is T6.8 and the score term is T7.15 (built; see §17.7). `capacity.subscriptions`
 and `capacity.pacing` are
-strict in `src/config/schema.ts`; `src/config/capacity.ts` refuses a provider id that is not configured, a provider in
+strict in `src/config/schema.ts`; `src/config/capacity.ts` refuses a provider id that is not configured, except the
+test-only `fake` adapter id when that adapter is registered (`checkCapacity` over `memberProviderIds(true)` via
+`loadConfig({ testFakeAdapter })`; T7.13 fix, 2026-10-18, `src/config/fake-model-groups.test.ts`), a provider in
 two subscriptions, a window id repeated in a subscription, a `fixed` reset without an ISO instant with an offset as
 `anchor`, and an `anchor` on any other reset. Subscriptions resolve in name order with the adapter id of each provider,
 and only when the file sets `subscriptions` or `pacing`, so a configuration without them resolves exactly as before.
@@ -6184,7 +6187,7 @@ term), **Affinity**, **Decision record, version 3** and **Run fields** subsectio
 { "model_groups": {
     "<name>": {                                     // ^[a-z][a-z0-9_-]{0,31}$, at most 32 groups
       "members": [                                  // 1..32, ordered; order is the last tie-break
-        { "provider": "<config provider id>", "model": "<model id or alias>" }
+        { "provider": "<config provider id>", "model": "<model id or alias>" }   // `fake` only with the test-only switch
       ] } },
   "routing": { "weights": { "pacing": 1 } } }      // seventh weight, 0..100, default 1 (Q-80)
 ```
