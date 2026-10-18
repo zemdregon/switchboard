@@ -302,9 +302,11 @@ event, span, log, artifact or sink, and the R-69 copy behaves as recorded. Desig
   and OpenCode cannot run by design, so as built it cannot pass for them); rows waiting on uncaptured live shapes
   (T4.23, T4.26, T4.33, T4.35, T4.36, T4.43, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66); README rows final after their
   live legs
-  (T4.29, T4.39, T4.49, T4.59, T4.69); Muse Code (Should: T4.71 and T4.78 need Meta access, Q-27; T4.73 is partial
-  until the T4.71 capture; T4.76 is blocked because the adapter has no denial or tool-call record to end a hostile
-  stream `PERMISSION_BLOCKED`; T4.79 is final after T4.78).
+  (T4.29, T4.39, T4.49, T4.59, T4.69, T4.79); Muse Code (Should) has module, compile matrix, auth preflight,
+  conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
+  [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
+  is partial until the T4.71 capture; T4.76 is blocked because the adapter has no denial or tool-call record to end a
+  hostile stream `PERMISSION_BLOCKED`; T4.79 is final after T4.78.
   Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
   Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
@@ -2183,6 +2185,164 @@ the guard enforces Git writes only), pinned as `kimiUnguardedStreams`. The live 
 T4.65 and T4.67 are `Done` against their Done-when on synthetic fixtures; T4.62 to T4.64 and T4.66 stay `Partial`.
 No end-to-end run through Switchboard against a logged-in `kimi` has been recorded yet (T4.68).
 
+## Muse Code CLI (milestone 4)
+
+Muse Code is a `Should` provider (FR-ADP-12). Config id `muse-code`; routing and `list_capabilities` id `muse`
+(`src/adapters/providers.ts`). Every native spelling the adapter uses is in `src/adapters/muse/protocol.ts`, cited to a
+source tag of [TDD §4.8](docs/design/TDD.md#48-muse-code-m4) with the status that section gives it (confirmed,
+corrected, reported by a third party, or **Assumption**). **No `muse` binary has been installed or run for any of this
+work, and nothing here is validated against a live CLI.** Using Muse Code needs Meta access (open question Q-27),
+which has not been verified.
+
+Switchboard would run the **`muse`** binary once per run as
+`muse exec --json -w off --approval-mode on-request --sandbox-network restricted|unrestricted --trust-workspace <prompt>`
+(`src/adapters/muse/adapter.ts`). The prompt is the last positional argv word and is visible in the process list. The
+child environment is empty with an allowlist of `PATH` and `HOME` (`MUSE_ENV_ALLOWLIST`): `META_API_KEY`, which would
+hide a browser login (TDD §4.8 "Auth preflight"), never reaches the child, and `MUSE_NO_AUTO_UPDATE` is not set
+because only a third party reports it. The adapter never reads a Muse credential, trust or settings file and never
+writes provider configuration ("the module source has no filesystem writes (inspection)" and "by inspection, the
+adapter reads no file of the Muse home and no credential name (FR-AUTH-02)" in `src/adapters/muse/muse.test.ts`).
+
+**Not runnable as shipped.** The compliance manifest (`src/adapters/manifests/muse.json`) has the range `<0.0.0`, so it
+admits no version: with a `muse` on `PATH`, `doctor` and `list_capabilities` report `ADAPTER_VERSION_UNVERIFIED` ("doctor
+lists muse with its version gate failing ADAPTER_VERSION_UNVERIFIED", "list_capabilities reports muse as
+ADAPTER_VERSION_UNVERIFIED with no supported profile"), until an operator runs `switchboard adapters validate muse-code`
+(ROADMAP T4.78). Without a `muse` on `PATH`, which is the case on any host that has not installed it, the probe's
+`binary` step fails and routing excludes the provider as `BINARY_MISSING` (`src/routing/eligibility.ts`). The provider
+is not disabled in configuration by default (a provider not listed under `providers` is enabled,
+`src/config/load.ts`); set `providers.muse-code.enabled` to `false` to exclude it as `PROVIDER_DISABLED`.
+
+### Login
+
+| Provider | Login step the adapter reports | Status of that step |
+| --- | --- | --- |
+| Muse Code | `muse login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs it) | Meta documents `muse auth set`, `muse logout` and sign-in on first run or with `/login`; `muse login` appears in Meta's changelog and a third-party report; no auth status command is documented ([TDD §4.8](docs/design/TDD.md#48-muse-code-m4) "Auth preflight"). Requires Meta access (Q-27), which is **not verified**; no Muse login has been checked |
+
+The auth preflight (T4.74) runs `muse auth status` with a 10-second timeout and nothing but `PATH` and `HOME`. That
+command is an **Assumption** (no status command is documented), as are its replies: at exit 0, a first stdout line
+starting `Logged in` is `OK` and one starting `Not logged in` is `AUTH_REQUIRED` naming `muse login`. Any other first
+line, a non-zero or null exit, a timeout, empty output or a spawn failure is `UNKNOWN` (fail closed), and the reason
+carries at most the first 80 printable characters of that line. Without a binary on `PATH` it is `UNKNOWN` and nothing
+runs. Tests: "muse auth preflight (T4.74, ...)" in `src/adapters/muse/muse.test.ts` ("runs only `auth status` with a
+short timeout and passes no META_API_KEY", "a logged-out first line at exit 0 is AUTH_REQUIRED naming the native login",
+"any other output, exit code, timeout or spawn failure is UNKNOWN and never leaks past the first line or carries an
+account value", "is UNKNOWN when the binary is not on PATH, without running anything"). The `doctor` probe runs
+`muse --version` and `muse exec --help`, which must list `--json`, `--approval-mode` and `--sandbox-network` ("muse
+probe on synthetic output (T4.72, FR-ADP-02)").
+
+### Trust profiles
+
+The compile matrix (T4.72, Delegated, fail closed) follows Grok Build: only an approved `privileged` bypass scope
+compiles. Each `Ineligible` reason below is the adapter's text, verbatim (`#build` in `src/adapters/muse/adapter.ts`
+and `NON_PRIVILEGED_UNSUPPORTED_DETAIL` in `src/adapters/muse/protocol.ts`); routing reports `PROFILE_UNSUPPORTED` and
+`CAPABILITY_MISSING` as `ELIGIBILITY_NONE`.
+
+| Profile | Available now | Effect in this version |
+| --- | --- | --- |
+| `inspect-untrusted` | no | `PROFILE_UNSUPPORTED`: "inspect-untrusted: Muse Code has no T4.71 results yet: whether --approval-mode holds with no TTY, what --sandbox-network restricted blocks and whether home-directory skills can be suppressed are Unverified (TDD §4.8), so no control a non-privileged profile needs is shown to hold (FR-POL-02)" |
+| `edit-untrusted` | no | As `inspect-untrusted`, with the profile name `edit-untrusted` |
+| `test-sandboxed` | no | As `inspect-untrusted`, with the profile name `test-sandboxed` |
+| `trusted-development` | no | As `inspect-untrusted`, with the profile name `trusted-development` |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once for a client whose `privileged_approval` is `not_required`). Only a scope that sets `bypass`, on an approved run, with worktree files, shell `broad`, network `off` or `on`, repository configuration `enabled`, no requested model and an objective that is not empty and does not start with `-` compiles, as `muse exec --json -w off --approval-mode on-request --sandbox-network <restricted for network off, unrestricted for on> --trust-workspace <prompt>`. Approvals and the sandbox stay on; nothing bypass-class but `--trust-workspace` is emitted. Every other scope is refused, as below |
+
+Refusals, in the order the adapter checks them (the first unmet check is the reason):
+
+| Request | Reason code | Detail (verbatim) |
+| --- | --- | --- |
+| Shell allowlist entry that could write Git (any profile, checked first) | `PROFILE_UNSUPPORTED` | "shell allowlist entries could write Git (FR-GIT-01): " followed by the entries |
+| A bypass approval on a profile other than `privileged` | `PROFILE_UNSUPPORTED` | "bypassApproved is set on a profile other than privileged: a bypass applies only to an approved privileged scope (FR-POL-03, ADR-0017)" |
+| `privileged` with no scope binding | `PROFILE_UNSUPPORTED` | "privileged without an approved scope binding (LLD §3.1)" |
+| `privileged` without `bypass` | `PROFILE_UNSUPPORTED` | "privileged without bypass: no non-bypass Muse Code cell is shown to hold until T4.71 (TDD §4.8), and the shared argv audit refuses -w (a declared Cursor short flag, ADR-0037) outside an approved bypass run, so \`-w off\` could not spawn" |
+| `bypass` set but the run's bypass approval missing | `PROFILE_UNSUPPORTED` | "privileged scope sets bypass but the run's bypassApproved is false: the Muse Code bypass cell is compiled only for an approved bypass run (FR-POL-03, ADR-0017)" |
+| Shell other than `broad` | `CAPABILITY_MISSING` | "privileged shell=\<mode\>: Muse Code documents no per-run allow rule, and whether --approval-mode untrusted stops or denies with no TTY is Unverified: T4.71" |
+| Read-only files, or a workspace that is not writable | `CAPABILITY_MISSING` | "privileged read-only files: no read-only file mode is documented" |
+| Network `allowlist` | `CAPABILITY_MISSING` | "privileged network=allowlist: what --sandbox-network proxy-only admits is not documented (R-36)" |
+| Repository configuration `disabled` or `approved` | `CAPABILITY_MISSING` | "privileged repository_config=\<mode\>: an untrusted headless run stops naming --trust-workspace ([M-log]), user-level rules and home-directory skills load regardless ([M-cfg], [M-ext]) and the CLI has no per-item approval" |
+| A requested model | `CAPABILITY_MISSING` | "no model flag is sourced for Muse Code and no model registry data (T4.5)" |
+| An empty objective, or one starting with `-` | `CAPABILITY_MISSING` | "the prompt is one positional argument ([M-ext]) and no end-of-options marker is sourced, so an empty objective or one starting with '-' is not compiled" |
+| No `muse` on `PATH` | `CAPABILITY_MISSING` | "muse not found on PATH" |
+
+Tests: "muse compile matrix per profile (T4.72)" ("%s is Ineligible PROFILE_UNSUPPORTED until T4.71, with and without a
+bypass approval", "privileged compiles only an approved bypass scope with worktree files, shell broad, network off or
+on, repo enabled", "privileged without bypass, or with bypass but no approval, is Ineligible with its reason", "a
+model, a read-only workspace, a git-writing allowlist, a dash-led or empty objective and a missing binary are
+Ineligible") and "muse argv invariants (T4.72)" ("`-w off` is present in every compiled argv, as one adjacent pair after
+`exec`", "approvals and the sandbox stay on: no bypass-class flag or widening value is ever emitted", "no bypass-class
+flag outside the approved bypass case: the audit refuses the compiled argv in every other context").
+
+**Bypass-class declarations.** The registry entry declares `--disable-approval`, `--disable-sandbox` and
+`--trust-workspace` (with the shared `--yolo`) as bypass flags, and `--approval-mode never`,
+`--sandbox-network unrestricted` and `--sandbox-network enabled` as bypass values, so the argv audit refuses them
+outside an approved bypass run ("declares the TDD §4.8 bypass-class flags and values, refused outside the approved
+bypass case"). Because the shared audit also refuses `-w` (Cursor's declared short flag) outside that run, no Muse
+argv could spawn anywhere else.
+
+**Resume (FR-SES-03).** `resumeArgs` adds `--session-id <uuid>` before the prompt and compiles through the same matrix,
+with the same refusals; a binding of another provider or an id that is not a uuid is refused, and
+`--allow-workspace-switch` is never emitted (`resumeCwd` `bound`). Tests: "muse resume args (T4.73, FR-SES-03)".
+
+### Parser rules
+
+The `--json` parser (T4.73, `parseEvent` and `extractResult` in `src/adapters/muse/adapter.ts`) reads one record per
+line, keyed on a string `kind`:
+
+- `run_started` binds the session id from its `session_id` field, which must be a uuid; `run_output_delta` `text`
+  becomes assistant text, joined as the summary; `task_lifecycle`, `command_accepted`, `command_result`,
+  `model_configured`, `tool_result` and `turn_input_user` are dropped.
+- **Success only for `terminal: "completed"`.** A run succeeds only with a `run_terminal` record whose `terminal` is
+  `completed`, at an expected exit code (`0`), with no provider error. Exit code 0 alone never succeeds, and exit 0
+  with any other `terminal` value ends `FAILED`.
+- **Unknown records are never success.** Any other `kind`, a record with no string `kind`, or a known kind missing its
+  field is an `unknown` event: counted, clipped, and never a result or a session, so a stream of unknown records at
+  exit 0 fails.
+- Fail closed (Delegated): any record after the first `run_terminal`, a session id that is not a uuid and a session id
+  that changes mid-run end `OUTPUT_PROTOCOL_ERROR`. No native error, rate-limit, permission or sandbox record is
+  sourced, so a failed terminal or an unexpected exit is `TOOL_FAILURE`, never a narrower code. No usage is recorded.
+
+Tests: "muse parser and result (T4.73; ...)" in `src/adapters/muse/muse.test.ts`, among them "terminal success: deltas
+joined, session id from run_started only, the other SDK kinds dropped", "exit code 0 with a failed terminal record ends
+FAILED, never success", "unknown kinds fail closed: counted and clipped, never a result or a session, so an
+unknown-only exit 0 fails", "stream anomaly %s is OUTPUT_PROTOCOL_ERROR, never success" and "a session id is taken from
+structured output only, never from assistant or terminal text", over the synthetic fixtures in
+`src/adapters/muse/fixtures/`.
+
+The conformance suite (T4.75; "muse conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.75)") replays those
+synthetic fixtures (`museConformanceCases` in `fixtures/cases.ts`) through the replay dialect
+`src/adapters/fixtures/replay-dialects/muse.mjs`, which refuses any argv the adapter would not emit ("the replay
+refuses an argv Muse Code would not be given (%s), so a wrong compile cannot pass", 13 edits, each ending exit 64 or
+65). "covers every FR-ADP-11 kind and passes the full suite" runs in CI with no `muse` installed. A missing login is
+`AUTH_REQUIRED` naming `muse login` at the preflight only; a logged-out run is `TOOL_FAILURE`, because no logged-out
+`muse exec --json` record is sourced.
+
+### Git and commits
+
+`list_capabilities` reports `gitWriteControl` **`none-documented`** (`remainingControls` `FR-GIT-03`, `FR-GIT-06`): no
+per-command Git deny control is documented, and the read-only `.git` inside Muse's writable workspace is a sandbox
+property, unverified for a worktree whose `.git` is a file (`MUSE_GIT_WRITE_CONTROL`, `GIT_WRITE_CONTROL_DETAIL`).
+Shell allowlist entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01) before any
+other check, including on an approved bypass scope. `commitChannel` is **`finalize-only`**: no tool is injected,
+because the `-c` form for an MCP server block is unverified (`MUSE_GIT_CAPABILITIES`). To publish work, set
+`finalize_commit` on the project's primary context ([How commits reach Git](#how-commits-reach-git)). Tests: "muse Git
+declaration (T4.77, FR-GIT-01, FR-GIT-02, FR-GIT-09)" in `src/adapters/muse/muse.test.ts`, including "a replayed
+write run in a finalize-only project gets the controller commit at FINALIZING". What a commit attempt does in a real
+run is unverified.
+
+### Open gaps
+
+- **Record spellings are Assumptions until the operator capture (T4.71).** Only the `kind` field and the
+  `run_terminal` shape are reported, by a third party; the other record kinds, the `session_id` and `text` fields and
+  the `muse auth status` command and replies are Assumption spellings, so T4.73 stays `Partial`.
+- **The malicious-fixture leg (T4.76) is blocked.** The parser emits no `tool_call` event, so Switchboard's tool-call
+  guard never sees a command and a synthetic Git write in a Muse command or tool record at exit 0 ends in success
+  rather than `PERMISSION_BLOCKED`; closing it needs a parser change that reads commands out of those records, whose
+  field names are unsourced.
+- **Not runnable by default.** With no `muse` installed the provider is `BINARY_MISSING`, and with one installed it is
+  `ADAPTER_VERSION_UNVERIFIED` until `adapters validate` passes a version (T4.78).
+- Live smoke, live malicious leg and `adapters validate` are operator work that needs Meta access (T4.71, T4.78, Q-27).
+
+T4.72, T4.74, T4.75 and T4.77 are `Done` against their Done-when on synthetic fixtures; T4.73 stays `Partial` and T4.76
+is `Planned` (blocked as above). No run through Switchboard against a real `muse` has been recorded.
+
 ## Trust profiles
 
 A trust profile says what a delegated agent may do ([ADR-0004](docs/adr/0004-trust-profiles-no-bypass-flags.md)). Each
@@ -2402,6 +2562,12 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   `Ineligible`. The malicious-fixture leg (T4.66) replays the approved bypass cell only: a credential read, outside
   write or network call without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg
   is operator work. See [Kimi Code CLI](#kimi-code-cli-milestone-4).
+- **Muse Code is built on synthetic fixtures only and does not run (ROADMAP T4.72 to T4.79).** No `muse` has been
+  installed or run, and Meta access (Q-27) is not verified. The `--json` record spellings and the `muse auth status`
+  probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) is blocked because the
+  parser emits no tool-call event for the guard to check. The provider is `BINARY_MISSING` without a `muse` on `PATH`
+  and `ADAPTER_VERSION_UNVERIFIED` with one, and only an approved `privileged` bypass scope compiles. See
+  [Muse Code CLI](#muse-code-cli-milestone-4).
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
   Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may
