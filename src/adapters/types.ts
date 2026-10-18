@@ -96,18 +96,72 @@ export interface CompileRequest {
 }
 
 /**
- * T16.5 (LLD §19.6, ADR-0056 items 6 and 7, TDD §3.16.1): how a compiled cell delivers the run's skills. Every adapter
- * and cell is `prompt_prefix` on 2026-10-17; T16.6 widens this with `{ native: NativeSkillLocation }` and T16.7 adds the
- * per-adapter declarations and their conformance check.
+ * T16.6 (LLD §19.6, ADR-0056 items 6 and 8, TDD §3.16.1): where a cell that delivers natively puts a skill file. The
+ * path is always a fresh `switchboard-` path inside the run worktree: `<dir>/switchboard-<name>/<file>` (`layout.file`)
+ * or `<dir>/switchboard-<name>.<ext>` (`layout.ext`). The workspace manager writes it (`src/workspace/native-skills.ts`);
+ * the adapter only declares it.
  */
-export type SkillDelivery = "prompt_prefix";
+export interface NativeSkillLocation {
+  /** Worktree-relative directory, `/`-separated; never absolute, never `..`, never a `.git` component. */
+  readonly dir: string;
+  readonly layout: { readonly file: string } | { readonly ext: string };
+  /** Pure renderer from the canonical skill to the text the provider expects (UTF-8 on disk). */
+  render(skill: PromptSkill): string;
+  /**
+   * Id of the T16.8 live check that showed a file at this location reaches the model. Required: a declaration without
+   * one is read as `prompt_prefix` here, and the T16.7 conformance suite fails it.
+   */
+  readonly evidence: string;
+}
+
+/**
+ * T16.5/T16.6 (LLD §19.6, ADR-0056 items 6 and 7, TDD §3.16.1): how a compiled cell delivers the run's skills. Every
+ * shipped provider adapter and cell is `prompt_prefix` on 2026-10-17; only the fake adapter can declare `native`, in tests
+ * (T16.6). T16.7 adds the per-adapter declarations and their conformance check.
+ */
+export type SkillDelivery = "prompt_prefix" | { readonly native: NativeSkillLocation };
 
 /** The default for every adapter and cell (LLD §19.6). */
 export const DEFAULT_SKILL_DELIVERY: SkillDelivery = "prompt_prefix";
 
+/** Path segment rules of {@link nativeSkillPath}: no empty, `.`, `..` or `.git` segment, no backslash, no NUL. */
+function safeSegment(seg: string): boolean {
+  return (
+    seg !== "" &&
+    seg !== "." &&
+    seg !== ".." &&
+    seg.toLowerCase() !== ".git" &&
+    !seg.includes("\\") &&
+    !seg.includes("\0") &&
+    !seg.includes("/")
+  );
+}
+
+/** Skill names as the store accepts them (`src/skills/format.ts` `SKILL_NAME`), repeated so this module stays leaf. */
+const NATIVE_SKILL_NAME = /^[a-z][a-z0-9-]{1,47}$/u;
+
+/**
+ * The worktree-relative path of `name`'s native file under `location`, or undefined when the location or the name is
+ * not a safe relative path (fail closed: the caller then uses the prompt prefix).
+ */
+export function nativeSkillPath(location: NativeSkillLocation, name: string): string | undefined {
+  if (!NATIVE_SKILL_NAME.test(name) || typeof location.dir !== "string") return undefined;
+  const dir = location.dir.split("/");
+  if (!dir.every(safeSegment)) return undefined;
+  const layout = location.layout as { file?: unknown; ext?: unknown };
+  if (typeof layout.file === "string" && safeSegment(layout.file)) {
+    return [...dir, `switchboard-${name}`, layout.file].join("/");
+  }
+  if (typeof layout.ext === "string" && /^[A-Za-z0-9]{1,16}$/u.test(layout.ext)) {
+    return [...dir, `switchboard-${name}.${layout.ext}`].join("/");
+  }
+  return undefined;
+}
+
 /**
  * The cell's declared delivery: {@link ProviderAdapter.skillDelivery} when the adapter declares it, else the default.
- * Anything other than a known mode is read as `prompt_prefix` (fail closed: nothing is written to the worktree).
+ * A `native` declaration is honoured only with a non-empty evidence id, a renderer and a safe location (T16.6);
+ * anything else is read as `prompt_prefix` (fail closed: nothing is written to the worktree).
  */
 export function skillDeliveryOf(
   adapter: Pick<ProviderAdapter, "skillDelivery">,
@@ -115,7 +169,18 @@ export function skillDeliveryOf(
   profile: ResolvedProfile,
 ): SkillDelivery {
   const declared = adapter.skillDelivery?.(request, profile);
-  return declared === "prompt_prefix" ? declared : DEFAULT_SKILL_DELIVERY;
+  if (declared === "prompt_prefix") return declared;
+  const native = typeof declared === "object" && declared !== null ? declared.native : undefined;
+  if (
+    native !== undefined &&
+    typeof native.evidence === "string" &&
+    native.evidence.trim() !== "" &&
+    typeof native.render === "function" &&
+    nativeSkillPath(native, "probe-name") !== undefined
+  ) {
+    return { native };
+  }
+  return DEFAULT_SKILL_DELIVERY;
 }
 
 export interface ResolvedProfile {
@@ -428,7 +493,7 @@ export interface ProviderAdapter {
   readonly gitCapabilities: GitCapabilities;
   /** T7.12 declaration ({@link ReportedModelFlag}); absent means `not_accepted`. */
   readonly reportedModelFlag?: ReportedModelFlag;
-  /** T16.5 declaration ({@link SkillDelivery}), pure, per compiled cell; absent means `prompt_prefix` for every cell. */
+  /** T16.5/T16.6 declaration ({@link SkillDelivery}), pure, per compiled cell; absent means `prompt_prefix` for every cell. */
   skillDelivery?(request: CompileRequest, profile: ResolvedProfile): SkillDelivery;
 
   /** FR-ADP-02 steps 1-5: binary, version, command, output formats, required flags. No auth, no model call. */

@@ -40,6 +40,10 @@
  * `reconciliation` event `environment_sweep` before its worktree is assessed. A sweep that cannot list the runtime's
  * containers fails reconciliation (fail closed: an orphan could still be writing the worktree).
  *
+ * T16.6 (LLD §19.8, FR-SKL-06): before a non-waiting run's worktree is assessed, its recorded native skill files are
+ * removed (removal point 3; `skill_removed`, `skill_tampered`, `skill_cleanup_failed` events). A failed removal does
+ * not stop reconciliation: the checkpoint excludes the recorded paths, and retention GC retries.
+ *
  * Idempotent (LLD §10): every step is conditional on the current state; a second pass over a reconciled ledger writes
  * nothing. A crash during reconciliation leaves the last committed step, which the next pass continues from.
  */
@@ -191,6 +195,15 @@ class Reconciler {
     // FR-EXE-06: a still-live provider group is terminated before the worktree is assessed.
     const orphan = await this.handleOrphan(run0);
     this.recordEnvironmentSweep(run0);
+    // T16.6 (LLD §19.8 removal point 3, FR-SKL-06): native skill files of a run found non-terminal go once no provider
+    // process is left and before its worktree is assessed or checkpointed. Idempotent; never throws.
+    try {
+      if (this.opts.workspace.hasPendingNativeSkills(run0.id)) {
+        await this.opts.workspace.removeNativeSkills(run0.id, "reconciliation");
+      }
+    } catch {
+      // Recorded by the workspace when it got that far; the checkpoint below excludes the recorded paths anyway.
+    }
     const run = this.current(run0.id);
 
     switch (run.state) {

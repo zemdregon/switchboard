@@ -1629,7 +1629,8 @@ Extend `$defs` in §3.0:
 ```jsonc
 { "$defs": {
   "needs_attention_reason": { "enum": [
-      "awaiting_approval", "parked_loop", "ci_fix_stuck", "failed_after_retry", "stalled", "budget_exhausted" ] },
+      "awaiting_approval", "parked_loop", "ci_fix_stuck", "failed_after_retry", "stalled", "budget_exhausted",
+      "skill_cleanup_failed" ] },
   "needs_attention": { "type": "object", "required": ["active"], "properties": {
       "active": { "type": "boolean" },
       "reason": { "$ref": "#/$defs/needs_attention_reason" } } },  // required when active is true
@@ -1857,7 +1858,7 @@ request and daemon application), `src/ledger/control-plane.ts` (migration 0018 r
 
 #### 3.4.5 Needs-attention derivation (FR-CTL-03)
 
-Closed reason list (FR-CTL-03, LLD §3.4.1; six values):
+Closed reason list (FR-CTL-03, LLD §3.4.1; seven values, `skill_cleanup_failed` added by T16.6):
 
 | Reason | Derived when (ledger facts only) |
 | --- | --- |
@@ -1867,9 +1868,12 @@ Closed reason list (FR-CTL-03, LLD §3.4.1; six values):
 | `failed_after_retry` | Run `FAILED` and `attempt` equals `control_plane.loop_breaker.max_successors_per_meta_session` or the meta-session is parked |
 | `stalled` | Run non-terminal, `RUNNING` or `LEASED`, and no `run_event` for this run in the last *T* minutes (§3.4.6); run is **not** cancelled |
 | `budget_exhausted` | Project (or global) budget refusal is active for admission (§3.4.6) |
+| `skill_cleanup_failed` | The run's newest `skill_removed` event reports an entry with `removal: "failed"`, or is malformed (fail closed) (§19.8; T16.6), in any state |
 
 Multiple reasons may apply; the envelope and digest expose the highest-priority reason only (order:
-`budget_exhausted`, `parked_loop`, `ci_fix_stuck`, `awaiting_approval`, `stalled`, `failed_after_retry`).
+`skill_cleanup_failed`, `budget_exhausted`, `parked_loop`, `ci_fix_stuck`, `awaiting_approval`, `stalled`,
+`failed_after_retry`; T16.6 put `skill_cleanup_failed` first, Delegated, because a skill file left in a worktree blocks
+publication until an operator or a later removal point clears it).
 Priority is **Proposed** for stable UI; T14.2 may adjust with tests.
 
 **Implemented (T14.2, Delegated, not owner-approved).** `src/control/needs-attention.ts` derives the flag on read and
@@ -6607,8 +6611,9 @@ Done-when).
 
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
 store, migration `0021` and state derivation (T16.1), the configuration keys and loader (T16.3), the operator CLI
-(T16.2), the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), admission (T16.4) and prompt-prefix delivery
-(T16.5), all Delegated, not owner-approved; native delivery (T16.6 and later) Proposed).
+(T16.2), the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), admission (T16.4), prompt-prefix delivery
+(T16.5) and the native-delivery framework with its exclusions and cleanup (T16.6), all Delegated, not owner-approved;
+per-provider native declarations (T16.7, T16.8) Proposed).
 Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
 are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to
 FR-SKL-10. Business rules: [FRD](../requirements/FRD.md#3-business-rules) BR-52 to BR-56, V15, C8, WF-16. Tasks:
@@ -6867,6 +6872,45 @@ pass before the worktree is removed. Each removal hashes the file first (`skill_
 `written_sha256`), unlinks it, removes now-empty `switchboard-` directories it created (never another directory), and
 verifies with `lstat`. A failed unlink or verify sets `removal = 'failed'`, emits `skill_cleanup_failed` and derives
 `needs_attention` with the reason `skill_cleanup_failed` (FR-CTL-03 amended by T16.6); the next removal point retries.
+
+Implementation notes (T16.6, Delegated, not owner-approved):
+
+- **Files.** TDD §3.16 puts the writer and cleaner in the workspace manager; they live in
+  `src/workspace/native-skills.ts`, called through `WorkspaceManager` (`writeNativeSkills`, `markNativeDelivered`,
+  `removeNativeSkills`), and directly by `src/git/commit.ts`, `src/git/push.ts` and `src/workspace/gc.ts` over the same
+  ledger handle. The lifecycle (`src/lifecycle/lifecycle.ts`) calls them at dispatch, at point 1 and at point 2 (in its
+  terminal `settle`, before waiters resolve); reconciliation (`src/reconcile/reconcile.ts`) at point 3 after orphan
+  termination and before the worktree is assessed; GC at point 4 before the worktrees go, and once more after (a path
+  whose removal failed goes with its worktree and is then recorded `verified`). Nothing imports `src/skills/`.
+- **Declaration.** `skillDelivery(cell)` returns `"prompt_prefix" | { native: NativeSkillLocation }`; the location
+  carries `dir`, `layout` (`{ file }` or `{ ext }`), `render` and `evidence` (the T16.8 id). `skillDeliveryOf` reads a
+  native declaration without a non-empty evidence id, a renderer or a safe relative path as `prompt_prefix`. Only the
+  fake adapter can declare `native` (`nativeSkills: true`, `.fake/skills/switchboard-<name>.md`, evidence
+  `fake-test-only`). `skills.delivery: prefix_only` reaches the lifecycle as `skillDeliveryMode` (`src/cli/serve.ts`).
+  A handoff run stays `prompt_prefix` (its block is already in the rendered prompt; T16.10 owns continuity).
+- **Recorded path.** `native_path` is written as an intent before the file is created and cleared again only when a
+  failed write left nothing; `delivery = 'native'` and `delivered_at` are set in the dispatch transaction. A recorded
+  path is one whose `removal` is not `verified`.
+- **Taken paths.** Besides the four Git checks, the path, the `switchboard-` directory and any symlinked or non-directory
+  parent already on disk count as `path_taken`, so the cleaner only ever removes what the writer made. Ignore rules are
+  checked for every prefix and, for parents, with a trailing `/` too (`git check-ignore --no-index`).
+- **Exclusions.** The commit tool adds `:(exclude,top,literal)` pathspecs to `add -A`, resets explicitly named recorded
+  paths to the parent's entries in its temporary index, and refuses `PATH_REFUSED` with `detailReason`
+  `SKILL_PATH_IN_COMMIT` (named in the message; the tool protocol has no `details`) when the written tree still holds
+  one, which happens when the publish ref already has a file there. Checkpoints use the same exclusions and reset the
+  worktree index entries to `HEAD` (an agent's `git add`); `assessMutation`, `rollback` and the `diff` and
+  `changed_files` artifacts exclude them too. No separate `patch` artifact exists today. The handoff diff summary is
+  computed from checkpoint commits, which never contain a recorded path, so `src/continuity/` is unchanged.
+- **Push.** `GitPusher` refuses `SKILL_PATH_PRESENT` (after the policy and violation checks, before any Git call)
+  while a recorded path of any run of the meta-session exists in its worktree; `switchboard git push` explains it.
+- **Removal.** A recorded path whose parent is no longer a real directory, or that is gone, is `verified` (the bytes
+  may live on under another name, R-69). A link or other non-regular file there is `skill_tampered` with
+  `found_sha256: null`; a link is unlinked without being followed, a directory is never removed (`failed`, `EISDIR`).
+  `skill_removed` also carries `point` (`before_verifying`, `terminal`, `reconciliation`, `gc`). `removal = 'not_needed'`
+  is not written for `prompt_prefix` rows. `needs_attention` reads the newest `skill_removed` event, written in the
+  same transaction as the `run_skill` update.
+- Tests: `src/workspace/native-skills.test.ts`, `src/lifecycle/native-skills.test.ts`,
+  `src/reconcile/native-skills.test.ts`, `src/control/needs-attention.test.ts`.
 
 ### 19.9 MCP tools (FR-SKL-08)
 

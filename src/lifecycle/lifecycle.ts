@@ -708,6 +708,11 @@ export interface RunLifecycleOptions {
    * entries runs without them and records that in `skill_delivered` (`skipped`, `store_unavailable`), never silently.
    */
   readonly skillDelivery?: SkillDeliveryPort;
+  /**
+   * T16.6 (LLD §19.3 `skills.delivery`, §19.6 step 1): `prefix_only` forces the prompt prefix even for a cell that
+   * declares `native`. Absent: `native_preferred`, the configuration default (`src/config/schema.ts`).
+   */
+  readonly skillDeliveryMode?: "native_preferred" | "prefix_only";
 }
 
 /**
@@ -719,6 +724,15 @@ export interface SkillDeliveryPort {
   load(runId: string): readonly PromptSkill[];
   /** Records `delivery` and `delivered_at` = `at` on every `run_skill` row of the run. */
   record(runId: string, delivery: "prompt_prefix", at: string): void;
+}
+
+/** T16.6: one entry of the `skill_delivered` event (LLD §19.11); never a body. */
+export interface SkillDeliveryEntry {
+  readonly name: string;
+  readonly version: number;
+  readonly delivery: "prompt_prefix" | "native";
+  readonly native_path?: string;
+  readonly fallback_reason?: "path_taken" | "write_failed";
 }
 
 /** T3.23: the lifecycle's view of the free-disk floor; `serve` composes it from the config and `src/workspace/gc.ts`. */
@@ -1833,7 +1847,7 @@ export class RunLifecycle {
       pack = await this.contextPack(this.opts.contextPack, runId, req.project_id, req.objective, ws);
       if (exec.cancelRequested) return this.cancelEarly(runId);
     }
-    const compileReq = {
+    const compileBase = {
       runId,
       // T5.5: a handoff run compiles the rendered bundle with the instruction last, and no separate constraints (the
       // bundle carries them); `handoff` is for the record only (no adapter reads it). Other runs are unchanged.
@@ -1843,9 +1857,32 @@ export class RunLifecycle {
       ...(handoffPrompt ? { handoff: handoffPrompt.ref } : {}),
       // T7.12 (FR-RTE-08): the model routing pinned at admission and preflight re-checked; absent = adapter default.
       ...(req.model !== undefined ? { model: req.model } : {}),
+    };
+    // T16.6 (LLD §19.6 steps 1 and 2): a cell that declares `native` gets each entry written as a fresh file in the
+    // worktree, unless `skills.delivery` is `prefix_only`; an entry whose path is taken or whose write fails falls back
+    // to the prefix. A handoff run already carries every entry in its rendered prompt (T16.10 owns continuity).
+    let delivery: SkillDeliveryEntry[] = skills.map((s) => ({
+      name: s.name,
+      version: s.version,
+      delivery: "prompt_prefix",
+    }));
+    if (
+      skills.length > 0 &&
+      ws.mode === "worktree" &&
+      !handoffPrompt &&
+      this.opts.skillDeliveryMode !== "prefix_only"
+    ) {
+      const declared = skillDeliveryOf(adapter, compileBase, profile);
+      if (declared !== "prompt_prefix") {
+        delivery = await this.opts.workspace.writeNativeSkills(runId, declared.native, skills);
+      }
+    }
+    const prefixSkills = skills.filter((_, i) => delivery[i]?.delivery !== "native");
+    const compileReq = {
+      ...compileBase,
       // T16.5 (LLD §19.7): rendered by the adapter before `Constraints:` and the task text; never part of `objective`.
-      // A handoff run already carries the block in its rendered prompt.
-      ...(skills.length > 0 && !handoffPrompt ? { skills } : {}),
+      // A handoff run already carries the block in its rendered prompt. T16.6: native entries are not in the block.
+      ...(prefixSkills.length > 0 && !handoffPrompt ? { skills: prefixSkills } : {}),
     };
     let inv =
       req.resume_native_session_id !== undefined
@@ -1890,7 +1927,7 @@ export class RunLifecycle {
     if (ws.mode === "worktree") {
       this.opts.workspace.extendLease(runId, 2 * inv.timeouts.wallClockMs + inv.timeouts.killGraceMs);
     }
-    if (skills.length > 0) this.recordSkillDelivery(runId, skillDeliveryOf(adapter, compileReq, profile), skills);
+    if (skills.length > 0) this.recordSkillDelivery(runId, delivery);
 
     // T9.4 (FR-GIT-02): the injected tool channel, opened just before spawn and closed as soon as the process exits.
     const nativeIds: string[] = req.resume_native_session_id !== undefined ? [req.resume_native_session_id] : [];
@@ -2209,6 +2246,9 @@ export class RunLifecycle {
       // T10.1 (FR-PRJ-05): the container is removed when the run ends, whatever ended it; idempotent, never throws.
       await environment.teardown(environmentRun);
     }
+    // T16.6 (LLD §19.8 removal point 1): the provider process group has exited; native skill files go before VERIFYING
+    // (and before FINALIZING when there is no verification), so neither the commands nor the checkpoint see them.
+    await this.removeNativeSkills(runId, "before_verifying");
     const meta = run0.meta_session_id;
     const streams = await this.storeStreams(runId, meta, out);
     if (!spawned) {
@@ -2781,20 +2821,31 @@ export class RunLifecycle {
   }
 
   /**
-   * T16.5 (LLD §19.6 steps 1 and 4, §19.11): every entry is delivered as `prompt_prefix` (the only mode before T16.6),
-   * recorded on its `run_skill` row with one `skill_delivered` event (names and versions; never a body), in one
-   * transaction, before spawn.
+   * T16.5/T16.6 (LLD §19.6 steps 1, 2 and 4, §19.11): each entry's mode recorded on its `run_skill` row (the port marks
+   * every row `prompt_prefix`, then the workspace marks the rows it wrote `native`) with one `skill_delivered` event
+   * (names, versions, modes, native paths and fallback reasons; never a body), in one transaction, before spawn.
    */
-  private recordSkillDelivery(runId: string, delivery: "prompt_prefix", skills: readonly PromptSkill[]): void {
+  private recordSkillDelivery(runId: string, entries: readonly SkillDeliveryEntry[]): void {
     const port = this.opts.skillDelivery;
     this.ledger.immediate(() => {
-      port?.record(runId, delivery, this.nowIso());
-      this.ledger.appendRunEvent({
-        runId,
-        type: SKILL_DELIVERED_EVENT,
-        payload: { entries: skills.map((s) => ({ name: s.name, version: s.version, delivery })) },
-      });
+      const at = this.nowIso();
+      port?.record(runId, "prompt_prefix", at);
+      if (entries.some((e) => e.delivery === "native")) this.opts.workspace.markNativeDelivered(runId, at);
+      this.ledger.appendRunEvent({ runId, type: SKILL_DELIVERED_EVENT, payload: { entries } });
     });
+  }
+
+  /**
+   * T16.6 (LLD §19.8 removal points 1 and 2): one removal pass over the run's recorded native skill paths. A run without
+   * any does nothing at all (no Git, no file system, no event). Never throws.
+   */
+  private async removeNativeSkills(runId: string, point: "before_verifying" | "terminal"): Promise<void> {
+    try {
+      if (!this.opts.workspace.hasPendingNativeSkills(runId)) return;
+      await this.opts.workspace.removeNativeSkills(runId, point);
+    } catch {
+      // A failed pass is recorded by the workspace (`removal = 'failed'`); the next removal point retries.
+    }
   }
 
   // ---- terminal helpers -----------------------------------------------------------------------------------------
@@ -3443,6 +3494,21 @@ export class RunLifecycle {
   }
 
   private settle(runId: string): void {
+    // T16.6 (LLD §19.8 removal point 2): on entry to any terminal state; waiters see the run after the pass.
+    let pending = false;
+    try {
+      pending = this.opts.workspace.hasPendingNativeSkills(runId);
+    } catch {
+      pending = false;
+    }
+    if (pending) {
+      void this.removeNativeSkills(runId, "terminal").then(() => this.resolveWaiters(runId));
+      return;
+    }
+    this.resolveWaiters(runId);
+  }
+
+  private resolveWaiters(runId: string): void {
     const list = this.waiters.get(runId);
     if (!list) return;
     this.waiters.delete(runId);

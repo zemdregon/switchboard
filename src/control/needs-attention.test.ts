@@ -218,6 +218,45 @@ describe("needs_attention derives each of the five reasons from ledger rows (T14
   });
 });
 
+describe("needs_attention skill_cleanup_failed (T16.6, FR-CTL-03 as amended, LLD §19.8)", () => {
+  const removed = (runId: string, removal: string[]) =>
+    ledger.appendRunEvent({
+      runId,
+      type: "skill_removed",
+      payload: {
+        point: "terminal",
+        entries: removal.map((r, i) => ({ name: `s${i}`, native_path: `p${i}`, removal: r })),
+      },
+    });
+
+  it("holds while the newest skill_removed event reports a failed removal, in any state, and ranks first", () => {
+    const s = session();
+    const done = run(s, "SUCCEEDED");
+    expect(attention(done)).toEqual({ active: false });
+    removed(done.id, ["verified", "failed"]);
+    expect(attention(done)).toEqual({ active: true, reason: "skill_cleanup_failed" });
+    // A later pass that verifies every entry clears it.
+    removed(done.id, ["verified", "verified"]);
+    expect(attention(done)).toEqual({ active: false });
+
+    const failed = run(s, "FAILED", { attempt: 99 });
+    removed(failed.id, ["failed"]);
+    expect(matchingReasons(readNeedsAttentionFacts(ledger, record(failed.id)), { now: now() })).toEqual([
+      "skill_cleanup_failed",
+      "failed_after_retry",
+    ]);
+    expect(attention(failed)).toEqual({ active: true, reason: "skill_cleanup_failed" });
+  });
+
+  it("a malformed skill_removed payload flags the run (fail closed)", () => {
+    for (const payload of [{ point: "gc" }, { entries: [{ name: "s", native_path: "p" }] }]) {
+      const r = run(session(), "SUCCEEDED");
+      ledger.appendRunEvent({ runId: r.id, type: "skill_removed", payload });
+      expect(attention(r)).toEqual({ active: true, reason: "skill_cleanup_failed" });
+    }
+  });
+});
+
 describe("needs_attention: no flag, priority and fail-closed defaults", () => {
   it("a terminal run with no matching rule has no flag and no reason", () => {
     const s = session();
@@ -249,6 +288,7 @@ describe("needs_attention: no flag, priority and fail-closed defaults", () => {
     };
     const later = { now: new Date(T0 + 60 * 60_000) };
     expect(NEEDS_ATTENTION_PRIORITY).toEqual([
+      "skill_cleanup_failed",
       "budget_exhausted",
       "parked_loop",
       "ci_fix_stuck",

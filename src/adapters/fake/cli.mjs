@@ -16,6 +16,9 @@
 // working directory (the run worktree) against temporary local repositories only. The objective on stdin is a JSON plan
 // `{"steps": [...], "hang": false}`; each step is one of
 //   {"op": "write", "path", "content"}            write a file (worktree-relative)
+//   {"op": "append", "path", "content"}           append to a file (T16.6: edit a delivered skill file)
+//   {"op": "rename", "from", "to"}                rename a file (T16.6)
+//   {"op": "add", "path"}                         git add -f -- <path> (T16.6: stage a file by name)
 //   {"op": "commit", "message"}                   git add -A && git commit
 //   {"op": "branch", "name"} / {"op": "tag", "name"}
 //   {"op": "update_ref", "ref", "to"}             git update-ref <ref> <to>   (to: a revision such as HEAD)
@@ -45,7 +48,7 @@
 // that is exactly `[instruction from the orchestrator]`, when there is one (the rendered bundle comes before it); a
 // prompt without that line is the plan itself, as before.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
 // A hanging scenario must outlive a controller that died (SIGKILL): ignore EPIPE instead of crashing on a late write.
@@ -361,6 +364,26 @@ async function gitAttemptsScenario() {
         mkdirSync(dirname(step.path), { recursive: true });
         writeFileSync(step.path, step.content); // relative to cwd, the run worktree
         rc = 0;
+        break;
+      case "append":
+        try {
+          appendFileSync(step.path, step.content);
+          rc = 0;
+        } catch {
+          rc = 1;
+        }
+        break;
+      case "rename":
+        try {
+          mkdirSync(dirname(step.to), { recursive: true });
+          renameSync(step.from, step.to);
+          rc = 0;
+        } catch {
+          rc = 1;
+        }
+        break;
+      case "add":
+        rc = agentGit(["add", "-f", "--", step.path]);
         break;
       case "commit":
         rc = agentGit(["add", "-A"]) || agentGit(["commit", "-q", "-m", step.message]);

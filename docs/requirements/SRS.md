@@ -398,7 +398,7 @@ are Proposed. The derived flag of FR-CTL-03 is not a run state, so the FRD is un
 | --- | --- | --- | --- | --- | --- |
 | FR-CTL-01 | `list_runs` shall list runs filtered by project, status and time, returning the compact envelope of FR-MCP-04, and shall show a caller only its own runs and runs of the projects it may use, as `get_run` does. | Must | CAP-15, BO-5 | T | M14 |
 | FR-CTL-02 | `get_digest(since_cursor)` shall return, per project, the runs that need attention, finished runs, failed runs, pending approvals and budget state since the cursor, and a new cursor taken from the append-only `run_event` ledger. Text written by agents is labelled untrusted and length-capped. | Must | CAP-15, BO-5, BO-3 | T | M14 |
-| FR-CTL-03 | A `needs_attention` flag with a reason from a closed list (`awaiting_approval`, `parked_loop`, `failed_after_retry`, `stalled`, `budget_exhausted`, `ci_fix_stuck`) shall be derived on `get_run`, `list_runs` and the digest. It is not a run state and changes no run transition. | Must | CAP-15, BO-5 | T | M14 |
+| FR-CTL-03 | A `needs_attention` flag with a reason from a closed list (`awaiting_approval`, `parked_loop`, `failed_after_retry`, `stalled`, `budget_exhausted`, `ci_fix_stuck`, `skill_cleanup_failed`) shall be derived on `get_run`, `list_runs` and the digest. It is not a run state and changes no run transition. *(Amended 2026-10-17 by T16.6, Delegated agent work, not owner-approved: `skill_cleanup_failed` added for a run whose native skill file could not be removed (FR-SKL-06, [LLD §19.8](../design/LLD.md#198-exclusion-and-cleanup-fr-skl-06)); it holds in any state, terminal included, until a later removal point verifies the removal.)* | Must | CAP-15, BO-5 | T | M14 |
 | FR-CTL-04 | `steer_run(run_id, note)` shall deliver the note at the next boundary as live input where the adapter declares that it accepts live input. Otherwise the run shall stop at a boundary and continue in the same native session with the note (FR-SES-03). It is never a replay (BR-7). | Should | CAP-15, BO-1, BO-4 | T, D | M14 |
 | FR-CTL-05 | `pause_project` and `resume_project` shall be available over MCP for the caller's projects, and an operator-only CLI command shall pause and resume all projects. A pause holds admission: queued runs wait and running runs finish. | Must | CAP-15, BO-3 | T | M14 |
 | FR-CTL-06 | The operator shall set per-project and global caps on runs per day, concurrent runs, wall-clock time per run and reported usage per window. Over a cap, admission is refused and the project is flagged `budget_exhausted`. Caps are operator values and are never presented as provider limits (ADR-0007). | Must | CAP-15, BO-3 | T | M14 |
@@ -447,8 +447,12 @@ recording and FR-SKL-10 `skill_delivered` event aspect that T16.5 built (the lab
 `src/adapters/prompt.ts`, the per-cell `skillDelivery` declaration defaulting to `prompt_prefix` in
 `src/adapters/types.ts`, the handoff block in `src/continuity/render.ts`, dispatch recording in
 `src/lifecycle/lifecycle.ts` wired in `src/cli/serve.ts`; `src/adapters/skill-prefix.test.ts`,
-`src/lifecycle/skill-delivery.test.ts`); the four limit defaults stay Assumptions and their ranges are
-Delegated (LLD §19.3).
+`src/lifecycle/skill-delivery.test.ts`), and the FR-SKL-05 native-delivery framework and FR-SKL-06, FR-SKL-10 leak
+prevention that T16.6 built (the `native` declaration with its evidence id in `src/adapters/types.ts`, the fake
+adapter's `.fake/skills/` location, the writer and cleaner in `src/workspace/native-skills.ts`, exclusions in the
+commit tool, checkpoints and artifacts, the `SKILL_PATH_PRESENT` push refusal, the four removal points and the
+`skill_cleanup_failed` reason of FR-CTL-03; no shipped provider cell is native until T16.7 and T16.8); the four limit
+defaults stay Assumptions and their ranges are Delegated (LLD §19.3).
 
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |

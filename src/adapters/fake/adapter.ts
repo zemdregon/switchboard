@@ -23,6 +23,7 @@ import type {
   Ineligible,
   Invocation,
   NativeBinding,
+  NativeSkillLocation,
   NormalizedEvent,
   ParseState,
   ProbeResult,
@@ -31,6 +32,7 @@ import type {
   ResolvedProfile,
   ResumeCwd,
   RunResult,
+  SkillDelivery,
   Transport,
 } from "../types.js";
 
@@ -110,7 +112,23 @@ export interface FakeAdapterOptions {
     configOptions?: Array<{ configId: string; value: string }>;
     mcpServers?: AcpPlan["mcpServers"];
   };
+  /**
+   * T16.6 test variant (TDD §3.16.1 Fake row, LLD §19.6): declare {@link FAKE_NATIVE_SKILL_LOCATION} for every cell, so
+   * the native writer, the exclusions and the cleanup run in CI. Default false: `prompt_prefix`, like every provider.
+   */
+  nativeSkills?: boolean;
 }
+
+/**
+ * T16.6 (TDD §3.16.1 Fake row): `.fake/skills/switchboard-<name>.md`, holding the canonical body as is. The evidence id
+ * names this test-only declaration; no live check exists or is needed for a fake (T16.8 covers real providers).
+ */
+export const FAKE_NATIVE_SKILL_LOCATION: NativeSkillLocation = {
+  dir: ".fake/skills",
+  layout: { ext: "md" },
+  render: (skill) => skill.body,
+  evidence: "fake-test-only",
+};
 
 type Json = Record<string, unknown>;
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
@@ -136,9 +154,11 @@ export class FakeAdapter implements ProviderAdapter {
   readonly #script: string;
   readonly #timeouts: Invocation["timeouts"];
   readonly #acp: FakeAdapterOptions["acp"];
+  readonly #nativeSkills: boolean;
 
   constructor(opts: FakeAdapterOptions = {}) {
     this.#acp = opts.acp;
+    this.#nativeSkills = opts.nativeSkills === true;
     this.transports = opts.acp ? ["acp-stdio"] : ["subprocess-jsonl"];
     this.resumeCwd = opts.resumeCwd ?? "bound";
     this.gitCapabilities =
@@ -199,6 +219,11 @@ export class FakeAdapter implements ProviderAdapter {
       // fall through
     }
     return { state: "UNKNOWN", reason: "unparseable auth status" };
+  }
+
+  /** T16.6: see {@link FakeAdapterOptions.nativeSkills}. */
+  skillDelivery(): SkillDelivery {
+    return this.#nativeSkills ? { native: FAKE_NATIVE_SKILL_LOCATION } : "prompt_prefix";
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {

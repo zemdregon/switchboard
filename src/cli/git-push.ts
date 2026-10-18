@@ -106,6 +106,8 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   NO_PROJECT: "the meta-session has no project, so it has no push policy",
   CONTEXT_UNKNOWN: "the meta-session's project is no longer in the configuration",
   GIT_POLICY_VIOLATION: "a run of this meta-session has a recorded Git policy violation (see runs show)",
+  SKILL_PATH_PRESENT:
+    "a Switchboard skill file is still in a run's worktree (see runs show; retention GC or a restart removes it)",
   REMOTE_INVALID: "push.remote is not a valid remote name",
   PREFIX_INVALID: "push.branch_prefix does not give a valid branch name",
   CONTEXT_MISMATCH: "the meta-session's repository is not the context's configured repository",

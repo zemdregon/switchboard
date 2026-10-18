@@ -1435,7 +1435,8 @@ implemented the store module below, T16.3 the configuration keys and loader, T16
 read-only MCP tools with the §19.5 steps 2 to 4 resolver, T16.4 admission (`src/skills/admission.ts`) with the
 import-boundary test, and T16.5 the prompt-prefix renderer (`renderSkillBlock` in `src/adapters/prompt.ts`, the
 per-cell `skillDelivery` declaration defaulting to `prompt_prefix`, and the `skill_delivered` event), all Delegated,
-not owner-approved; the native writer and exclusions are still Proposed (T16.6)).
+not owner-approved; T16.6 built the native writer, cleaner and exclusions in `src/workspace/native-skills.ts`, Delegated,
+not owner-approved; per-provider native declarations stay Proposed (T16.7, T16.8)).
 Delegated, not owner-approved beyond the direction.* Contract: [LLD §19](LLD.md#19-switchboard-controlled-skills-m16-proposed).
 Tasks: ROADMAP T16.0 to T16.12.
 

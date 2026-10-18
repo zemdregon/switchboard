@@ -20,6 +20,12 @@
  * - A stall clock that cannot be evaluated (an unparseable timestamp) does not flag `stalled`.
  * - An approval lookup that hits the one-approval-per-meta-session invariant (it throws) shows `awaiting_approval`: an
  *   operator has to look at that meta-session.
+ *
+ * T16.6 (FR-CTL-03 as amended, FR-SKL-06, LLD §19.8; Delegated, not owner-approved): `skill_cleanup_failed` holds while
+ * the run's newest `skill_removed` event reports an entry with `removal: "failed"` (that event and the `run_skill`
+ * update share one transaction, `src/workspace/native-skills.ts`), in any state, terminal included, until a later
+ * removal point verifies the removal. It ranks first: a Switchboard skill file left in a worktree blocks publication
+ * (`SKILL_PATH_PRESENT`) and only an operator or a later removal point clears it.
  */
 
 import type Database from "better-sqlite3";
@@ -28,6 +34,7 @@ import { isTerminal } from "../lifecycle/index.js";
 
 /** The closed reason list (FR-CTL-03, LLD §3.4.1), highest priority first (LLD §3.4.5, Proposed order). */
 export const NEEDS_ATTENTION_PRIORITY = [
+  "skill_cleanup_failed",
   "budget_exhausted",
   "parked_loop",
   "ci_fix_stuck",
@@ -65,6 +72,8 @@ export interface NeedsAttentionFacts {
   budgetExhausted: boolean;
   /** CI fix-up cap reached on a publish ref for the run's project (T15.5). */
   ciFixStuck: boolean;
+  /** T16.6: the run's newest `skill_removed` event reports a failed removal. Absent means false. */
+  skillCleanupFailed?: boolean;
 }
 
 export interface NeedsAttentionOptions {
@@ -77,6 +86,7 @@ export interface NeedsAttentionOptions {
 export function matchingReasons(f: NeedsAttentionFacts, o: NeedsAttentionOptions): NeedsAttentionReason[] {
   const terminal = isTerminal(f.state);
   const matches: Record<NeedsAttentionReason, boolean> = {
+    skill_cleanup_failed: f.skillCleanupFailed === true,
     budget_exhausted: f.budgetExhausted && !terminal,
     parked_loop: f.metaSessionParked && f.newestInMetaSession,
     ci_fix_stuck: f.ciFixStuck && (!terminal || f.newestInMetaSession),
@@ -125,17 +135,32 @@ export function readNeedsAttentionFacts(
   control: ControlPlaneFacts = NO_CONTROL_PLANE_FACTS,
 ): NeedsAttentionFacts {
   const newest = ledger.listRunsForMetaSession(run.meta_session_id).at(-1);
+  const events = ledger.listRunEvents(run.id);
   return {
     state: run.state,
     attempt: run.attempt,
-    lastActivityAt: ledger.listRunEvents(run.id).at(-1)?.ts ?? run.created_at,
+    lastActivityAt: events.at(-1)?.ts ?? run.created_at,
     pendingApproval: pendingApproval(ledger, run),
     metaSessionParked: control.metaSessionParked(run.meta_session_id),
     newestInMetaSession: newest?.id === run.id,
     budgetExhausted:
       run.project_id !== null && (control.budgetExhausted(run.project_id) || control.budgetExhausted("*")),
     ciFixStuck: run.project_id !== null && (control.ciFixStuck?.(run.project_id) ?? false),
+    skillCleanupFailed: skillCleanupFailed(events),
   };
+}
+
+/** T16.6: the newest `skill_removed` event (LLD §19.11) reports an entry not `verified`, or is malformed. */
+function skillCleanupFailed(events: readonly { type: string; payload_json: string }[]): boolean {
+  const newest = events.findLast((e) => e.type === "skill_removed");
+  if (newest === undefined) return false;
+  try {
+    const entries = (JSON.parse(newest.payload_json) as { entries?: unknown }).entries;
+    if (!Array.isArray(entries)) return true; // a malformed removal record is not evidence of a clean worktree
+    return entries.some((e) => (e as { removal?: unknown })?.removal !== "verified");
+  } catch {
+    return true; // an unreadable removal record is not evidence of a clean worktree (fail closed)
+  }
 }
 
 /** The envelope's `needs_attention` for one run, recomputed from current ledger rows. */
