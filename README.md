@@ -383,6 +383,9 @@ Minimal example:
 }
 ```
 
+More complete starting points live in [`examples/`](examples/README.md): each file loads as is (replace the
+`/home/you/...` paths first).
+
 Keys (from `src/config/schema.ts`; the `projects` key is described below the table):
 
 | Key | Required | Meaning |

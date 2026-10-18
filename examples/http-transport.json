@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "allowed_roots": ["/home/you/projects"],
+  "mcp_clients": [
+    { "id": "orchestrator", "max_trust_profile": "edit-untrusted" },
+    { "id": "remote", "max_trust_profile": "edit-untrusted" }
+  ],
+  "transport": {
+    "http": {
+      "enabled": true,
+      "public_url": "https://switchboard.example.test/mcp",
+      "bind": "127.0.0.1",
+      "port": 18790,
+      "passphrase_hash": "scrypt$17$8$1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "clients": [{ "oauth_client_id": "sbc_0123456789012345678901", "mcp_client": "remote" }],
+      "default_mcp_client": "orchestrator"
+    }
+  }
+}
