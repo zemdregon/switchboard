@@ -40,9 +40,9 @@ export const REQUIRED_PACKAGE_FILES = [
 
 /**
  * Unpacked-size ceiling in bytes. Derived from the measured payload on
- * 2026-10-18: 610 files, 5,180,003 bytes unpacked (dist with sourcemaps plus
+ * 2026-10-18: 610 files, 5,195,419 bytes unpacked (dist with sourcemaps plus
  * package.json, README.md, LICENSE and SECURITY.md), plus ~50% headroom for
- * normal growth: 5,180,003 * 1.5 = 7,770,004, rounded to 7,800,000. Small
+ * normal growth: 5,195,419 * 1.5 = 7,793,129, rounded to 7,800,000. Small
  * enough that a `files` regression pulling in `src/`, `test/` or `docs/`
  * (which roughly doubles the payload) fails loudly.
  */
