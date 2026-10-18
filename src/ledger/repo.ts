@@ -995,6 +995,7 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
     outcome: { kind: "admitted"; runId: string } | { kind: "retry" } | { kind: "failed"; code: string },
   ): WorkItemRow | undefined;
   markWorkItemDone(workItemId: string): WorkItemRow | undefined;
+  closeWorkItemForRun(runId: string, runState: "SUCCEEDED" | "FAILED" | "CANCELLED"): WorkItemRow | undefined;
   reconcileAdmittingWorkItems(): number;
   countWorkItemsForProject(projectId: string): number;
   listDistinctProjectIdsWithReadyWork(): string[];
@@ -1134,6 +1135,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
   };
 
   const immediate = <T>(fn: () => T): T => db.transaction(fn).immediate();
+  const workQueue = createWorkQueueLedgerSlice(db, { ids, ts, immediate });
 
   const APPROVAL_SQL =
     "SELECT id, run_id, scope_json, scope_hash, status, requested_at, decided_at, decided_by FROM approval";
@@ -1265,6 +1267,8 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         // T5.3 (LLD §15.3): every terminal transition, whichever caller made it, refreshes the open-work projection.
         if (moved !== undefined && (TERMINAL_STATES as readonly string[]).includes(input.to)) {
           refreshOpenWork(moved.meta_session_id, when);
+          // LLD §18.2 (T15.1): the queue item that admitted this run is closed in the same transaction.
+          workQueue.closeWorkItemForRun(moved.id, input.to as (typeof TERMINAL_STATES)[number]);
         }
         return moved;
       });
@@ -2201,7 +2205,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       ) as InnerCallRow[];
     },
 
-    ...createWorkQueueLedgerSlice(db, { ids, ts, immediate }),
+    ...workQueue,
     // T14.6 (FR-CTL-05): pause rows and operator pause signals (migration 0018).
     ...createControlPlaneLedgerSlice(db, { ids, ts, immediate }),
     // T15.2 (FR-QUE-02): schedules (migration 0019).

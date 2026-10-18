@@ -60,6 +60,11 @@ export interface WorkQueueLedgerSlice {
     outcome: { kind: "admitted"; runId: string } | { kind: "retry" } | { kind: "failed"; code: string },
   ): WorkItemRow | undefined;
   markWorkItemDone(workItemId: string): WorkItemRow | undefined;
+  /**
+   * LLD §18.2: close the ADMITTED item whose run just reached a terminal state. `SUCCEEDED` makes it `DONE`; `FAILED`
+   * and `CANCELLED` set `terminal_at` and leave it `ADMITTED`, the only state §18.2 defines for an item with a run.
+   */
+  closeWorkItemForRun(runId: string, runState: "SUCCEEDED" | "FAILED" | "CANCELLED"): WorkItemRow | undefined;
   reconcileAdmittingWorkItems(): number;
   countWorkItemsForProject(projectId: string): number;
   listDistinctProjectIdsWithReadyWork(): string[];
@@ -145,7 +150,8 @@ export function createWorkQueueLedgerSlice(
 
   const isBlockingPredecessor = (predecessorId: string): boolean => {
     const pred = getWorkItemFixed(predecessorId);
-    return pred !== undefined && pred.state !== "DONE" && pred.state !== "CANCELLED";
+    // LLD §18.3, §18.8: only DONE satisfies an edge; a CANCELLED predecessor blocks (fail closed).
+    return pred !== undefined && pred.state !== "DONE";
   };
 
   const unblockDependents = (predecessorId: string) => {
@@ -190,6 +196,19 @@ export function createWorkQueueLedgerSlice(
     }
     return false;
   };
+
+  const markWorkItemDone = (workItemId: string): WorkItemRow | undefined =>
+    immediate(() => {
+      const item = getWorkItemFixed(workItemId);
+      if (item === undefined || item.state !== "ADMITTED" || item.terminal_at !== null) return undefined;
+      const at = ts();
+      const done = setState(workItemId, "DONE", { terminal_at: at }, "done");
+      if (done !== undefined) {
+        unblockDependents(done.id);
+        notifyQueueChange(item.project_id);
+      }
+      return done;
+    });
 
   return {
     getWorkItem: getWorkItemFixed,
@@ -240,8 +259,8 @@ export function createWorkQueueLedgerSlice(
         const at = ts();
         const id = ids.id("que");
         const preds = input.predecessorIds ?? [];
-        // A predecessor that is already DONE or CANCELLED never transitions again, so unblockDependents would not
-        // promote this item later; apply the same rule here.
+        // A predecessor that is already DONE never transitions again, so unblockDependents would not promote this
+        // item later; apply the same rule here.
         const initialState: WorkItemState = preds.some(isBlockingPredecessor) ? "PENDING" : "READY";
         db.prepare(
           `INSERT INTO project_work_item (id, project_id, creator_client_id, state, priority, request_json, source_kind,
@@ -374,17 +393,20 @@ export function createWorkQueueLedgerSlice(
       });
     },
 
-    markWorkItemDone(workItemId) {
+    markWorkItemDone,
+
+    closeWorkItemForRun(runId, runState) {
       return immediate(() => {
-        const item = getWorkItemFixed(workItemId);
-        if (item === undefined || item.state !== "ADMITTED") return undefined;
+        const item = db.prepare(`SELECT ${ITEM_COLS} FROM project_work_item WHERE admitted_run_id = ?`).get(runId) as
+          | WorkItemRow
+          | undefined;
+        if (item === undefined || item.state !== "ADMITTED" || item.terminal_at !== null) return undefined;
+        if (runState === "SUCCEEDED") return markWorkItemDone(item.id);
+        // No state or event fits (the 0017 CHECKs are closed): stamp terminal_at only. Successors stay PENDING.
         const at = ts();
-        const done = setState(workItemId, "DONE", { terminal_at: at }, "done");
-        if (done !== undefined) {
-          unblockDependents(done.id);
-          notifyQueueChange(item.project_id);
-        }
-        return done;
+        db.prepare(`UPDATE project_work_item SET terminal_at = ?, updated_at = ? WHERE id = ?`).run(at, at, item.id);
+        notifyQueueChange(item.project_id);
+        return getWorkItemFixed(item.id);
       });
     },
 
@@ -438,12 +460,13 @@ export function createWorkQueueLedgerSlice(
             item.state === "DONE" ||
             item.state === "READY" ||
             item.state === "ADMITTING" ||
-            item.state === "ADMITTED"
+            (item.state === "ADMITTED" && item.terminal_at === null)
           ) {
             canSucceedMemo.set(id, true);
             return true;
           }
-          if (item.state === "CANCELLED" || item.state === "FAILED_ADMISSION") {
+          // A closed ADMITTED item (its run FAILED or was CANCELLED) never becomes DONE either.
+          if (item.state === "CANCELLED" || item.state === "FAILED_ADMISSION" || item.state === "ADMITTED") {
             canSucceedMemo.set(id, false);
             return false;
           }
