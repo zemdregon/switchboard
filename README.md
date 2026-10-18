@@ -273,7 +273,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#444](https://github.com/zemdregon/switchboard/pull/444)), a conformance suite (T4.65,
   [#455](https://github.com/zemdregon/switchboard/pull/455)), a malicious-fixture leg (partial: T4.66,
   [#459](https://github.com/zemdregon/switchboard/pull/459)) and a Git declaration (T4.67,
-  [#464](https://github.com/zemdregon/switchboard/pull/464)), all on synthetic fixtures (README
+  [#464](https://github.com/zemdregon/switchboard/pull/464)), all on synthetic fixtures except the T4.64 probe's
+  2026-10-18 live final-verify (auth `OK`; still `Partial` pending a scrubbed capture, ROADMAP T4.64) (README
   [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke, live malicious leg and
   `adapters validate` remain operator work (T4.68). Manifests still admit no version until
   `switchboard adapters validate` passes a real CLI (operator tasks). M4 stays `Partial` (T4.90 closure, 2026-10-17,
@@ -349,7 +350,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | Antigravity | Launch **`agy`** without arguments (the adapter returns `AUTH_REQUIRED` naming `agy`; the CLI's stderr also says to launch without arguments to sign in) | Auth preflight runs `agy models` and keys on exit code and stderr (`<slug>\t<name>` lines at exit 0 vs `Error: Please sign in` at exit 1 on the 2026-10-14 live check, `agy` 1.3.4; [`docs/research/live-checks-2026-10-14-antigravity.md`](docs/research/live-checks-2026-10-14-antigravity.md)); check Google's Antigravity documentation for the login step |
 | Cursor CLI | `cursor-agent login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `cursor-agent status --format json` and keys on `isAuthenticated` (exit 0 both logged in and logged out on the 2026-10-14 live check; [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)); check Cursor's documentation for the login step |
 | OpenCode | `opencode auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `opencode auth list --format json --standalone` and treats any non-environment connection type as logged in (exit 0 in every state on the 2026-10-14 live check, `opencode v2.0.23`; [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md)); check OpenCode's documentation for the login step |
-| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe through Switchboard is synthetic-only until T4.68; check Moonshot's Kimi Code documentation for the login step |
+| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe ran live once through Switchboard on 2026-10-18 (final-verify `validate kimi` on the fixed probe: `[ok] auth: OK`, ROADMAP T4.64); full validation is still T4.68; check Moonshot's Kimi Code documentation for the login step |
 
 Do not copy credential files between machines or users. Do not put API keys or tokens in the Switchboard config; it has
 no place for them and rejects unknown keys.
@@ -2204,13 +2205,16 @@ The compliance manifest range (`src/adapters/manifests/kimi.json`) admits no ver
 
 See the [login table](#log-in-to-the-providers-natively) above. Switchboard never runs `kimi login` or
 `kimi acp --login`. Kimi Code has no auth status command, so the auth preflight (T4.64) runs `kimi acp` in a fresh
-private scratch directory and writes ACP `initialize` and `session/new` (that directory, no `mcpServers`) on stdin; it
-never sends `authenticate` or a prompt, so no model call is made. Only the JSON-RPC replies decide, whatever the exit
-code: a `session/new` result with a safe `sessionId` is `OK`, a `session/new` error `-32000` is `AUTH_REQUIRED` naming
-`kimi login` (live check rows 8 to 10), and anything else is `UNKNOWN` (fail closed). The reason carries codes only,
-never provider text. The probe session is persisted in Kimi's own data directory (live check row 12), so the preflight
-cache bounds it to once per window. The `doctor` probe runs `kimi --version` and `kimi --help`, which must list
-`--prompt`, `--output-format`, `--model`, `--session` and the `acp` subcommand.
+private scratch directory and writes ACP `initialize` and `session/new` (that directory, no `mcpServers`) on stdin,
+which stays open until both replies arrive or the 15 s bound ends the probe (Kimi Code 2.1.1 can exit at stdin
+end-of-file before it answers `session/new`); it never sends `authenticate` or a prompt, so no model call is made. Only
+the JSON-RPC replies decide, whatever the exit code: a `session/new` result with a safe `sessionId` is `OK`, a
+`session/new` error `-32000` is `AUTH_REQUIRED` naming `kimi login` (live check rows 8 to 10), and anything else is
+`UNKNOWN` (fail closed). The reason carries codes, the exit, whether stdin was still open and at most one clipped stderr
+line scrubbed of paths, secrets and ids; never the provider's JSON-RPC message text. The probe session is persisted in
+Kimi's own data directory (live check row 12), so the preflight cache bounds it to once per window. The `doctor`
+probe runs `kimi --version` and `kimi --help`, which must list `--prompt`, `--output-format`, `--model`, `--session`
+and the `acp` subcommand.
 
 ### Trust profiles
 
@@ -2661,10 +2665,15 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   compiled scope because repository configuration is `enabled` and `opencode.json` and `AGENTS.md` load with no approval
   (live check rows 10a, 10c). Closing the remaining gap needs operator capture of native refusal fields (T4.58) or an
   owner decision on classifying `status` `error`. See ROADMAP T4.56 for the full gap list.
-- **Kimi Code is validated on synthetic fixtures only (ROADMAP T4.62 to T4.68).** The parser rests on one scrubbed
+- **Kimi Code is validated on synthetic fixtures only (ROADMAP T4.62 to T4.68), except the auth probe.**
+  The parser rests on one scrubbed
   `stream-json` capture of a successful run plus synthetic lines; tool-call and error record fields, exit codes, the
-  `--prompt=` one-word form, the auth probe's stdin timing and the `kimi acp` permission round trip in `default` mode
-  are Assumptions until the operator capture (T4.68). If `default` mode does not ask, the restricted ACP cell becomes
+  `--prompt=` one-word form and the `kimi acp` permission round trip in `default` mode
+  are Assumptions until the operator capture (T4.68). The auth probe's stdin timing is no longer an Assumption: the
+  2026-10-17 live `validate kimi` run showed CLI 2.1.1 exits at stdin end-of-file before the `session/new` reply, and
+  the fixed probe (stdin held open until both replies arrive) printed `[ok] auth: OK` on the 2026-10-18 final-verify
+  (ROADMAP T4.64); T4.64 stays `Partial` until a scrubbed capture of the replies replaces the synthetic lines (ROADMAP
+  §6.8.2 item 2). If `default` mode does not ask, the restricted ACP cell becomes
   `Ineligible`. The malicious-fixture leg (T4.66) replays the approved bypass cell only: a credential read, outside
   write or network call without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg
   is operator work. See [Kimi Code CLI](#kimi-code-cli-milestone-4).

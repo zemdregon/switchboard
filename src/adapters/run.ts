@@ -31,20 +31,40 @@ const STDERR_TAIL_BYTES = 4096; // Proposed
 /** ProbeRunner backed by the supervisor. Only PATH is inherited. */
 export function createProbeRunner(envAllowlist: readonly string[] = ["PATH"]): ProbeRunner {
   return async (argv, opts) => {
-    const r = await supervise({
+    const stdinText = opts?.stdinText;
+    const until = stdinText !== undefined ? opts?.holdStdinUntil : undefined;
+    let held = until !== undefined;
+    const run = supervise({
       argv,
       envAllowlist,
       ...(opts?.cwd ? { cwd: opts.cwd } : {}),
-      ...(opts?.stdinText !== undefined ? { stdinText: opts.stdinText } : {}),
+      ...(until !== undefined
+        ? {
+            keepStdinOpen: true,
+            // Lines that are not JSON objects are only captured (the caller judges them), never a protocol error.
+            isIgnorableLine: (line: string) => !line.trimStart().startsWith("{"),
+            onEvent: (value: unknown) => {
+              if (held && until(value)) {
+                held = false;
+                run.endStdin();
+              }
+            },
+          }
+        : stdinText !== undefined
+          ? { stdinText }
+          : {}),
       wallClockMs: opts?.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
       killGraceMs: 500,
-    }).result;
+    });
+    if (until !== undefined && stdinText !== undefined) run.writeStdin(stdinText);
+    const r = await run.result;
     return {
       exitCode: r.exitCode,
       stdout: r.stdout.toString("utf8"),
       stderr: r.stderr.toString("utf8"),
       timedOut: r.outcome === "timeout",
       ...(r.error ? { spawnError: r.error.message } : {}),
+      ...(until !== undefined ? { stdinOpenAtEnd: held } : {}),
     };
   };
 }

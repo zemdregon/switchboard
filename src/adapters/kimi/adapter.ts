@@ -30,6 +30,7 @@
  * so none of this runs before `adapters validate` passes a version (FR-ADP-09, T4.68).
  */
 
+import { defaultRedactor } from "../../artifacts/redact.js";
 import { ACP_AUTH_REQUIRED_CODE, acpRunSucceeded, mapAcpMessage } from "../../exec/acp/events.js";
 import {
   DEFAULT_IDLE_MS,
@@ -116,6 +117,41 @@ const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,127}$/;
  */
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const MAX_SUMMARY_CHARS = 2_000;
+const MAX_DIAGNOSTIC_CHARS = 160;
+
+/**
+ * T4.64 diagnostics (Proposed): the first non-blank stderr line, scrubbed for an `UNKNOWN` reason. Secrets go through
+ * the artifact redactor; then every path (absolute or `~`), e-mail address, UUID, long hex or digit run and long
+ * mixed token is replaced, control characters are dropped and the result is clipped. Best effort, not a guarantee:
+ * the probe sends no prompt, so stderr should hold only the CLI's own log line.
+ */
+export function scrubStderrLine(stderr: string, home: string | undefined = process.env.HOME): string | undefined {
+  const first = stderr.split(/\r?\n/).find((l) => l.trim() !== "");
+  if (first === undefined) return undefined;
+  let line = defaultRedactor(Buffer.from(first, "utf8")).toString("utf8");
+  if (home !== undefined && home.length > 1) line = line.split(home).join("~");
+  line = line
+    .replace(/\p{Cc}/gu, " ")
+    .replace(/(?:~|\b[A-Za-z]:)?(?:[\\/][^\s"'`,;:()[\]{}<>]+)+/g, "<path>")
+    .replace(/~/g, "<path>")
+    .replace(/[^\s"'`<>@]+@[^\s"'`<>@]+/g, "<email>")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<id>")
+    .replace(/\b[0-9a-f]{16,}\b/gi, "<id>")
+    .replace(/\b\d{6,}\b/g, "<n>")
+    .replace(/\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}\b/g, "<token>")
+    .replace(/\s+/g, " ")
+    .trim();
+  return line.length > MAX_DIAGNOSTIC_CHARS ? `${line.slice(0, MAX_DIAGNOSTIC_CHARS)}...` : line;
+}
+
+/** How the probe process ended, for an `UNKNOWN` reason: exit or timeout, stdin state and the scrubbed stderr line. */
+function probeDiagnostic(r: ProbeOutput): string {
+  const parts = [r.timedOut ? "timed out" : `exit ${r.exitCode}`];
+  if (r.stdinOpenAtEnd !== undefined) parts.push(r.stdinOpenAtEnd ? "stdin still open" : "stdin closed");
+  const stderr = scrubStderrLine(r.stderr);
+  if (stderr !== undefined && stderr !== "") parts.push(`stderr: ${JSON.stringify(stderr)}`);
+  return parts.join(", ");
+}
 const MAX_MESSAGE_CHARS = 4_000;
 const MAX_NAME_CHARS = 64;
 const MAX_TARGET_CHARS = 512;
@@ -278,11 +314,13 @@ export class KimiAdapter implements ProviderAdapter {
   /**
    * FR-AUTH-01/02 via the ACP probe (T4.64, ADR-0049 item 4; spellings and Assumptions in protocol.ts): `kimi acp` in a
    * fresh scratch directory, sent `initialize` (version 1, no client capability, the ADR-0036 client's shape) and
-   * `session/new` (that directory, no `mcpServers`) on stdin. Only the JSON-RPC replies decide, whatever the exit code
-   * or timeout: an `initialize` result with protocol version 1 and then a `session/new` result with a safe `sessionId`
+   * `session/new` (that directory, no `mcpServers`) on stdin, which is held open until a reply for each id has arrived
+   * or the timeout (2.1.1 can exit 0 at end-of-file before the `session/new` reply). Only the JSON-RPC replies decide,
+   * whatever the exit code or timeout: an `initialize` result with protocol version 1 and then a `session/new` result with a safe `sessionId`
    * is OK; a `session/new` error `-32000` is AUTH_REQUIRED naming `kimi login`; anything else (no or duplicate replies,
    * another error, a line that is not JSON, a spawn failure) is UNKNOWN (fail closed, NFR-SEC-06). The reason carries
-   * codes only, never provider text. Never `authenticate`, `--login` or a prompt: no model call and no login. No Kimi
+   * codes, the exit, the stdin state and at most one scrubbed stderr line ({@link scrubStderrLine}), never the
+   * JSON-RPC message text. Never `authenticate`, `--login` or a prompt: no model call and no login. No Kimi
    * file is read and `KIMI_CODE_HOME` is never set. The probe session persists in Kimi's data directory ([LIVE] 12),
    * so this runs once per preflight window (the preflight cache), not per run.
    */
@@ -311,10 +349,18 @@ export class KimiAdapter implements ProviderAdapter {
           },
         ];
         const stdinText = lines.map((l) => `${JSON.stringify(l)}\n`).join("");
+        // Kimi Code 2.1.1 can exit 0 at stdin end-of-file after the `initialize` reply and before the `session/new`
+        // reply (T4.64 fix), so stdin stays open until a reply for each request id has arrived, or the timeout.
+        const answered = new Set<unknown>();
         return runner([exe, ...this.#launcher, ACP_SUBCOMMAND], {
           cwd: dir,
           timeoutMs: AUTH_PROBE_TIMEOUT_MS,
           stdinText,
+          holdStdinUntil: (message) => {
+            const msg = obj(message);
+            if (msg !== undefined && !Object.hasOwn(msg, "method") && Object.hasOwn(msg, "id")) answered.add(msg.id);
+            return answered.has(AUTH_PROBE_INITIALIZE_ID) && answered.has(AUTH_PROBE_SESSION_ID);
+          },
         });
       });
     } catch {
@@ -339,7 +385,7 @@ export class KimiAdapter implements ProviderAdapter {
       const got = replies.get(id) ?? [];
       return got.length === 0 ? "missing" : got.length > 1 ? "duplicate" : (got[0] as Json);
     };
-    const exit = r.timedOut ? "timed out" : `exit ${r.exitCode}`;
+    const exit = probeDiagnostic(r);
     const init = one(AUTH_PROBE_INITIALIZE_ID);
     if (typeof init === "string") {
       return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (initialize ${init}, ${exit})` };
