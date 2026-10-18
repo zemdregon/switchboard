@@ -166,14 +166,15 @@ Pre-release. The package is private and is not published to any registry; you bu
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
-- **Milestone 16 (Switchboard-controlled skills) is `Partial`.** The skill store, configuration, operator CLI,
-  admission, prompt-prefix delivery, the native-delivery framework with leak prevention, the adapter declarations,
-  the MCP tools and the malicious-fixture leg are built on fakes (T16.1 to T16.7, T16.9 and T16.11, all Delegated,
-  not owner-approved). The M16 acceptance file (`src/mcp/m16-acceptance.test.ts`, T16.12) runs one test per clause of
-  the milestone's acceptance column through a scripted MCP client on the fake adapter. Not done: skill continuity
-  across handoff and resume (T16.10) and the operator live checks that would let a real provider's native skill
-  location be used (T16.8, operator-only, not required for `Done`). Every real provider delivers skills as a prompt
-  prefix. See [Switchboard-controlled skills (milestone 16)](#switchboard-controlled-skills-milestone-16),
+- **Milestone 16 (Switchboard-controlled skills) is `Done` on fakes** (Delegated agent work, not owner-approved). The
+  skill store, configuration, operator CLI, admission, prompt-prefix delivery, the native-delivery framework with leak
+  prevention, the adapter declarations, the MCP tools, continuity across handoff and resume and the malicious-fixture
+  leg are built (T16.1 to T16.7, T16.9 to T16.11). The M16 acceptance file (`src/mcp/m16-acceptance.test.ts`, T16.12)
+  runs one test per clause of the milestone's acceptance column through a scripted MCP client on the fake adapter.
+  Not run: the operator live checks that would let a real provider's native skill location be used (T16.8,
+  operator-only, not required for `Done`), so every real provider delivers skills as a prompt prefix, and no skill
+  has been delivered to a live provider through Switchboard yet.
+  See [Switchboard-controlled skills (milestone 16)](#switchboard-controlled-skills-milestone-16),
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP

@@ -4,8 +4,9 @@
  * pieces: the T16.1 store (`addSkill`, `appendSkillEvent`), the T16.4 admission inside `delegate_task` and
  * `continue_task`, the T16.5 renderer (`renderSkillBlock`) and delivery port (`skillDeliveryPort`), the T16.6 native
  * writer, cleaner, exclusions and GC, the T16.9 tools, the T8.3 in-process OTLP collector, a notification sink
- * dispatcher with a capturing transport, the `serve` logger and the T16.11 surface detectors. The skills continuity
- * clause (handoff and resume, T16.10) is covered by `src/continuity/skill-continuity.test.ts`.
+ * dispatcher with a capturing transport, the `serve` logger and the T16.11 surface detectors. The continuity clause
+ * (ADR-0056 item 14, T16.10) runs here through `continue_task`; `src/continuity/skill-continuity.test.ts` has the
+ * bundle-level detail.
  *
  * A scripted MCP client (the SDK client over an in-memory transport, so every result is checked against the published
  * output schemas) drives one fake adapter (`fake`, the bundled fake CLI; `fake-b`, the second continuity fake, for the
@@ -35,6 +36,7 @@ import {
   type CompileRequest,
   type Ineligible,
   type Invocation,
+  type NativeBinding,
   type ResolvedProfile,
   type SkillDelivery,
 } from "../adapters/index.js";
@@ -169,7 +171,12 @@ class AcceptanceFake extends FakeAdapter {
     return this.native ? { native: FAKE_NATIVE_SKILL_LOCATION } : "prompt_prefix";
   }
   override compile(req: CompileRequest, p: ResolvedProfile): Invocation | Ineligible {
-    const inv = super.compile(req, p);
+    return this.#keep(req, super.compile(req, p));
+  }
+  override resumeArgs(binding: NativeBinding, req: CompileRequest, p: ResolvedProfile): Invocation | Ineligible {
+    return this.#keep(req, super.resumeArgs(binding, req, p));
+  }
+  #keep(req: CompileRequest, inv: Invocation | Ineligible): Invocation | Ineligible {
     if ("ineligible" in inv) return inv;
     const argv = inv.argv.map((a, i) => (i > 0 && inv.argv[i - 1] === "--scenario" ? this.scenario : a));
     const out = { ...inv, argv };
@@ -877,6 +884,94 @@ describe("M16 acceptance (T16.12)", () => {
       expect(surfacesContaining(capture, "Operator playbook for")).toEqual([]);
       // Positive control: the detector reports a surface the canary is planted on.
       expect(surfacesContaining({ ...capture, planted: `x ${w.canary} y` }, w.canary)).toEqual(["planted"]);
+    },
+    TEST_TIMEOUT,
+  );
+
+  it(
+    "continuity: a handoff and a native resume re-deliver the same skill versions in the successor's own way, and the bundle lists them as facts without text",
+    async () => {
+      const w = await openWorld();
+      w.fake.native = true;
+      const expected = resolvedSet(w);
+      const facts = expected.map((s) => ({ name: s.name, version: s.version, sha256: s.sha256 }));
+
+      // Run A on the native fake. Handoff to the second fake (prompt prefix): the successor re-pins the same versions
+      // (`continued`) and gets them as the block; the bundle lists them as name, version and hash and holds no text.
+      const a = await delegated(w, { skills: ["alpha-docs"], role: "reviewer" });
+      expect(a.run.status).toBe("SUCCEEDED");
+      expect(skillRows(w, a.runId).map((r) => [r.delivery, r.removal])).toEqual([
+        ["native", "verified"],
+        ["native", "verified"],
+      ]);
+      const session = a.run.meta_session_id as string;
+      const h = await call(w, "continue_task", {
+        meta_session_id: session,
+        instruction: "Carry on",
+        routing: { provider_preference: SECOND_FAKE_ID },
+      });
+      expect(h.isError, JSON.stringify(h.body)).toBe(false);
+      const b = h.body.run_id as string;
+      expect((await w.lifecycle.waitForTerminal(b)).state).toBe("SUCCEEDED");
+      const bRun = await ok(w, "get_run", { run_id: b });
+      expect(bRun.provider).toMatchObject({ adapter: SECOND_FAKE_ID });
+      expect(
+        (bRun.skills as Json[]).map(({ name, version, sha256, source, delivery }) => ({
+          name,
+          version,
+          sha256,
+          source,
+          delivery,
+        })),
+      ).toEqual(facts.map((s) => ({ ...s, source: "continued", delivery: "prompt_prefix" })));
+      const view = w.ledger.listArtifactsForRun(b).find((x) => x.kind === "handoff_view");
+      const bundleText = (await w.artifacts.get(view?.sha256 as string)).toString("utf8");
+      const bundle = JSON.parse(bundleText) as Json;
+      expect(bundle.skills).toEqual(facts.map((s) => ({ run_id: a.runId, ...s })));
+      expect(bundleText).not.toContain(w.canary);
+      expect(bundleText).not.toContain("Operator playbook for");
+      // The successor's prompt: the block (the only place a body may appear) after the preamble, the instruction last.
+      const block = renderSkillBlock(expected);
+      // The second fake's prompt log is JSON lines (`{session_id, prompt}`); the handoff is its only prompt.
+      const promptB = readFileSync(w.fakeB.reports.at(-1)?.prompt_log as string, "utf8")
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .map((l) => (JSON.parse(l) as { prompt: string }).prompt)
+        .join("\n");
+      expect(promptB).toContain(block);
+      expect(promptB.replace(block, "")).not.toContain(w.canary);
+      expect(promptB.indexOf("[Switchboard handoff")).toBeLessThan(promptB.indexOf(block));
+      expect(promptB.indexOf(block)).toBeLessThan(promptB.indexOf("Carry on"));
+
+      // A same-provider native resume (a fresh session on the native fake): the files are written again for the new
+      // run, in the origin worktree, and removed again; the prompt carries no block.
+      const c = await delegated(w, { skills: ["alpha-docs"], role: "reviewer" });
+      expect(c.run.status).toBe("SUCCEEDED");
+      const r = await call(w, "continue_task", { meta_session_id: c.run.meta_session_id, instruction: "Next step" });
+      expect(r.isError, JSON.stringify(r.body)).toBe(false);
+      const d = r.body.run_id as string;
+      expect((await w.lifecycle.waitForTerminal(d)).state).toBe("SUCCEEDED");
+      const dRun = await ok(w, "get_run", { run_id: d });
+      expect(dRun.provider).toMatchObject({ adapter: "fake" });
+      expect(w.fake.compiled.get(d)?.argv).toContain("--resume");
+      expect(worktreeOf(w, d)).toBe(worktreeOf(w, c.runId));
+      expect(
+        skillRows(w, d).map((x) => [x.name, x.version, x.sha256, x.source, x.delivery, x.native_path, x.removal]),
+      ).toEqual([
+        ["beta-review", facts[0]?.version, facts[0]?.sha256, "continued", "native", BETA, "verified"],
+        ["alpha-docs", facts[1]?.version, facts[1]?.sha256, "continued", "native", ALPHA, "verified"],
+      ]);
+      expect(ofType(w, d, "skill_delivered")[0]?.p.entries).toEqual([
+        { name: "beta-review", version: facts[0]?.version, delivery: "native", native_path: BETA },
+        { name: "alpha-docs", version: facts[1]?.version, delivery: "native", native_path: ALPHA },
+      ]);
+      expect(ofType(w, d, "skill_removed").length).toBeGreaterThan(0);
+      expect(stdinOf(w, d)).not.toContain("[operator skills:");
+      for (const p of [ALPHA, BETA]) expect(existsSync(path.join(worktreeOf(w, d), p))).toBe(false);
+      for (const id of [a.runId, b, c.runId, d]) {
+        for (const e of w.ledger.listRunEvents(id)) expect(e.payload_json).not.toContain(w.canary);
+        expect(JSON.stringify(await ok(w, "get_run", { run_id: id }))).not.toContain(w.canary);
+      }
     },
     TEST_TIMEOUT,
   );
