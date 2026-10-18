@@ -773,7 +773,7 @@ export class CursorAdapter implements ProviderAdapter {
 }
 
 /**
- * T6.15 (FR-CAP-11, FR-ADP-04): the Cursor "out of usage" quota stop of the 2026-10-18 T6.11 capture
+ * T6.15 (FR-CAP-11, FR-ADP-04; accepted: owner decision 64, ADR-0058): the Cursor "out of usage" quota stop of the 2026-10-18 T6.11 capture
  * (`cursor-20261018T091208Z.txt`, exit 1, stderr `ActionRequiredError: ... You're out of usage. ...`). A non-zero
  * exited run whose stderr tail holds a line with both `ActionRequiredError` and `out of usage` maps to
  * `QUOTA_EXHAUSTED`. Both phrases are required on one line so another `ActionRequiredError` text (for example a

@@ -737,7 +737,7 @@ export class KimiAdapter implements ProviderAdapter {
 }
 
 /**
- * T6.15 (FR-CAP-11, FR-ADP-04): the Kimi Code 5-hour usage-limit stop of the 2026-10-15 T6.11 capture
+ * T6.15 (FR-CAP-11, FR-ADP-04; accepted: owner decision 64, ADR-0058): the Kimi Code 5-hour usage-limit stop of the 2026-10-15 T6.11 capture
  * (exit 1, stderr `provider.auth_error: 403 ... 5-hour usage limit ...`; capture file name in ROADMAP T6.15). A non-zero
  * exited run whose stderr tail holds a line with both `403` and `usage limit` maps to `QUOTA_EXHAUSTED`. The quota
  * signal is checked before the auth mapping: the CLI labels this quota stop `provider.auth_error`, and a stream

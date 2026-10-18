@@ -5906,14 +5906,17 @@ a capture shows a structured used or remaining fraction or reset time. The adapt
 stderr (§2), so the mapping is reached only by a caller that passes the tail `startAdapterRun` captures; the lifecycle
 does not yet (pinned in `src/adapters/antigravity/limit-signals.test.ts`).
 
-*Update 2026-10-18 (Delegated, ROADMAP T6.15):* two newer captures map here too without declaring a key: Cursor's
+*Update 2026-10-18 (owner decision 64, [ADR-0058](../adr/0058-captured-limit-signatures.md), ROADMAP T6.15):*
+two newer captures map here too without declaring a key: Cursor's
 out-of-usage stderr line (`ActionRequiredError` plus `out of usage` on one tail line at exit 1) and Kimi Code's 5-hour
 usage-limit stderr line (`403` plus `usage limit` on one tail line at exit 1, checked before the auth mapping because
 the CLI labels the stop `provider.auth_error`), both to `QUOTA_EXHAUSTED` in `classifyFailure`
 (`cursorQuotaClassification` in `src/adapters/cursor/adapter.ts`, `kimiQuotaClassification` in
 `src/adapters/kimi/adapter.ts`). Neither sources a reset and neither adds a `USAGE_KEYS` entry, so the keys stay empty
-and frozen. Both signals are free text under T6.11's classification (no structured field), so they sit under the open
-Q-100 decision (`docs/_doc-alignment-notes.md` §16). As with Antigravity, the mapping is reached only through
+and frozen. Both signals are free text under T6.11's classification (no structured field); they map as
+structured-enough captured distinctive signatures under owner decision 64
+([ADR-0058](../adr/0058-captured-limit-signatures.md), which supersedes ADR-0055 item 11 in part and answers Q-100;
+history in `docs/_doc-alignment-notes.md` §17). As with Antigravity, the mapping is reached only through
 `FailureEvidence.stderrTail`, which `extractResult` cannot supply (pinned in `src/adapters/cursor/limit-signals.test.ts`
 and `src/adapters/kimi/limit-signals.test.ts`).
 

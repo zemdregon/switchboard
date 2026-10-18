@@ -1,11 +1,13 @@
 /**
- * T6.15 (FR-CAP-11, FR-ADP-04; Delegated agent work, not owner-approved): Cursor "out of usage" limit-signal
- * mapping from the 2026-10-18 T6.11 capture (`cursor-20261018T091208Z.txt`, exit 1).
+ * T6.15 (FR-CAP-11, FR-ADP-04; accepted by owner decision 64, [ADR-0058](../../adr/0058-captured-limit-signatures.md)):
+ * Cursor "out of usage" limit-signal mapping from the 2026-10-18 T6.11 captures (`cursor-20261018T091208Z.txt`,
+ * exit 1; the signature repeats across the `cursor-*.txt` captures).
  *
  * SYNTHETIC tails only, built from the redacted capture line (the capture carries no secret): a non-zero exited
  * run whose stderr tail holds a line with both `ActionRequiredError` and `out of usage` maps to `QUOTA_EXHAUSTED`
  * (`cursorQuotaClassification`, reached only through `FailureEvidence.stderrTail`, which `extractResult` cannot
- * supply). A near-miss stays on the old mapping, and exit 0 never maps to quota. No `cursor-agent` is run.
+ * supply). A near-miss stays on the old mapping (either phrase alone, the phrases on different lines, or a generic
+ * limit word with neither phrase), and exit 0 never maps to quota. No `cursor-agent` is run.
  */
 import { describe, expect, it } from "vitest";
 import type { ExitInfo, FailureEvidence, NormalizedEvent } from "../types.js";
@@ -48,6 +50,15 @@ describe("cursor out-of-usage mapping (T6.15, FR-CAP-11; SYNTHETIC tails from th
     const bareUsage = "You're out of usage. Switch to Auto to continue.\n";
     expect(cursorQuotaClassification(evidence([], bareUsage))).toBeUndefined();
     expect(adapter().classifyFailure(evidence([], bareUsage))).toEqual(TOOL_FAILURE_1);
+    // Generic limit words with neither phrase map nothing (ADR-0058 (d)).
+    for (const generic of [
+      "Error: rate limit exceeded (429), retry later.\n",
+      "Error: quota exceeded for this window.\n",
+      "ActionRequiredError: none\nlimit reached\n",
+    ]) {
+      expect(cursorQuotaClassification(evidence([], generic))).toBeUndefined();
+      expect(adapter().classifyFailure(evidence([], generic))).toEqual(TOOL_FAILURE_1);
+    }
     // The phrases on different lines are not one signal.
     const split = "ActionRequiredError: something else failed\nYou're out of usage\n";
     expect(cursorQuotaClassification(evidence([], split))).toBeUndefined();

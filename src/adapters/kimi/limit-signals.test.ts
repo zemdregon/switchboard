@@ -1,13 +1,15 @@
 /**
- * T6.15 (FR-CAP-11, FR-ADP-04; Delegated agent work, not owner-approved): Kimi Code 5-hour usage-limit mapping
- * from the 2026-10-15 T6.11 capture (`kimi-20261015T103850Z.txt`, exit 1).
+ * T6.15 (FR-CAP-11, FR-ADP-04; accepted by owner decision 64, [ADR-0058](../../adr/0058-captured-limit-signatures.md)):
+ * Kimi Code 5-hour usage-limit mapping from the T6.11 captures (`kimi-20261015T103850Z.txt`, exit 1, and
+ * `kimi-20261014T011741Z.txt`, which carries the same signature line from normal use).
  *
  * SYNTHETIC tails only, built from the redacted capture line (the capture carries no secret): a non-zero exited
  * run whose stderr tail holds a line with both `403` and `usage limit` maps to `QUOTA_EXHAUSTED`
  * (`kimiQuotaClassification`, reached only through `FailureEvidence.stderrTail`, which `extractResult` cannot
  * supply). The quota check runs before the auth mapping because the CLI labels this quota stop
  * `provider.auth_error`: without it the router would treat a usage stop as a logged-out provider. A `403`
- * without `usage limit` keeps its current mapping, and exit 0 never maps to quota. No `kimi` is run.
+ * without `usage limit` keeps its current mapping, a generic limit word maps nothing, and exit 0 never maps to
+ * quota. No `kimi` is run.
  */
 import { describe, expect, it } from "vitest";
 import type { ExitInfo, FailureEvidence, NormalizedEvent } from "../types.js";
@@ -86,6 +88,15 @@ describe("kimi 5-hour usage-limit mapping (T6.15, FR-CAP-11; SYNTHETIC tails fro
     const split = "error: provider.auth_error: 403\ninfo: usage limit dashboard at <url>\n";
     expect(kimiQuotaClassification(evidence([], split))).toBeUndefined();
     expect(adapter().classifyFailure(evidence([], split))).toEqual(TOOL_FAILURE_1);
+    // Generic limit words with neither half of the pair map nothing (ADR-0058 (d)).
+    for (const generic of [
+      "error: 429 too many requests, retry in a minute\n",
+      "error: quota exceeded for this window\n",
+      "error: rate limited, slow down\n",
+    ]) {
+      expect(kimiQuotaClassification(evidence([], generic))).toBeUndefined();
+      expect(adapter().classifyFailure(evidence([], generic))).toEqual(TOOL_FAILURE_1);
+    }
   });
 
   it("exit 0 never maps to quota, whatever the tail says", () => {
