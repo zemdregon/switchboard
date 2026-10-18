@@ -1422,7 +1422,7 @@ A `tool_call` after the `end` line is not a success (fail closed; a guard verdic
 `PERMISSION_BLOCKED`; an unreadable trailing `tool_call` line that normalizes as `unknown` also fails closed as
 `OUTPUT_PROTOCOL_ERROR` with detail `tool call after the end line`). A bare unreadable `tool_call_update` after a clean
 `end_turn` (for example only `status` and `content`, with no readable command) still ends `ok` at exit 0 today: it
-carries no command the guard can read, but it is inconsistent with the trailing `tool_call` rule (ROADMAP T4.26 residual;
+carries no command the guard can read, but it is inconsistent with the trailing `tool_call` rule (ROADMAP T4.28 gap;
 parser change is outside fixture-only work). The `tool call after the end line` detail is set only when the code is
 `OUTPUT_PROTOCOL_ERROR`; under a cancelled `stopReason` or a non-zero exit the classifier's own detail is kept
 ([#372](https://github.com/zemdregon/switchboard/pull/372)). A clean `end_turn` line is never the run verdict on its
@@ -1454,8 +1454,7 @@ the run total), and dropped event kinds (`available_commands`, `thought`, standa
 shape without incrementing unknown event counts ([#313](https://github.com/zemdregon/switchboard/pull/313)).
 `ParseState` instances isolate `seenEnds` and `seenToolCalls` state across runs
 ([#313](https://github.com/zemdregon/switchboard/pull/313)). Rate-limit, permission-denial and sandbox-violation event
-shapes and native `tool_call` / `tool_call_update` parameter fields remain unrecorded (T4.23 stays `Partial` on the
-roadmap). Supervisor-replayed JSONL fixtures pin today's gaps without inventing native fields
+shapes and native `tool_call` / `tool_call_update` parameter fields remain unrecorded (T4.23 is `Done` against its Done-when on synthetic fixtures, owner decision 65 (a); the native shapes are T4.28's work). Supervisor-replayed JSONL fixtures pin today's gaps without inventing native fields
 ([#260](https://github.com/zemdregon/switchboard/pull/260),
 [#313](https://github.com/zemdregon/switchboard/pull/313),
 [#319](https://github.com/zemdregon/switchboard/pull/319)): `sandbox_violation` and `permission_denied_rule` (live
@@ -1517,8 +1516,7 @@ Tool kind maps to `shell` when a command is present or tool name is `run_termina
 and `other` otherwise. In an approved bypass run
 the guard enforces Git
 writes only: a credential read, outside write or network call chained with a parsed Git write is blocked because of the
-Git write, not because those other actions were refused. Native command/target fields remain unrecorded (ROADMAP T4.26,
-T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` text, a hostile
+Git write, not because those other actions were refused. Native command/target fields remain unrecorded (ROADMAP T4.28). A bare `tool_call` before a clean `end_turn` still succeeds; path keys, tool `content` text, a hostile
 lower-precedence argument key shadowed by a benign higher one, and a command in a container shadowed by an earlier
 object container without one remain invisible to the guard. A shell call carrying its command only in a target key now
 hands the whole target to the guard (the kept target is still clipped to 512 characters), and a nameless target-only
@@ -1561,7 +1559,7 @@ the shapes of the 2026-10-14 live check)", "grok conformance suite (synthetic re
 "grok registry entry and manifest gate (T4.22)", "grok Git declaration (T4.27, FR-GIT-01, FR-GIT-02, FR-GIT-09)", and
 "grok backing-provider fixture (T4.23, T4.6, FR-ADP-10)"); CI also runs `test/malicious/adapters/grok.case.ts` and
 `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: grok" and "adapter malicious leg: grok partial streams",
-T4.26 partial
+T4.26 `Done` against its Done-when on fixtures, owner decision 65 (b))
 ([#291](https://github.com/zemdregon/switchboard/pull/291),
 [#302](https://github.com/zemdregon/switchboard/pull/302),
 [#308](https://github.com/zemdregon/switchboard/pull/308),
