@@ -52,6 +52,7 @@ import type {
   ProviderAdapter,
   ResolvedProfile,
   RunResult,
+  SkillDelivery,
 } from "../types.js";
 import {
   AUTH_ENV_CONNECTION_TYPES,
@@ -259,6 +260,14 @@ export class OpenCodeAdapter implements ProviderAdapter {
       }
     }
     return stored ? { state: "OK" } : { state: "AUTH_REQUIRED", loginCommand: OPENCODE_LOGIN_COMMAND };
+  }
+
+  /**
+   * T16.7 (TDD §3.16.1, LLD §19.6, ADR-0056 items 5, 6 and 8): every cell delivers skills as the prompt prefix. A cell
+   * may name `native` only with the evidence id of a T16.8 live check; the conformance suite fails one without it.
+   */
+  skillDelivery(): SkillDelivery {
+    return "prompt_prefix";
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
