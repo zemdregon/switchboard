@@ -13,10 +13,11 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AntigravityAdapter } from "../adapters/antigravity/adapter.js";
+import { replayAdapter as antigravityReplay } from "../adapters/antigravity/fixtures/cases.js";
 import { findBypassFlags } from "../adapters/audit.js";
 import { replayAdapter as cursorReplay } from "../adapters/cursor/fixtures/cases.js";
 import { FakeAdapter, type FakeScenario } from "../adapters/fake/adapter.js";
+import { privilegedProfile } from "../adapters/fixtures/privileged.js";
 import { replayAdapter as grokReplay } from "../adapters/grok/fixtures/cases.js";
 import {
   AdapterRegistry,
@@ -24,13 +25,15 @@ import {
   type CompileRequest,
   type Ineligible,
   type Invocation,
+  isIneligible,
   type ProbeResult,
   type ProviderAdapter,
   type ResolvedProfile,
 } from "../adapters/index.js";
 import { replayAdapter as kimiReplay } from "../adapters/kimi/fixtures/cases.js";
 import { parseManifest } from "../adapters/manifest/index.js";
-import { OpenCodeAdapter } from "../adapters/opencode/adapter.js";
+import { MuseAdapter } from "../adapters/muse/adapter.js";
+import { replayAdapter as opencodeReplay } from "../adapters/opencode/fixtures/cases.js";
 import { COMPILED_CELL_FALLBACK } from "./adapters-validate.js";
 import { HELP, main } from "./index.js";
 import type { CliIo } from "./io.js";
@@ -313,9 +316,10 @@ describe("adapters validate: usage and defaults", () => {
   });
 });
 
-// ---- Owner decision 59: the compiled-cell fallback for Grok Build, Cursor and Kimi Code (fakes and replays only) ----
+// ---- Compiled-cell fallback (owner decisions 59 and 60; fakes and replays only) ----
 
-const CELL_NOTE = "approved privileged bypass cell, owner decision 59; inspect-untrusted is Ineligible";
+const CELL_NOTE_59 = "approved privileged bypass cell, owner decision 59; inspect-untrusted is Ineligible";
+const CELL_NOTE_60 = "approved privileged bypass cell, owner decision 60; inspect-untrusted is Ineligible";
 
 /** A synthetic OK probe and auth for a real adapter whose binary is the shared replay helper; nothing else changes. */
 function synthetic<A extends ProviderAdapter>(a: A): A {
@@ -347,18 +351,79 @@ function useManifest(provider: string): string {
   return f;
 }
 
-const FALLBACK: [string, () => ProviderAdapter, string, string][] = [
-  ["grok", () => grokReplay("success_edit"), "--always-approve", "task_failure"],
-  ["cursor", () => cursorReplay("success_edit"), "--force", "task_failure"],
-  ["kimi", () => kimiReplay("success_edit"), "--prompt", "task_failure"],
+interface FallbackEntry {
+  readonly provider: string;
+  readonly make: () => ProviderAdapter;
+  /** The cell's declared bypass flag, or null when the cell declares none (OpenCode, Q-83). */
+  readonly flag: string | null;
+  readonly failFixture: string;
+  readonly note: string;
+  /** A bypass-class flag planted in the argv to prove the audit refuses it. */
+  readonly planted: string;
+}
+
+const FALLBACK: FallbackEntry[] = [
+  {
+    provider: "grok",
+    make: () => grokReplay("success_edit"),
+    flag: "--always-approve",
+    failFixture: "task_failure",
+    note: CELL_NOTE_59,
+    planted: "--yolo",
+  },
+  {
+    provider: "cursor",
+    make: () => cursorReplay("success_edit"),
+    flag: "--force",
+    failFixture: "task_failure",
+    note: CELL_NOTE_59,
+    planted: "--yolo",
+  },
+  {
+    provider: "kimi",
+    make: () => kimiReplay("success_edit"),
+    flag: "--prompt",
+    failFixture: "task_failure",
+    note: CELL_NOTE_59,
+    planted: "--yolo",
+  },
+  {
+    provider: "opencode",
+    make: () => opencodeReplay("success_edit"),
+    flag: null,
+    failFixture: "task_failure",
+    note: CELL_NOTE_60,
+    planted: "--auto",
+  },
+  {
+    provider: "antigravity",
+    make: () => antigravityReplay("success_edit"),
+    flag: "--dangerously-skip-permissions",
+    failFixture: "task_failure",
+    note: CELL_NOTE_60,
+    planted: "--yolo",
+  },
 ];
 
-describe("adapters validate: compiled-cell fallback (owner decision 59)", () => {
-  it("the allowlist is exactly grok, cursor and kimi", () => {
-    expect(Object.keys(COMPILED_CELL_FALLBACK).sort()).toEqual(["cursor", "grok", "kimi"]);
+describe("adapters validate: compiled-cell fallback (owner decisions 59 and 60)", () => {
+  it("the allowlist is exactly grok, cursor, kimi, opencode and antigravity", () => {
+    expect(Object.keys(COMPILED_CELL_FALLBACK).sort()).toEqual(["antigravity", "cursor", "grok", "kimi", "opencode"]);
   });
 
-  for (const [provider, make, flag, failFixture] of FALLBACK) {
+  it("opencode's cell declares no bypass flag while every other cell declares exactly one", () => {
+    for (const entry of FALLBACK) {
+      const cell = COMPILED_CELL_FALLBACK[entry.provider as keyof typeof COMPILED_CELL_FALLBACK];
+      if (entry.provider === "opencode") {
+        expect(cell?.bypassFlag).toBeNull();
+      } else {
+        expect(cell?.bypassFlag).toBe(entry.flag);
+      }
+    }
+  });
+
+  for (const entry of FALLBACK) {
+    const { provider, make, flag, failFixture, note, planted } = entry;
+    const ruling = note.includes("decision 60") ? "owner decision 60" : "owner decision 59";
     it(`${provider}: inspect-untrusted first, then the approved privileged cell; passes and names the cell`, async () => {
       const f = useManifest(provider);
       const adapter = synthetic(make());
@@ -372,15 +437,14 @@ describe("adapters validate: compiled-cell fallback (owner decision 59)", () => 
       expect("ineligible" in (calls[0]?.inv ?? {})).toBe(true);
       const smoke = r.json.steps.find((s: { id: string }) => s.id === "smoke");
       expect(smoke).toMatchObject({ status: "ok", smoke_profile: "privileged" });
-      expect(smoke.detail).toContain(CELL_NOTE);
-      expect(r.json.steps.find((s: { id: string }) => s.id === "conformance").detail).toContain(CELL_NOTE);
-      expect(parseManifest(readFileSync(f, "utf8")).notes).toContain(
-        `one structured-output smoke call ok (${CELL_NOTE})`,
-      );
-      // The smoke argv carries exactly the cell's declared bypass flag and nothing else bypass-class.
+      expect(smoke.detail).toContain(note);
+      expect(r.json.steps.find((s: { id: string }) => s.id === "conformance").detail).toContain(note);
+      expect(parseManifest(readFileSync(f, "utf8")).notes).toContain(`one structured-output smoke call ok (${note})`);
+      // The smoke argv carries exactly the cell's declared bypass flag and nothing else bypass-class
+      // (OpenCode declares none, so none may appear).
       const spawned = calls.filter((c) => c.profile.name === "privileged" && c.request.bypassApproved === true);
       const inv = spawned.at(-1)?.inv as Invocation;
-      expect(findBypassFlags(inv, provider)).toEqual([flag]);
+      expect(findBypassFlags(inv, provider)).toEqual(flag === null ? [] : [flag]);
       // The approval is in memory only: the profile carries the placeholder id, and the repository is gone.
       expect(spawned.at(-1)?.profile.privilegedScope?.approvalId).toBe("apv_00000000000000000000VA1DAT");
       expect(existsSync(inv.cwd)).toBe(false);
@@ -394,7 +458,11 @@ describe("adapters validate: compiled-cell fallback (owner decision 59)", () => 
           ? grokReplay(failFixture)
           : provider === "cursor"
             ? cursorReplay(failFixture)
-            : kimiReplay(failFixture),
+            : provider === "kimi"
+              ? kimiReplay(failFixture)
+              : provider === "opencode"
+                ? opencodeReplay(failFixture)
+                : antigravityReplay(failFixture),
       );
       const calls = recordCompiles(adapter);
       const r = await validate(adapter, [provider]);
@@ -413,7 +481,7 @@ describe("adapters validate: compiled-cell fallback (owner decision 59)", () => 
       const original = adapter.compile.bind(adapter);
       adapter.compile = (request, profile) => {
         const inv = original(request, profile);
-        return "ineligible" in inv ? inv : { ...inv, argv: [...inv.argv, "--yolo"] };
+        return "ineligible" in inv ? inv : { ...inv, argv: [...inv.argv, planted] };
       };
       let spawned = 0;
       const parse = adapter.parseEvent.bind(adapter);
@@ -423,29 +491,16 @@ describe("adapters validate: compiled-cell fallback (owner decision 59)", () => 
       };
       const r = await validate(adapter, [provider]);
       expect(r.code).toBe(1);
-      expect(r.json.error).toContain(`only ${flag} is allowed (owner decision 59)`);
-      expect(r.json.error).toContain("--yolo");
+      if (flag === null) {
+        expect(r.json.error).toContain(`none allowed (${ruling})`);
+      } else {
+        expect(r.json.error).toContain(`only ${flag} is allowed (${ruling})`);
+      }
+      expect(r.json.error).toContain(planted);
       expect(spawned).toBe(0);
       expect(readFileSync(f).equals(before)).toBe(true);
     });
   }
-
-  it("opencode and antigravity are not on the allowlist: they still fail at compiles, with no privileged compile", async () => {
-    for (const [provider, adapter] of [
-      ["opencode", synthetic(new OpenCodeAdapter({ executable: process.execPath }))],
-      ["antigravity", synthetic(new AntigravityAdapter({ executable: process.execPath }))],
-    ] as const) {
-      const f = useManifest(provider);
-      const before = readFileSync(f);
-      const calls = recordCompiles(adapter);
-      const r = await validate(adapter, [provider]);
-      expect(r.code).toBe(1);
-      expect(r.json.error).toBe("conformance: static checks failed: compiles");
-      expect(calls.some((c) => c.profile.name === "privileged" && c.request.bypassApproved === true)).toBe(false);
-      expect(readFileSync(f).equals(before)).toBe(true);
-      writeFileSync(file, MANIFEST);
-    }
-  });
 
   it("an adapter outside the allowlist never falls back, even when a privileged cell would compile", async () => {
     const adapter = new FakeAdapter();
@@ -465,6 +520,54 @@ describe("adapters validate: compiled-cell fallback (owner decision 59)", () => 
     // The statics' own "never silently downgraded" probe compiles privileged without approval; nothing approved runs.
     expect(profiles[0]).toBe("inspect-untrusted");
     expect(readFileSync(file).equals(before)).toBe(true);
+  });
+
+  it("muse is not on the allowlist: it never falls back, even though its privileged cell would compile", async () => {
+    const adapter = synthetic(new MuseAdapter({ executable: process.execPath }));
+    // Premise: an approved privileged bypass cell compiles for muse, so validate *could* fall back but must not.
+    const profile = privilegedProfile({
+      files: { access: "worktree" },
+      shell: { mode: "broad" },
+      network: { mode: "on" },
+      repository_config: { mode: "enabled" },
+      bypass: true,
+    });
+    expect(
+      isIneligible(
+        adapter.compile(
+          {
+            runId: "run_premise",
+            objective: "synthetic premise objective",
+            constraints: [],
+            workspace: { cwd: tmp, writable: true },
+            bypassApproved: true,
+          },
+          profile,
+        ),
+      ),
+    ).toBe(false);
+    const f = useManifest("muse");
+    const before = readFileSync(f);
+    const original = adapter.compile.bind(adapter);
+    const profiles: string[] = [];
+    const approvedRuns: boolean[] = [];
+    adapter.compile = (request, p) => {
+      profiles.push(p.name);
+      approvedRuns.push(request.bypassApproved === true);
+      if (p.name === "inspect-untrusted") {
+        return { ineligible: true, reason: "PROFILE_UNSUPPORTED", detail: "test: no inspect-untrusted cell" };
+      }
+      return original(request, p);
+    };
+    const r = await validate(adapter, ["muse"]);
+    expect(r.code).toBe(1);
+    expect(r.json.error).toBe("conformance: static checks failed: compiles");
+    // The statics' own "never silently downgraded" probe compiles privileged without approval; nothing approved runs.
+    expect(profiles[0]).toBe("inspect-untrusted");
+    expect(approvedRuns.some((a) => a)).toBe(false);
+    expect(readFileSync(f).equals(before)).toBe(true);
+    expect(readdirSync(dir)).toEqual(["muse.json"]);
+    writeFileSync(file, MANIFEST);
   });
 
   it("a fake that compiles inspect-untrusted keeps the inspect-untrusted smoke and the old evidence text", async () => {

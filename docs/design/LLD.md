@@ -2619,12 +2619,14 @@ the manifest fails validation (fail closed); the run's auth mode is not in `auth
 nothing else, only after the probe (FR-ADP-02 steps 1 to 5), an `OK` auth preflight and the conformance subset including
 the structured-output smoke call (step 7, one provider call) pass; on any failure it writes nothing.
 The smoke task is compiled under `inspect-untrusted` first. Only when that is `Ineligible` and the adapter is Grok
-Build, Cursor or Kimi Code (owner decision 59; Delegated reading) does it run in the adapter's only compiled cell
-instead: `privileged` with the narrowest bypass scope that adapter compiles, approved by an in-memory approval local to
-that call (no ledger row, approval record or config change), with the throwaway repository passed writable where the
-cell refuses a read-only workspace (Cursor, Kimi Code). Before the spawn the argv's bypass-class flags must be exactly the
-one flag the cell declares (`--always-approve`, `--force`, `--prompt`). The step detail, the `--json` `smoke_profile`
-field and the evidence line name the cell; every other adapter, OpenCode and Antigravity included, is unchanged.
+Build, Cursor or Kimi Code (owner decision 59), OpenCode or Antigravity (owner decision 60; Delegated readings) does
+it run in the adapter's only compiled cell instead: `privileged` with the narrowest bypass scope that adapter compiles,
+approved by an in-memory approval local to that call (no ledger row, approval record or config change), with the
+throwaway repository passed writable where the cell refuses a read-only workspace (Cursor, Kimi Code, OpenCode,
+Antigravity). Before the spawn the argv's bypass-class flags must be exactly the one flag the cell declares
+(`--always-approve`, `--force`, `--prompt`, `--dangerously-skip-permissions`; OpenCode declares none, so none may
+appear). The step detail, the `--json` `smoke_profile` field and the evidence line name the cell and its ruling; every
+other adapter, Claude Code and Codex included, is unchanged.
 The range is the installed `X.Y.Z` to the next minor, `>=X.Y.Z <X.(Y+1).0` (Q-12; an Assumption, not a provider
 statement); a pre-release version is refused.
 
