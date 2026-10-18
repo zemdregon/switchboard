@@ -2532,7 +2532,7 @@ FR-INN-06; a hook or an `inner` command is a later wiring task), summarising oth
 
 **T11.10 status (2026-10-15; Delegated): Done on fakes. No live inner backend, provider CLI or network was used.** "Done
 when", clause by clause (all in `src/inner/handoff-condense.test.ts`): *structured bundle fields are identical with and
-without the inner agent*: every test stores a version 1 `handoff_view` (the T5.5 synthetic bundle, redacted as other
+without the inner agent*: every test stores a version 2 `handoff_view` (the T5.5 synthetic bundle, redacted as other
 artifacts are) and compares its bytes before and after condensation, with the task disabled and enabled, on accept, on
 rejection, on fallback and on a privacy denial; the parsed bundle and the run record are unchanged. The builder under
 `src/continuity/` is not modified, so the view stays the pure function of `(as_of, bounds, builder_version)` (FR-SES-05).
