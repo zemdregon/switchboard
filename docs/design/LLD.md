@@ -964,7 +964,8 @@ it never holds a DB transaction and returns the current non-terminal envelope on
 ```jsonc
 { "input": { "required": ["meta_session_id","instruction"], "properties": {
     "meta_session_id": {"type":"string"}, "instruction": {"type":"string","maxLength":32768},
-    "routing": {"$ref":"#/$defs/routing"},      // different provider => handoff bundle (FR-SES-04)
+    "routing": {"$ref":"#/$defs/routing"},      // different provider => handoff bundle (FR-SES-04);
+                                                     // the 3-field subset: no model_group, no model (§17.7, Q-99)
     "trust_profile": {"$ref":"#/$defs/trust_profile"},   // default: previous run's; may not exceed client max;
                                                          // privileged only with the meta-session's approval (§3.1)
     "wait_seconds": {"type":"integer","minimum":0,"maximum":60} } },
@@ -6207,7 +6208,11 @@ both validate through `modelGroupsOf` (`src/config/routing.ts`): the resolved ta
    ids (`claude-code`) while `provider_preference` names adapter ids (`claude`), so each member is mapped to its
    adapter id first (`groupMembersFor` in `src/config/routing.ts`; an id with no mapping compares as is). If none
    remains, the result is `INVALID_REQUEST`. `require_provider` alone names no provider, so it narrows nothing.
-4. `continue_task` takes neither field. Continuations stay governed by FR-SES-03 and BR-18 (Q-99).
+4. `continue_task` takes neither field: either one is `INVALID_REQUEST` with the message
+   "continue_task accepts neither routing.model_group nor routing.model (Q-99)" and
+   `details.field` `"routing"` (returned before `checkRouting` runs, so the closed schema never
+   masks it with the generic message; any other unknown routing key keeps the generic
+   additional-properties refusal). Continuations stay governed by FR-SES-03 and BR-18 (Q-99).
 
 **Candidates.** Without either field, candidates are providers, as in §17.3. With a group, a candidate is a member,
 keyed `<provider>/<model>`. Stage 1 per member: (a) the provider's stage-1 reasons, unchanged; (b) registry resolution
