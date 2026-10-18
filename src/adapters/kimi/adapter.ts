@@ -62,6 +62,7 @@ import type {
   ProviderAdapter,
   ResolvedProfile,
   RunResult,
+  SkillDelivery,
 } from "../types.js";
 import {
   ACP_CONFIG_MODEL,
@@ -360,6 +361,14 @@ export class KimiAdapter implements ProviderAdapter {
     const sessionId = str(ownProp(obj(ownProp(session, "result")), "sessionId"));
     if (sessionId !== undefined && SESSION_ID_RE.test(sessionId)) return { state: "OK" };
     return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (session/new returned no usable sessionId, ${exit})` };
+  }
+
+  /**
+   * T16.7 (TDD §3.16.1, LLD §19.6, ADR-0056 items 5, 6 and 8): every cell delivers skills as the prompt prefix. A cell
+   * may name `native` only with the evidence id of a T16.8 live check; the conformance suite fails one without it.
+   */
+  skillDelivery(): SkillDelivery {
+    return "prompt_prefix";
   }
 
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {

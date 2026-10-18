@@ -6628,9 +6628,10 @@ Done-when).
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
 store, migration `0021` and state derivation (T16.1), the configuration keys and loader (T16.3), the operator CLI
 (T16.2), the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), admission (T16.4), prompt-prefix delivery
-(T16.5) and the native-delivery framework with its exclusions and cleanup (T16.6), and continuity across handoff
-and resume (T16.10: the bundle `skills` facts and re-delivery in the receiving provider's way), all Delegated, not owner-approved;
-per-provider native declarations (T16.7, T16.8) Proposed).
+(T16.5), the native-delivery framework with its exclusions and cleanup (T16.6), adapter declarations
+(T16.7 Done 2026-10-17, Delegated, not owner-approved), and continuity across handoff and resume (T16.10: the bundle
+`skills` facts and re-delivery in the receiving provider's way), all Delegated, not owner-approved;
+per-provider native (T16.8) Proposed).
 Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
 are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to
 FR-SKL-10. Business rules: [FRD](../requirements/FRD.md#3-business-rules) BR-52 to BR-56, V15, C8, WF-16. Tasks:
@@ -6837,6 +6838,15 @@ Per run, after the worktree and lease exist and before the provider is spawned:
 
 Delivery never changes the argv, the environment allowlist, the profile or the tool set. The argv audit is unchanged,
 and a test asserts that a run's argv and environment are byte-identical with and without skills.
+
+Implementation notes (T16.7, Delegated, not owner-approved):
+
+- Each of the eight provider adapters declares `skillDelivery()` = `prompt_prefix` as its own method
+  (`src/adapters/{claude,codex,grok,antigravity,cursor,opencode,kimi,muse}/adapter.ts`); `checkSkillDelivery` in
+  `src/adapters/conformance.ts`, run by `checkAdapterStatics` for every case whether or not the cell compiles, reads
+  the declaration raw (not through `skillDeliveryOf`), fails a `native` declaration without a T16.8 evidence id, and
+  fails a cell whose argv, environment, allowlist or policy flags the skills change beyond the prompt text
+  (`src/adapters/skill-delivery-conformance.test.ts`, over each adapter's compile matrix).
 
 ### 19.7 Prompt prefix rendering (FR-SKL-05)
 

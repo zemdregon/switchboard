@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { auditInvocation, BYPASS_FLAGS, type BypassContext } from "./audit.js";
 import { FAILURE_CODES, type FailureCode } from "./failure.js";
+import { type PromptSkill, renderSkillBlock } from "./prompt.js";
 import { startAdapterRun } from "./run.js";
 import {
   type CompileRequest,
@@ -17,6 +18,7 @@ import {
   type ProviderAdapter,
   type ResolvedProfile,
   type RunResult,
+  type SkillDelivery,
 } from "./types.js";
 
 /** Cases FR-ADP-11 requires, plus the extras T1.7 exercises. */
@@ -92,6 +94,8 @@ export function checkAdapterStatics(c: ConformanceCase): ConformanceCheck[] {
   const a = c.adapter;
   const inv1 = c.binding ? a.resumeArgs(c.binding, c.request, c.profile) : a.compile(c.request, c.profile);
   const inv2 = c.binding ? a.resumeArgs(c.binding, c.request, c.profile) : a.compile(c.request, c.profile);
+  // T16.7: the delivery declaration is checked whether or not this cell compiles.
+  checks.push(...checkSkillDelivery(c));
   if (isIneligible(inv1)) {
     check("compiles", false, `ineligible: ${inv1.reason}`);
     return checks;
@@ -119,6 +123,76 @@ export function checkAdapterStatics(c: ConformanceCase): ConformanceCheck[] {
   check("privileged profile is never silently downgraded", isIneligible(priv) || !auditInvocation(priv).length);
   const unapproved = a.compile({ ...c.request, bypassApproved: false }, c.profile);
   check("no bypass flag without bypassApproved", isIneligible(unapproved) || !auditInvocation(unapproved).length);
+  return checks;
+}
+
+/** T16.7 probe entries: two, so an adapter that put them anywhere but the prompt carrier would show it in the argv. */
+const PROBE_SKILLS: readonly PromptSkill[] = [
+  { name: "conformance-probe", version: 1, sha256: "a".repeat(64), body: "Probe skill one.\n" },
+  { name: "conformance-probe-two", version: 2, sha256: "b".repeat(64), body: "Probe skill two.\n" },
+];
+
+/** A declaration as comparable text: the location and evidence of a `native` one, `absent` for none. */
+function describeDelivery(d: SkillDelivery | undefined): string {
+  if (d === undefined || d === "prompt_prefix") return d ?? "absent";
+  const n = typeof d === "object" && d !== null ? d.native : undefined;
+  return JSON.stringify({ dir: n?.dir, layout: n?.layout, evidence: n?.evidence ?? null });
+}
+
+/**
+ * T16.7 (LLD §19.6, ADR-0056 items 5, 6 and 8, TDD §3.16.1): the case's skill delivery declaration, read raw (not
+ * through `skillDeliveryOf`, which reads a bad one as `prompt_prefix`). A `native` declaration must carry the evidence
+ * id of a T16.8 live check; the declaration must be pure and must not depend on the skills; and it never changes the
+ * compiled argv: the cell compiled with skills and with none differs only in the prompt text (the T16.5 reading of
+ * "argv identical": the one word that carries the prompt may gain the block, nothing else may change).
+ */
+export function checkSkillDelivery(c: ConformanceCase): ConformanceCheck[] {
+  const checks: ConformanceCheck[] = [];
+  const check = (name: string, ok: boolean, detail?: string) =>
+    checks.push({ name, ok, ...(detail ? { detail } : {}) });
+  const a = c.adapter;
+  const { skills: _skills, ...bare } = c.request;
+  const withSkills: CompileRequest = { ...bare, skills: PROBE_SKILLS };
+  const declared = a.skillDelivery?.(bare, c.profile);
+  const shown = describeDelivery(declared);
+  check(
+    "skill delivery declaration is pure and ignores the skills",
+    shown === describeDelivery(a.skillDelivery?.(bare, c.profile)) &&
+      shown === describeDelivery(a.skillDelivery?.(withSkills, c.profile)),
+    shown,
+  );
+  const native = typeof declared === "object" && declared !== null ? declared.native : undefined;
+  const evidence = native?.evidence;
+  check(
+    "native skill delivery carries a T16.8 evidence id",
+    declared === undefined || declared === "prompt_prefix" || (typeof evidence === "string" && evidence.trim() !== ""),
+    native === undefined ? shown : `evidence=${typeof evidence === "string" ? JSON.stringify(evidence) : "missing"}`,
+  );
+  const compileWith = (req: CompileRequest) =>
+    c.binding ? a.resumeArgs(c.binding, req, c.profile) : a.compile(req, c.profile);
+  const plain = compileWith(bare);
+  const skilled = compileWith(withSkills);
+  if (isIneligible(plain) || isIneligible(skilled)) {
+    check(
+      "skills never change the compiled argv",
+      isIneligible(plain) && isIneligible(skilled) && plain.reason === skilled.reason,
+      `eligible without skills: ${!isIneligible(plain)}, with skills: ${!isIneligible(skilled)}`,
+    );
+    return checks;
+  }
+  const block = `${renderSkillBlock(PROBE_SKILLS)}\n\n`;
+  const at = skilled.argv.findIndex((w, i) => w.replace(block, "") !== plain.argv[i]);
+  const same = (x: unknown, y: unknown) => JSON.stringify(x) === JSON.stringify(y);
+  check(
+    "skills never change the compiled argv",
+    skilled.argv.length === plain.argv.length &&
+      at === -1 &&
+      skilled.cwd === plain.cwd &&
+      same(skilled.env, plain.env) &&
+      same(skilled.envAllowlist, plain.envAllowlist) &&
+      same(skilled.policyFlags, plain.policyFlags),
+    at === -1 ? `argv ${plain.argv.length} words` : `argv[${at}] differs`,
+  );
   return checks;
 }
 

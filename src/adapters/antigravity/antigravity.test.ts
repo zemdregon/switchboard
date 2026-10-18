@@ -2184,7 +2184,16 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     const report = await runConformanceCase(caseOf("resume"));
     expect(report.ok).toBe(false);
     expect(report.result).toBeUndefined();
-    expect(report.checks).toEqual([{ name: "compiles", ok: false, detail: "ineligible: CAPABILITY_MISSING" }]);
+    // T16.7: the skill delivery checks run whether or not the cell compiles; "compiles" is the only failure.
+    expect(report.checks.filter((k) => !k.ok)).toEqual([
+      { name: "compiles", ok: false, detail: "ineligible: CAPABILITY_MISSING" },
+    ]);
+    expect(report.checks.map((k) => k.name)).toEqual([
+      "skill delivery declaration is pure and ignores the skills",
+      "native skill delivery carries a T16.8 evidence id",
+      "skills never change the compiled argv",
+      "compiles",
+    ]);
   });
 
   it("the resume fixture and dialect keep the --conversation id, ready for when Q-86 allows a compile", async () => {
