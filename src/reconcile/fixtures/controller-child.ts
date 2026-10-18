@@ -3,6 +3,9 @@
  * in its own process, so the test can SIGKILL it mid-RUNNING. Usage (see reconcile.test.ts):
  *   node --experimental-transform-types --import ./ts-register.mjs controller-child.ts '<json config>'
  * Prints one JSON line `{"running": {...}}` once the provider process is spawned and its pid is committed, then idles.
+ * Also prints `{"transition": {"runId", "to"}}` for every transition, so a named crash point (`SWITCHBOARD_TEST_CRASH_AT`
+ * with `NODE_ENV=test` in the child's environment, `src/lifecycle/crash-point.ts`) can be checked against the last state
+ * the child reached before it killed itself.
  */
 import path from "node:path";
 import { FakeAdapter, type FakeScenario } from "../../adapters/fake/adapter.js";
@@ -86,6 +89,7 @@ const lifecycle = new RunLifecycle({
     ? { environments: { resolve: () => ({ environment: containerEnvironment, readOnlyContexts: [] }) } }
     : {}),
   onTransition: (n) => {
+    process.stdout.write(`${JSON.stringify({ transition: { runId: n.runId, to: n.to } })}\n`);
     if (n.to !== "RUNNING") return;
     const run = ledger.getRunRecord(n.runId);
     process.stdout.write(

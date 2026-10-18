@@ -39,6 +39,7 @@ import {
   type RunState,
   type TrustProfile,
 } from "../ledger/index.js";
+import { type CrashPoint, TEST_CRASH_AT_ENV } from "../lifecycle/crash-point.js";
 import { procStartTicks, RunLifecycle, SLOT_STATES, TERMINAL_STATES } from "../lifecycle/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { fileRuntime, plantContainer } from "./fixtures/file-runtime.js";
@@ -78,6 +79,21 @@ else {
   emit({ type: "session", session_id: "partial-1" });
   writeFileSync("partial.txt", "half-written\\n");
   setInterval(() => {}, 1000);
+}
+`;
+
+/** Fake CLI that writes into its worktree and exits successfully: FINALIZING has a change to checkpoint. */
+const WRITE_THEN_SUCCEED_CLI = `
+import { writeFileSync } from "node:fs";
+const a = process.argv.slice(2);
+const emit = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+if (a.includes("--version")) process.stdout.write("fake-cli 1.0.0\\n");
+else if (a.includes("--auth-status")) process.stdout.write('{"authenticated":true}\\n');
+else if (a.includes("--smoke")) emit({ type: "result", ok: true, summary: "smoke" });
+else {
+  emit({ type: "session", session_id: "done-1" });
+  writeFileSync("done.txt", "work\\n");
+  emit({ type: "result", ok: true, summary: "completed" });
 }
 `;
 
@@ -140,8 +156,7 @@ function expectConsistentLedger(): void {
   }
 }
 
-/** Start the controller in a child process; resolve once its provider is RUNNING (pid committed). */
-async function startChildController(extra: Record<string, unknown> = {}) {
+function spawnChildController(extra: Record<string, unknown>, env: NodeJS.ProcessEnv): ChildProcess {
   const child = spawn(
     process.execPath,
     [
@@ -152,9 +167,15 @@ async function startChildController(extra: Record<string, unknown> = {}) {
       path.join(FIXTURES, "controller-child.ts"),
       JSON.stringify({ dataDir, root, repo, ...extra }),
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    { stdio: ["ignore", "pipe", "pipe"], env },
   );
   cleanup.push(() => child.kill("SIGKILL"));
+  return child;
+}
+
+/** Start the controller in a child process; resolve once its provider is RUNNING (pid committed). */
+async function startChildController(extra: Record<string, unknown> = {}, env: NodeJS.ProcessEnv = process.env) {
+  const child = spawnChildController(extra, env);
   let stderr = "";
   child.stderr?.on("data", (d: Buffer) => {
     stderr += d.toString();
@@ -490,6 +511,185 @@ describe("controller crash during VERIFYING (T3.10; FRD WF-8, §4.3)", () => {
     expect(rules.slice(-2)).toEqual(["FINALIZING:T14", "CANCELLED:T17"]);
     expectConsistentLedger();
   });
+});
+
+/**
+ * Run the child controller with a named crash point armed (`src/lifecycle/crash-point.ts`); resolve once it has
+ * SIGKILLed itself there, with the states it reported and the one run it admitted (read from a fresh controller).
+ */
+async function crashChildAt(point: CrashPoint, extra: Record<string, unknown> = {}) {
+  db.close(); // the child is the only controller while it lives
+  const child = spawnChildController(extra, { ...process.env, NODE_ENV: "test", [TEST_CRASH_AT_ENV]: point });
+  let stderr = "";
+  child.stderr?.on("data", (d: Buffer) => {
+    stderr += d.toString();
+  });
+  const states: string[] = [];
+  createInterface({ input: child.stdout as NodeJS.ReadableStream }).on("line", (line) => {
+    const msg = JSON.parse(line) as { transition?: { to: string } };
+    if (msg.transition) states.push(msg.transition.to);
+  });
+  const [code, signal] = (await once(child, "close")) as [number | null, NodeJS.Signals | null];
+  expect({ code, signal, stderr }).toMatchObject({ code: null, signal: "SIGKILL" });
+  openController();
+  const runs = db.prepare("SELECT id FROM run").all() as { id: string }[];
+  expect(runs).toHaveLength(1); // no duplicate run row
+  return { states, runId: (runs[0] as { id: string }).id };
+}
+
+const checkpointCommits = (runId: string, kind: "pre" | "post") =>
+  (
+    db.prepare("SELECT commit_sha FROM workspace_checkpoint WHERE run_id = ? AND kind = ?").all(runId, kind) as {
+      commit_sha: string;
+    }[]
+  ).map((r) => r.commit_sha);
+const terminalTransitions = (runId: string) =>
+  events(runId).filter((e) => e.type === "state_transition" && TERMINAL_STATES.has(e.p.to as RunState));
+
+/** FR-WS-05: the operator's checkout is never touched: same HEAD, same branch, clean tree. */
+function expectOperatorCheckoutUntouched(head: string): void {
+  expect(g(repo, "rev-parse", "HEAD")).toBe(head);
+  expect(g(repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+  expect(g(repo, "status", "--porcelain")).toBe("");
+}
+
+/** A second pass changes nothing (idempotent reconciliation). */
+async function expectIdempotentReconcile(): Promise<void> {
+  const n = eventCount();
+  expect((await runReconcile()).actions).toEqual([]);
+  expect(eventCount()).toBe(n);
+}
+
+describe("named crash points: SIGKILL at PREFLIGHT, LEASED and FINALIZING (T1.9, TDD §3.6, NFR-REL-01)", () => {
+  it("preflight: killed after the PREFLIGHT verdict, before any lease; reconciled back to QUEUED (T20), then runs", async () => {
+    const head = g(repo, "rev-parse", "HEAD");
+    const { states, runId } = await crashChildAt("preflight", { scenario: "success" });
+    expect(states).toEqual(["PREFLIGHT"]);
+    const before = run(runId);
+    expect(before).toMatchObject({ state: "PREFLIGHT", worktree_path: null, pgid: null });
+    expect(sessionRow(before.meta_session_id).lease_run_id).toBeNull();
+    expect(checkpointCommits(runId, "pre")).toEqual([]);
+
+    const report = await runReconcile();
+    expect(report.actions.map((a) => `${a.from}>${a.to}`)).toEqual(["PREFLIGHT>QUEUED"]);
+    expect(events(runId).at(-1)?.p).toMatchObject({ to: "QUEUED", rule: "T20", cause: "controller_restart" });
+    expect(sessionRow(before.meta_session_id).lease_run_id).toBeNull();
+    expectConsistentLedger();
+    expectOperatorCheckoutUntouched(head);
+    await expectIdempotentReconcile();
+
+    const lifecycle = lifecycleWith(new FakeAdapter({ scenario: "success" }));
+    try {
+      lifecycle.start();
+      expect((await lifecycle.waitForTerminal(runId)).state).toBe("SUCCEEDED");
+    } finally {
+      await lifecycle.shutdown();
+    }
+    expect(terminalTransitions(runId)).toHaveLength(1);
+    expectOperatorCheckoutUntouched(head);
+  }, 60_000);
+
+  it("leased: killed with the lease, worktree and pre checkpoint in place, before spawn; FAILED/PROCESS_CRASH (T10)", async () => {
+    const head = g(repo, "rev-parse", "HEAD");
+    const { states, runId } = await crashChildAt("leased", { scenario: "success" });
+    expect(states).toEqual(["PREFLIGHT", "LEASED"]);
+    const before = run(runId);
+    expect(before).toMatchObject({ state: "LEASED", pgid: null });
+    expect(sessionRow(before.meta_session_id).lease_run_id).toBe(runId);
+    const wt = before.worktree_path as string;
+    expect(existsSync(wt)).toBe(true);
+    const pre = checkpointCommits(runId, "pre");
+    expect(pre).toHaveLength(1);
+
+    await runReconcile();
+    const after = run(runId);
+    expect(after).toMatchObject({ state: "FAILED", failure_code: "PROCESS_CRASH" });
+    expect(terminalTransitions(runId).map((e) => e.p.rule)).toEqual(["T10"]);
+    expect(sessionRow(before.meta_session_id)).toEqual({ head_commit: pre[0], lease_run_id: null });
+    // The run branch is kept as evidence; nothing was committed on it (no provider ran).
+    const branch = `switchboard/${before.meta_session_id}/${runId}`;
+    expect(g(repo, "rev-parse", branch)).toBe(pre[0]);
+    expect(checkpointCommits(runId, "post")).toEqual([pre[0]]);
+    expectConsistentLedger();
+    expectOperatorCheckoutUntouched(head);
+    await expectIdempotentReconcile();
+  }, 60_000);
+
+  it("finalizing_before_checkpoint: pending success is applied once from the worktree; SUCCEEDED (T15), head advanced", async () => {
+    const head = g(repo, "rev-parse", "HEAD");
+    const script = path.join(root, "write-then-succeed.mjs");
+    writeFileSync(script, WRITE_THEN_SUCCEED_CLI);
+    const { states, runId } = await crashChildAt("finalizing_before_checkpoint", { script });
+    expect(states).toEqual(["PREFLIGHT", "LEASED", "RUNNING", "FINALIZING"]);
+    const before = run(runId);
+    expect(before.state).toBe("FINALIZING");
+    expect(events(runId).find((e) => e.p.to === "FINALIZING")?.p).toMatchObject({ pending: "success" });
+    expect(sessionRow(before.meta_session_id).lease_run_id).toBe(runId);
+    expect(checkpointCommits(runId, "post")).toEqual([]);
+
+    await runReconcile();
+    expect(run(runId).state).toBe("SUCCEEDED");
+    expect(terminalTransitions(runId).map((e) => e.p.rule)).toEqual(["T15"]);
+    const post = checkpointCommits(runId, "post");
+    expect(post).toHaveLength(1);
+    expect(sessionRow(before.meta_session_id)).toEqual({ head_commit: post[0], lease_run_id: null });
+    expect(g(repo, "show", `${post[0]}:done.txt`)).toBe("work");
+    expect(g(repo, "rev-parse", `${post[0]}^`)).toBe(checkpointCommits(runId, "pre")[0]);
+    expect(existsSync(path.join(repo, "done.txt"))).toBe(false);
+    expectConsistentLedger();
+    expectOperatorCheckoutUntouched(head);
+    await expectIdempotentReconcile();
+  }, 60_000);
+
+  it("finalizing_after_checkpoint: the redo reuses the committed checkpoint, no second commit; SUCCEEDED (T15)", async () => {
+    const head = g(repo, "rev-parse", "HEAD");
+    const script = path.join(root, "write-then-succeed.mjs");
+    writeFileSync(script, WRITE_THEN_SUCCEED_CLI);
+    const { states, runId } = await crashChildAt("finalizing_after_checkpoint", { script });
+    expect(states).toEqual(["PREFLIGHT", "LEASED", "RUNNING", "FINALIZING"]);
+    const before = run(runId);
+    expect(before.state).toBe("FINALIZING");
+    const [committed] = checkpointCommits(runId, "post");
+    expect(committed).toBeDefined();
+    expect(events(runId).filter((e) => e.type === "checkpoint" && e.p.kind === "post")).toHaveLength(1);
+    expect(sessionRow(before.meta_session_id).lease_run_id).toBe(runId);
+
+    await runReconcile();
+    expect(run(runId).state).toBe("SUCCEEDED");
+    expect(terminalTransitions(runId).map((e) => e.p.rule)).toEqual(["T15"]);
+    const branch = `switchboard/${before.meta_session_id}/${runId}`;
+    const pre = checkpointCommits(runId, "pre")[0] as string;
+    expect(g(repo, "rev-list", "--count", `${pre}..${branch}`)).toBe("1"); // one checkpoint commit, not two
+    expect(g(repo, "rev-parse", branch)).toBe(committed);
+    // As built: the redo records its own `post` checkpoint row and event (`reconciled`, nothing committed) for the same
+    // commit; no second commit, run or terminal transition.
+    expect(checkpointCommits(runId, "post")).toEqual([committed, committed]);
+    expect(
+      events(runId)
+        .filter((e) => e.type === "checkpoint" && e.p.kind === "post")
+        .map((e) => e.p),
+    ).toEqual([
+      { kind: "post", commit: committed, committed: true, changed_files: 1 },
+      { kind: "post", commit: committed, committed: false, changed_files: 1, reconciled: true },
+    ]);
+    expect(sessionRow(before.meta_session_id)).toEqual({ head_commit: committed, lease_run_id: null });
+    expect(existsSync(path.join(repo, "done.txt"))).toBe(false);
+    expectConsistentLedger();
+    expectOperatorCheckoutUntouched(head);
+    await expectIdempotentReconcile();
+  }, 60_000);
+
+  it("the hook is inert without NODE_ENV=test: the same variable on a production environment reaches RUNNING", async () => {
+    db.close();
+    const { child, running } = await startChildController(
+      { scenario: "hang" },
+      { ...process.env, NODE_ENV: "production", [TEST_CRASH_AT_ENV]: "leased" },
+    );
+    expect(child.exitCode).toBeNull();
+    await sigkill(child);
+    openController();
+    expect(run(running.runId).state).toBe("RUNNING");
+  }, 60_000);
 });
 
 describe("orphan identity (LLD §8)", () => {
