@@ -2626,7 +2626,9 @@ throwaway repository passed writable where the cell refuses a read-only workspac
 Antigravity). Before the spawn the argv's bypass-class flags must be exactly the one flag the cell declares
 (`--always-approve`, `--force`, `--prompt`, `--dangerously-skip-permissions`; OpenCode declares none, so none may
 appear). The step detail, the `--json` `smoke_profile` field and the evidence line name the cell and its ruling; every
-other adapter, Claude Code and Codex included, is unchanged.
+other adapter, Claude Code and Codex included, is unchanged. A failed smoke step reports the run's classified failure
+code and its classifier detail (redacted with the ledger's secret patterns, e-mails and URL queries stripped, clipped
+to one line; never raw stderr or stdout), and the `--json` smoke step adds `failure_code` and `failure_detail`.
 The range is the installed `X.Y.Z` to the next minor, `>=X.Y.Z <X.(Y+1).0` (Q-12; an Assumption, not a provider
 statement); a pre-release version is refused.
 

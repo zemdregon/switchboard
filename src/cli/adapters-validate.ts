@@ -64,6 +64,7 @@ import {
   type ResolvedProfile,
 } from "../adapters/types.js";
 import { recordAdapterVersion } from "../adapters/version-canary.js";
+import { defaultRedactor, REDACTION_MARKER } from "../artifacts/redact.js";
 import { loadConfig } from "../config/index.js";
 import { type PrivilegedScope, privilegedScopeHash, resolveProfile, resolveTrustProfile } from "../policy/index.js";
 import { defaultAdapters } from "./doctor.js";
@@ -193,6 +194,10 @@ export interface ValidateStep {
   readonly detail: string;
   /** Smoke step only: the profile the smoke task was compiled under (`inspect-untrusted` or `privileged`). */
   readonly smoke_profile?: string;
+  /** Smoke FAIL only: the run's classified failure code (T4.4 failure-detail follow-up). */
+  readonly failure_code?: string;
+  /** Smoke FAIL only: the classifier's detail, redacted and clipped to one line; never raw stderr/stdout. */
+  readonly failure_detail?: string;
 }
 
 export interface ValidateReport {
@@ -227,6 +232,19 @@ const clip = (s: string): string =>
     .filter((c) => c >= " " && c !== "\x7f")
     .join("")
     .slice(0, 200);
+
+/**
+ * The classifier's `detail` as it may appear in output: the ledger's own secret redactor (the same patterns the
+ * lifecycle applies to `failure_detail`), then e-mail addresses and URL query strings become the redaction marker
+ * (the ledger patterns cover credential shapes, not those), then one line, clipped. Never call this on raw
+ * stderr/stdout: only the classifier's detail reaches output.
+ */
+export function sanitizeFailureDetail(detail: string): string {
+  const redacted = defaultRedactor(Buffer.from(detail, "utf8")).toString("utf8");
+  return clip(
+    redacted.replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, REDACTION_MARKER).replace(/(https?:\/\/[^\s?]+)\?[^\s]*/g, "$1"),
+  );
+}
 
 /** Replaces the value of the single top-level `"key": "<string>"` line; null when the line is not found exactly once. */
 function replaceStringLine(text: string, key: string, value: string): string | null {
@@ -495,9 +513,24 @@ export async function runAdaptersValidate(
       .done;
     const sawResult = outcome.events.some((e) => e.kind === "result" && e.ok);
     if (!outcome.result.ok || !sawResult || !outcome.groupEmpty) {
-      return smokeFail(
-        `structured-output smoke test failed: ${outcome.result.failureCode ?? (sawResult ? "process group not empty" : "no successful structured result")}${outcome.result.failureDetail ? ` (${clip(outcome.result.failureDetail)})` : ""}`,
-      );
+      const code =
+        outcome.result.failureCode ?? (sawResult ? "process group not empty" : "no successful structured result");
+      const safeDetail =
+        outcome.result.failureDetail !== undefined && outcome.result.failureDetail !== ""
+          ? sanitizeFailureDetail(outcome.result.failureDetail)
+          : null;
+      const text =
+        `structured-output smoke test failed: ${clip(code)} (exit code ${outcome.exit.exitCode ?? "unknown"})` +
+        (safeDetail === null ? "" : `: ${safeDetail}`);
+      steps.push({
+        id: "smoke",
+        status: "fail",
+        detail: text,
+        smoke_profile: smokeProfile,
+        failure_code: clip(code),
+        ...(safeDetail === null ? {} : { failure_detail: safeDetail }),
+      });
+      return done(`smoke: ${text}`);
     }
     steps.push({
       id: "smoke",

@@ -23,12 +23,16 @@ import {
   AdapterRegistry,
   type AuthResult,
   type CompileRequest,
+  type ExitInfo,
+  type FailureCode,
   type Ineligible,
   type Invocation,
   isIneligible,
+  type NormalizedEvent,
   type ProbeResult,
   type ProviderAdapter,
   type ResolvedProfile,
+  type RunResult,
 } from "../adapters/index.js";
 import { replayAdapter as kimiReplay } from "../adapters/kimi/fixtures/cases.js";
 import { parseManifest } from "../adapters/manifest/index.js";
@@ -585,5 +589,99 @@ describe("adapters validate: compiled-cell fallback (owner decisions 59 and 60)"
     expect(calls.every((c) => c.request.bypassApproved !== true)).toBe(true);
     expect(parseManifest(readFileSync(file, "utf8")).notes).toContain("(inspect-untrusted, no bypass flag)");
     expect(existsSync(calls[0]?.request.workspace.cwd ?? "")).toBe(false);
+  });
+});
+
+describe("adapters validate: smoke failure carries the classified detail (T4.4 failure-detail follow-up)", () => {
+  /** A smoke run whose classifier reports a fixed code and detail, whatever the fake CLI emitted. */
+  class ClassifiedFailAdapter extends FakeAdapter {
+    constructor(
+      private readonly code: FailureCode,
+      private readonly detail: string,
+    ) {
+      super({ scenario: "task_failure" });
+    }
+    override extractResult(_events: readonly NormalizedEvent[], _exit: ExitInfo): RunResult {
+      return { ok: false, failureCode: this.code, failureDetail: this.detail, unknownEventCount: 0 };
+    }
+  }
+
+  const smokeOf = (j: { steps: { id: string }[] }) => j.steps.find((s) => s.id === "smoke") as Record<string, unknown>;
+
+  async function validateText(adapter: ProviderAdapter) {
+    const out: string[] = [];
+    const io: CliIo = {
+      stdout: { write: (s) => out.push(s) },
+      stderr: { write: () => {} },
+      env: {},
+      adapters: registry(adapter),
+      manifestDir: dir,
+      now: () => new Date("2026-10-13T12:00:00Z"),
+    };
+    const code = await main(["adapters", "validate", "fake"], io);
+    return { code, text: out.join("") };
+  }
+
+  it("a fake smoke failure with a known classification prints the code and detail in text and JSON", async () => {
+    const r = await validate(new ClassifiedFailAdapter("QUOTA_EXHAUSTED", "out of usage"));
+    expect(r.code).toBe(1);
+    expect(r.json.ok).toBe(false);
+    expect(r.json.written).toBe(false);
+    const smoke = smokeOf(r.json);
+    expect(smoke).toMatchObject({ status: "fail", failure_code: "QUOTA_EXHAUSTED", failure_detail: "out of usage" });
+    expect(smoke.detail).toBe("structured-output smoke test failed: QUOTA_EXHAUSTED (exit code 1): out of usage");
+    expect(r.json.error).toContain("QUOTA_EXHAUSTED (exit code 1): out of usage");
+
+    const t = await validateText(new ClassifiedFailAdapter("QUOTA_EXHAUSTED", "out of usage"));
+    expect(t.code).toBe(1);
+    expect(t.text).toContain(
+      "[FAIL] smoke: structured-output smoke test failed: QUOTA_EXHAUSTED (exit code 1): out of usage",
+    );
+    expect(t.text).toContain("Nothing was written.");
+    expect(t.text).toContain("Result: FAILED");
+  });
+
+  it("a planted secret-like token, an e-mail and a URL query never appear in the output", async () => {
+    const planted = "sk-ant-secret-abcdefghijklmnopqrstuvwxyz1234";
+    const detail = `quota stop for alice@example.com at https://example.com/usage?token=abc123&user=alice using ${planted}`;
+    const r = await validate(new ClassifiedFailAdapter("QUOTA_EXHAUSTED", detail));
+    expect(r.code).toBe(1);
+    const dumped = JSON.stringify(r.json);
+    for (const secret of [planted, "alice@example.com", "token=abc123"]) {
+      expect(dumped).not.toContain(secret);
+    }
+    expect(dumped).toContain("QUOTA_EXHAUSTED");
+    expect(dumped).toContain("[REDACTED]");
+    expect(String(smokeOf(r.json).failure_detail)).toContain("https://example.com/usage");
+
+    const t = await validateText(new ClassifiedFailAdapter("QUOTA_EXHAUSTED", detail));
+    for (const secret of [planted, "alice@example.com", "token=abc123"]) {
+      expect(t.text).not.toContain(secret);
+    }
+  });
+
+  it("a long detail is clipped and stays on one line", async () => {
+    const detail = `first line\nsecond line ${"x".repeat(500)}`;
+    const r = await validate(new ClassifiedFailAdapter("TOOL_FAILURE", detail));
+    expect(r.code).toBe(1);
+    const smoke = smokeOf(r.json);
+    expect(String(smoke.detail)).not.toContain("\n");
+    expect(String(smoke.failure_detail)).not.toContain("\n");
+    expect(String(smoke.failure_detail)).toHaveLength(200);
+    expect(JSON.stringify(r.json)).not.toContain("x".repeat(500));
+  });
+
+  it("the success output is unchanged and carries no failure fields", async () => {
+    const r = await validate(new FakeAdapter());
+    expect(r.code).toBe(0);
+    const smoke = smokeOf(r.json);
+    expect(smoke).toEqual({
+      id: "smoke",
+      status: "ok",
+      detail: "one provider call; a successful structured result was parsed",
+      smoke_profile: "inspect-untrusted",
+    });
+    expect("failure_code" in smoke).toBe(false);
+    expect("failure_detail" in smoke).toBe(false);
   });
 });
