@@ -185,7 +185,11 @@ Pre-release. The package is private and is not published to any registry; you bu
  built (T16.6, Delegated, not owner-approved): the per-cell `skillDelivery` declaration, fresh-path exclusive writes,
  exclusion from the commit tool, checkpoints, diff artifacts and `changed_files`, `push` refusal while a skill file
  exists, removal before `VERIFYING`, at terminal states, at reconciliation and by GC, and the `skill_cleanup_failed`
- needs-attention reason; only the fake adapter declares a native location, in tests. Design:
+ needs-attention reason; only the fake adapter declares a native location, in tests. The malicious-fixture leg is
+ built (T16.11, Delegated, not owner-approved): `test/malicious/skills-leg.test.ts` runs the hostile skill
+ repository (its own `.claude/skills`, `.cursor/rules`, `AGENTS.md`, a pre-existing `switchboard-` path and a
+ symlinked `.claude`) against the production store and delivery ports; untrusted runs load no repository skill, the
+ canary reaches no event, span, log, artifact or sink, and the R-69 copy behaves as recorded. Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
