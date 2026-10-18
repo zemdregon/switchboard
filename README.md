@@ -280,7 +280,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   Delegated). Open items, by blocker: operator live legs (T4.12 on a Mac, T4.28, T4.38, T4.48, T4.58, T4.68; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
   and OpenCode cannot run by design; owner decision 59 lets Grok Build, Cursor and Kimi Code reach the smoke step
-  in the adapter's only compiled cell instead (T4.4), while OpenCode and Antigravity still stop at `compiles`); rows waiting on uncaptured live shapes
+  in the adapter's only compiled cell instead (T4.4), while OpenCode and Antigravity still stop at `compiles`);
+   rows waiting on uncaptured live shapes
   (T4.23, T4.26, T4.33, T4.35, T4.36, T4.43, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66); README rows final after their
   live legs
   (T4.29, T4.39, T4.49, T4.59, T4.69, T4.79); Muse Code (Should) has module, compile matrix, auth preflight,
