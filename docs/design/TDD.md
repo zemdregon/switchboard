@@ -310,7 +310,8 @@ no key that can enable it, and `serve` logs a warning on stderr when it is on. T
 adapter id itself: `loadConfig({ testFakeAdapter })` accepts it as a `model_groups` member `provider` and in
 `capacity.subscriptions.<name>.providers` only when the switch is on (T7.13 fix, 2026-10-18; [LLD §17.7](LLD.md#177-model-groups-fr-rte-10-fr-rte-11),
 [LLD §16.9](LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10)); without the switch it is refused as before.
-Production registers `claude` and `codex` only. With the switch on, `SWITCHBOARD_TEST_CLOCK_OFFSET_MS` (an integer) shifts the daemon's clock
+Production registers `claude` and `codex` only.
+With the switch on, `SWITCHBOARD_TEST_CLOCK_OFFSET_MS` (an integer) shifts the daemon's clock
 so a process test can show that a run waiting for approval does not expire (T3.4); set without the switch, or to a
 non-integer, it refuses to start.
 
