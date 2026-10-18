@@ -2197,9 +2197,10 @@ invocation has an empty environment with an allowlist of `PATH` and `HOME`; `KIM
 configuration, sessions and credentials, is never passed. The adapter never reads a Kimi credential or configuration
 file and never writes provider configuration (`src/adapters/kimi/adapter.ts`, `src/adapters/kimi/protocol.ts`).
 
-The compliance manifest range (`src/adapters/manifests/kimi.json`) admits no version until an operator runs
-`switchboard adapters validate kimi-code` and commits the manifest diff (ROADMAP T4.68). Until then `doctor` reports
-`ADAPTER_VERSION_UNVERIFIED` for Kimi Code, and none of the paths below runs against a real `kimi`.
+The compliance manifest range (`src/adapters/manifests/kimi.json`) admits `>=2.1.1 <2.2.0`
+since `switchboard adapters validate kimi` passed on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68).
+Other versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`, and the adapter stays disabled
+until T4.68's remaining operator cells pass (FR-ADP-09).
 
 ### Login
 
