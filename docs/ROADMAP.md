@@ -2847,7 +2847,8 @@ list. `Done` also needs:
 
 1. **The operator, live legs:** T4.28 (Grok Build), T4.38 (Antigravity), T4.48 (Cursor), T4.58 (OpenCode) and T4.68
    (Kimi Code): live smoke, live malicious leg and `adapters validate` (for Kimi Code the `adapters validate` leg
-   passed live on 2026-10-18: CLI 2.1.1, range `>=2.1.1 <2.2.0`; live smoke and live malicious leg stay operator-only). NFR-SEC-03's "no escape" for these adapters and
+   passed live on 2026-10-18: CLI 2.1.1, range `>=2.1.1 <2.2.0`; live smoke and live malicious leg stay operator-only).
+   NFR-SEC-03's "no escape" for these adapters and
    the criterion "`adapters validate` accepts a new CLI version only after its live checks pass" need real CLIs.
    zemdregon holds the subscriptions (owner decision 5). The capture tasks T4.21, T4.31 and T4.41 are `Done` and T4.51
    is `Partial`; the 2026-10-17 live checks ran Grok Build 1.0.50, Antigravity 1.4.0, Cursor 2026.10.16-e3cb207 and
