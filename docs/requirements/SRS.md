@@ -541,7 +541,7 @@ defaults stay Assumptions and their ranges are Delegated (LLD §19.3).
 | Git (worktrees, checkpoint and published commits, push) | Controller → local repo and, under FR-GIT-05, a remote | [LLD §5](../design/LLD.md#5-workspace-and-lease-algorithm), [LLD §12](../design/LLD.md#12-injected-git-tools-commits-and-publication) |
 | Injected `commit` / `push` tools (per-run MCP channel) | Agent → controller | [LLD §12](../design/LLD.md#12-injected-git-tools-commits-and-publication) |
 | Inner backend (HTTP chat completion, or a one-shot provider CLI run) | Controller → operator-chosen model | [LLD §13](../design/LLD.md#13-inner-agent) |
-| Container runtime (create, start, stop, remove; runtime Proposed in ADR-0013) | Controller → container runtime | [LLD §11](../design/LLD.md#11-projects-contexts-and-environments) |
+| Container runtime (create, start, stop, remove; rootless runtime per ADR-0013, Accepted 2026-10-18) | Controller → container runtime | [LLD §11](../design/LLD.md#11-projects-contexts-and-environments) |
 | OpenTelemetry OTLP export (OTLP/HTTP as built) | Controller → operator endpoint | [LLD §7](../design/LLD.md#7-telemetry-spans) |
 | Operator CLI | Operator → controller | [FRD](FRD.md) workflows |
 

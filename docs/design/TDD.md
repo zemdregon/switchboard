@@ -963,8 +963,11 @@ above is unchanged and the Proposed items stay Proposed).* What `src/environment
   `src/cli/projects.ts`).
 - *Mounts*: exactly the worktree (rw) and the declared read-only contexts (ro), each at its own host path, so `cwd`
   and argument paths stay valid; nothing else. No login volume yet (its mount point per provider waits for the
-  operator's T10.0 result).
-- *Provider logins*: unchanged, Proposed, not exercised.
+  operator's T10.0 result; *update 2026-10-18:* that result is in the
+  [spike §6](../research/container-runtime-spike-2026-10-16.md#6-operator-in-volume-login-and-prompt-results-2026-10-18)).
+- *Provider logins*: not exercised by the backend (no login volume). *Update 2026-10-18:* the in-volume login mechanism
+  is
+  Accepted in ADR-0013 on the operator's T10.0 results.
 - *Network*: `off` and an empty allowlist are `--network none`; a non-empty allowlist is **refused** (Docker enforces
   no host allowlist); `policy` runs on the default network with the enforcement recorded as the provider's; a
   privileged scope follows its `network.mode`.
