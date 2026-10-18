@@ -6626,12 +6626,13 @@ The MCP server attaches no tracker, so only a `serve` run emits `queue_low` in p
 
 ## 19. Switchboard-controlled skills (M16, Proposed)
 
-*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); built: the
 store, migration `0021` and state derivation (T16.1), the configuration keys and loader (T16.3), the operator CLI
 (T16.2), the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), admission (T16.4), prompt-prefix delivery
 (T16.5), the native-delivery framework with its exclusions and cleanup (T16.6), adapter declarations
-(T16.7 Done 2026-10-17, Delegated, not owner-approved), and continuity across handoff and resume (T16.10: the bundle
-`skills` facts and re-delivery in the receiving provider's way), all Delegated, not owner-approved;
+(T16.7 Done 2026-10-17, Delegated, not owner-approved), continuity across handoff and resume (T16.10: the bundle
+`skills` facts and re-delivery in the receiving provider's way), the malicious-fixture leg (T16.11) and the M16
+acceptance test on fakes (T16.12), all Delegated, not owner-approved;
 per-provider native (T16.8) Proposed).
 Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
 are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to
