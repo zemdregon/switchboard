@@ -1257,8 +1257,9 @@ wider trust ceiling or provider set than the revision in force is stored as `PEN
 until you approve it; until then the previous revision stays in force. Review it with `switchboard projects show <id>`,
 then run `switchboard projects approve <id>` (add `--revision <n>` once the project has more than one revision, and
 `--reject` to refuse it). There is no way to approve over MCP. `approve` works while `serve` runs. Deleting a project
-is refused while one of its runs is still going; its history stays. Not yet: pushing from a dynamic project (a push is
-refused even after approval). Approved `container` dynamic projects can run when `serve` composes placement (milestone 10,
+is refused while one of its runs is still going; its history stays. By design a push from a dynamic project
+is refused (`CONTEXT_UNKNOWN`) even after approval (owner decision 62; Q-46 answered). Approved `container`
+dynamic projects can run when `serve` composes placement (milestone 10,
 [PR #554](https://github.com/zemdregon/switchboard/pull/554)); operator live login (T10.0) is still open.
 
 `gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than
