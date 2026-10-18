@@ -283,7 +283,9 @@ branch, its checkpoint and its diff artifact until GC, but its directory then ho
 detection, abandon-only removal; the amendment follow-up builds it):* a concurrent run's worktree of a project may be
 removed when its changes are merged or its meta-session is abandoned (ARCHIVED or an explicit operator command,
 Delegated); its branch and
-diff artifact stay to retention GC. Until accepted, the rows above apply unchanged.
+diff artifact stay to retention GC. Until accepted, the rows above apply unchanged. *Split 2026-10-18 (Delegated,
+ruling 1 under decision 62):* the abandon trigger is `ARCHIVED` by retention GC only — no `CLOSED` state, no explicit
+command, no merge detection; the worktree, branch and artifacts are removed together by that GC unit.
 
 Garbage collection deletes artifacts, worktrees and controller branches together (NFR-DATA-01). The operator's
 checked-out branch and working tree are never modified (FR-WS-05).

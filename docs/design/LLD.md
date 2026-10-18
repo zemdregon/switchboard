@@ -2331,7 +2331,9 @@ Retention job deletes, per expired terminal run, in one
 logical unit: worktree directory (`git worktree remove --force`, then `git worktree prune`), controller branch,
 artifact files (set `deleted_at`). Never touches branches outside `switchboard/`. *Proposed (FR-WS-09, owner decision
 42):* a concurrent run's worktree may also be removed on merge or abandon before retention; the branch and
-artifacts stay until GC. From M9 the publish refs (§12.3) are
+artifacts stay until GC. *Split 2026-10-18 (Delegated, ruling 1 under decision 62):* the abandon trigger is
+`ARCHIVED` by retention GC only (no earlier removal step exists and none is added), so the worktree, branch and
+artifacts are removed together by that GC unit; no merge detection. From M9 the publish refs (§12.3) are
 collected with the rest of their meta-session. Orphan sweep: worktree directories or `switchboard/*` branches with no
 matching `run` row are reported by `doctor` and removed only by GC after the retention period.
 

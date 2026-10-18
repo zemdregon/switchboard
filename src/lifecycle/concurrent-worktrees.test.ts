@@ -9,9 +9,10 @@
  * backend (`src/environment/container.test.ts`, the opt-in Docker leg) and through MCP admission (T10.1,
  * `src/mcp/mcp.test.ts` "container projects through MCP admission").
  *
- * FR-WS-09 (removal of a concurrent run's worktree on merge or abandon) is Proposed and not accepted by the owner; its
- * merge trigger is open question Q-55. Its tests below are skipped placeholders until the owner accepts it; until then
- * FRD §4.4 applies unchanged (worktrees stay until retention GC).
+ * FR-WS-09 (abandon-only reading, Linus ruling 1 under owner decision 62): "abandoned" is the meta-session
+ * reaching `ARCHIVED`, which happens only through retention GC (FR-WS-07; `beginGc` is the only write of
+ * `meta_session.status`). There is no `CLOSED` state and no merge detection (decision 62, Q-55). Its two tests
+ * below pin that trigger; until then FRD §4.4 applies unchanged (worktrees stay until retention GC).
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -177,6 +178,8 @@ const leaseOf = (metaSessionId: string) =>
     lease_run_id: string | null;
     lease_expires_at: string | null;
   };
+const metaStatus = (metaSessionId: string): string =>
+  (db.prepare("SELECT status FROM meta_session WHERE id = ?").get(metaSessionId) as { status: string }).status;
 const leaseEvents = (runId: string) => ledger.listRunEvents(runId).filter((e) => e.type === "lease");
 const violations = (runId: string) => ledger.listRunEvents(runId).filter((e) => e.type === GIT_POLICY_VIOLATION_EVENT);
 
@@ -344,24 +347,112 @@ describe("finalization of concurrent runs in one repository (T9.11 regression)",
 });
 
 /**
- * FR-WS-09 is Proposed (owner decision 42, Delegated) and NOT accepted by the owner; how a merge is detected is open
- * question Q-55. These placeholders stay skipped until the owner accepts FR-WS-09 and Q-55 is answered; until then FRD
- * §4.4 applies unchanged. Flipping the flag without implementing the behaviour makes them fail on purpose.
+ * FR-WS-09 abandon removal (Linus ruling 1 under owner decision 62): "abandoned" is the meta-session reaching
+ * `ARCHIVED`, which happens only through retention GC (FR-WS-07; `beginGc` in `src/ledger/repo.ts` is the only write
+ * of `meta_session.status`). There is no `CLOSED` state and no merge detection (decision 62, Q-55). The two tests
+ * below pin that trigger: GC archives the finished session and removes its worktree in the same unit, and a GC pass
+ * never touches a non-terminal run or another meta-session. Honest difference from FR-WS-09's "branches and artifacts
+ * kept to GC" wording, which assumed a removal earlier than retention: the same GC unit that archives the session
+ * also removes its controller branch and artifact files (see `src/workspace/gc.ts`), and the tests pin that too.
+ * The merge placeholder stays skipped: no merge detection by design (decision 62, Q-55).
  */
-const FR_WS_09_ACCEPTED = false;
-const PENDING_FR_WS_09 = "FR-WS-09 is Proposed and awaits owner acceptance; the merge trigger is open question Q-55";
+describe("FR-WS-09 abandon removal through retention GC (T9.11 split, ruling 1 under decision 62)", () => {
+  const gcNow = () =>
+    runRetentionGc({
+      db,
+      artifacts: new ArtifactStore(path.join(dataDir, "artifacts")),
+      dataDir,
+      days: 1,
+      now: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+    });
+  const artifactPath = (sha256: string) => new ArtifactStore(path.join(dataDir, "artifacts")).pathFor(sha256);
 
-describe.skipIf(!FR_WS_09_ACCEPTED)(
-  `FR-WS-09 worktree removal on merge or abandon (skipped: ${PENDING_FR_WS_09})`,
-  () => {
-    it("removes the worktree when the meta-session is abandoned, keeping branch and diff", () => {
-      throw new Error(`placeholder: ${PENDING_FR_WS_09}`);
-    });
-    it("removes the worktree when the run's changes are merged, keeping branch and diff", () => {
-      throw new Error(`placeholder: ${PENDING_FR_WS_09}`);
-    });
-    it("never removes the worktree of a run that is not terminal or of another meta-session", () => {
-      throw new Error(`placeholder: ${PENDING_FR_WS_09}`);
-    });
-  },
-);
+  it("abandon (ARCHIVED by retention GC) removes the session worktree with its branch and artifacts in one unit", async () => {
+    const a = await startGated("alpha");
+    const b = await startGated("beta");
+    expect(a.sess).not.toBe(b.sess);
+
+    // The first run finishes while the second keeps running.
+    open("alpha");
+    const doneA = await lifecycle.waitForTerminal(a.runId);
+    expect(doneA.state, doneA.failure_detail ?? "").toBe("SUCCEEDED");
+    expect(state(b.runId)).toBe("RUNNING");
+
+    const hashes = (
+      db.prepare("SELECT sha256, deleted_at FROM artifact WHERE meta_session_id = ?").all(a.sess) as {
+        sha256: string;
+        deleted_at: string | null;
+      }[]
+    ).map((r) => r.sha256);
+    expect(hashes.length).toBeGreaterThan(0);
+
+    // Retention GC archives the finished meta-session; the still-running one is not a candidate.
+    const gc = await gcNow();
+    expect(gc.errors).toEqual([]);
+    expect(gc.collected.map((u) => u.sessionId)).toEqual([a.sess]);
+
+    // The abandon trigger is ARCHIVED, set by the same GC unit that removes the worktree, the controller branch
+    // and the artifact files (not kept: there is no earlier removal step).
+    expect(metaStatus(a.sess)).toBe("ARCHIVED");
+    expect(existsSync(a.worktree)).toBe(false);
+    expect(hasBranch(repo, a.branch)).toBe(false);
+    for (const h of hashes) expect(existsSync(artifactPath(h))).toBe(false);
+    const after = db.prepare("SELECT deleted_at FROM artifact WHERE meta_session_id = ?").all(a.sess) as {
+      deleted_at: string | null;
+    }[];
+    expect(after.length).toBe(hashes.length);
+    expect(after.every((r) => r.deleted_at !== null)).toBe(true);
+
+    // The other meta-session is untouched: worktree, branch, file, lease and RUNNING run.
+    expect(metaStatus(b.sess)).toBe("ACTIVE");
+    expect(existsSync(b.worktree)).toBe(true);
+    expect(hasBranch(repo, b.branch)).toBe(true);
+    expect(readFileSync(path.join(b.worktree, "beta.txt"), "utf8")).toBe("beta\n");
+    expect(leaseOf(b.sess).lease_run_id).toBe(b.runId);
+    expect(state(b.runId)).toBe("RUNNING");
+
+    open("beta");
+    expect((await lifecycle.waitForTerminal(b.runId)).state).toBe("SUCCEEDED");
+    for (const id of [a.runId, b.runId]) expect(violations(id)).toEqual([]);
+  });
+
+  it("retention GC never removes the worktree of a run that is not terminal or of another meta-session", async () => {
+    const a = await startGated("alpha");
+    const b = await startGated("beta");
+
+    // Both runs still RUNNING: neither session is a candidate, so a GC pass collects nothing.
+    const none = await gcNow();
+    expect(none.errors).toEqual([]);
+    expect(none.collected).toEqual([]);
+    for (const u of [a, b]) {
+      expect(metaStatus(u.sess)).toBe("ACTIVE");
+      expect(existsSync(u.worktree)).toBe(true);
+      expect(hasBranch(repo, u.branch)).toBe(true);
+    }
+
+    // After one session's run finishes, GC archives only that session; the other's worktree, lease and branch
+    // are untouched while its run is still not terminal.
+    open("alpha");
+    expect((await lifecycle.waitForTerminal(a.runId)).state).toBe("SUCCEEDED");
+    const gc = await gcNow();
+    expect(gc.errors).toEqual([]);
+    expect(gc.collected.map((u) => u.sessionId)).toEqual([a.sess]);
+    expect(metaStatus(a.sess)).toBe("ARCHIVED");
+    expect(existsSync(a.worktree)).toBe(false);
+    expect(leaseOf(a.sess).lease_run_id).toBeNull();
+    expect(metaStatus(b.sess)).toBe("ACTIVE");
+    expect(existsSync(b.worktree)).toBe(true);
+    expect(hasBranch(repo, b.branch)).toBe(true);
+    expect(readFileSync(path.join(b.worktree, "beta.txt"), "utf8")).toBe("beta\n");
+    expect(leaseOf(b.sess).lease_run_id).toBe(b.runId);
+    expect(state(b.runId)).toBe("RUNNING");
+
+    open("beta");
+    expect((await lifecycle.waitForTerminal(b.runId)).state).toBe("SUCCEEDED");
+    for (const id of [a.runId, b.runId]) expect(violations(id)).toEqual([]);
+  });
+
+  it.skip("removes the worktree when the run's changes are merged", () => {
+    throw new Error("no merge detection by design (decision 62, Q-55)");
+  });
+});
