@@ -44,10 +44,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   It is not `Done`: no run of a real Claude Code and Codex pair has been made (the opt-in `npm run test:live:pair`
   script exists and has not been run), and resume for the providers of milestone 4 is not built. See
   [ROADMAP §6.9](docs/ROADMAP.md#69-m5-continuity-tasks).
-- **Milestone 6 (capacity and resilience) is `Partial`.** `get_capacity` and `switchboard capacity` show per-provider
+- **Milestone 6 (capacity and resilience) is `Done` on fake providers** (2026-10-18, Delegated agent work, not
+  owner-approved; acceptance in `src/mcp/m6-acceptance.test.ts`). `get_capacity` and `switchboard capacity` show per-provider
   estimates with their sources, a circuit breaker holds a failing provider back, retryable failures are retried
   automatically as linked successor runs, and quota exhaustion fails over to another provider or returns. All of this
-  is tested on fake providers. It is not `Done`: real limit output is captured in text mode for five
+  is tested on fake providers. Limits: real limit output is captured in text mode for five
   providers with the remaining cells `NOT_CHECKED` (operator task T6.11, `Done` 2026-10-17;
   [limit captures](docs/research/limit-captures-2026-10-17.md)), and no provider is known to publish an
   enforceable rate limit, so there is no token-bucket gate; the pacing gate paces usage per subscription window
@@ -59,7 +60,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   (ROADMAP T6.16, `Done` 2026-10-17, `src/mcp/m6-pacing-acceptance.test.ts`). Pacing estimates are lower bounds from
   Switchboard's own dispatches, and pacing never creates a run (see [Model groups and pacing](#model-groups-and-pacing)).
   See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
-- **Milestone 7 (routing) is `Partial`.** Eligible providers are scored from Switchboard's own records, every route
+- **Milestone 7 (routing) is `Done` on fake providers** (2026-10-18, Delegated agent work, not owner-approved;
+  acceptance in `src/mcp/m7-acceptance.test.ts`). Eligible providers are scored from Switchboard's own records, every route
   decision is stored and replays exactly, `explain_route` shows why a run went where it did, a project stays on its
   provider until a listed reason moves it (`switchboard affinity list|reset`), and `minimum_capability` is enforced
   against operator-declared model capabilities in the model registry (`src/routing/minimum-capability.test.ts`). All
@@ -148,7 +150,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#559](https://github.com/zemdregon/switchboard/pull/559)). ADR-0047 and ADR-0048 remain Proposed. See
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
-- **Milestone 15 (project queue, schedules and CI triggers) is `Partial`.** The durable per-project work queue
+- **Milestone 15 (project queue, schedules and CI triggers) is `Done` on fakes** (2026-10-18, Delegated agent work,
+  not owner-approved; the `serve` low-water wiring below is a separate open fix). The durable per-project work queue
   (T15.1, [#527](https://github.com/zemdregon/switchboard/pull/527)) and the CI-failure trigger (T15.3,
   [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
