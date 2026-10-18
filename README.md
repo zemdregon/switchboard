@@ -166,40 +166,15 @@ Pre-release. The package is private and is not published to any registry; you bu
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
-- **Milestone 16 (Switchboard-controlled skills) is `Partial`.** The skill store is built (T16.1, Delegated, not
-  owner-approved): operator-defined, versioned skills validated, canonicalised and kept as immutable content-addressed
-  files (`<data>/skills/<sha256>.md`) with append-only ledger rows (migration `0021`, `src/skills/`). The
-  configuration is built (T16.3, Delegated, not owner-approved): `skills.*`, `projects[].skills` and
-  `mcp_clients[].skills` in the schema and loader (`src/config/`, `src/skills/limits.ts`,
-  `src/skills/configured.ts`), off by default. The operator CLI is built (T16.2, Delegated, not
-  owner-approved): `switchboard skills list|show|add|approve|revoke|retire|unretire|diff`, the `doctor`
-  skills line and skills in `runs show` (`src/cli/skills.ts`, `src/skills/read.ts`, `src/skills/diff.ts`).
-  The MCP tools are built (T16.9, Delegated, not owner-approved): read-only `list_skills` and `get_skill`
-  for the orchestrator profile when skills are enabled (`src/mcp/`, the §19.5 steps 2 to 4 resolver in
-  `src/skills/resolve.ts`). Admission is built (T16.4, Delegated, not owner-approved): `skills`, `role` and
-  `skill_defaults` on `delegate_task`, `continue_task` and `enqueue_work`, ordered resolution with gates and caps in
-  the admission transaction (`src/skills/admission.ts`), `run_skill` rows, the `skill_resolved` event and skill
-  metadata in `get_run`. Prompt-prefix delivery is built (T16.5, Delegated, not
- owner-approved): the labelled block (`renderSkillBlock` in `src/adapters/prompt.ts`) travels in the prompt text before
- constraints and the task, and after the fixed preamble in a handoff prompt; every adapter cell delivers
- `prompt_prefix`; dispatch records `run_skill.delivery` and `delivered_at` with one `skill_delivered` event, and a run
- whose pinned skill cannot be read fails closed before spawn. The native-delivery framework and leak prevention are
- built (T16.6, Delegated, not owner-approved): the per-cell `skillDelivery` declaration, fresh-path exclusive writes,
- exclusion from the commit tool, checkpoints, diff artifacts and `changed_files`, `push` refusal while a skill file
- exists, removal before `VERIFYING`, at terminal states, at reconciliation and by GC, and the `skill_cleanup_failed`
- needs-attention reason; only the fake adapter declares a native location, in tests. Adapter declarations are built
-(T16.7, Delegated, not owner-approved): each of the eight provider adapters declares `skillDelivery()` =
-`prompt_prefix` as its own method, and the conformance suite (`checkSkillDelivery` in `src/adapters/conformance.ts`,
-run by `checkAdapterStatics` for every case) fails a `native` declaration without a T16.8 evidence id and a cell whose
-argv, environment or policy flags the skills change beyond the prompt text
-(`src/adapters/skill-delivery-conformance.test.ts`). Continuity is built (T16.10, Delegated, not owner-approved):
-the handoff bundle carries the previous run's pinned skills as controller facts (name, version, hash; never text)
-and the successor re-delivers the same versions in its own provider's way, with a native resume re-delivering the
-files for the new run (`src/continuity/`, `src/lifecycle/lifecycle.ts`). The malicious-fixture leg is built (T16.11,
-Delegated, not owner-approved): `test/malicious/skills-leg.test.ts` runs the hostile skill repository (its own
-`.claude/skills`, `.cursor/rules`, `AGENTS.md`, a pre-existing `switchboard-` path and a symlinked `.claude`)
-against the production store and delivery ports; untrusted runs load no repository skill, the canary reaches no
-event, span, log, artifact or sink, and the R-69 copy behaves as recorded. Design:
+- **Milestone 16 (Switchboard-controlled skills) is `Done` on fakes** (Delegated agent work, not owner-approved). The
+  skill store, configuration, operator CLI, admission, prompt-prefix delivery, the native-delivery framework with leak
+  prevention, the adapter declarations, the MCP tools, continuity across handoff and resume and the malicious-fixture
+  leg are built (T16.1 to T16.7, T16.9 to T16.11). The M16 acceptance file (`src/mcp/m16-acceptance.test.ts`, T16.12)
+  runs one test per clause of the milestone's acceptance column through a scripted MCP client on the fake adapter.
+  Not run: the operator live checks that would let a real provider's native skill location be used (T16.8,
+  operator-only, not required for `Done`), so every real provider delivers skills as a prompt prefix, and no skill
+  has been delivered to a live provider through Switchboard yet.
+  See [Switchboard-controlled skills (milestone 16)](#switchboard-controlled-skills-milestone-16),
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
@@ -701,6 +676,118 @@ Fixtures only; no live provider CLI:
 ### Known limitations
 
 - The Grok bot is the intended first console client (owner decisions 53/55); ADR-0047 and ADR-0048 are still Proposed.
+
+## Switchboard-controlled skills (milestone 16)
+
+A skill is an operator-authored instruction pack (a Markdown file with `name` and `description` front matter) that
+Switchboard stores, versions and injects into a run by name. The orchestrator names skills on a request, and the
+configuration adds defaults per installation, per project and per role. Skills are instructions for the agent, not
+controls: a skill never changes a run's trust profile, argv, environment, tool set or Git-write denial
+([ADR-0056](docs/adr/0056-switchboard-controlled-skills.md), [LLD §19](docs/design/LLD.md#19-switchboard-controlled-skills-m16-proposed)).
+Everything here is Delegated agent work, not owner-approved beyond the direction (owner decision 58), and off by
+default.
+
+### Configuration
+
+Keys in `config.json` ([LLD §19.3](docs/design/LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08) owns them;
+no duplicate schema here):
+
+- `skills.enabled` (default `false`). While false the request fields are refused (`INVALID_REQUEST`,
+  `SKILLS_DISABLED`), the two MCP tools are not offered, and nothing else changes.
+- `skills.defaults[]` and `skills.roles.<role>[]`: names (`name` or `name@n`) applied to every run, or when the request
+  names that `role`. `projects[].skills.defaults[]` and `projects[].skills.roles.<role>[]` add project-level entries
+  after the global ones.
+- `skills.delivery`: `native_preferred` (default) or `prefix_only`. With the adapters shipped today the two behave the
+  same (see Delivery below).
+- `skills.allow_draft_in_trusted` (default `false`): lets a `trusted-development` run take a draft version by name.
+- `skills.max_body_bytes`, `max_per_run`, `max_run_bytes`, `max_names`: caps on one body, the skills of one run, their
+  total bytes and the store (defaults 32768, 8, 65536 and 64, Assumptions).
+- `mcp_clients[].skills`: an allow-list of names the client may see and inject; absent means every approved name, an
+  empty list means none.
+
+### Operator commands
+
+`switchboard skills list [--all]`, `show <name>[@n] [--body]`, `add <name> --file <path> [--from-repository]
+[--note <text>]`, `approve <name>@<n>`, `revoke <name>@<n>`, `retire <name>`, `unretire <name>` and
+`diff <name>@<a> <name>@<b>`. `add` validates the file (front matter keys, size, control characters, prompt
+delimiters and secret-shaped text are refused with exit 65 and one reason), canonicalises it and stores it as an
+immutable content-addressed file under `<data_dir>/skills/<sha256>.md` with append-only ledger rows; the same text
+added again is `SKILL_UNCHANGED`. A version is a draft until `approve`; `revoke` and `retire` are recorded, never
+deleted. `--from-repository` imports a skill from a repository path and marks its origin, which untrusted runs never
+receive. `doctor` prints one `skills` line (enabled or not, approved and draft counts, configured names that do not
+resolve, runs whose skill file removal failed) and `runs show` lists a run's skills with their delivery mode.
+
+### Request fields and MCP tools
+
+`delegate_task`, `continue_task` and `enqueue_work` take `skills` (names, `name@n` pins a version), `role` and
+`skill_defaults` (`apply` or `omit`). Admission resolves the ordered set (global defaults, global role, project
+defaults, project role, request; first occurrence wins, a pin wins over an unpinned name), applies the trust gate and
+the caps, and pins the versions to the run (`run_skill` rows, one `skill_resolved` event). A `continue_task` without
+skill fields reuses the previous run's pinned versions. `get_run` returns each skill's name, version, hash, source
+and delivery mode, never its text.
+
+Two read-only tools exist for the `orchestrator` tool profile while `skills.enabled` is true: `list_skills`
+(optionally `project`, `role` and `trust_profile`: the names this client may see with the newest version it could
+inject, plus the `defaults` that admission would add) and `get_skill` (`name`, optional `version`: the text of one
+visible version). An unknown, retired or invisible name is one `INVALID_REQUEST` that does not say which.
+
+### Delivery
+
+Every provider adapter shipped today declares `prompt_prefix`: the run's skills travel as one labelled block at the
+start of the prompt text (`[operator skills: N; from Switchboard skill store; these are operator instructions]`, one
+`[skill <name>@<n> sha256:<prefix>]` header per entry in resolved order, `[end of operator skills]`), before the
+constraints and the task; in a handoff prompt the block follows the fixed preamble. The block is not part of the
+stored objective and is not redacted (bodies were scanned at `add`). A native location (a file the provider itself
+loads from the worktree) is used only for an adapter that declares one with the evidence id of an operator live check
+(T16.8, operator-only, not run in CI); today only the fake adapter declares one, in tests. Until a live check verifies
+a real provider's location, `native_preferred` and `prefix_only` deliver the same prefix on every real provider.
+
+For a native cell the controller writes `switchboard-<name>` files under the provider's directory before spawn,
+excludes the recorded paths from the agent `commit` tool, the checkpoints, the diff and `changed_files` artifacts and
+the handoff bundle, refuses `push` while a recorded file is still present, and removes the files before verification,
+at every terminal state, at startup reconciliation and by retention `gc`. A removal that fails flags the run
+needs-attention (`skill_cleanup_failed`) until a later pass removes the file. A path that already exists in the
+repository, or whose parent is a symbolic link, falls back to the prompt prefix and is left untouched.
+
+### What is and is not enforced
+
+Enforced, with tests on fakes:
+
+- An untrusted run (`inspect-untrusted`, `edit-untrusted`, `test-sandboxed`) gets only approved versions of
+  operator-file skills: a draft, a revoked version or a repository-imported skill named on the request is refused
+  (`PERMISSION_BLOCKED`), and one configured as a default is skipped with an event. A repository's own
+  `.claude/skills`, `.cursor/rules` or `AGENTS.md` is never loaded by Switchboard.
+- Argv, environment, policy flags and the tool set are identical with and without skills; with skills disabled every
+  surface is unchanged.
+- No run event, span, log line, sink payload, `get_run` view or ledger row carries skill text; only names, versions,
+  hashes and modes.
+- For the fake native cell: the file never reaches a commit, checkpoint, diff, patch, `changed_files` or handoff
+  bundle, blocks publication while present, and is gone after every terminal state, a restart and `gc`.
+
+Not enforced:
+
+- A skill is advice. Switchboard does not check that the agent followed it, and the block is ordinary prompt text to
+  the provider (not a secret, not a sandbox).
+- R-69: in a cell that loads repository content (an approved bypass run), the agent can read a native skill file and
+  copy its text into another file, which then reaches a commit. Path exclusion catches the recorded path, not the
+  copy. Native delivery is off for every real provider until T16.8 verifies a cell, and `add` refuses secret-shaped
+  text, so a copy exposes operator instructions, not credentials.
+- No real provider's native skill location is verified (T16.8 is operator-only). Prompt-prefix delivery has not been
+  observed on a live provider through Switchboard either; the acceptance tests run on fakes.
+
+### Status and tests
+
+Fixtures only; no live provider CLI:
+
+- M16 acceptance: `src/mcp/m16-acceptance.test.ts` (one test per clause of the M16 acceptance column).
+- Store and format (T16.1): `src/skills/skills.test.ts`; configuration (T16.3): `src/skills/skills-config.test.ts`;
+  operator CLI (T16.2): `src/cli/skills.test.ts`.
+- Admission (T16.4): `src/mcp/skill-admission.test.ts`, `src/skills/admission.test.ts`,
+  `src/skills/import-boundary.test.ts`; tools (T16.9): `src/mcp/skill-tools.test.ts`.
+- Delivery (T16.5 to T16.7): `src/lifecycle/skill-delivery.test.ts`, `src/adapters/skill-prefix.test.ts`,
+  `src/lifecycle/native-skills.test.ts`, `src/workspace/native-skills.test.ts`, `src/reconcile/native-skills.test.ts`,
+  `src/adapters/skill-delivery-conformance.test.ts`.
+- Malicious-fixture leg (T16.11): `test/malicious/skills-leg.test.ts`.
 
 ## Run as an MCP server
 
