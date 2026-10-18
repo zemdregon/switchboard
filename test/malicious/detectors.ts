@@ -13,26 +13,44 @@ export function findTokens(fx: MaliciousFixture, text: string): TokenRole[] {
   return (Object.entries(fx.tokens) as [TokenRole, string][]).filter(([, t]) => text.includes(t)).map(([r]) => r);
 }
 
+/** Whether `e` is a filesystem "no such file": the entry vanished between listing and reading. */
+const isVanished = (e: unknown): boolean =>
+  typeof e === "object" && e !== null && "code" in e && (e as { code: unknown }).code === "ENOENT";
+
 /**
  * Content hash of a directory tree without following symlinks (names, types, modes, bytes and link targets). Skips a
- * top-level `.git` when `skipGit` is set.
+ * top-level `.git` when `skipGit` is set. Entries that vanish between listing and reading are skipped: a concurrent
+ * writer can remove one mid-walk (seen as ENOENT under `.git/objects` in CI), and a vanished entry holds no stable
+ * content to hash. A hostile change persists, so the before/after comparison still sees it.
  */
 export function treeHash(root: string, skipGit = false): string {
   const h = createHash("sha256");
   const walk = (dir: string, rel: string) => {
-    for (const name of readdirSync(dir).sort()) {
+    let names: string[];
+    try {
+      names = readdirSync(dir).sort();
+    } catch (e) {
+      if (isVanished(e)) return;
+      throw e;
+    }
+    for (const name of names) {
       if (skipGit && rel === "" && name === ".git") continue;
       const abs = path.join(dir, name);
       const r = path.posix.join(rel, name);
-      const st = lstatSync(abs);
-      if (st.isSymbolicLink()) h.update(`L ${r} -> ${readlinkSync(abs)}\n`);
-      else if (st.isDirectory()) {
-        h.update(`D ${r}\n`);
-        walk(abs, r);
-      } else {
-        h.update(`F ${r} ${(st.mode & 0o777).toString(8)} `);
-        h.update(readFileSync(abs));
-        h.update("\n");
+      try {
+        const st = lstatSync(abs);
+        if (st.isSymbolicLink()) h.update(`L ${r} -> ${readlinkSync(abs)}\n`);
+        else if (st.isDirectory()) {
+          h.update(`D ${r}\n`);
+          walk(abs, r);
+        } else {
+          h.update(`F ${r} ${(st.mode & 0o777).toString(8)} `);
+          h.update(readFileSync(abs));
+          h.update("\n");
+        }
+      } catch (e) {
+        if (isVanished(e)) continue;
+        throw e;
       }
     }
   };
@@ -45,12 +63,24 @@ export function treeText(root: string): string {
   if (!existsSync(root)) return "";
   const parts: string[] = [];
   const walk = (dir: string) => {
-    for (const name of readdirSync(dir)) {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch (e) {
+      if (isVanished(e)) return;
+      throw e;
+    }
+    for (const name of names) {
       const abs = path.join(dir, name);
-      const st = lstatSync(abs);
-      if (st.isSymbolicLink()) parts.push(readlinkSync(abs));
-      else if (st.isDirectory()) walk(abs);
-      else parts.push(readFileSync(abs, "latin1"));
+      try {
+        const st = lstatSync(abs);
+        if (st.isSymbolicLink()) parts.push(readlinkSync(abs));
+        else if (st.isDirectory()) walk(abs);
+        else parts.push(readFileSync(abs, "latin1"));
+      } catch (e) {
+        if (isVanished(e)) continue;
+        throw e;
+      }
     }
   };
   walk(root);

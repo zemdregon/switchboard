@@ -2255,7 +2255,8 @@ nothing is keyed by project or context. The one rule that holds per worktree (FR
 unchanged. One defect was found and fixed: another run's ref check could see a checkpoint commit before its `post` row
 (see [§12.5](#125-ref-snapshot-and-violation-handling), "Concurrent runs"); finalization is now serialised per
 repository root. Tests: `src/lifecycle/concurrent-worktrees.test.ts`. Not built: the `container` clause of FR-WS-08
-(M10, FR-PRJ-05) and FR-WS-09 (Proposed, not accepted, Q-55; its tests are skipped placeholders).
+(M10, FR-PRJ-05) and FR-WS-09 (Proposed, not accepted; Q-55 answered 2026-10-18: no merge detection, abandon-only
+removal; the amendment follow-up builds it; its tests are skipped placeholders).
 
 *As built (worktree creation, 2026-10-13, Delegated).* Git takes no lock on `.git/worktrees/` during `git worktree add`,
 so concurrent preparations on one repository failed intermittently: an add that enumerated worktrees read a sibling's

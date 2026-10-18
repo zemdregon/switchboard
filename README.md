@@ -2184,9 +2184,9 @@ hostile streams at exit 2 and exit 137 in every hostile category (ending `PERMIS
 `TOOL_FAILURE`), empty tool names with string command, commands beside paths, swapped benign/hostile commands, separate
 benign calls following hostile calls, JSON encodings resolved by `JSON.parse` (`\u` escapes, duplicate command keys with
 last-value winning, CRLF lines), hypothetical stop reasons (`max_tokens`, `refusal` at exit 0 where the guard outranks
-`OUTPUT_PROTOCOL_ERROR`), path-to-command upgrades in subsequent `tool_use`, 24 partial streams cutting before,
-inside, and after hostile calls (`opencodePartialStreams`), and 72 unreadable-event streams before/after `stop` at exits
-0 and 1 (`opencodeUnreadableStreams`). In an approved bypass run the guard still enforces Git
+`OUTPUT_PROTOCOL_ERROR`), path-to-command upgrades in subsequent `tool_use`, 48 partial streams cutting before,
+inside, and after hostile calls (`opencodePartialStreams`), and 140 unreadable-event streams before/after `stop` at
+exits 0, 1, 2 and 137 (`opencodeUnreadableStreams`). In an approved bypass run the guard still enforces Git
 writes only: an out-of-worktree denial recorded only as `tool_use`
 `state.status` `error` without refusal-specific fields still ends `ok` in the parser suite (T4.53 gap pinned); closing
 that needs operator capture of native refusal fields or an owner decision on classifying `status` `error` (ROADMAP
@@ -2243,7 +2243,7 @@ command, reaches the tool-call guard",
 FR-ADP-11, T4.55)" and "opencode Git declaration (T4.57, FR-GIT-01, FR-GIT-02, FR-GIT-09)");
 CI also runs `test/malicious/adapters/opencode.case.ts` (275 synthetic streams: 263 blocked — 88 `credential_read`, 90
 `out_of_worktree_write`, 85 `network` — and 12 `unknown_events`, 3 ending `OUTPUT_PROTOCOL_ERROR` at exit 0 and 9
-`TOOL_FAILURE` at exits 1, 2 and 137; 24 `opencodePartialStreams`, 72 `opencodeUnreadableStreams`) and
+`TOOL_FAILURE` at exits 1, 2 and 137; 48 `opencodePartialStreams`, 140 `opencodeUnreadableStreams`) and
 `test/malicious/adapter-leg.test.ts` ("adapter malicious leg: discovery", "adapter malicious leg: opencode" and
 "adapter malicious leg: opencode partial streams", T4.56 partial — see [Known limitations](#known-limitations);
 guard-blocked, trailing-tool and unreadable-event streams [#245](https://github.com/zemdregon/switchboard/pull/245),
@@ -2732,7 +2732,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   [#323](https://github.com/zemdregon/switchboard/pull/323),
   [#355](https://github.com/zemdregon/switchboard/pull/355), and
   [#369](https://github.com/zemdregon/switchboard/pull/369) widened the suite to 275 streams (263 blocked, 12 unknown-event;
-  24 partial streams, 72 unreadable streams), covering Git-write prefixes and subcommands (`git -C . commit`,
+  48 partial streams, 140 unreadable streams), covering Git-write prefixes and subcommands (`git -C . commit`,
   `git branch -D`, `/usr/bin/git commit`, `sh -c`, `env`, `xargs`, `--git-dir`, `reset --hard`, `tag`, `stash`, `merge`,
   `rebase`, `checkout -b`), command-bearing tool names (`bash` at exit 1, `sh`, `terminal`, `run_command`, etc.), exits
   2 and 137 in every hostile category (guard outranks `TOOL_FAILURE`), empty tool names, swapped commands, separate benign
