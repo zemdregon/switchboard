@@ -1932,7 +1932,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       const tool = name as ToolName;
       const args = structuredClone(rawArgs ?? {}) as Args; // defaults are filled in place by Ajv
       const validate = validators[tool];
-      if (!validate(args)) throw schemaError(validate.errors ?? []);
+      if (!validate(args)) throw schemaError(validate.errors ?? [], tool);
       if (tool === "delegate_task" && args.privileged_scope !== undefined) {
         // V1 continued (LLD §3.1): the list-presence rules the JSON Schema cannot express.
         const lists = checkScopeLists(args.privileged_scope as never);
@@ -2073,7 +2073,7 @@ function compileWorkValidators(): Record<WorkQueueToolName, ValidateFunction> {
   >;
 }
 
-function schemaError(errors: readonly ErrorObject[]): ToolError {
+function schemaError(errors: readonly ErrorObject[], tool?: string): ToolError {
   // FRD V12: the root `oneOf` of delegate_task says it better than the branch errors it leaves behind.
   if (errors.some((e) => e.keyword === "oneOf" && e.instancePath === "")) {
     return invalid("invalid arguments: exactly one of workspace_path and project is required", {
@@ -2086,6 +2086,20 @@ function schemaError(errors: readonly ErrorObject[]): ToolError {
     return invalid("invalid arguments: give at most one of status and status_in", {
       field: "status_in",
       errors: [{ path: "$", message: "must not have both status and status_in" }],
+    });
+  }
+  // T7.14 (Q-99): continue_task rejects routing.model_group and routing.model before checkRouting runs.
+  if (
+    (!tool || tool === "continue_task") &&
+    errors.some(
+      (e) =>
+        e.keyword === "additionalProperties" &&
+        e.instancePath === "/routing" &&
+        (e.params.additionalProperty === "model_group" || e.params.additionalProperty === "model"),
+    )
+  ) {
+    return invalid("continue_task accepts neither routing.model_group nor routing.model (Q-99)", {
+      field: "routing",
     });
   }
   const list = errors.slice(0, 10).map((e) => {

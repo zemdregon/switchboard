@@ -6,7 +6,7 @@
  * each configured member it considered; an unknown group would instead be INVALID_REQUEST before eligibility.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,3 +181,95 @@ describe("serve wires configured model_groups (T7.14; FR-RTE-11, LLD §17.7)", (
     expect(item, JSON.stringify(item)).toMatchObject({ admitted_run_id: null, last_error_code: "ELIGIBILITY_NONE" });
   }, 60_000);
 });
+
+/**
+ * The dev MCP check G5 could not run (mcp-test-results 20261017T204625Z): a group whose only member is the test-only
+ * fake, and a subscription over it with `pacing.mode: score`. `fake` is accepted there only because serve registered
+ * the fake adapter (the test switch); `src/config/fake-model-groups.test.ts` pins the refusal without it.
+ */
+const DEV_FAKE = {
+  model_groups: { "dev-fake": { members: [{ provider: "fake", model: "fake-model-1" }] } },
+  capacity: {
+    subscriptions: {
+      "dev-fake-sub": {
+        providers: ["fake"],
+        windows: [{ id: "h1", length_seconds: 3600, reset: { kind: "rolling" } }],
+      },
+    },
+    pacing: { mode: "score" },
+  },
+};
+const INSPECT = { objective: "Look", trust_profile: "inspect-untrusted" };
+// A run on the fake needs its compile matrix, verified on linux only (Q-35, NFR-PORT-02): on darwin every profile is
+// PROFILE_PLATFORM_UNVERIFIED, so this suite runs on linux only, like the real-run suites in `serve.test.ts`.
+const describeLinuxVerified = process.platform === "darwin" ? describe.skip : describe;
+
+describeLinuxVerified(
+  "serve accepts the test-only fake in model_groups and capacity.subscriptions (T7.13, T6.13)",
+  () => {
+    beforeEach(() => {
+      const cfg = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+      writeFileSync(configPath, JSON.stringify({ ...cfg, ...DEV_FAKE }));
+    });
+
+    it("delegate_task and enqueue_work route a dev-fake group to fake; explain_route and get_capacity show the pacing", async () => {
+      const c = await connect();
+      const done = async (runId: string) => {
+        const deadline = Date.now() + 30_000;
+        // biome-ignore lint/suspicious/noExplicitAny: tool results are untyped JSON
+        let run: any;
+        while (Date.now() < deadline) {
+          run = (await call(c, "get_run", { run_id: runId })).body;
+          if (["SUCCEEDED", "FAILED", "CANCELLED"].includes(run.status)) break;
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        return run;
+      };
+
+      const delegated = await call(c, "delegate_task", {
+        ...INSPECT,
+        workspace_path: repo,
+        routing: { model_group: "dev-fake" },
+      });
+      expect(delegated.isError, JSON.stringify(delegated.body)).toBe(false);
+      expect((await done(delegated.body.run_id)).status).toBe("SUCCEEDED");
+      const explained = (await call(c, "explain_route", { run_id: delegated.body.run_id })).body;
+      expect(explained.selected_provider).toBe("fake");
+      expect(explained.candidates.map((m: { provider: string }) => m.provider)).toEqual(["fake/fake-model-1"]);
+      expect(explained.candidates[0].terms).toHaveProperty("pacing");
+      expect(explained.features).toMatchObject({
+        model_group: "dev-fake",
+        pacing_mode: "score",
+        candidate_subscription: { fake: "dev-fake-sub" },
+      });
+      expect(explained.deciding_factors).toEqual(
+        expect.arrayContaining(["model group dev-fake: member fake/fake-model-1 chosen", "pacing: fake pace unknown"]),
+      );
+
+      const capacity = (await call(c, "get_capacity", {})).body;
+      expect(capacity.pacing).toEqual([
+        expect.objectContaining({ subscription: "dev-fake-sub", providers: ["fake"], mode: "score" }),
+      ]);
+
+      const queued = await call(c, "enqueue_work", {
+        project_id: "web",
+        request: { ...INSPECT, routing: { model_group: "dev-fake" } },
+      });
+      expect(queued.isError, JSON.stringify(queued.body)).toBe(false);
+      const deadline = Date.now() + 30_000;
+      // biome-ignore lint/suspicious/noExplicitAny: tool results are untyped JSON
+      let item: any;
+      while (Date.now() < deadline) {
+        item = (await call(c, "list_work", {})).body.items.find(
+          (i: { work_item_id: string }) => i.work_item_id === queued.body.work_item_id,
+        );
+        if (item.admitted_run_id !== null || item.terminal_at !== null) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      expect(item.admitted_run_id, JSON.stringify(item)).not.toBeNull();
+      expect((await done(item.admitted_run_id)).status).toBe("SUCCEEDED");
+      const admitted = (await call(c, "explain_route", { run_id: item.admitted_run_id })).body;
+      expect(admitted.features).toMatchObject({ model_group: "dev-fake", members: [{ key: "fake/fake-model-1" }] });
+    }, 60_000);
+  },
+);

@@ -44,6 +44,7 @@ import {
   BUILTIN_CONFIG_PROVIDER_IDS,
   type ConfigProviderId,
   configProviderIds,
+  providerEntries,
   providerGeneration,
 } from "../adapters/providers.js";
 import { MODEL_ID_PATTERN, type ModelConfig } from "../models/registry.js";
@@ -1079,7 +1080,25 @@ export function configSchemaFor(ids: readonly string[]): Record<string, unknown>
  * The schema config validation uses now: {@link configSchema} while no provider is registered at runtime, else
  * {@link configSchemaFor} over every registered config id. `generation` changes whenever that set changes.
  */
-export function currentConfigSchema(): { readonly generation: number; readonly schema: Record<string, unknown> } {
+export function currentConfigSchema(opts: { readonly testFakeAdapter?: boolean } = {}): {
+  readonly generation: number;
+  readonly schema: Record<string, unknown>;
+} {
   const generation = providerGeneration();
-  return { generation, schema: generation === 0 ? configSchema : configSchemaFor(configProviderIds()) };
+  const schema = generation === 0 ? configSchema : configSchemaFor(configProviderIds());
+  if (opts.testFakeAdapter !== true) return { generation, schema };
+  // biome-ignore lint/suspicious/noExplicitAny: a structural copy of a JSON schema document, edited at one known path
+  const widened = structuredClone(schema) as any;
+  widened.properties.model_groups = modelGroupsSchemaFor(memberProviderIds(true));
+  return { generation, schema: widened };
+}
+
+/**
+ * Provider ids a `model_groups` member or a `capacity.subscriptions.<s>.providers[]` entry may name: every registered
+ * config id, plus the test-only adapter ids (`fake`, which has no config id) when `testFakeAdapter` says that adapter is
+ * registered (`serve`'s test-only switch; TDD §3.6). Without it the list, and so every message, is as before.
+ */
+export function memberProviderIds(testFakeAdapter: boolean): string[] {
+  const ids = configProviderIds();
+  return testFakeAdapter ? [...ids, ...providerEntries().flatMap((e) => (e.kind === "test" ? [e.id] : []))] : ids;
 }

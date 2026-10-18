@@ -964,7 +964,8 @@ it never holds a DB transaction and returns the current non-terminal envelope on
 ```jsonc
 { "input": { "required": ["meta_session_id","instruction"], "properties": {
     "meta_session_id": {"type":"string"}, "instruction": {"type":"string","maxLength":32768},
-    "routing": {"$ref":"#/$defs/routing"},      // different provider => handoff bundle (FR-SES-04)
+    "routing": {"$ref":"#/$defs/routing"},      // different provider => handoff bundle (FR-SES-04);
+                                                     // the 3-field subset: no model_group, no model (§17.7, Q-99)
     "trust_profile": {"$ref":"#/$defs/trust_profile"},   // default: previous run's; may not exceed client max;
                                                          // privileged only with the meta-session's approval (§3.1)
     "wait_seconds": {"type":"integer","minimum":0,"maximum":60} } },
@@ -5808,6 +5809,7 @@ the operator.
     "subscriptions": {
       "<name>": {                                   // ^[a-z][a-z0-9_-]{0,31}$; operator's own label
         "providers": ["<config provider id>"],      // 1..16; a provider is in at most one subscription
+                                                     // (`fake` only when the test-only fake adapter is registered; §17.7)
         "windows": [ {
           "id": "<window id>",                      // ^[a-z0-9_-]{1,32}$, unique in the subscription
           "length_seconds": 0,                       // 60..2678400; operator-declared
@@ -5898,7 +5900,9 @@ percentage of a plan, and the text view prints "used (estimate, Switchboard-obse
 *As built (T6.13, 2026-10-17, Delegated):* the configuration keys and the per-window figures. The projection block that
 reads them is T6.14 (below); the gate that holds runs is T6.8 and the score term is T7.15 (built; see §17.7). `capacity.subscriptions`
 and `capacity.pacing` are
-strict in `src/config/schema.ts`; `src/config/capacity.ts` refuses a provider id that is not configured, a provider in
+strict in `src/config/schema.ts`; `src/config/capacity.ts` refuses a provider id that is not configured, except the
+test-only `fake` adapter id when that adapter is registered (`checkCapacity` over `memberProviderIds(true)` via
+`loadConfig({ testFakeAdapter })`; T7.13 fix, 2026-10-18, `src/config/fake-model-groups.test.ts`), a provider in
 two subscriptions, a window id repeated in a subscription, a `fixed` reset without an ISO instant with an offset as
 `anchor`, and an `anchor` on any other reset. Subscriptions resolve in name order with the adapter id of each provider,
 and only when the file sets `subscriptions` or `pacing`, so a configuration without them resolves exactly as before.
@@ -6186,17 +6190,19 @@ term), **Affinity**, **Decision record, version 3** and **Run fields** subsectio
 { "model_groups": {
     "<name>": {                                     // ^[a-z][a-z0-9_-]{0,31}$, at most 32 groups
       "members": [                                  // 1..32, ordered; order is the last tie-break
-        { "provider": "<config provider id>", "model": "<model id or alias>" }
+        { "provider": "<config provider id>", "model": "<model id or alias>" }   // `fake` only with the test-only switch
       ] } },
   "routing": { "weights": { "pacing": 1 } } }      // seventh weight, 0..100, default 1 (Q-80)
 ```
 
 Startup refuses an unknown provider id, a duplicate `{ provider, model }` pair, an empty `members` list and a malformed
-name or model. Whether the model resolves is checked at routing time, not at startup, because the registry's listing
-changes with each probe (§2.1). `loadConfig` resolves `model_groups` once into `ResolvedConfig.modelGroups`
-(`src/config/load.ts`); `serve` passes that table to the MCP server and to queue admission (`src/cli/serve.ts`), and
-both validate through `modelGroupsOf` (`src/config/routing.ts`): the resolved table when present, else the raw
-`model_groups`, else the file at `configPath`, else none.
+name or model. The test-only fake adapter id `fake` is accepted as a member `provider` (and in
+`capacity.subscriptions.<name>.providers`, §16.9) only when that adapter is registered (`serve`'s test-only switch,
+`loadConfig({ testFakeAdapter })`); otherwise the messages are unchanged. Whether the model resolves is checked at
+routing time, not at startup, because the registry's listing changes with each probe (§2.1). `loadConfig` resolves
+`model_groups` once into `ResolvedConfig.modelGroups` (`src/config/load.ts`); `serve` passes that table to the MCP
+server and to queue admission (`src/cli/serve.ts`), and both validate through `modelGroupsOf` (`src/config/routing.ts`):
+the resolved table when present, else the raw `model_groups`, else the file at `configPath`, else none.
 
 **Request** (`routing.model_group`, `routing.model`; §3.0). Validation, before any side effect (FRD V14):
 
@@ -6209,7 +6215,11 @@ both validate through `modelGroupsOf` (`src/config/routing.ts`): the resolved ta
    ids (`claude-code`) while `provider_preference` names adapter ids (`claude`), so each member is mapped to its
    adapter id first (`groupMembersFor` in `src/config/routing.ts`; an id with no mapping compares as is). If none
    remains, the result is `INVALID_REQUEST`. `require_provider` alone names no provider, so it narrows nothing.
-4. `continue_task` takes neither field. Continuations stay governed by FR-SES-03 and BR-18 (Q-99).
+4. `continue_task` takes neither field: either one is `INVALID_REQUEST` with the message
+   "continue_task accepts neither routing.model_group nor routing.model (Q-99)" and
+   `details.field` `"routing"` (returned before `checkRouting` runs, so the closed schema never
+   masks it with the generic message; any other unknown routing key keeps the generic
+   additional-properties refusal). Continuations stay governed by FR-SES-03 and BR-18 (Q-99).
 
 **Candidates.** Without either field, candidates are providers, as in §17.3. With a group, a candidate is a member,
 keyed `<provider>/<model>`. Stage 1 per member: (a) the provider's stage-1 reasons, unchanged; (b) registry resolution
@@ -6634,12 +6644,13 @@ Done-when).
 
 ## 19. Switchboard-controlled skills (M16, Proposed)
 
-*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); built: the
 store, migration `0021` and state derivation (T16.1), the configuration keys and loader (T16.3), the operator CLI
 (T16.2), the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), admission (T16.4), prompt-prefix delivery
 (T16.5), the native-delivery framework with its exclusions and cleanup (T16.6), adapter declarations
-(T16.7 Done 2026-10-17, Delegated, not owner-approved), and continuity across handoff and resume (T16.10: the bundle
-`skills` facts and re-delivery in the receiving provider's way), all Delegated, not owner-approved;
+(T16.7 Done 2026-10-17, Delegated, not owner-approved), continuity across handoff and resume (T16.10: the bundle
+`skills` facts and re-delivery in the receiving provider's way), the malicious-fixture leg (T16.11) and the M16
+acceptance test on fakes (T16.12), all Delegated, not owner-approved;
 per-provider native (T16.8) Proposed).
 Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
 are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to

@@ -44,10 +44,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   It is not `Done`: no run of a real Claude Code and Codex pair has been made (the opt-in `npm run test:live:pair`
   script exists and has not been run), and resume for the providers of milestone 4 is not built. See
   [ROADMAP §6.9](docs/ROADMAP.md#69-m5-continuity-tasks).
-- **Milestone 6 (capacity and resilience) is `Partial`.** `get_capacity` and `switchboard capacity` show per-provider
+- **Milestone 6 (capacity and resilience) is `Done` on fake providers** (2026-10-18, Delegated agent work, not
+  owner-approved; acceptance in `src/mcp/m6-acceptance.test.ts`). `get_capacity` and `switchboard capacity` show per-provider
   estimates with their sources, a circuit breaker holds a failing provider back, retryable failures are retried
   automatically as linked successor runs, and quota exhaustion fails over to another provider or returns. All of this
-  is tested on fake providers. It is not `Done`: real limit output is captured in text mode for five
+  is tested on fake providers. Limits: real limit output is captured in text mode for five
   providers with the remaining cells `NOT_CHECKED` (operator task T6.11, `Done` 2026-10-17;
   [limit captures](docs/research/limit-captures-2026-10-17.md)), and no provider is known to publish an
   enforceable rate limit, so there is no token-bucket gate; the pacing gate paces usage per subscription window
@@ -59,7 +60,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   (ROADMAP T6.16, `Done` 2026-10-17, `src/mcp/m6-pacing-acceptance.test.ts`). Pacing estimates are lower bounds from
   Switchboard's own dispatches, and pacing never creates a run (see [Model groups and pacing](#model-groups-and-pacing)).
   See [ROADMAP §6.11](docs/ROADMAP.md#611-m6-capacity-and-resilience-tasks).
-- **Milestone 7 (routing) is `Partial`.** Eligible providers are scored from Switchboard's own records, every route
+- **Milestone 7 (routing) is `Done` on fake providers** (2026-10-18, Delegated agent work, not owner-approved;
+  acceptance in `src/mcp/m7-acceptance.test.ts`). Eligible providers are scored from Switchboard's own records, every route
   decision is stored and replays exactly, `explain_route` shows why a run went where it did, a project stays on its
   provider until a listed reason moves it (`switchboard affinity list|reset`), and `minimum_capability` is enforced
   against operator-declared model capabilities in the model registry (`src/routing/minimum-capability.test.ts`). All
@@ -148,7 +150,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#559](https://github.com/zemdregon/switchboard/pull/559)). ADR-0047 and ADR-0048 remain Proposed. See
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
-- **Milestone 15 (project queue, schedules and CI triggers) is `Partial`.** The durable per-project work queue
+- **Milestone 15 (project queue, schedules and CI triggers) is `Done` on fakes** (2026-10-18, Delegated agent work,
+  not owner-approved; the `serve` low-water wiring below is a separate open fix). The durable per-project work queue
   (T15.1, [#527](https://github.com/zemdregon/switchboard/pull/527)) and the CI-failure trigger (T15.3,
   [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
@@ -166,40 +169,15 @@ Pre-release. The package is private and is not published to any registry; you bu
   are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
   `switchboard schedule`. See
   [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
-- **Milestone 16 (Switchboard-controlled skills) is `Partial`.** The skill store is built (T16.1, Delegated, not
-  owner-approved): operator-defined, versioned skills validated, canonicalised and kept as immutable content-addressed
-  files (`<data>/skills/<sha256>.md`) with append-only ledger rows (migration `0021`, `src/skills/`). The
-  configuration is built (T16.3, Delegated, not owner-approved): `skills.*`, `projects[].skills` and
-  `mcp_clients[].skills` in the schema and loader (`src/config/`, `src/skills/limits.ts`,
-  `src/skills/configured.ts`), off by default. The operator CLI is built (T16.2, Delegated, not
-  owner-approved): `switchboard skills list|show|add|approve|revoke|retire|unretire|diff`, the `doctor`
-  skills line and skills in `runs show` (`src/cli/skills.ts`, `src/skills/read.ts`, `src/skills/diff.ts`).
-  The MCP tools are built (T16.9, Delegated, not owner-approved): read-only `list_skills` and `get_skill`
-  for the orchestrator profile when skills are enabled (`src/mcp/`, the §19.5 steps 2 to 4 resolver in
-  `src/skills/resolve.ts`). Admission is built (T16.4, Delegated, not owner-approved): `skills`, `role` and
-  `skill_defaults` on `delegate_task`, `continue_task` and `enqueue_work`, ordered resolution with gates and caps in
-  the admission transaction (`src/skills/admission.ts`), `run_skill` rows, the `skill_resolved` event and skill
-  metadata in `get_run`. Prompt-prefix delivery is built (T16.5, Delegated, not
- owner-approved): the labelled block (`renderSkillBlock` in `src/adapters/prompt.ts`) travels in the prompt text before
- constraints and the task, and after the fixed preamble in a handoff prompt; every adapter cell delivers
- `prompt_prefix`; dispatch records `run_skill.delivery` and `delivered_at` with one `skill_delivered` event, and a run
- whose pinned skill cannot be read fails closed before spawn. The native-delivery framework and leak prevention are
- built (T16.6, Delegated, not owner-approved): the per-cell `skillDelivery` declaration, fresh-path exclusive writes,
- exclusion from the commit tool, checkpoints, diff artifacts and `changed_files`, `push` refusal while a skill file
- exists, removal before `VERIFYING`, at terminal states, at reconciliation and by GC, and the `skill_cleanup_failed`
- needs-attention reason; only the fake adapter declares a native location, in tests. Adapter declarations are built
-(T16.7, Delegated, not owner-approved): each of the eight provider adapters declares `skillDelivery()` =
-`prompt_prefix` as its own method, and the conformance suite (`checkSkillDelivery` in `src/adapters/conformance.ts`,
-run by `checkAdapterStatics` for every case) fails a `native` declaration without a T16.8 evidence id and a cell whose
-argv, environment or policy flags the skills change beyond the prompt text
-(`src/adapters/skill-delivery-conformance.test.ts`). Continuity is built (T16.10, Delegated, not owner-approved):
-the handoff bundle carries the previous run's pinned skills as controller facts (name, version, hash; never text)
-and the successor re-delivers the same versions in its own provider's way, with a native resume re-delivering the
-files for the new run (`src/continuity/`, `src/lifecycle/lifecycle.ts`). The malicious-fixture leg is built (T16.11,
-Delegated, not owner-approved): `test/malicious/skills-leg.test.ts` runs the hostile skill repository (its own
-`.claude/skills`, `.cursor/rules`, `AGENTS.md`, a pre-existing `switchboard-` path and a symlinked `.claude`)
-against the production store and delivery ports; untrusted runs load no repository skill, the canary reaches no
-event, span, log, artifact or sink, and the R-69 copy behaves as recorded. Design:
+- **Milestone 16 (Switchboard-controlled skills) is `Done` on fakes** (Delegated agent work, not owner-approved). The
+  skill store, configuration, operator CLI, admission, prompt-prefix delivery, the native-delivery framework with leak
+  prevention, the adapter declarations, the MCP tools, continuity across handoff and resume and the malicious-fixture
+  leg are built (T16.1 to T16.7, T16.9 to T16.11). The M16 acceptance file (`src/mcp/m16-acceptance.test.ts`, T16.12)
+  runs one test per clause of the milestone's acceptance column through a scripted MCP client on the fake adapter.
+  Not run: the operator live checks that would let a real provider's native skill location be used (T16.8,
+  operator-only, not required for `Done`), so every real provider delivers skills as a prompt prefix, and no skill
+  has been delivered to a live provider through Switchboard yet.
+  See [Switchboard-controlled skills (milestone 16)](#switchboard-controlled-skills-milestone-16),
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
@@ -412,7 +390,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `retention.days`, `retention.interval` | no | How long idle meta-sessions are kept (integer days, default 30) and how often `serve` runs the clean-up pass (`30m`, `12h`, `7d`; default `24h`). **Nothing is deleted unless you set `retention.days`**; the default only applies once you do (or to `gc` dry runs). |
 | `projects` | no | List of `{ "id", "name", "environment"?, "contexts": [...] , "max_trust_profile"?, "allowed_providers"? }`. `id` matches `^[a-z][a-z0-9-]{1,40}$` and is unique. `environment` is `{ "kind": "host" }` (default) or a `container` shape; `projects validate` checks runtime, image and the no-Git-client probe for `container` projects when configured (see [Container environments](#container-environments-milestone-10)). Each context is `{ "id", "kind": "repository", "path", "base_ref", "primary"?, "writable"?, "push"?, "identity"?, "sign"?, "finalize_commit"? }` with an absolute `path` under an allowed root; exactly one context is primary. Unknown keys and context kinds stop startup. `push.remote` must be the name of a remote in the repository (not a URL), and `push.branch_prefix` a branch-name prefix such as `"switchboard/"`. `max_trust_profile` and `allowed_providers` apply to `delegate_task` with a `project`: the effective trust ceiling is the lower of the client's and the project's, and routing is limited to the listed providers (a request naming another provider with `require_provider` fails `PERMISSION_BLOCKED`); `sign` (default `false`; needs `identity`, primary writable context only) makes the controller sign each published commit with the operator's own global Git signing configuration; a signing failure, a repository whose own configuration sets `gpg.*` or `user.signingkey`, or a run whose agent could reach the key (the `push` rule) returns `SIGNING_FAILED` and commits nothing; `projects validate` makes a test signature. Only GnuPG has been tried, with a throwaway key; SSH, X.509, passphrase-protected and hardware keys are untested. `finalize_commit` (default `false`; needs `identity`, primary writable context only) turns on finalize-only commits, described below. Full shape: LLD section 11.1. |
 | `routing` | no | `{ "weights"?: { "success", "latency", "capacity", "security", "handoff", "cost", "pacing" }, "affinity"?: { "enabled", "low_water_mark", "min_confidence", "idle_ttl" } }`. Each weight 0 to 100, default 1; all 0 means configured order. The seventh weight `pacing` (T7.13) is accepted and resolved, and since T7.15 (`Done` 2026-10-17) the scorer reads it: a candidate whose provider is in a configured subscription gets the `pacing` term after the six terms in [Routing and affinity](#routing-and-affinity), otherwise the score still uses those six. `affinity.enabled` defaults to `true`; `low_water_mark` and `min_confidence` (0 to 1) are set together or both left `null` (the default, which leaves the estimate trigger off); `idle_ttl` accepts only `null` (no expiry). Unknown keys stop startup. See [Routing and affinity](#routing-and-affinity) and LLD section 17.1. |
-| `model_groups` | no | Operator-named groups of models across providers (T7.13, FR-RTE-10): `{ "<name>": { "members": [{ "provider": "<config provider id>", "model": "<model id or alias>" }] } }`. Names match `^[a-z][a-z0-9_-]{0,31}$`, at most 32 groups; each group lists 1 to 32 members in order (order is the last tie-break). Startup refuses an unknown provider id, a duplicate pair, an empty group, a malformed name or model, and unknown keys. A member whose model the registry cannot resolve is accepted and reported by `doctor` (below), not refused. Names and members are configuration only. Full shape: [LLD §17.7](docs/design/LLD.md#177-model-groups-fr-rte-10-fr-rte-11). |
+| `model_groups` | no | Operator-named groups of models across providers (T7.13, FR-RTE-10): `{ "<name>": { "members": [{ "provider": "<config provider id>", "model": "<model id or alias>" }] } }`. Names match `^[a-z][a-z0-9_-]{0,31}$`, at most 32 groups; each group lists 1 to 32 members in order (order is the last tie-break). Startup refuses an unknown provider id, a duplicate pair, an empty group, a malformed name or model, and unknown keys; the one exception is the test-only `fake` adapter id, accepted as a member `provider` (and in `capacity.subscriptions.<name>.providers`) only when that adapter is registered (`serve` with the test-only fake switch, TDD §3.6), and refused as before otherwise. A member whose model the registry cannot resolve is accepted and reported by `doctor` (below), not refused. Names and members are configuration only. Full shape: [LLD §17.7](docs/design/LLD.md#177-model-groups-fr-rte-10-fr-rte-11). |
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `telemetry.otlp_endpoint` | no | `http` or `https` URL for OTLP/HTTP trace export. When omitted or empty, Switchboard does not load OpenTelemetry at startup and makes no outbound telemetry connection. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [LLD §7](docs/design/LLD.md#7-telemetry-spans). |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
@@ -702,6 +680,118 @@ Fixtures only; no live provider CLI:
 
 - The Grok bot is the intended first console client (owner decisions 53/55); ADR-0047 and ADR-0048 are still Proposed.
 
+## Switchboard-controlled skills (milestone 16)
+
+A skill is an operator-authored instruction pack (a Markdown file with `name` and `description` front matter) that
+Switchboard stores, versions and injects into a run by name. The orchestrator names skills on a request, and the
+configuration adds defaults per installation, per project and per role. Skills are instructions for the agent, not
+controls: a skill never changes a run's trust profile, argv, environment, tool set or Git-write denial
+([ADR-0056](docs/adr/0056-switchboard-controlled-skills.md), [LLD §19](docs/design/LLD.md#19-switchboard-controlled-skills-m16-proposed)).
+Everything here is Delegated agent work, not owner-approved beyond the direction (owner decision 58), and off by
+default.
+
+### Configuration
+
+Keys in `config.json` ([LLD §19.3](docs/design/LLD.md#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08) owns them;
+no duplicate schema here):
+
+- `skills.enabled` (default `false`). While false the request fields are refused (`INVALID_REQUEST`,
+  `SKILLS_DISABLED`), the two MCP tools are not offered, and nothing else changes.
+- `skills.defaults[]` and `skills.roles.<role>[]`: names (`name` or `name@n`) applied to every run, or when the request
+  names that `role`. `projects[].skills.defaults[]` and `projects[].skills.roles.<role>[]` add project-level entries
+  after the global ones.
+- `skills.delivery`: `native_preferred` (default) or `prefix_only`. With the adapters shipped today the two behave the
+  same (see Delivery below).
+- `skills.allow_draft_in_trusted` (default `false`): lets a `trusted-development` run take a draft version by name.
+- `skills.max_body_bytes`, `max_per_run`, `max_run_bytes`, `max_names`: caps on one body, the skills of one run, their
+  total bytes and the store (defaults 32768, 8, 65536 and 64, Assumptions).
+- `mcp_clients[].skills`: an allow-list of names the client may see and inject; absent means every approved name, an
+  empty list means none.
+
+### Operator commands
+
+`switchboard skills list [--all]`, `show <name>[@n] [--body]`, `add <name> --file <path> [--from-repository]
+[--note <text>]`, `approve <name>@<n>`, `revoke <name>@<n>`, `retire <name>`, `unretire <name>` and
+`diff <name>@<a> <name>@<b>`. `add` validates the file (front matter keys, size, control characters, prompt
+delimiters and secret-shaped text are refused with exit 65 and one reason), canonicalises it and stores it as an
+immutable content-addressed file under `<data_dir>/skills/<sha256>.md` with append-only ledger rows; the same text
+added again is `SKILL_UNCHANGED`. A version is a draft until `approve`; `revoke` and `retire` are recorded, never
+deleted. `--from-repository` imports a skill from a repository path and marks its origin, which untrusted runs never
+receive. `doctor` prints one `skills` line (enabled or not, approved and draft counts, configured names that do not
+resolve, runs whose skill file removal failed) and `runs show` lists a run's skills with their delivery mode.
+
+### Request fields and MCP tools
+
+`delegate_task`, `continue_task` and `enqueue_work` take `skills` (names, `name@n` pins a version), `role` and
+`skill_defaults` (`apply` or `omit`). Admission resolves the ordered set (global defaults, global role, project
+defaults, project role, request; first occurrence wins, a pin wins over an unpinned name), applies the trust gate and
+the caps, and pins the versions to the run (`run_skill` rows, one `skill_resolved` event). A `continue_task` without
+skill fields reuses the previous run's pinned versions. `get_run` returns each skill's name, version, hash, source
+and delivery mode, never its text.
+
+Two read-only tools exist for the `orchestrator` tool profile while `skills.enabled` is true: `list_skills`
+(optionally `project`, `role` and `trust_profile`: the names this client may see with the newest version it could
+inject, plus the `defaults` that admission would add) and `get_skill` (`name`, optional `version`: the text of one
+visible version). An unknown, retired or invisible name is one `INVALID_REQUEST` that does not say which.
+
+### Delivery
+
+Every provider adapter shipped today declares `prompt_prefix`: the run's skills travel as one labelled block at the
+start of the prompt text (`[operator skills: N; from Switchboard skill store; these are operator instructions]`, one
+`[skill <name>@<n> sha256:<prefix>]` header per entry in resolved order, `[end of operator skills]`), before the
+constraints and the task; in a handoff prompt the block follows the fixed preamble. The block is not part of the
+stored objective and is not redacted (bodies were scanned at `add`). A native location (a file the provider itself
+loads from the worktree) is used only for an adapter that declares one with the evidence id of an operator live check
+(T16.8, operator-only, not run in CI); today only the fake adapter declares one, in tests. Until a live check verifies
+a real provider's location, `native_preferred` and `prefix_only` deliver the same prefix on every real provider.
+
+For a native cell the controller writes `switchboard-<name>` files under the provider's directory before spawn,
+excludes the recorded paths from the agent `commit` tool, the checkpoints, the diff and `changed_files` artifacts and
+the handoff bundle, refuses `push` while a recorded file is still present, and removes the files before verification,
+at every terminal state, at startup reconciliation and by retention `gc`. A removal that fails flags the run
+needs-attention (`skill_cleanup_failed`) until a later pass removes the file. A path that already exists in the
+repository, or whose parent is a symbolic link, falls back to the prompt prefix and is left untouched.
+
+### What is and is not enforced
+
+Enforced, with tests on fakes:
+
+- An untrusted run (`inspect-untrusted`, `edit-untrusted`, `test-sandboxed`) gets only approved versions of
+  operator-file skills: a draft, a revoked version or a repository-imported skill named on the request is refused
+  (`PERMISSION_BLOCKED`), and one configured as a default is skipped with an event. A repository's own
+  `.claude/skills`, `.cursor/rules` or `AGENTS.md` is never loaded by Switchboard.
+- Argv, environment, policy flags and the tool set are identical with and without skills; with skills disabled every
+  surface is unchanged.
+- No run event, span, log line, sink payload, `get_run` view or ledger row carries skill text; only names, versions,
+  hashes and modes.
+- For the fake native cell: the file never reaches a commit, checkpoint, diff, patch, `changed_files` or handoff
+  bundle, blocks publication while present, and is gone after every terminal state, a restart and `gc`.
+
+Not enforced:
+
+- A skill is advice. Switchboard does not check that the agent followed it, and the block is ordinary prompt text to
+  the provider (not a secret, not a sandbox).
+- R-69: in a cell that loads repository content (an approved bypass run), the agent can read a native skill file and
+  copy its text into another file, which then reaches a commit. Path exclusion catches the recorded path, not the
+  copy. Native delivery is off for every real provider until T16.8 verifies a cell, and `add` refuses secret-shaped
+  text, so a copy exposes operator instructions, not credentials.
+- No real provider's native skill location is verified (T16.8 is operator-only). Prompt-prefix delivery has not been
+  observed on a live provider through Switchboard either; the acceptance tests run on fakes.
+
+### Status and tests
+
+Fixtures only; no live provider CLI:
+
+- M16 acceptance: `src/mcp/m16-acceptance.test.ts` (one test per clause of the M16 acceptance column).
+- Store and format (T16.1): `src/skills/skills.test.ts`; configuration (T16.3): `src/skills/skills-config.test.ts`;
+  operator CLI (T16.2): `src/cli/skills.test.ts`.
+- Admission (T16.4): `src/mcp/skill-admission.test.ts`, `src/skills/admission.test.ts`,
+  `src/skills/import-boundary.test.ts`; tools (T16.9): `src/mcp/skill-tools.test.ts`.
+- Delivery (T16.5 to T16.7): `src/lifecycle/skill-delivery.test.ts`, `src/adapters/skill-prefix.test.ts`,
+  `src/lifecycle/native-skills.test.ts`, `src/workspace/native-skills.test.ts`, `src/reconcile/native-skills.test.ts`,
+  `src/adapters/skill-delivery-conformance.test.ts`.
+- Malicious-fixture leg (T16.11): `test/malicious/skills-leg.test.ts`.
+
 ## Run as an MCP server
 
 `serve --client <id>` runs the MCP server on stdin/stdout for one configured client. stdout carries MCP messages only;
@@ -884,7 +974,9 @@ without them (`src/routing/group-selection.test.ts`, `src/capacity/pacing-projec
 `model_groups` (see [Configure](#configure)). It is configuration only. Switchboard ships no group, tier or model name,
 and a group's name or a member's place in it is never a claim about quality, capability or price: a group called
 `flagship` is just a label. `minimum_capability` still uses only the capabilities you declared for each model, and
-member order is used only as the last tie-break.
+member order is used only as the last tie-break. A member's `provider` is a config provider id; the test-only fake
+adapter id `fake` is accepted there and in `capacity.subscriptions.<name>.providers` only when that adapter is
+registered (`serve` with the test-only fake switch, TDD §3.6), and is refused as before otherwise.
 
 **How to request one.** `delegate_task` and `enqueue_work` accept two optional routing fields; give at most one:
 

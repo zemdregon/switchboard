@@ -1,7 +1,7 @@
 /**
  * T5.8 (FR-SES-03, FR-ADP-04, FR-ADP-11, NFR-MAINT-01; TDD §4.9 item 6): a registry-wide check of `resumeArgs`.
- * It enumerates every provider entry that has an adapter (the built-ins, plus the second continuity fake registered at
- * runtime) and requires each adapter to:
+ * It enumerates every provider entry that has an adapter (the built-ins, plus the second continuity fake and the T4.1
+ * scratch adapter registered at runtime, T4.2) and requires each adapter to:
  *
  * 1. declare `resumeCwd` as the value of its registry entry, one of `bound`, `independent` or `unverified` (T5.7);
  * 2. compile a binding of its own provider wherever `compile` compiles the same request and profile, or return an
@@ -18,6 +18,7 @@ import { resolveTrustProfile } from "../policy/profiles.js";
 import { ClaudeAdapter } from "./claude/index.js";
 import { CodexAdapter } from "./codex/index.js";
 import { secondFakeProvider } from "./fixtures/continuity-fakes.js";
+import { SCRATCH_PROVIDER } from "./fixtures/scratch-provider.js";
 import { type ProviderEntry, providerEntries, registerProvider } from "./providers.js";
 import {
   type CompileRequest,
@@ -97,12 +98,12 @@ function resumeViolations(
   return out;
 }
 
-let unregister: (() => void) | undefined;
+let unregister: (() => void)[] = [];
 beforeEach(() => {
-  unregister = registerProvider(secondFakeProvider("/nonexistent-home"));
+  unregister = [registerProvider(secondFakeProvider("/nonexistent-home")), registerProvider(SCRATCH_PROVIDER)];
 });
 afterEach(() => {
-  unregister?.();
+  for (const off of unregister) off();
 });
 
 const adapters = () =>
@@ -112,9 +113,9 @@ const adapters = () =>
   });
 
 describe("resumeArgs conformance over the provider registry (T5.8)", () => {
-  it("enumerates Claude Code, Codex and both fakes", () => {
+  it("enumerates Claude Code, Codex, both fakes and the scratch adapter", () => {
     const ids = adapters().map((a) => a.entry.id);
-    expect(ids).toEqual(expect.arrayContaining(["claude", "codex", "fake", "fake-b"]));
+    expect(ids).toEqual(expect.arrayContaining(["claude", "codex", "fake", "fake-b", "scratch"]));
   });
 
   it("every registered adapter conforms", () => {

@@ -121,6 +121,12 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   restating other tasks' sequencing, which is the roadmap owner's call. It does not block PR #645 (T7.13's own
   evidence is the T7.13 status block, cited directly).
 
+  **Update 2026-10-18 (PR #682, M7 `Done` reconciliation):** the §6.12.2 "Blocks Done" instances of this gap are
+  reconciled in the same change that flips the M7 row to `Done` (the header now reads "M7 reached `Done` on fakes"
+  with "What `Done` needed (history)", and item 3 records T7.9/T7.12 `Done` with the remaining wording gap
+  disclosed), because that section directly restates the milestone status. The §6.12.1 wave-planning notes ("Wave B
+  ... T7.8 is blocked on T7.12", "Waits for another lane") remain as planning history per the decision above.
+
 ## 11. LLD §18.3 `CANCELLED` predecessor: Proposed fail-closed vs implemented unblock (pre-existing, not from PR #660)
 
 - [LLD §18.3](design/LLD.md#183-priority-and-dependencies-fr-que-01) says a predecessor in `CANCELLED` or
@@ -139,7 +145,34 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   `FAILED`/`CANCELLED`, and LLD §18.2–18.3/§18.8 plus the ROADMAP T15.1 row describe the new behaviour. Code and
   documents agree; no owner decision remains open on this item.
 
-## 12. SDD FR-RTE-08, Q-90 and LLD §17.6 still describe the T7.5 state (pre-existing, not from PR #684)
+## 12. T7.12 model-pinning docs lane: LLD §17.6, SDD FR-RTE-08 and Q-90 still describe T7.5 (pre-existing, not from PR #682)
+
+- The T7.12 row in [ROADMAP §6.12](ROADMAP.md#612-m7-routing-tasks) is `Done on fakes` (2026-10-14): a held decision
+  on a declaring adapter compiles with the remembered model (`planModelPin`, `withModelPin`, `pinModel`,
+  `src/routing/model-pin.test.ts`).
+- [LLD §17.6](design/LLD.md#176-affinity-details-fills-32), the SDD FR-RTE-08 row and [Q-90](ROADMAP.md#7-risks-blockers-and-open-questions)
+  still describe the T7.5 state (model remembered but not pinned); the T7.12 row itself says their update is left to
+  the docs lane. The README [Routing and affinity](../README.md#routing-and-affinity) section does describe pinning.
+- Left unchanged: the LLD/SDD wording is the design owner's call, and the gap is disclosed in the T7.12 row. The M7
+  `Done` reconciliation (PR #682) neither introduces nor worsens it: T7.12 has been `Done` since 2026-10-14 and the
+  acceptance evidence (`src/mcp/m7-acceptance.test.ts`, `src/routing/model-pin.test.ts`) is cited in-row.
+
+## 13. Design "(Proposed)" labels vs M6/M7/M15 Done (pre-existing, not from PR #682)
+
+- [HLD COMP-RTE](design/HLD.md) still tags the pacing mechanism "Proposed (owner decision 57, [ADR-0055](adr/0055-model-groups-and-usage-pacing.md);
+  built on fakes ...)" and the scheduler tick "M15 (Proposed)"; [LLD §16.9](design/LLD.md#169-usage-windows-and-pacing-fr-cap-09-fr-cap-10),
+  [LLD §17.7](design/LLD.md#177-model-groups-fr-rte-10-fr-rte-11) and [LLD §18](design/LLD.md#18-project-queue-schedules-and-ci-triggers-m15-proposed-t150)
+  keep "(Proposed)" headers; [ADR-0050](adr/0050-ci-status-via-operator-gh-cli.md) and [ADR-0055](adr/0055-model-groups-and-usage-pacing.md)
+  stay Proposed.
+- The labels mark design/ADR review state, not build state: ADR-0055's own status line already records every wave-C
+  task `Done` 2026-10-17, and the M16 `Done` reconciliation (PR #683, on `main`) likewise left its LLD/TDD "(Proposed)"
+  headers in place while flipping the milestone. Neither M6/M7 nor M15 lists ADR acceptance as a verification clause
+  (contrast M14, which stays `Partial` pending ADR-0047/ADR-0048).
+- Left unchanged: rewording design review-state labels is the design owner's call. PR #682 neither introduces nor
+  worsens it (every §6.11/§6.12/§6.14 task was already `Done`; only the milestone rows flip). It does not block
+  PR #682.
+
+## 14. SDD FR-RTE-08, Q-90 and LLD §17.6 still describe the T7.5 state (pre-existing, not from PR #684)
 
 - The [T7.12 row](ROADMAP.md) records `Done on fakes` (2026-10-14) for FR-RTE-08 model pinning (the remembered
   model passed to `compile` on adapters that declare it) and notes itself that "LLD §17.6, SDD FR-RTE-08 and Q-90
