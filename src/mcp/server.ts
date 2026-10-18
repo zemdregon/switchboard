@@ -116,6 +116,9 @@
  *   `search_project_context`); every `get_skill` miss (unknown, retired, invisible, version not injectable) is the same
  *   INVALID_REQUEST, which never names the skill; a stored file that fails its hash is TOOL_FAILURE.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, type CallToolResult, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -262,8 +265,30 @@ import { type SearchContextDeps, searchEnabledFor, searchProjectContext } from "
 import { applyToolProfile, profileOffers } from "./tool-profile.js";
 
 export const SERVER_NAME = "switchboard";
-/** Proposed: tracks package.json `version`. */
-export const SERVER_VERSION = "0.0.0";
+/**
+ * Tracks package.json `version`. Read at runtime relative to this module so it
+ * works from `src/` (tests), from `dist/` (built CLI) and inside the packed
+ * tarball (which always contains the root `package.json`). Falls back to
+ * "0.0.0" when the file is missing or unparsable, so a relocated copy still
+ * starts instead of crashing at import time.
+ */
+export const SERVER_VERSION: string = readPackageVersion();
+
+function readPackageVersion(): string {
+  try {
+    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+    const parsed: unknown = JSON.parse(readFileSync(pkgPath, "utf8"));
+    if (typeof parsed === "object" && parsed !== null) {
+      const version = (parsed as { readonly version?: unknown }).version;
+      if (typeof version === "string" && version !== "") {
+        return version;
+      }
+    }
+  } catch {
+    // Fall through to the fallback below.
+  }
+  return "0.0.0";
+}
 
 export interface McpServerDeps {
   readonly lifecycle: RunLifecycle;

@@ -2,9 +2,10 @@
 
 ## Supported versions
 
-The project is pre-release: nothing has been published to a package registry, and
-you build it from source. Only the `main` branch is maintained, and security
-fixes apply to it.
+The project is pre-1.0: nothing has been published to a package registry, and
+you build it from source. Only the latest tagged release (see
+[CHANGELOG.md](CHANGELOG.md)) and the `main` branch are supported, and security
+fixes apply to them. Older tags receive no fixes.
 
 ## Reporting a vulnerability
 
