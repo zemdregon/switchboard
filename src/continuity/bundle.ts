@@ -12,6 +12,11 @@
  * marker `[truncated: <n> characters omitted]` (LLD §15.4 rule 2). The canonical JSON (sorted keys, LLD §10) is then
  * redacted once more as a whole, exactly as the artifact store will redact it, and measured against `max_bundle_bytes`;
  * over budget, whole items are dropped in the fixed order of LLD §15.4 rule 3 (extended, see {@link DROP_ORDER}).
+ *
+ * T16.10 (ADR-0056 item 14, FR-SKL-03): version 2 adds `skills`, the pinned entries of the newest run in `as_of` (the run
+ * a continuation follows, LLD §19.5 step 1), taken from that run's controller-written `skill_resolved` event within its
+ * watermark: name, version and hash only. Skill text is never a source: the builder reads no skill file and no
+ * `run_skill` column beyond what that event carries. Version 1 is still built for a stored version 1 view.
  */
 import { createHash } from "node:crypto";
 import { canonicalJson } from "../lifecycle/request.js";
@@ -21,6 +26,7 @@ import {
   BUNDLE_LIMITS,
   BUNDLE_SCHEMA,
   BUNDLE_VERSION,
+  BUNDLE_VERSIONS,
   type BundleBounds,
   type BundleChangedFile,
   type BundleDecision,
@@ -31,7 +37,9 @@ import {
   type BundleOpenWorkItem,
   type BundleReported,
   type BundleRun,
+  type BundleSkill,
   type BundleTruncation,
+  type BundleVersion,
   checkBounds,
   type HandoffBundle,
   HandoffBundleError,
@@ -160,18 +168,32 @@ export const DROP_ORDER = [
   "open_work",
   "constraints",
   "diagnostics",
+  "skills",
 ] as const;
+
+/** LLD §19.11: the run event that lists a run's pinned skills (written by the lifecycle at admission). */
+const SKILL_RESOLVED = "skill_resolved";
+/** LLD §19.1 skill names (`src/skills/format.ts` `SKILL_NAME`; not imported: the builder reaches no skills module). */
+const SKILL_NAME_RE = /^[a-z][a-z0-9-]{1,47}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
 
 type Mutable = {
   -readonly [K in keyof HandoffBundle]: HandoffBundle[K] extends readonly (infer T)[] ? T[] : HandoffBundle[K];
 };
 
-/** The pure assembler. Throws {@link HandoffBundleError} only for inconsistent sources, a redactor failure or no fit. */
+/**
+ * The pure assembler. Throws {@link HandoffBundleError} only for inconsistent sources, a redactor failure or no fit.
+ * `version` is {@link BUNDLE_VERSION} for a new bundle; 1 rebuilds a stored version 1 view (no `skills`).
+ */
 export function assembleHandoffBundle(
   sources: BundleSources,
   boundsIn: BundleBounds,
   redactor: BundleRedactor,
+  version: BundleVersion = BUNDLE_VERSION,
 ): BuiltBundle {
+  if (!(BUNDLE_VERSIONS as readonly unknown[]).includes(version)) {
+    throw new HandoffBundleError("unknown bundle version");
+  }
   const bounds = checkBounds(boundsIn);
   const redact = (text: string): string => {
     try {
@@ -432,10 +454,16 @@ export function assembleHandoffBundle(
     return out;
   });
 
+  // skills (controller facts, version 2): the newest run's pinned entries, from its `skill_resolved` event.
+  const previous = runs.at(-1);
+  const resolved = previous === undefined ? undefined : eventPayloads(previous, SKILL_RESOLVED).at(-1);
+  const pinned = resolved === undefined ? [] : skillsOf(resolved, (previous as SourceRun).record.id);
+  const skills = first(pinned, BUNDLE_LIMITS.skills, "skills");
+
   const bundle: Mutable = {
     schema: BUNDLE_SCHEMA,
-    version: BUNDLE_VERSION,
-    builder_version: BUILDER_VERSION,
+    version,
+    builder_version: version === 1 ? 1 : BUILDER_VERSION,
     as_of: asOf,
     bounds,
     goal,
@@ -451,9 +479,33 @@ export function assembleHandoffBundle(
     diagnostics,
     diff_excerpts: diffExcerpts,
     reported,
+    ...(version === 1 ? {} : { skills }),
     truncation,
   };
   return fitToBudget(bundle, bounds, redactor);
+}
+
+/**
+ * The entries of a `skill_resolved` payload as bundle facts: `name`, `version` and `sha256` are copied and every other
+ * key (`source`, and anything a later payload adds) is left out. A malformed entry is an inconsistent record (fail closed).
+ */
+function skillsOf(payload: Record<string, unknown>, runId: string): BundleSkill[] {
+  const entries = payload.entries;
+  if (!Array.isArray(entries)) throw new HandoffBundleError(`run ${runId}: skill_resolved has no entries`);
+  return entries.map((e) => {
+    if (
+      !isRecord(e) ||
+      typeof e.name !== "string" ||
+      !SKILL_NAME_RE.test(e.name) ||
+      int(e.version) === null ||
+      (e.version as number) < 1 ||
+      typeof e.sha256 !== "string" ||
+      !SHA256_RE.test(e.sha256)
+    ) {
+      throw new HandoffBundleError(`run ${runId}: skill_resolved has a malformed entry`);
+    }
+    return { run_id: runId, name: e.name, version: e.version as number, sha256: e.sha256 };
+  });
 }
 
 function serialise(bundle: Mutable, redactor: BundleRedactor): Buffer {
@@ -466,6 +518,7 @@ function serialise(bundle: Mutable, redactor: BundleRedactor): Buffer {
 
 /** LLD §15.4 rule 3: drop whole items in {@link DROP_ORDER} until the redacted canonical JSON fits. */
 function fitToBudget(bundle: Mutable, bounds: BundleBounds, redactor: BundleRedactor): BuiltBundle {
+  const order = bundle.skills === undefined ? DROP_ORDER.filter((s) => s !== "skills") : DROP_ORDER;
   const drops = new Map<string, BundleTruncation>();
   const dropOne = (step: (typeof DROP_ORDER)[number]): boolean => {
     let field: string = step;
@@ -496,6 +549,9 @@ function fitToBudget(bundle: Mutable, bounds: BundleBounds, redactor: BundleReda
       case "constraints":
         if ((bundle[step] as unknown[]).pop() === undefined) return false;
         break;
+      case "skills":
+        if (bundle.skills === undefined || (bundle.skills as BundleSkill[]).pop() === undefined) return false;
+        break;
       case "diagnostics":
         if (bundle.diagnostics === null) return false;
         bundle.diagnostics = null;
@@ -515,7 +571,7 @@ function fitToBudget(bundle: Mutable, bounds: BundleBounds, redactor: BundleReda
   let bytes = serialise(bundle, redactor);
   let step = 0;
   while (bytes.length > bounds.max_bundle_bytes) {
-    const name = DROP_ORDER[step];
+    const name = order[step];
     if (name === undefined) throw new HandoffBundleError("the bundle does not fit max_bundle_bytes");
     if (!dropOne(name)) {
       step++;
@@ -533,22 +589,40 @@ export interface BuildDeps extends BundleReadDeps {
   readonly redact: BundleRedactor;
 }
 
-/** Collect the sources at `asOf` and assemble the bundle (LLD §15.2). Throws {@link HandoffBundleError} on failure. */
-export async function buildHandoffBundle(deps: BuildDeps, asOf: AsOf, bounds: BundleBounds): Promise<BuiltBundle> {
+/**
+ * Collect the sources at `asOf` and assemble the bundle (LLD §15.2). Throws {@link HandoffBundleError} on failure.
+ * `version` defaults to {@link BUNDLE_VERSION}; {@link regenerateHandoffBundle} passes a stored view's own version.
+ */
+export async function buildHandoffBundle(
+  deps: BuildDeps,
+  asOf: AsOf,
+  bounds: BundleBounds,
+  version: BundleVersion = BUNDLE_VERSION,
+): Promise<BuiltBundle> {
   const checked = checkBounds(bounds);
   const sources = await collectBundleSources(deps, asOf);
-  return assembleHandoffBundle(sources, checked, deps.redact);
+  return assembleHandoffBundle(sources, checked, deps.redact, version);
 }
 
 /**
- * Regenerate a stored view (FR-SES-05): rebuild from the `as_of` and `bounds` recorded in its bytes. The result is
- * byte-identical to the stored view when the records are intact.
+ * Regenerate a stored view (FR-SES-05): rebuild from the `as_of`, `bounds` and version recorded in its bytes, with that
+ * version's builder (version 1 or 2). The result is byte-identical to the stored view when the records are intact.
  */
 export async function regenerateHandoffBundle(deps: BuildDeps, storedView: Buffer): Promise<BuiltBundle> {
   const parsed = parseJson(storedView.toString("utf8"));
-  if (!isRecord(parsed) || parsed.schema !== BUNDLE_SCHEMA || parsed.builder_version !== BUILDER_VERSION) {
-    throw new HandoffBundleError("the stored view is not a version 1 bundle");
+  if (
+    !isRecord(parsed) ||
+    parsed.schema !== BUNDLE_SCHEMA ||
+    !(BUNDLE_VERSIONS as readonly unknown[]).includes(parsed.builder_version) ||
+    parsed.version !== parsed.builder_version
+  ) {
+    throw new HandoffBundleError("the stored view is not a bundle of a known version");
   }
   if (!isRecord(parsed.as_of) || !isRecord(parsed.bounds)) throw new HandoffBundleError("the stored view is malformed");
-  return buildHandoffBundle(deps, parsed.as_of as unknown as AsOf, parsed.bounds as unknown as BundleBounds);
+  return buildHandoffBundle(
+    deps,
+    parsed.as_of as unknown as AsOf,
+    parsed.bounds as unknown as BundleBounds,
+    parsed.version as BundleVersion,
+  );
 }

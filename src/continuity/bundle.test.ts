@@ -9,7 +9,9 @@
  * - a secret planted in the diff (and in verification output, a summary and a constraint) is redacted;
  * - the content of the provider stream artifacts and of the `diff` artifact (each holding a canary) never appears,
  *   and the builder reads the content of `changed_files` and `test_report` artifacts only;
- * - a build failure is `TOOL_FAILURE` / `HANDOFF_BUNDLE_UNAVAILABLE` and writes nothing.
+ * - a build failure is `TOOL_FAILURE` / `HANDOFF_BUNDLE_UNAVAILABLE` and writes nothing;
+ * - T16.10: `skills` lists the previous run's pinned skills (name, version, hash; never text), and the schema change
+ *   follows ADR-0038's versioning (version 2; a version 1 view still regenerates byte for byte).
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -32,7 +34,10 @@ import {
 } from "./bundle.js";
 import {
   type AsOf,
+  BUILDER_VERSION,
   BUNDLE_FIELDS,
+  BUNDLE_FIELDS_V1,
+  BUNDLE_VERSION,
   type BundleBounds,
   DEFAULT_BUNDLE_BOUNDS,
   FR_SES_04_FIELDS,
@@ -42,6 +47,7 @@ import {
 } from "./bundle-schema.js";
 import { collectBundleSources, takeAsOf } from "./bundle-sources.js";
 import { storeHandoffView } from "./handoff-view.js";
+import { parseHandoffBundle, RENDERER_VERSION, renderHandoffPrompt } from "./render.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -375,12 +381,13 @@ describe("bundle regeneration (FR-SES-05)", () => {
 });
 
 describe("bundle content (FR-SES-04, BR-8)", () => {
-  it("every field of version 1 is present; FR-SES-04 fields are filled", async () => {
+  it("every field of version 2 is present; FR-SES-04 fields are filled", async () => {
     const { s, head, ok, bad } = await richSession();
     const built = await buildHandoffBundle(deps, takeAsOf(ledger, s.id), DEFAULT_BUNDLE_BOUNDS);
     const b = parse(built.bytes);
     expect(Object.keys(b).sort()).toEqual([...BUNDLE_FIELDS].sort());
-    expect(b).toMatchObject({ schema: "switchboard.handoff_bundle", version: 1, builder_version: 1 });
+    expect(b).toMatchObject({ schema: "switchboard.handoff_bundle", version: 2, builder_version: 2 });
+    expect(b.skills).toEqual([]); // T16.10: present and empty for a previous run without skills
     expect(b.goal).toBe("Build the feature");
     expect(b.constraints).toEqual(["keep the tests green", `never print ${REDACTION_MARKER}`]);
     expect(b.instructions).toEqual([{ run_id: bad.id, text: "Now add the second part" }]);
@@ -702,5 +709,116 @@ describe("the handoff_view artifact (LLD §15.2 Storage, §15.3)", () => {
         `bundle=${out.artifactId} sha256=${out.sha256} as_of=${out.asOfSha256} source_runs=2`,
       ],
     ]);
+  }, 30_000);
+});
+
+describe("skills as controller facts and the version rule (T16.10; ADR-0056 item 14, ADR-0038)", () => {
+  const SKILL_CANARY = "CANARY-T1610-skill-body-3e9d";
+  const sha = (c: string) => c.repeat(64);
+  /** A `skill_resolved` payload as admission writes it, plus keys a payload must never carry into a bundle. */
+  const resolved = (entries: { name: string; version: number; sha256: string }[]) => ({
+    entries: entries.map((e) => ({
+      ...e,
+      source: "continued",
+      body: `body ${SKILL_CANARY}`,
+      description: `description ${SKILL_CANARY}`,
+    })),
+    skipped: [{ name: `gamma@1 ${SKILL_CANARY}`, reason: "SKILL_NOT_APPROVED" }],
+  });
+
+  async function skilledSession() {
+    const s = session();
+    const first = await addRun(s.id, { state: "SUCCEEDED" });
+    ledger.appendRunEvent({
+      runId: first.id,
+      type: "skill_resolved",
+      payload: resolved([{ name: "old-skill", version: 1, sha256: sha("1") }]),
+    });
+    const previous = await addRun(s.id, { state: "SUCCEEDED", objective: "Second part" });
+    ledger.appendRunEvent({
+      runId: previous.id,
+      type: "skill_resolved",
+      payload: resolved([
+        { name: "security-review", version: 3, sha256: sha("a") },
+        { name: "docs-alignment", version: 1, sha256: sha("b") },
+      ]),
+    });
+    return { s, previous };
+  }
+
+  it("lists the previous run's skills as name, version and hash only, never text, and regenerates byte-identically", async () => {
+    const { s, previous } = await skilledSession();
+    const asOf = takeAsOf(ledger, s.id);
+    const built = await buildHandoffBundle(deps, asOf, DEFAULT_BUNDLE_BOUNDS);
+    expect(built.bundle.skills).toEqual([
+      { run_id: previous.id, name: "security-review", version: 3, sha256: sha("a") },
+      { run_id: previous.id, name: "docs-alignment", version: 1, sha256: sha("b") },
+    ]);
+    const text = built.bytes.toString("utf8");
+    expect(text).not.toContain(SKILL_CANARY);
+    expect(text).not.toContain("old-skill"); // only the run a continuation follows
+    expect(text).not.toMatch(/"(source|body|description)":/);
+    // A later `skill_resolved` event is past the watermark: the rebuild is byte for byte the same (FR-SES-05).
+    ledger.appendRunEvent({
+      runId: previous.id,
+      type: "skill_resolved",
+      payload: resolved([{ name: "late-skill", version: 9, sha256: sha("c") }]),
+    });
+    const again = await regenerateHandoffBundle(deps, built.bytes);
+    expect(again.bytes.equals(built.bytes)).toBe(true);
+    expect(again.sha256).toBe(built.sha256);
+  }, 30_000);
+
+  it("a malformed skill_resolved entry fails the build closed", async () => {
+    const s = session();
+    const run = await addRun(s.id, { state: "SUCCEEDED" });
+    ledger.appendRunEvent({
+      runId: run.id,
+      type: "skill_resolved",
+      payload: { entries: [{ name: "x", version: 1, sha256: "not-a-hash" }] },
+    });
+    const err = await buildHandoffBundle(deps, takeAsOf(ledger, s.id), DEFAULT_BUNDLE_BOUNDS).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(HandoffBundleError);
+    expect((err as HandoffBundleError).details.reason).toBe(HANDOFF_BUNDLE_UNAVAILABLE);
+  }, 30_000);
+
+  it("the schema change bumps version and builder_version to 2; a version 1 view stays buildable, byte for byte", async () => {
+    const { s } = await skilledSession();
+    const asOf = takeAsOf(ledger, s.id);
+    const v2 = await buildHandoffBundle(deps, asOf, DEFAULT_BUNDLE_BOUNDS);
+    const v1 = await buildHandoffBundle(deps, asOf, DEFAULT_BUNDLE_BOUNDS, 1);
+    expect(v2.bundle).toMatchObject({ version: BUNDLE_VERSION, builder_version: BUILDER_VERSION });
+    expect([BUNDLE_VERSION, BUILDER_VERSION]).toEqual([2, 2]);
+    expect(Object.keys(parse(v2.bytes)).sort()).toEqual([...BUNDLE_FIELDS].sort());
+    const one = parse(v1.bytes);
+    expect(one).toMatchObject({ version: 1, builder_version: 1 });
+    expect(Object.keys(one).sort()).toEqual([...BUNDLE_FIELDS_V1].sort());
+    // Version 1 is exactly version 2 without `skills` (same as_of, same values), so the as_of hash is shared.
+    const { skills: _skills, version: _v, builder_version: _b, ...rest2 } = parse(v2.bytes);
+    const { version: _v1, builder_version: _b1, ...rest1 } = one;
+    expect(rest1).toEqual(rest2);
+    expect(v1.asOfSha256).toBe(v2.asOfSha256);
+    // Each stored view regenerates with its own version's builder (ADR-0038 "Regenerability", FR-SES-05).
+    expect((await regenerateHandoffBundle(deps, v1.bytes)).bytes.equals(v1.bytes)).toBe(true);
+    expect((await regenerateHandoffBundle(deps, v2.bytes)).bytes.equals(v2.bytes)).toBe(true);
+    // Both versions render to the same prompt: `skills` is not rendered, so the renderer version is unchanged.
+    const render = (b: Buffer) => renderHandoffPrompt({ bundle: parseHandoffBundle(b), instruction: "go on" }).prompt;
+    expect(render(v1.bytes)).toBe(render(v2.bytes));
+    expect(RENDERER_VERSION).toBe(1);
+    // An unknown or mixed version is refused.
+    for (const bad of [
+      { ...one, version: 3, builder_version: 3 },
+      { ...one, version: 1, builder_version: 2 },
+    ]) {
+      await expect(regenerateHandoffBundle(deps, Buffer.from(JSON.stringify(bad)))).rejects.toBeInstanceOf(
+        HandoffBundleError,
+      );
+    }
+    expect(() => assembleHandoffBundle({} as never, DEFAULT_BUNDLE_BOUNDS, (b) => b, 3 as never)).toThrow(
+      HandoffBundleError,
+    );
   }, 30_000);
 });
