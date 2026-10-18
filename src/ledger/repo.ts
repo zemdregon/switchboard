@@ -89,6 +89,11 @@ export interface NewRun {
   idempotencyKey?: string | null;
   /** Adapter id chosen at admission (T1.8; M1 has no router). */
   provider?: string | null;
+  /**
+   * T7.14 fix (FR-RTE-10, LLD §17.7 Run fields): the requested/resolved model the run uses
+   * (`request_json.model`); null when no model was requested, so the adapter default applies.
+   */
+  model?: string | null;
   /** Higher dispatches first (LLD §1 `run.priority`, default 1). */
   priority?: number;
   /** Project of the run (FR-PRJ-03); must equal the meta-session's. */
@@ -1952,9 +1957,9 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       const now = ts();
       db.prepare(
         `INSERT INTO run (id, meta_session_id, state, trust_profile, policy_snapshot_json, request_json, request_hash,
-                          client_id, idempotency_key, provider, priority, project_id, parent_run_id, attempt,
+                          client_id, idempotency_key, provider, model, priority, project_id, parent_run_id, attempt,
                           next_attempt_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         input.metaSessionId,
@@ -1966,6 +1971,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         input.clientId,
         input.idempotencyKey ?? null,
         input.provider ?? null,
+        input.model ?? null,
         input.priority ?? 1,
         input.projectId ?? null,
         input.parentRunId ?? null,

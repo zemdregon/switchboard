@@ -6152,11 +6152,13 @@ trigger is an error rather than silently off.
 helper, the quota failover's forced `capacity_exhausted`, and `recordAffinity` at the `SUCCEEDED` transition in
 `src/lifecycle/lifecycle.ts`. Points decided here, each an **Assumption**:
 
-- **The model is remembered, not pinned** (Q-90). `run.model` is never set, so the row's `model` is the one the run's
-  native session reported (`provider_binding.model`, else `null`). It is **not** passed to `compile`: the Codex adapter
-  refuses any model (`CAPABILITY_MISSING`), and no adapter declares that a reported model id is accepted by its model
-  flag, so pinning could make a held provider ineligible. The provider still holds; the model is the adapter default.
-  Pinning is T7.12, after the adapters declare it.
+- **The model is remembered, not pinned** (Q-90). At that time
+  `run.model` was never set, so the row's `model` was the one the run's
+  native session reported (`provider_binding.model`, else `null`). It was **not** passed to `compile`: the Codex adapter
+  refused any model (`CAPABILITY_MISSING`), and no adapter declared that a reported model id is accepted by its model
+  flag, so pinning could make a held provider ineligible. The provider still held; the model was the adapter default.
+  Pinning is T7.12, after the adapters declare it. (Superseded in one respect: the T7.14 fix in §17.7 now records
+  `run.model` at admission from `request_json.model`, so the envelope reports the requested/resolved model.)
 - "Runs after the row" means runs that finished after the row's `updated_at` (the success write, or a reset), so the
   run that wrote the row never counts and a GC'd `last_run_id` does not matter.
 - The `routing_affinity_*` events are appended when the row is written, on the succeeded run: `routing_affinity_held`
@@ -6265,7 +6267,14 @@ each excluded member's first code, and the pacing factor (for example "pacing: c
 fixed template.
 
 **Run fields.** The chosen member's resolved model goes into `request_json.model` and `CompileRequest.model`, as for
-T7.12 pinning. The envelope's `provider.model` reports what the native session reported, as today.
+T7.12 pinning. The envelope's `provider.model` reports the run's recorded model (`run.model`), `null` when none was
+requested (see the As built fix below; it no longer reports whatever the native session reported).
+
+*As built (T7.14 fix, 2026-10-18, Delegated):* `run.model` is recorded at admission from `request_json.model`
+(`null` when no model was requested, so the adapter default applies); a `WAITING_CAPACITY` successor keeps the
+failed run's model. The envelope's `provider.model` therefore reports the requested/resolved model the run used.
+Evidence: `src/mcp/envelope-model.test.ts` (through the SDK client on the fake adapter: `get_run`, `list_runs` and
+`explain_route` report the requested model; `null` when none was requested).
 
 *As built (T7.15, 2026-10-17, Delegated):* `src/routing/groups.ts` (member candidates), `src/routing/score.ts` (the
 seventh term and member selection), `src/routing/affinity.ts`, `src/routing/decision.ts` (version 3 record, replay,

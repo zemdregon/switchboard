@@ -171,3 +171,17 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
 - Left unchanged: rewording design review-state labels is the design owner's call. PR #682 neither introduces nor
   worsens it (every §6.11/§6.12/§6.14 task was already `Done`; only the milestone rows flip). It does not block
   PR #682.
+
+## 14. SDD FR-RTE-08, Q-90 and LLD §17.6 still describe the T7.5 state (pre-existing, not from PR #684)
+
+- The [T7.12 row](ROADMAP.md) records `Done on fakes` (2026-10-14) for FR-RTE-08 model pinning (the remembered
+  model passed to `compile` on adapters that declare it) and notes itself that "LLD §17.6, SDD FR-RTE-08 and Q-90
+  still describe the T7.5 state; their update is left to the docs lane".
+- [SDD FR-RTE-08](design/SDD.md) still says "the model is remembered but not yet passed to the adapter, so a held
+  run uses the adapter default"; [Q-90](ROADMAP.md) still says the model is "not passed to `compile`"; only the
+  LLD §17.6 paragraph touched by PR #684 now carries a "(Superseded in one respect ...)" note, and only for the
+  `run.model` recording, not for pinning.
+- PR #684 neither introduces nor worsens this: it records `run.model` at admission for envelope reporting without
+  changing what `compile` receives. Left unchanged: restating the pinning behaviour in the SDD and Q-90 is the
+  docs-lane update the T7.12 row already defers, not this PR's. It does not block PR #684 (the fix's own evidence
+  is `src/mcp/envelope-model.test.ts`, cited in LLD §17.7 and the T7.14 row).
