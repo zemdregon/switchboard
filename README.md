@@ -185,7 +185,10 @@ Pre-release. The package is private and is not published to any registry; you bu
  built (T16.6, Delegated, not owner-approved): the per-cell `skillDelivery` declaration, fresh-path exclusive writes,
  exclusion from the commit tool, checkpoints, diff artifacts and `changed_files`, `push` refusal while a skill file
  exists, removal before `VERIFYING`, at terminal states, at reconciliation and by GC, and the `skill_cleanup_failed`
- needs-attention reason; only the fake adapter declares a native location, in tests. Continuity is built (T16.10, Delegated, not owner-approved): the handoff bundle carries the previous run's pinned skills as controller facts (name, version, hash; never text) and the successor re-delivers the same versions in its own provider's way, with a native resume re-delivering the files for the new run (`src/continuity/`, `src/lifecycle/lifecycle.ts`). Design:
+ needs-attention reason; only the fake adapter declares a native location, in tests. Continuity is built (T16.10,
+ Delegated, not owner-approved): the handoff bundle carries the previous run's pinned skills as controller facts
+ (name, version, hash; never text) and the successor re-delivers the same versions in its own provider's way, with a
+ native resume re-delivering the files for the new run (`src/continuity/`, `src/lifecycle/lifecycle.ts`). Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
