@@ -76,9 +76,11 @@ import {
   ERROR_MODEL_PREFIX,
   EVENT,
   GIT_WRITE_CONTROL_DETAIL,
+  GO_FLAG_UNDEFINED_RE,
   HELP_FLAG,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
   OUTPUT_FORMAT_FLAG,
+  OUTPUT_FORMAT_PROBE_ARGS,
   OUTPUT_STREAM_JSON,
   PROMPT_FLAG,
   REQUIRED_HELP_FLAGS,
@@ -228,13 +230,31 @@ export class AntigravityAdapter implements ProviderAdapter {
     const help = await run(HELP_FLAG);
     const commandOk = help.spawnError === undefined && !help.timedOut && help.exitCode === 0;
     const flags = new Set(commandOk ? (help.stdout.match(/--[a-z][a-z0-9-]*/g) ?? []) : []);
-    const missing = REQUIRED_HELP_FLAGS.filter((f) => !flags.has(f));
+
+    // Delegated (T4.32): agy 1.4.0 no longer lists --output-format in --help (observed 2026-10-17, live checks §5).
+    // If --help lists it, accept it as before. Otherwise, verify via a no-model check (OUTPUT_FORMAT_PROBE_ARGS) that
+    // the CLI accepts the flag without an undefined flag error. Every other flag keeps the help-listing rule.
+    let outputFormatOk = flags.has(OUTPUT_FORMAT_FLAG);
+    if (!outputFormatOk && commandOk) {
+      const check = await run(...OUTPUT_FORMAT_PROBE_ARGS);
+      outputFormatOk =
+        check.spawnError === undefined &&
+        !check.timedOut &&
+        check.exitCode === 0 &&
+        !GO_FLAG_UNDEFINED_RE.test(check.stderr) &&
+        !GO_FLAG_UNDEFINED_RE.test(check.stdout);
+    }
+
+    const missing = REQUIRED_HELP_FLAGS.filter((f) => {
+      if (f === OUTPUT_FORMAT_FLAG) return !outputFormatOk;
+      return !flags.has(f);
+    });
     steps.push(
       { step: "command", ok: commandOk, ...(commandOk ? {} : { detail: `\`${HELP_FLAG}\` unavailable` }) },
       {
         step: "output_format",
-        ok: flags.has(OUTPUT_FORMAT_FLAG),
-        ...(flags.has(OUTPUT_FORMAT_FLAG) ? {} : { detail: OUTPUT_FORMAT_FLAG }),
+        ok: outputFormatOk,
+        ...(outputFormatOk ? {} : { detail: OUTPUT_FORMAT_FLAG }),
       },
       {
         step: "flags",

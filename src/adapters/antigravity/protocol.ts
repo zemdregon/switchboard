@@ -44,6 +44,19 @@ export const REQUIRED_HELP_FLAGS: readonly string[] = [
   CONVERSATION_FLAG,
 ];
 
+/** Value passed to --output-format when probing whether the CLI accepts the flag (Delegated, T4.32). */
+export const OUTPUT_FORMAT_PROBE_VALUE = "json";
+
+/**
+ * Arguments used to probe whether the CLI accepts --output-format when `agy --help` no longer lists it
+ * (observed on agy 1.4.0, 2026-10-17; Delegated, T4.32). Runs a no-model check with `--help` so it requires no login
+ * and triggers no model call.
+ */
+export const OUTPUT_FORMAT_PROBE_ARGS: readonly string[] = [OUTPUT_FORMAT_FLAG, OUTPUT_FORMAT_PROBE_VALUE, HELP_FLAG];
+
+/** Regex matching Go flag package's unknown flag error message on stderr/stdout ([LIVE] C3; Delegated, T4.32). */
+export const GO_FLAG_UNDEFINED_RE = /flags? provided but not defined/;
+
 /** Never self-update during a run ([TS]; [LIVE] C12: accepted, no new updater files). */
 export const DISABLE_AUTO_UPDATE_ENV = "AGY_CLI_DISABLE_AUTO_UPDATE";
 
