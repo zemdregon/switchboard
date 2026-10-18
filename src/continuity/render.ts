@@ -23,11 +23,11 @@ import { createHash } from "node:crypto";
 import { defaultRedactor, type Redactor } from "../artifacts/redact.js";
 import { canonicalJson } from "../lifecycle/request.js";
 import {
-  BUILDER_VERSION,
-  BUNDLE_FIELDS,
   BUNDLE_SCHEMA,
-  BUNDLE_VERSION,
+  BUNDLE_VERSIONS,
   type BundleDiagnosticCommand,
+  type BundleVersion,
+  bundleFieldsOf,
   checkBounds,
   type HandoffBundle,
   HandoffBundleError,
@@ -145,16 +145,25 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** Structural check of a version 1 bundle; throws {@link HandoffBundleError} (fail closed). */
+/**
+ * Structural check of a version 1 or 2 bundle; throws {@link HandoffBundleError} (fail closed). Version 2's `skills`
+ * (T16.10) is checked as a list of objects and not rendered: the receiving run gets its skills through its own delivery
+ * (LLD §19.6, §19.7), so the rendered prompt is the same for both versions and {@link RENDERER_VERSION} is unchanged.
+ */
 export function checkHandoffBundle(value: unknown): HandoffBundle {
   const bad = (what: string): never => {
     throw new HandoffBundleError(`the stored bundle is malformed: ${what}`);
   };
   if (!isObject(value)) return bad("not an object");
-  if (value.schema !== BUNDLE_SCHEMA || value.version !== BUNDLE_VERSION || value.builder_version !== BUILDER_VERSION) {
+  if (
+    value.schema !== BUNDLE_SCHEMA ||
+    !(BUNDLE_VERSIONS as readonly unknown[]).includes(value.version) ||
+    value.builder_version !== value.version
+  ) {
     bad("unknown schema or version");
   }
-  for (const f of BUNDLE_FIELDS) if (!(f in value)) bad(`field ${f} is missing`);
+  for (const f of bundleFieldsOf(value.version as BundleVersion)) if (!(f in value)) bad(`field ${f} is missing`);
+  if (value.version !== 1 && !(Array.isArray(value.skills) && value.skills.every(isObject))) bad("skills");
   for (const f of ARRAY_FIELDS) {
     const list = value[f];
     if (!Array.isArray(list)) return bad(`${f} is not a list`);

@@ -1438,7 +1438,10 @@ per-cell `skillDelivery` declaration defaulting to `prompt_prefix`, and the `ski
 not owner-approved; T16.6 built the native writer, cleaner and exclusions in `src/workspace/native-skills.ts`, Delegated,
 not owner-approved; T16.7 declared `prompt_prefix` in each of the eight provider adapters with the delivery
 conformance check (`checkSkillDelivery` in `src/adapters/conformance.ts`), Delegated, not owner-approved;
-per-provider native (T16.8) stays Proposed).
+T16.10 built continuity across handoff and resume (the bundle `skills` facts in
+`src/continuity/bundle-schema.ts` and `src/continuity/bundle.ts`, re-delivery in the receiving provider's way in
+`src/lifecycle/lifecycle.ts`; `src/continuity/skill-continuity.test.ts`), Delegated,
+not owner-approved; per-provider native (T16.8) stays Proposed).
 Delegated, not owner-approved beyond the direction.* Contract: [LLD §19](LLD.md#19-switchboard-controlled-skills-m16-proposed).
 Tasks: ROADMAP T16.0 to T16.12.
 

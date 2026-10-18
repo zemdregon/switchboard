@@ -5125,7 +5125,7 @@ run in the worktree, including file paths). Only the last two are rendered as un
 
 | Field | Content | Only source | Class | Bound (§15.4) |
 | --- | --- | --- | --- | --- |
-| `schema`, `version`, `builder_version` | `"switchboard.handoff_bundle"`, `1`, `1` | Constants | controller | — |
+| `schema`, `version`, `builder_version` | `"switchboard.handoff_bundle"`, `2`, `2` (`1`, `1` before T16.10; see "Version 2" below) | Constants | controller | — |
 | `as_of` | `{ meta_session_id, base_commit, head_commit, runs: [{ run_id, last_seq }] }` (§15.2) | `meta_session` row at build time; `run` rows and `MAX(run_event.seq)` per run | controller | All terminal runs |
 | `bounds` | The bound values in force (§15.4) | Configuration at build time, then frozen in the view | controller | — |
 | `goal` | The meta-session objective | `meta_session.objective` | orchestrator | 8,000 chars |
@@ -5141,6 +5141,7 @@ run in the worktree, including file paths). Only the last two are rendered as un
 | `diagnostics` | The newest run that ran verification: per command `index`, `argv`, `outcome`, `exit_code`, `signal`, `duration_ms`, `output_excerpt` | `verification_command` events; `argv` from that run's `request_json` `verification_commands`; `output_excerpt` is the tail of stdout and stderr from its `test_report` artifact (controller-produced, redacted) | controller; `argv` orchestrator; `output_excerpt` repository | 8 commands; excerpt `max_text_chars` |
 | `diff_excerpts` | `[{ path, text, truncated }]` in path order | `git diff-tree -p --no-renames --no-ext-diff --no-textconv --no-color --full-index --src-prefix=a/ --dst-prefix=b/ <base> <head>`, split per file | repository | 4,096 bytes per file; `max_diff_excerpt_bytes` in all |
 | `reported` | `[{ run_id, provider, field, text }]`, `field` one of `summary`, `failure_detail` | `summary` of the run's terminal `state_transition` payload (from the provider's structured result, already bounded to 4,000); `run.failure_detail` | provider_reported | Newest 10 runs, each `max_text_chars` |
+| `skills` (version 2) | `[{ run_id, name, version, sha256 }]`, the pinned skills of the newest run in `as_of`, in position order; never a body, description, source or delivery mode | That run's `skill_resolved` event (§19.11) within its watermark | controller | 64 items (the highest `skills.max_per_run`) |
 | `truncation` | `[{ field, dropped, reason }]` | Written by the builder (§15.4) | controller | — |
 
 Git is run read-only, with the environment and `-c core.hooksPath=/dev/null` of §5, against the meta-session's
@@ -5196,6 +5197,21 @@ I/O), `src/continuity/bundle.ts` (`assembleHandoffBundle`, pure; `buildHandoffBu
 - **Not yet wired.** The three `continuity.*` configuration keys and the `continue_task` caller are T5.6; until then
   the builder takes the bounds as input, with `DEFAULT_BUNDLE_BOUNDS` holding the defaults of §15.4. *Wired by T5.6
   (2026-10-14), see §15.7 "As built".*
+
+*Version 2 (T16.10, 2026-10-17, Delegated, not owner-approved; [ADR-0056](../adr/0056-switchboard-controlled-skills.md)
+item 14).* The bundle gains `skills`, so `version` and `builder_version` become `2`. Delegated reading of ADR-0038: §1.1
+fixes `version: 1` and its "Regenerability" consequence makes regeneration per builder version, and this section says
+every field is always present, so a new top-level field is a schema change even when its list may be empty; it bumps
+both numbers rather than adding an optional field to version 1. Version 1 stays buildable: `regenerateHandoffBundle`
+rebuilds a stored view with the version recorded in it (a version 1 view byte for byte, without `skills`), and the
+renderer reads both versions (`version` must equal `builder_version`; version 2 must carry `skills` as a list of
+objects). `skills` is not rendered: the receiving run gets its skills through its own delivery (§19.5 step 1, §19.6),
+so the rendered prompt is the same for both versions and `RENDERER_VERSION` stays `1`. `skills` is taken from the
+newest run's `skill_resolved` event (no `run_skill` read, no skill file; a malformed entry fails the build closed) and
+is dropped from the last after every other §15.4 drop step. Code: `src/continuity/bundle-schema.ts` (`BUNDLE_VERSIONS`,
+`BundleSkill`, `BUNDLE_FIELDS_V1`), `src/continuity/bundle.ts`, `src/continuity/render.ts`. Tests:
+`src/continuity/bundle.test.ts` ("skills as controller facts and the version rule"),
+`src/continuity/skill-continuity.test.ts`.
 
 ### 15.2 `as_of` and regeneration
 
@@ -6614,8 +6630,10 @@ Done-when).
 *Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: the
 store, migration `0021` and state derivation (T16.1), the configuration keys and loader (T16.3), the operator CLI
 (T16.2), the MCP tools with the §19.5 steps 2 to 4 resolver (T16.9), admission (T16.4), prompt-prefix delivery
-(T16.5) and the native-delivery framework with its exclusions and cleanup (T16.6), all Delegated, not owner-approved;
-adapter declarations (T16.7 Done 2026-10-17, Delegated, not owner-approved); per-provider native (T16.8) Proposed).
+(T16.5), the native-delivery framework with its exclusions and cleanup (T16.6), adapter declarations
+(T16.7 Done 2026-10-17, Delegated, not owner-approved), and continuity across handoff and resume (T16.10: the bundle
+`skills` facts and re-delivery in the receiving provider's way), all Delegated, not owner-approved;
+per-provider native (T16.8) Proposed).
 Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
 are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to
 FR-SKL-10. Business rules: [FRD](../requirements/FRD.md#3-business-rules) BR-52 to BR-56, V15, C8, WF-16. Tasks:
@@ -6898,7 +6916,9 @@ Implementation notes (T16.6, Delegated, not owner-approved):
   native declaration without a non-empty evidence id, a renderer or a safe relative path as `prompt_prefix`. Only the
   fake adapter can declare `native` (`nativeSkills: true`, `.fake/skills/switchboard-<name>.md`, evidence
   `fake-test-only`). `skills.delivery: prefix_only` reaches the lifecycle as `skillDeliveryMode` (`src/cli/serve.ts`).
-  A handoff run stays `prompt_prefix` (its block is already in the rendered prompt; T16.10 owns continuity).
+  A handoff run delivers like any other run since T16.10: entries a native cell takes are written as files and left
+  out of the block of the rendered handoff prompt, which is rendered again from the same verified view (§15.1
+  "Version 2"); a native resume writes the files again for the new run.
 - **Recorded path.** `native_path` is written as an intent before the file is created and cleared again only when a
   failed write left nothing; `delivery = 'native'` and `delivered_at` are set in the dispatch transaction. A recorded
   path is one whose `removal` is not `verified`.

@@ -112,7 +112,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   has been exercised. Two tasks are wired into production `serve` run paths: the commit-message
   task (the optional `message` on the `commit` tool) and routing classification (`serve` admission, continuation and
   quota failover, with heuristic fallback when inner is off or unavailable). Handoff condensation, PR drafting,
-  verification-summary, run-title and a live backend are not. T11.5 usage-surface pins merged
+  verification-summary, run-title and a live backend are not: their designs name no run-path call site, so they stay
+  service functions, and `src/inner/run-path-reach.test.ts` pins both lists. T11.14 (README and roadmap status for
+  M11) is `Done` on that basis, with T11.13 still `Partial`. T11.5 usage-surface pins merged
   [#362](https://github.com/zemdregon/switchboard/pull/362) (suspended-task and project-off denials, re-ask deadline
   counts, shared-subscription label routing, whole `inner_shared_subscription` doctor checks, `enabled: false` with the
   flag set, capacity collector `source` exclusion), [#396](https://github.com/zemdregon/switchboard/pull/396)
@@ -190,11 +192,14 @@ Pre-release. The package is private and is not published to any registry; you bu
 `prompt_prefix` as its own method, and the conformance suite (`checkSkillDelivery` in `src/adapters/conformance.ts`,
 run by `checkAdapterStatics` for every case) fails a `native` declaration without a T16.8 evidence id and a cell whose
 argv, environment or policy flags the skills change beyond the prompt text
-(`src/adapters/skill-delivery-conformance.test.ts`). The malicious-fixture leg is built (T16.11,
- Delegated, not owner-approved): `test/malicious/skills-leg.test.ts` runs the hostile skill repository (its own
- `.claude/skills`, `.cursor/rules`, `AGENTS.md`, a pre-existing `switchboard-` path and a symlinked `.claude`)
- against the production store and delivery ports; untrusted runs load no repository skill, the canary reaches no
- event, span, log, artifact or sink, and the R-69 copy behaves as recorded. Design:
+(`src/adapters/skill-delivery-conformance.test.ts`). Continuity is built (T16.10, Delegated, not owner-approved):
+the handoff bundle carries the previous run's pinned skills as controller facts (name, version, hash; never text)
+and the successor re-delivers the same versions in its own provider's way, with a native resume re-delivering the
+files for the new run (`src/continuity/`, `src/lifecycle/lifecycle.ts`). The malicious-fixture leg is built (T16.11,
+Delegated, not owner-approved): `test/malicious/skills-leg.test.ts` runs the hostile skill repository (its own
+`.claude/skills`, `.cursor/rules`, `AGENTS.md`, a pre-existing `switchboard-` path and a symlinked `.claude`)
+against the production store and delivery ports; untrusted runs load no repository skill, the canary reaches no
+event, span, log, artifact or sink, and the R-69 copy behaves as recorded. Design:
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
@@ -1092,7 +1097,7 @@ T11.6 behaviour is pinned on a scripted fake backend in `src/inner/suspension.te
 keeps falling back with a good backend until re-enabled, and the re-enable is recorded and restarts the window. Neither
 command prints a base URL's userinfo, a header, a key or any prompt or response text.
 
-Which tasks run today (2026-10-15): two tasks are wired into production `serve` run paths — the commit-message task
+Which tasks run today (2026-10-18): two tasks are wired into production `serve` run paths — the commit-message task
 (the optional `message` on the `commit` tool offered to the provider CLI in the run's worktree) and routing
 classification (T11.11, **Done on fakes**; `serve` admission, continuation and quota failover through
 `RunLifecycleOptions.classifyRouteFeatures`). Features are stored with source, model and template version and never
@@ -1100,10 +1105,12 @@ change eligibility or `require_provider` (Q-82); when the inner agent is off, th
 or the backend is unavailable, dispatch records the heuristic classifier. The PR-draft, verification-summary, run-title
 and handoff-condensation (T11.10, **Done on fakes**) tasks exist as service functions, tested on fakes; neither `serve`
 nor any `inner` command calls them on a run path (`inner test` exercises the pipeline with its built-in synthetic
-fixture only). The `inner status|test|resume` commands are CLI-only and never touch run data: with a populated run
-ledger and no shared-subscription declaration, those diagnostics leave every non-inner table unchanged and do not
-link inner calls to the run (`src/inner/cli-run-isolation.test.ts`). With `shares_subscription_with`, a backend
-request also records labelled usage with no run link. Merged fake-backend evidence for usage accounting
+fixture only). That is by design for now: the LLD names no run-path call site for any of the four, and
+`src/inner/run-path-reach.test.ts` fails if one gains a production caller without the documents changing with it.
+The `inner status|test|resume` commands are CLI-only and never touch run data: with a populated run ledger and no
+shared-subscription declaration, those diagnostics leave every non-inner table unchanged and do not link inner calls
+to the run (`src/inner/cli-run-isolation.test.ts`). With `shares_subscription_with`, a backend request
+also records labelled usage with no run link. Merged fake-backend evidence for usage accounting
 ([PR #334](https://github.com/zemdregon/switchboard/pull/334),
 [PR #338](https://github.com/zemdregon/switchboard/pull/338) and
 [PR #343](https://github.com/zemdregon/switchboard/pull/343)): the injected commit-message task and routing hook that
