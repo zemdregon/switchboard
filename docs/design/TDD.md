@@ -259,7 +259,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Retrieval index (M12) | Deterministic fake embedding backend, hostile-content fixtures, planted-secret scan, isolation and import-boundary tests; details in [§3.13](#313-retrieval-index) | No | FR-RAG-01..14 |
 | Telemetry export (M8) | Fake-adapter runs through `RunLifecycle` into an in-process loopback OTLP/HTTP collector fixture (`src/telemetry/fixtures/collector.ts`): span names, derived parent links, exact-key allowlist, forbidden-category scan of attributes and raw OTLP bodies with planted canaries and positive controls; lazy load and no startup import of OTel ([LLD §7](LLD.md#7-telemetry-spans)) | No | FR-TEL-02, FR-TEL-03, NFR-SEC-01, NFR-PRIV-01 |
 | Version bump (M8) | Injected version strings through the preflight cache's binary-identity invalidation, the manifest gate and the version-canary store; routing excludes the provider until validation records the version (`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`) | No | FR-ADP-03, NFR-PERF-02 |
-| Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references) | No | NFR-MAINT-02 |
+| Docs check | `scripts/check-docs.mjs` must pass on every change (links, anchors, ID references, task status markers) | No | NFR-MAINT-02 |
 
 **Shared suite plumbing (T4.3).** A provider supplies cases and small data files; the shared code is not edited.
 Replay: one helper, `src/adapters/fixtures/replay.mjs`, replays a recorded or synthetic fixture for any provider, with
