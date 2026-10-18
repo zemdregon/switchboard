@@ -58,7 +58,8 @@ Rules on the matrix: a caller's maximum trust profile is a ceiling per MCP clien
 `PERMISSION_BLOCKED` before any side effect (BR-13). Privileged approval exists only on the operator CLI (BR-14), or,
 since 2026-10-13, in the operator's configuration for a client set `privileged_approval: "not_required"` (BR-14 note,
 [ADR-0019](../adr/0019-per-client-privileged-approval.md)), or, since 2026-10-15, through `decide_approval` for a client
-marked `approval_proxy` (owner decision 50; [ADR-0047](../adr/0047-approval-proxy-over-mcp.md), Proposed; FR-CTL-08). The orchestrator has no way to raise its own ceiling or to
+marked `approval_proxy` (owner decision 50; [ADR-0047](../adr/0047-approval-proxy-over-mcp.md), Proposed; FR-CTL-08).
+The orchestrator has no way to raise its own ceiling or to
 change that setting.
 
 ## 3. Business rules

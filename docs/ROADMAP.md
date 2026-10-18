@@ -3375,7 +3375,8 @@ CAP-15](requirements/PRD.md#3-capabilities). Design records: [ADR-0047](adr/0047
 `get_run` is the only per-run read (`src/mcp/server.ts`).
 - Approval is given only through the operator CLI (`approve`, `deny`, `projects approve`; FR-OPS-02), and the M13
 consent page serves client registration and sign-in (FR-MCP-17, [ADR-0041](adr/0041-http-transport-with-oauth-2-1.md)).
-Since 2026-10-15, a client marked `approval_proxy` may also decide through MCP ([ADR-0047](adr/0047-approval-proxy-over-mcp.md), Proposed; T14.8).
+Since 2026-10-15, a client marked `approval_proxy` may also decide through MCP
+([ADR-0047](adr/0047-approval-proxy-over-mcp.md), Proposed; T14.8).
 - `run_event` is append-only (T1.3), so a cursor over it is stable. Pause and attention need no new run state: the FRD
 run state machine is unchanged, and `needs_attention` is a derived flag (FR-CTL-03).
 **Conventions (Proposed, Delegated).**
