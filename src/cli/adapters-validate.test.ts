@@ -1,6 +1,7 @@
 /** `switchboard adapters validate` (T4.4): fake adapter and fake CLI only; no provider CLI is ever started. */
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -12,9 +13,25 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AntigravityAdapter } from "../adapters/antigravity/adapter.js";
+import { findBypassFlags } from "../adapters/audit.js";
+import { replayAdapter as cursorReplay } from "../adapters/cursor/fixtures/cases.js";
 import { FakeAdapter, type FakeScenario } from "../adapters/fake/adapter.js";
-import { AdapterRegistry, type AuthResult, type ProbeResult } from "../adapters/index.js";
+import { replayAdapter as grokReplay } from "../adapters/grok/fixtures/cases.js";
+import {
+  AdapterRegistry,
+  type AuthResult,
+  type CompileRequest,
+  type Ineligible,
+  type Invocation,
+  type ProbeResult,
+  type ProviderAdapter,
+  type ResolvedProfile,
+} from "../adapters/index.js";
+import { replayAdapter as kimiReplay } from "../adapters/kimi/fixtures/cases.js";
 import { parseManifest } from "../adapters/manifest/index.js";
+import { OpenCodeAdapter } from "../adapters/opencode/adapter.js";
+import { COMPILED_CELL_FALLBACK } from "./adapters-validate.js";
 import { HELP, main } from "./index.js";
 import type { CliIo } from "./io.js";
 
@@ -49,11 +66,11 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 
-function registry(adapter: FakeAdapter = new FakeAdapter()): AdapterRegistry {
+function registry(adapter: ProviderAdapter = new FakeAdapter()): AdapterRegistry {
   return new AdapterRegistry().register(adapter);
 }
 
-async function validate(adapter: FakeAdapter, args: string[] = ["fake"]) {
+async function validate(adapter: ProviderAdapter, args: string[] = ["fake"]) {
   const out: string[] = [];
   const err: string[] = [];
   const io: CliIo = {
@@ -293,5 +310,177 @@ describe("adapters validate: usage and defaults", () => {
     const io: CliIo = { stdout: { write: () => {} }, stderr: { write: () => {} }, env: {}, adapters: registry() };
     // No manifestDir injected: the fake has no manifest file in the source tree, so it fails and writes nothing.
     expect(await main(["adapters", "validate", "fake"], io)).toBe(1);
+  });
+});
+
+// ---- Owner decision 59: the compiled-cell fallback for Grok Build, Cursor and Kimi Code (fakes and replays only) ----
+
+const CELL_NOTE = "approved privileged bypass cell, owner decision 59; inspect-untrusted is Ineligible";
+
+/** A synthetic OK probe and auth for a real adapter whose binary is the shared replay helper; nothing else changes. */
+function synthetic<A extends ProviderAdapter>(a: A): A {
+  a.probe = async () => ({
+    binaryPath: process.execPath,
+    binaryVersion: "1.0.0",
+    steps: (["binary", "version", "command", "output_format", "flags"] as const).map((step) => ({ step, ok: true })),
+  });
+  a.authPreflight = async () => ({ state: "OK" });
+  return a;
+}
+
+/** Records every compile: the profile it ran under, the workspace and the invocation. */
+function recordCompiles(a: ProviderAdapter) {
+  const calls: { profile: ResolvedProfile; request: CompileRequest; inv: Invocation | Ineligible }[] = [];
+  const original = a.compile.bind(a);
+  a.compile = (request, profile) => {
+    const inv = original(request, profile);
+    calls.push({ profile, request, inv });
+    return inv;
+  };
+  return calls;
+}
+
+function useManifest(provider: string): string {
+  const f = path.join(dir, `${provider}.json`);
+  writeFileSync(f, MANIFEST.replace('"provider": "fake"', `"provider": "${provider}"`));
+  rmSync(file);
+  return f;
+}
+
+const FALLBACK: [string, () => ProviderAdapter, string, string][] = [
+  ["grok", () => grokReplay("success_edit"), "--always-approve", "task_failure"],
+  ["cursor", () => cursorReplay("success_edit"), "--force", "task_failure"],
+  ["kimi", () => kimiReplay("success_edit"), "--prompt", "task_failure"],
+];
+
+describe("adapters validate: compiled-cell fallback (owner decision 59)", () => {
+  it("the allowlist is exactly grok, cursor and kimi", () => {
+    expect(Object.keys(COMPILED_CELL_FALLBACK).sort()).toEqual(["cursor", "grok", "kimi"]);
+  });
+
+  for (const [provider, make, flag, failFixture] of FALLBACK) {
+    it(`${provider}: inspect-untrusted first, then the approved privileged cell; passes and names the cell`, async () => {
+      const f = useManifest(provider);
+      const adapter = synthetic(make());
+      const calls = recordCompiles(adapter);
+      const r = await validate(adapter, [provider]);
+      expect(r.json.error).toBeNull();
+      expect(r.code).toBe(0);
+      expect(r.json).toMatchObject({ ok: true, written: true, provider });
+      // Order unchanged: the first compile is inspect-untrusted and Ineligible.
+      expect(calls[0]?.profile.name).toBe("inspect-untrusted");
+      expect("ineligible" in (calls[0]?.inv ?? {})).toBe(true);
+      const smoke = r.json.steps.find((s: { id: string }) => s.id === "smoke");
+      expect(smoke).toMatchObject({ status: "ok", smoke_profile: "privileged" });
+      expect(smoke.detail).toContain(CELL_NOTE);
+      expect(r.json.steps.find((s: { id: string }) => s.id === "conformance").detail).toContain(CELL_NOTE);
+      expect(parseManifest(readFileSync(f, "utf8")).notes).toContain(
+        `one structured-output smoke call ok (${CELL_NOTE})`,
+      );
+      // The smoke argv carries exactly the cell's declared bypass flag and nothing else bypass-class.
+      const spawned = calls.filter((c) => c.profile.name === "privileged" && c.request.bypassApproved === true);
+      const inv = spawned.at(-1)?.inv as Invocation;
+      expect(findBypassFlags(inv, provider)).toEqual([flag]);
+      // The approval is in memory only: the profile carries the placeholder id, and the repository is gone.
+      expect(spawned.at(-1)?.profile.privilegedScope?.approvalId).toBe("apv_00000000000000000000VA1DAT");
+      expect(existsSync(inv.cwd)).toBe(false);
+    });
+
+    it(`${provider}: a failing fallback smoke exits 1, writes nothing and removes the repository`, async () => {
+      const f = useManifest(provider);
+      const before = readFileSync(f);
+      const adapter = synthetic(
+        provider === "grok"
+          ? grokReplay(failFixture)
+          : provider === "cursor"
+            ? cursorReplay(failFixture)
+            : kimiReplay(failFixture),
+      );
+      const calls = recordCompiles(adapter);
+      const r = await validate(adapter, [provider]);
+      expect(r.code).toBe(1);
+      expect(r.json).toMatchObject({ ok: false, written: false, changes: null });
+      expect(r.json.steps.at(-1)).toMatchObject({ id: "smoke", status: "fail", smoke_profile: "privileged" });
+      expect(readFileSync(f).equals(before)).toBe(true);
+      expect(readdirSync(dir)).toEqual([`${provider}.json`]);
+      expect(existsSync(calls[0]?.request.workspace.cwd ?? "")).toBe(false);
+    });
+
+    it(`${provider}: an extra bypass-class flag in the cell's argv fails before any spawn and writes nothing`, async () => {
+      const f = useManifest(provider);
+      const before = readFileSync(f);
+      const adapter = synthetic(make());
+      const original = adapter.compile.bind(adapter);
+      adapter.compile = (request, profile) => {
+        const inv = original(request, profile);
+        return "ineligible" in inv ? inv : { ...inv, argv: [...inv.argv, "--yolo"] };
+      };
+      let spawned = 0;
+      const parse = adapter.parseEvent.bind(adapter);
+      adapter.parseEvent = (...a: Parameters<ProviderAdapter["parseEvent"]>) => {
+        spawned += 1;
+        return parse(...a);
+      };
+      const r = await validate(adapter, [provider]);
+      expect(r.code).toBe(1);
+      expect(r.json.error).toContain(`only ${flag} is allowed (owner decision 59)`);
+      expect(r.json.error).toContain("--yolo");
+      expect(spawned).toBe(0);
+      expect(readFileSync(f).equals(before)).toBe(true);
+    });
+  }
+
+  it("opencode and antigravity are not on the allowlist: they still fail at compiles, with no privileged compile", async () => {
+    for (const [provider, adapter] of [
+      ["opencode", synthetic(new OpenCodeAdapter({ executable: process.execPath }))],
+      ["antigravity", synthetic(new AntigravityAdapter({ executable: process.execPath }))],
+    ] as const) {
+      const f = useManifest(provider);
+      const before = readFileSync(f);
+      const calls = recordCompiles(adapter);
+      const r = await validate(adapter, [provider]);
+      expect(r.code).toBe(1);
+      expect(r.json.error).toBe("conformance: static checks failed: compiles");
+      expect(calls.some((c) => c.profile.name === "privileged" && c.request.bypassApproved === true)).toBe(false);
+      expect(readFileSync(f).equals(before)).toBe(true);
+      writeFileSync(file, MANIFEST);
+    }
+  });
+
+  it("an adapter outside the allowlist never falls back, even when a privileged cell would compile", async () => {
+    const adapter = new FakeAdapter();
+    const original = adapter.compile.bind(adapter);
+    const profiles: string[] = [];
+    adapter.compile = (request, profile) => {
+      profiles.push(profile.name);
+      if (profile.name === "inspect-untrusted") {
+        return { ineligible: true, reason: "PROFILE_UNSUPPORTED", detail: "test: no inspect-untrusted cell" };
+      }
+      return original(request, profile);
+    };
+    const before = readFileSync(file);
+    const r = await validate(adapter);
+    expect(r.code).toBe(1);
+    expect(r.json.error).toBe("conformance: static checks failed: compiles");
+    // The statics' own "never silently downgraded" probe compiles privileged without approval; nothing approved runs.
+    expect(profiles[0]).toBe("inspect-untrusted");
+    expect(readFileSync(file).equals(before)).toBe(true);
+  });
+
+  it("a fake that compiles inspect-untrusted keeps the inspect-untrusted smoke and the old evidence text", async () => {
+    const adapter = new FakeAdapter();
+    const calls = recordCompiles(adapter);
+    const r = await validate(adapter);
+    expect(r.code).toBe(0);
+    const smoke = r.json.steps.find((s: { id: string }) => s.id === "smoke");
+    expect(smoke).toEqual({
+      id: "smoke",
+      status: "ok",
+      detail: "one provider call; a successful structured result was parsed",
+      smoke_profile: "inspect-untrusted",
+    });
+    expect(calls.every((c) => c.request.bypassApproved !== true)).toBe(true);
+    expect(parseManifest(readFileSync(file, "utf8")).notes).toContain("(inspect-untrusted, no bypass flag)");
+    expect(existsSync(calls[0]?.request.workspace.cwd ?? "")).toBe(false);
   });
 });

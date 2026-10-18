@@ -6,8 +6,20 @@
  * adapter checks (`checkAdapterStatics`) and the structured-output smoke test (FR-ADP-02 step 7) against the installed
  * binary. The smoke test makes ONE real provider call: it compiles a trivial read-only task with the adapter's own
  * `compile` under `inspect-untrusted`, runs it in a throwaway Git repository and requires the adapter to parse a
- * successful structured `result`. It never logs in, never reads a credential file, never passes a bypass-class flag
- * (the run goes through the same argv audit as every run, with no approval).
+ * successful structured `result`. It never logs in and never reads a credential file. Under `inspect-untrusted` it
+ * never passes a bypass-class flag (the run goes through the same argv audit as every run, with no approval).
+ *
+ * Compiled-cell fallback (owner decision 59, relayed by the orchestrator with standing authority on 2026-10-18;
+ * Delegated reading): Grok Build, Cursor and Kimi Code compile only an approved `privileged` bypass scope (owner decision
+ * 46; Kimi ADR-0049 item 1), so `inspect-untrusted` is `Ineligible` for them by design. For those three adapter ids only
+ * ({@link COMPILED_CELL_FALLBACK}), and only when the `inspect-untrusted` compile is `Ineligible`, the same smoke task
+ * (same objective, same throwaway repository, same timeouts, same `startAdapterRun` and argv audit) runs in the
+ * adapter's only compiled cell: `privileged` with the scope below, approved by an in-memory approval local to this one
+ * call (no ledger row, no client approval record, no config change; nothing is persisted). Cursor and Kimi Code refuse
+ * a read-only workspace in that cell, so the throwaway repository (a fresh temp repository with one commit and nothing
+ * else) is passed writable for them. Before the spawn the bypass-class flags in the argv must be exactly the one flag
+ * the cell declares; anything else fails the smoke step. Every other adapter is unchanged: OpenCode and Antigravity still
+ * fail at `compiles`, and an adapter outside the list never falls back even if a `privileged` cell would compile.
  *
  * Only on full success does it write the provider's manifest file in the SOURCE tree (the file a contributor changes in
  * a pull request; the operator commits it): `validated_cli_version`, `validated_on`, `validated_version_range` (Q-12
@@ -35,16 +47,23 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findBypassFlags } from "../adapters/audit.js";
 import { checkAdapterStatics } from "../adapters/conformance.js";
 import { ManifestError, parseManifest } from "../adapters/manifest/load.js";
 import { parseVersion } from "../adapters/manifest/semver.js";
 import { adapterIdForConfigId } from "../adapters/providers.js";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import { createProbeRunner, startAdapterRun } from "../adapters/run.js";
-import { isIneligible, type ProviderAdapter, type ProviderId } from "../adapters/types.js";
+import {
+  type CompileRequest,
+  isIneligible,
+  type ProviderAdapter,
+  type ProviderId,
+  type ResolvedProfile,
+} from "../adapters/types.js";
 import { recordAdapterVersion } from "../adapters/version-canary.js";
 import { loadConfig } from "../config/index.js";
-import { resolveProfile } from "../policy/index.js";
+import { type PrivilegedScope, privilegedScopeHash, resolveProfile, resolveTrustProfile } from "../policy/index.js";
 import { defaultAdapters } from "./doctor.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST, UsageError } from "./io.js";
 
@@ -53,12 +72,87 @@ export const SMOKE_TIMEOUT_MS = 120_000;
 const SMOKE_OBJECTIVE = "Reply with the single word ok. Do not use any tools and do not modify any files.";
 const REQUIRED_PROBE_STEPS = ["binary", "version", "command", "output_format", "flags"] as const;
 
+/** The only compiled cell of an adapter that compiles nothing under `inspect-untrusted` (owner decision 59). */
+export interface CompiledCell {
+  /** The approved `privileged` scope the adapter compiles (its narrowest compiling bypass scope). */
+  readonly scope: PrivilegedScope;
+  /** Whether the throwaway repository is passed writable (the cell refuses a read-only workspace). */
+  readonly writable: boolean;
+  /** The one bypass-class flag the cell declares (ADR-0035 registry); the argv may carry no other. */
+  readonly bypassFlag: string;
+}
+
+/**
+ * Owner decision 59 allowlist: `adapters validate` MAY smoke in the adapter's only compiled cell under
+ * inspect-untrusted for Grok Build, Cursor and Kimi Code. Scopes follow each adapter's compile matrix:
+ * - grok: read-only files need network `off` (`--sandbox read-only`), shell `broad`, repository config `enabled`;
+ * - cursor: worktree files, shell `broad`, network `on`, repository config `enabled` (read-only is refused, Q-65, Q-79);
+ * - kimi: the `--prompt` bypass cell, the same scope as Cursor (read-only is refused, ADR-0049 item 1).
+ */
+export const COMPILED_CELL_FALLBACK: Readonly<Partial<Record<ProviderId, CompiledCell>>> = Object.freeze({
+  grok: {
+    scope: {
+      files: { access: "read-only" },
+      shell: { mode: "broad" },
+      network: { mode: "off" },
+      repository_config: { mode: "enabled" },
+      bypass: true,
+    },
+    writable: false,
+    bypassFlag: "--always-approve",
+  },
+  cursor: {
+    scope: {
+      files: { access: "worktree" },
+      shell: { mode: "broad" },
+      network: { mode: "on" },
+      repository_config: { mode: "enabled" },
+      bypass: true,
+    },
+    writable: true,
+    bypassFlag: "--force",
+  },
+  kimi: {
+    scope: {
+      files: { access: "worktree" },
+      shell: { mode: "broad" },
+      network: { mode: "on" },
+      repository_config: { mode: "enabled" },
+      bypass: true,
+    },
+    writable: true,
+    bypassFlag: "--prompt",
+  },
+});
+
+/** Placeholder approval id in the resolver's format; it names no approval row (nothing is persisted). */
+const VALIDATE_APPROVAL_ID = "apv_00000000000000000000VA1DAT";
+const FALLBACK_CELL_NOTE = "approved privileged bypass cell, owner decision 59; inspect-untrusted is Ineligible";
+
+/**
+ * The validate-local `privileged` profile for `cell`, from the real resolver (so `bypassApproved` stays false on it).
+ * The in-memory approval travels as the request's `bypassApproved` and the run's `bypassApproved` option, for this one
+ * call only, as the conformance cases carry it.
+ */
+function cellProfile(provider: string, cell: CompiledCell): ResolvedProfile {
+  const scopeHash = privilegedScopeHash({
+    clientId: "switchboard-adapters-validate",
+    metaSessionId: `validate-${provider}`,
+    scope: cell.scope,
+  });
+  return resolveTrustProfile("privileged", {
+    privileged: { scope: cell.scope, scopeHash, approvalId: VALIDATE_APPROVAL_ID },
+  });
+}
+
 export type ValidateStatus = "ok" | "fail" | "skip";
 
 export interface ValidateStep {
   readonly id: string;
   readonly status: ValidateStatus;
   readonly detail: string;
+  /** Smoke step only: the profile the smoke task was compiled under (`inspect-untrusted` or `privileged`). */
+  readonly smoke_profile?: string;
 }
 
 export interface ValidateReport {
@@ -287,15 +381,24 @@ export async function runAdaptersValidate(
 
   // 3. Live conformance subset: static checks, then the structured-output smoke test (one provider call).
   let repo: ReturnType<typeof makeSmokeRepo> | undefined;
+  let fallback: CompiledCell | undefined;
   try {
     repo = makeSmokeRepo();
-    const profile = resolveProfile("inspect-untrusted");
-    const request = {
+    let profile: ResolvedProfile = resolveProfile("inspect-untrusted");
+    let request: CompileRequest = {
       runId: "run_validate",
       objective: SMOKE_OBJECTIVE,
       constraints: [],
       workspace: { cwd: repo.dir, writable: false },
     };
+    // Owner decision 59: inspect-untrusted first; only an allowlisted adapter for which it is Ineligible falls back.
+    const cell = COMPILED_CELL_FALLBACK[provider];
+    if (cell !== undefined && isIneligible(adapter.compile(request, profile))) {
+      fallback = cell;
+      profile = cellProfile(provider, cell);
+      request = { ...request, workspace: { cwd: repo.dir, writable: cell.writable }, bypassApproved: true };
+    }
+    const smokeProfile = profile.name;
     const statics = checkAdapterStatics({
       kind: "success",
       adapter,
@@ -307,10 +410,28 @@ export async function runAdaptersValidate(
     if (staticsBad.length > 0) {
       return fail("conformance", `static checks failed: ${staticsBad.map((c) => clip(c.name)).join("; ")}`);
     }
-    steps.push({ id: "conformance", status: "ok", detail: `${statics.length} static checks ok` });
+    steps.push({
+      id: "conformance",
+      status: "ok",
+      detail: `${statics.length} static checks ok${fallback ? ` (${FALLBACK_CELL_NOTE})` : ""}`,
+    });
 
+    const smokeFail = (detail: string): ValidateReport => {
+      steps.push({ id: "smoke", status: "fail", detail, smoke_profile: smokeProfile });
+      return done(`smoke: ${detail}`);
+    };
     const inv = adapter.compile(request, profile);
-    if (isIneligible(inv)) return fail("smoke", `inspect-untrusted is ineligible: ${inv.reason}: ${clip(inv.detail)}`);
+    if (isIneligible(inv)) return smokeFail(`${smokeProfile} is ineligible: ${inv.reason}: ${clip(inv.detail)}`);
+    if (fallback) {
+      // The approved context admits every bypass flag in the audit, so the cell's argv is narrowed here: exactly the
+      // one flag the cell declares, nothing else bypass-class (provider-scoped flags included).
+      const found = findBypassFlags(inv, provider);
+      if (found.length !== 1 || found[0] !== fallback.bypassFlag) {
+        return smokeFail(
+          `bypass-class flags in the compiled argv: ${found.map(clip).join(", ") || "none"}; only ${fallback.bypassFlag} is allowed (owner decision 59)`,
+        );
+      }
+    }
     const bounded = {
       ...inv,
       timeouts: {
@@ -319,15 +440,20 @@ export async function runAdaptersValidate(
         idleMs: Math.min(inv.timeouts.idleMs, SMOKE_TIMEOUT_MS),
       },
     };
-    const outcome = await startAdapterRun(adapter, bounded, { profile }).done;
+    const outcome = await startAdapterRun(adapter, bounded, fallback ? { profile, bypassApproved: true } : { profile })
+      .done;
     const sawResult = outcome.events.some((e) => e.kind === "result" && e.ok);
     if (!outcome.result.ok || !sawResult || !outcome.groupEmpty) {
-      return fail(
-        "smoke",
+      return smokeFail(
         `structured-output smoke test failed: ${outcome.result.failureCode ?? (sawResult ? "process group not empty" : "no successful structured result")}${outcome.result.failureDetail ? ` (${clip(outcome.result.failureDetail)})` : ""}`,
       );
     }
-    steps.push({ id: "smoke", status: "ok", detail: "one provider call; a successful structured result was parsed" });
+    steps.push({
+      id: "smoke",
+      status: "ok",
+      detail: `one provider call; a successful structured result was parsed${fallback ? ` (${FALLBACK_CELL_NOTE})` : ""}`,
+      smoke_profile: smokeProfile,
+    });
   } catch (err) {
     return fail("smoke", clip((err as Error).message));
   } finally {
@@ -339,7 +465,7 @@ export async function runAdaptersValidate(
     const today = (io.now ?? (() => new Date()))().toISOString().slice(0, 10);
     const evidence =
       `\`switchboard adapters validate ${provider}\` passed on version ${binaryVersion}: probe steps ${REQUIRED_PROBE_STEPS.join(", ")} ok, ` +
-      "auth OK, static conformance checks ok and one structured-output smoke call ok (inspect-untrusted, no bypass flag). " +
+      `auth OK, static conformance checks ok and one structured-output smoke call ok (${fallback ? FALLBACK_CELL_NOTE : "inspect-untrusted, no bypass flag"}). ` +
       "The range is the same minor series (Q-12 convention, an Assumption, not a provider statement).";
     const { text, changes } = buildUpdatedManifest(
       original.toString("utf8"),

@@ -1092,7 +1092,12 @@ subset that ends
 with a structured-output smoke test, and **that smoke step makes one real provider call** (a trivial read-only prompt in
 a throwaway repository; it may use your subscription quota). It never logs in: if the CLI is not logged in (`AUTH_REQUIRED`)
 or its login state cannot be determined (`UNKNOWN`) it fails, and you log in natively and run it again. It passes no
-bypass flag. Only when everything passes does it edit the provider's manifest file in your source checkout
+bypass flag under `inspect-untrusted`. Grok Build, Cursor and Kimi Code compile nothing under `inspect-untrusted`, so
+for those three only (owner decision 59) the same smoke task runs in the adapter's only compiled cell instead: an
+approved `privileged` bypass scope, approved in memory for that one call and never recorded, with exactly the one bypass
+flag that cell declares (`--always-approve`, `--force` or `--prompt`); the step output and the evidence line name that
+cell, and `--json` reports it as `smoke_profile`. Only when everything passes does it edit the provider's manifest file
+in your source checkout
 (`src/adapters/manifests/<provider>.json`): `validated_cli_version`, `validated_on`, `validated_version_range` (the same
 minor series, for example `>=2.1.296 <2.2.0`; an assumption, not a provider statement) and a dated evidence sentence
 appended to `notes`. It does not commit: review the diff and commit the manifest change yourself, then rebuild and
