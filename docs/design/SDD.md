@@ -310,7 +310,9 @@ M12 retrieval through T12.3 (FR-RAG-01–04 on fakes) lists primary tests and mo
 T12.5 admission pack design for FR-RAG-05, FR-RAG-07 and FR-RAG-08 is in [LLD
 §14.11](LLD.md#1411-admission-context-pack-t125) and [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14);
 implementation evidence is in [§4.1](#t125--admission-context-pack-design-intent). M4 adapter parser hardening on
-synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode; T4.43 and T4.53 are Done against their Done-when under owner decision 65 (a), the rest stay `Partial`) is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial).
+synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode;
+T4.43 and T4.53 are Done against their Done-when under owner decision 65 (a), the rest stay `Partial`)
+is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial).
 
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
 | --- | --- | --- | --- | --- |

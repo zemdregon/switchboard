@@ -357,7 +357,8 @@ Compile matrix and transport are in [TDD §4.6](TDD.md#46-opencode-m4); parser a
 
 #### T4.53 — parser, result, failure classification and resume (Done against its Done-when)
 
-**Evidence (Done against its Done-when under owner decision 65 (a); synthetic lines in the shapes of the T4.51 live check).** FR-ADP-04, FR-SES-03 (`--session`
+**Evidence (Done against its Done-when under owner decision 65 (a); synthetic lines in the shapes of the T4.51 live
+check).** FR-ADP-04, FR-SES-03 (`--session`
 through the compile matrix), FR-ADP-10 (`backingProvider` unset: events name no vendor).
 
 - **Tests:** `src/adapters/opencode/opencode.test.ts` ("opencode parser and result (T4.53)", including nested
