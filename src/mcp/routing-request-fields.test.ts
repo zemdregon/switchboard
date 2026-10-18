@@ -405,6 +405,10 @@ describe("routing request fields (T7.14, FR-RTE-11, LLD §17.7)", () => {
     });
     expect(rGroup.isError).toBe(true);
     expect(rGroup.body.error.code).toBe("INVALID_REQUEST");
+    expect(rGroup.body.error.message).toBe(
+      "continue_task accepts neither routing.model_group nor routing.model (Q-99)",
+    );
+    expect(rGroup.body.error.details).toMatchObject({ field: "routing" });
 
     // continue_task with model is refused
     const rModel = await h.call("continue_task", {
@@ -416,6 +420,36 @@ describe("routing request fields (T7.14, FR-RTE-11, LLD §17.7)", () => {
     });
     expect(rModel.isError).toBe(true);
     expect(rModel.body.error.code).toBe("INVALID_REQUEST");
+    expect(rModel.body.error.message).toBe(
+      "continue_task accepts neither routing.model_group nor routing.model (Q-99)",
+    );
+    expect(rModel.body.error.details).toMatchObject({ field: "routing" });
+
+    // continue_task with another unknown routing key keeps the generic message
+    const rUnknown = await h.call("continue_task", {
+      meta_session_id: run.meta_session_id,
+      instruction: "Follow up instruction",
+      routing: {
+        unexpected_key: "surprise",
+      },
+    });
+    expect(rUnknown.isError).toBe(true);
+    expect(rUnknown.body.error.code).toBe("INVALID_REQUEST");
+    expect(rUnknown.body.error.message).toContain("must NOT have additional properties");
+    expect(rUnknown.body.error.details).toMatchObject({ field: "$.routing.unexpected_key" });
+
+    // tools/list for continue_task is unchanged and keeps closed routing schema without model/model_group
+    const { tools } = await h.client().listTools();
+    const continueTool = tools.find((t) => t.name === "continue_task");
+    expect(continueTool).toBeDefined();
+    const continueRouting = continueTool?.inputSchema.properties?.routing as Json;
+    expect(continueRouting.type).toBe("object");
+    expect(continueRouting.additionalProperties).toBe(false);
+    expect(Object.keys(continueRouting.properties).sort()).toEqual([
+      "minimum_capability",
+      "provider_preference",
+      "require_provider",
+    ]);
   });
 
   // 9. Valid requests with model_group or model
