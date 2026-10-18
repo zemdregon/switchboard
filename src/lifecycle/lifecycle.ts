@@ -236,6 +236,7 @@ import {
   denyApprovalOnCancel,
   evaluateBypass,
 } from "./approval.js";
+import { crashPoint } from "./crash-point.js";
 import { requestHash } from "./request.js";
 import {
   planResumeDirectory,
@@ -1825,6 +1826,7 @@ export class RunLifecycle {
     if (exec.cancelRequested) return this.cancelEarly(runId);
     if (!verdict.ok) return this.fail(runId, verdict.code, verdict.detail, verdict.extra);
     const binaryVersion = verdict.binaryVersion;
+    crashPoint("preflight");
 
     // LEASED (T5): intent committed before the lease and worktree are created.
     this.move(this.current(runId), "LEASED", {}, { adapter_version: binaryVersion });
@@ -1864,6 +1866,7 @@ export class RunLifecycle {
       return this.fail(runId, "TOOL_FAILURE", `workspace preparation failed: ${errorText(err)}`);
     }
     if (exec.cancelRequested) return this.cancelEarly(runId);
+    crashPoint("leased");
     if (ws.mode === "worktree") {
       // T9.5 (FR-GIT-03, LLD §12.5): the controller-visible Git state, recorded before the provider can touch it. A
       // repository that cannot be read here cannot be checked later, so the run fails before spawn (fail closed).
@@ -2580,6 +2583,7 @@ export class RunLifecycle {
     let finalizeCommit: FinalizeCommitOutcome | undefined;
     // T6.5 (BR-7): only an assessed worktree equal to its pre-run checkpoint may be retried (fail closed otherwise).
     let retryEligible: boolean | undefined;
+    crashPoint("finalizing_before_checkpoint");
     if (ws.mode === "worktree") {
       try {
         // T9.5 (FR-GIT-03, BR-27): compare refs with the LEASED snapshot and put controller-owned refs back BEFORE the
@@ -2621,6 +2625,7 @@ export class RunLifecycle {
           artifactId: fin.diffArtifactId,
           payload: { kind: "post", commit: fin.postCommit, committed: fin.committed, changed_files: changedFiles },
         });
+        crashPoint("finalizing_after_checkpoint");
         if (!success) {
           // FRD §4.4: the meta-session head stays at / returns to the pre-run checkpoint; never replay (FR-WS-04).
           this.ledger.setMetaSessionHead(metaSessionId, ws.baseCommit);

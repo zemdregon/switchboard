@@ -988,7 +988,10 @@ Actions are not yet pinned by SHA (`setup-node` uses a tag).
 - **T1.8:** `src/lifecycle/`; `src/lifecycle/lifecycle.test.ts` (state-machine table, admission, queue bound,
   priority, concurrency, one active run per meta-session, per-edge outcomes, cancel in each state).
 - **T1.9:** `src/reconcile/`; `src/reconcile/reconcile.test.ts` (real `SIGKILL` of a controller child during RUNNING,
-  restart ends `FAILED/PROCESS_CRASH`, orphan killed, PID-reuse guard, per-state WF-8 outcomes).
+  restart ends `FAILED/PROCESS_CRASH`, orphan killed, PID-reuse guard, per-state WF-8 outcomes). Follow-up
+  (2026-10-18, status unchanged): test-only named crash points (`src/lifecycle/crash-point.ts`) and real-kill tests at
+  `preflight`, `leased`, `finalizing_before_checkpoint` and `finalizing_after_checkpoint` (TDD §3.6 fault-injection
+  row).
 - **T1.10:** `src/cli/`; `src/cli/cli.test.ts` (no login command, `doctor`, `runs list|show|cancel` with `--json`,
   cancel with and without a lock holder, daemon-side application).
 - **T1.11:** this reconciliation; design-doc changes are listed in the change description and carried in the documents
