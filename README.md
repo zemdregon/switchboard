@@ -1103,7 +1103,10 @@ bypass flag under `inspect-untrusted`. Grok Build, Cursor, Kimi Code, OpenCode a
 compiled cell instead: an approved `privileged` bypass scope, approved in memory for that one call and never recorded,
 with exactly the one bypass flag that cell declares (`--always-approve`, `--force`, `--prompt` or
 `--dangerously-skip-permissions`; OpenCode declares none, so its smoke argv carries no bypass-class flag at all); the
-step output and the evidence line name that cell and its ruling, and `--json` reports it as `smoke_profile`. Only
+step output and the evidence line name that cell and its ruling, and `--json` reports it as `smoke_profile`. If the
+smoke step fails, the step reports the run's classified failure code and its classifier detail (`CODE (exit code N):
+detail`), redacted with the ledger's secret patterns with e-mail addresses and URL query strings stripped, clipped to
+one line and never raw stderr or stdout, and `--json` adds `failure_code` and `failure_detail` to the smoke step. Only
 when everything passes does it edit the provider's manifest file in your source checkout
 (`src/adapters/manifests/<provider>.json`): `validated_cli_version`, `validated_on`, `validated_version_range` (the same
 minor series, for example `>=2.1.296 <2.2.0`; an assumption, not a provider statement) and a dated evidence sentence
