@@ -837,7 +837,9 @@ Tool schemas are published through MCP `tools/list`.
 - **Resume.** The session's provider is eligible and has a native session: Switchboard resumes that native session
   (Claude Code `--resume <session id>`, Codex `exec resume <session id>`; the Codex form is an assumption until the
   operator's live run) in the worktree path of the run that created
-  it, on a new run branch at the session's head checkpoint. If that directory is gone or is not clean, the continuation
+  it, on a new run branch at the session's head checkpoint — unless the adapter declares `resumeCwd: 'independent'`
+  from a recorded capture (today only Claude Code, from T5.12 cell 2), in which case the resume gets a fresh worktree
+  path. For a bound resume, if that directory is gone or is not clean, the continuation
   becomes a handoff on the same provider instead of resuming somewhere else.
 - **Handoff.** You name another provider in `routing.provider_preference`, the session has no native session to resume,
   its directory is unusable, or its provider is no longer eligible. Switchboard builds a bundle, stores it as the run's

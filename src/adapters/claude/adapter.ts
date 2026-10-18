@@ -634,10 +634,11 @@ export class ClaudeAdapter implements ProviderAdapter {
   readonly transports = ["subprocess-jsonl"] as const;
   readonly gitWriteControl = CLAUDE_GIT_WRITE_CONTROL;
   /**
-   * T5.7 (ADR-0038 item 6.3): TDD §4.10 records whether a resumed session is tied to its directory as
-   * `Unverified: T5.12`, so a resume reuses the origin worktree path (handled as `bound`).
+   * T5.12 cell 2 (2026-10-17, Claude Code 2.1.294; docs/research/live-checks-2026-10-17-claude.md): session found from
+   * a second worktree and from an unrelated empty directory (not tied to cwd), so resumeCwd is `independent`
+   * (ADR-0038 item 6.3, LLD §15.6, TDD §4.10).
    */
-  readonly resumeCwd = "unverified" as const;
+  readonly resumeCwd = "independent" as const;
   /**
    * T7.12 (FR-RTE-08, Q-90, Delegated): [R2] says the CLI's `--model` accepts model aliases and full model IDs, and the
    * `system` `init` event carries `model` (parse.ts). **Assumption** (to be confirmed by the live conformance subset,
