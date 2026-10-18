@@ -27,8 +27,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.2](docs/ROADMAP.md#62-m2-claude-code-adapter-and-mcp-slice-tasks).
 - **Milestone 3 (isolation) is `Partial`.** Trust profiles and overrides, approvals (`approve`, `deny`), privileged
   runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
-  implemented and tested on fakes. Not done: the operator's live malicious-fixture leg (T3.9) and the adversarial
-  fake-provider scenarios awaiting zemdregon's review (T3.8b). See
+  implemented and tested on fakes, as are the controller confinement checks of T3.8b (owner decision 63; credential
+  reads, network egress and a push to an explicit URL are not enforced on the fake by design). Not done: the
+  operator's live malicious-fixture leg (T3.9). See
   [ROADMAP §6.5](docs/ROADMAP.md#65-m3-isolation-tasks) for each task.
 - **Milestone 9 (projects and controlled commits) is `Partial`.** Projects, the agent `commit` tool, finalize-only
   commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
