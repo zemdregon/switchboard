@@ -1649,8 +1649,10 @@ passes only `PATH` and `HOME` from the parent environment and
 sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` on every run and never puts `GEMINI_API_KEY`, `GOOGLE_API_KEY` or
 `GOOGLE_GEMINI_BASE_URL` in the child environment (API-key mode stays disabled).
 
-The compliance manifest range admits no version until an operator runs `switchboard adapters validate antigravity` and
-commits the manifest diff (ROADMAP T4.38). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Antigravity.
+The compliance manifest range (`src/adapters/manifests/antigravity.json`) admits `>=1.4.2 <1.5.0`
+since `switchboard adapters validate antigravity` passed on CLI 1.4.2 on 2026-10-18 (ROADMAP T4.38).
+Other versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`; the live smoke and the live
+malicious leg stay operator-only (T4.38).
 
 ### Login
 
