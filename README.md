@@ -678,7 +678,11 @@ Fixtures only; no live provider CLI:
 - M14 acceptance: `src/mcp/m14-acceptance.test.ts` (scenarios A–G).
 - Pause (T14.6): `src/mcp/pause.test.ts`, `src/control/pause.test.ts`, `src/cli/pause.test.ts`.
 - Approval proxy (T14.8): `test/malicious/approval-proxy.test.ts`.
-- Notification sinks (T14.9): `src/control/sinks.test.ts`.
+- Notification sinks (T14.9): `src/control/sinks.test.ts`; producer legs in `src/lifecycle/lifecycle.test.ts`
+  (`approval_pending`/`awaiting_approval` at admission, `parked_loop`/`failed_after_retry`/`skill_cleanup_failed` on
+  the run path), `src/mcp/project-tools.test.ts` (pending-revision `approval_pending`), `src/ci/ci-trigger.test.ts`
+  (`ci_fix_stuck` 0-to-1), and `test/malicious/approval-proxy.test.ts` / `test/malicious/consent-link.test.ts`
+  (served-resource link).
 - Webhook authorization (T14.14, FR-CTL-12): `src/config/notification-sinks.test.ts`, `src/cli/cli.test.ts` (doctor
   `set`/`unset` suite); header-delivery and canary scans in `src/control/sinks.test.ts`.
 - Digest and envelopes: `src/mcp/digest.test.ts`, `src/mcp/list-runs.test.ts`, `src/mcp/needs-attention.test.ts`.
