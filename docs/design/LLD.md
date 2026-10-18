@@ -6148,7 +6148,8 @@ trigger is an error rather than silently off.
 helper, the quota failover's forced `capacity_exhausted`, and `recordAffinity` at the `SUCCEEDED` transition in
 `src/lifecycle/lifecycle.ts`. Points decided here, each an **Assumption**:
 
-- **The model is remembered, not pinned** (Q-90). At that time `run.model` was never set, so the row's `model` was the one the run's
+- **The model is remembered, not pinned** (Q-90). At that time
+  `run.model` was never set, so the row's `model` was the one the run's
   native session reported (`provider_binding.model`, else `null`). It was **not** passed to `compile`: the Codex adapter
   refused any model (`CAPABILITY_MISSING`), and no adapter declared that a reported model id is accepted by its model
   flag, so pinning could make a held provider ineligible. The provider still held; the model was the adapter default.
