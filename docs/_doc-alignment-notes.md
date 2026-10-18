@@ -202,3 +202,17 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   edit by the PR author (or a code-touching follow-up), not an owner decision.
   It does not block PR #694 (the range fields and the evidence line, which are
   what the gate and the version check read, are correct).
+
+## 16. Sink `needs_attention` closed list predates FR-CTL-03 `skill_cleanup_failed` (pre-existing, not from PR #695)
+
+- [SRS FR-CTL-03](requirements/SRS.md) gained a seventh reason, `skill_cleanup_failed` (2026-10-17, T16.6), but
+  `NEEDS_ATTENTION_REASONS` in `src/control/sinks.ts` still lists the six earlier reasons, and
+  [ADR-0048 item 3](adr/0048-notification-sinks.md) (reworded, not extended, by PR #695) cites "the closed list of
+  FR-CTL-03" for `needs_attention`.
+- No production producer emits a `needs_attention` sink event today (producers emit `run_terminal`,
+  `approval_decided`, `budget_exhausted`, `project_paused` and `queue_low`; the digest/envelope derivation reads
+  `needsAttentionOf`, which does include `skill_cleanup_failed`), so nothing is dropped in practice; a future
+  producer emitting `needs_attention` / `skill_cleanup_failed` would be dropped as `invalidEvents`.
+- Left unchanged: closing the gap needs a code change (extend the sink closed list) or an SRS/ADR owner note, and
+  PR #695 neither introduces nor worsens it (FR-CTL-03 was amended after T14.9; the PR only rewords the ADR-0048
+  citation). It does not block PR #695.

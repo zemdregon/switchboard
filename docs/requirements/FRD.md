@@ -634,7 +634,9 @@ sequenceDiagram
   transaction; there is no operator step, and `approve`/`deny` refuse that run. Later runs and the bypass check proceed
   as above.
 - **Failure paths:** client ceiling below `privileged` → `PERMISSION_BLOCKED`; `approve` for a run not AWAITING_APPROVAL
-  → CLI error (no run state change); an MCP attempt to approve does not exist as a tool (FR-MCP-06); a `privileged`
+  → CLI error (no run state change); an MCP attempt to approve does not exist as a tool (FR-MCP-06; since
+  2026-10-15, except `decide_approval` for a client marked `approval_proxy`: owner decision 50,
+  [ADR-0047](../adr/0047-approval-proxy-over-mcp.md), Proposed, FR-CTL-08); a `privileged`
   `continue_task` on a meta-session without an `APPROVED` approval for the caller → `INVALID_REQUEST` (C7).
 - **Postconditions:** an `approval` row, created by the meta-session's first `privileged` run, binds the approval to one
   client, one meta-session and one canonical scope, and covers every run of that meta-session under that scope; it is
