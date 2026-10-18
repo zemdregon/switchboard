@@ -690,8 +690,8 @@ the Q-84 bypass cell: `--prompt=<objective>`, `--output-format stream-json`, `--
 `none-documented`, `commitChannel` `finalize-only`, `resumeCwd` `bound`.
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity compile matrix (T4.32)`,
-  `antigravity bypass-class declarations (ADR-0035, ADR-0045)`, `antigravity probe and auth placeholder (fail closed
-  until T4.34)`, `antigravity registry entry and manifest gate (T4.32)`); `src/adapters/providers.test.ts` (declared
+  `antigravity bypass-class declarations (ADR-0035, ADR-0045)`, `antigravity probe (T4.32)`,
+  `antigravity registry entry and manifest gate (T4.32)`); `src/adapters/providers.test.ts` (declared
   bypass spellings).
 
 **As built (T4.33, Partial).** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `adapter.ts`; event

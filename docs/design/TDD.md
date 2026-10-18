@@ -1945,7 +1945,8 @@ check settled now reads **Observed (1.3.4, [LC] Cn)**; cells the note lists unde
 ([live checks 2026-10-17](../research/live-checks-2026-10-17-claude-codex.md) §5), causing `output_format` and `flags`
 probe steps to fail although the flag remains supported by the CLI. The probe accepts `--output-format` when listed
 in `--help`, and otherwise falls back to a no-model check (`agy --output-format json --help` exiting 0 without Go-style
-undefined flag errors) to verify flag acceptance without spawning a model call or requiring a login.
+undefined flag errors) to verify flag acceptance without spawning a model call or requiring a login. Help flags are
+matched across `stdout` and `stderr`, and the undefined-flag check reads both streams.
 
 | Aspect | Detail |
 | --- | --- |
