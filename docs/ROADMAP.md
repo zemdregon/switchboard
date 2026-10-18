@@ -3220,7 +3220,9 @@ quota ladder, per-provider limits and the acceptance test T6.10. `Done` also nee
 ### 6.12 M7 Routing: tasks
 
 *Proposed breakdown (2026-10-14, Delegated agent work, documentation only; not owner-approved), written under §9.1
-step 2 from the M7 row in §6 and the requirements it lists.* M6 is `Done` (2026-10-18, Delegated agent work, not owner-approved; T6.11 `Done` 2026-10-17 with `NOT_CHECKED` follow-up cells the operator's capture hook fills in a follow-up note, §6.11.2), so the M7 tasks below stand on a `Done` dependency. It is
+step 2 from the M7 row in §6 and the requirements it lists.* M6 is `Done` (2026-10-18, Delegated agent work,
+not owner-approved; T6.11 `Done` 2026-10-17 with `NOT_CHECKED` follow-up cells the operator's capture hook fills
+in a follow-up note, §6.11.2), so the M7 tasks below stand on a `Done` dependency. It is
 numbered after §6.11 so that
 earlier anchors stay. Design: [ADR-0008](adr/0008-two-stage-routing.md) (two-stage routing: hard filter, then static
 weighted score, every decision persisted), [ADR-0032](adr/0032-provider-model-affinity.md) (provider and model affinity,
