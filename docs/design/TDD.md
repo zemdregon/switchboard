@@ -1430,7 +1430,7 @@ T7.17 (all `Done` 2026-10-17, on fakes; T6.11 is the operator capture).
 
 ### 3.16 Switchboard-controlled skills (Proposed)
 
-*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); partly built: T16.1
+*Proposed (2026-10-17, owner decision 58, [ADR-0056](../adr/0056-switchboard-controlled-skills.md); built: T16.1
 implemented the store module below, T16.3 the configuration keys and loader, T16.2 the operator CLI, T16.9 the
 read-only MCP tools with the §19.5 steps 2 to 4 resolver, T16.4 admission (`src/skills/admission.ts`) with the
 import-boundary test, and T16.5 the prompt-prefix renderer (`renderSkillBlock` in `src/adapters/prompt.ts`, the
@@ -1441,7 +1441,9 @@ conformance check (`checkSkillDelivery` in `src/adapters/conformance.ts`), Deleg
 T16.10 built continuity across handoff and resume (the bundle `skills` facts in
 `src/continuity/bundle-schema.ts` and `src/continuity/bundle.ts`, re-delivery in the receiving provider's way in
 `src/lifecycle/lifecycle.ts`; `src/continuity/skill-continuity.test.ts`), Delegated,
-not owner-approved; per-provider native (T16.8) stays Proposed).
+not owner-approved; T16.11 built the malicious-fixture leg (`test/malicious/skills-leg.test.ts`) and T16.12 the M16
+acceptance test on fakes (`src/mcp/m16-acceptance.test.ts`), Delegated, not owner-approved;
+per-provider native (T16.8) stays Proposed).
 Delegated, not owner-approved beyond the direction.* Contract: [LLD §19](LLD.md#19-switchboard-controlled-skills-m16-proposed).
 Tasks: ROADMAP T16.0 to T16.12.
 
