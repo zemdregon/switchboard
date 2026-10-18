@@ -17,6 +17,7 @@ import { consentHashPassphrase, consentPair, renderPair, renderPassphraseHash } 
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { renderGc, runGcCommand } from "./gc.js";
 import { renderGitPush, runGitPush } from "./git-push.js";
+import { commandNames, HELP, renderCommandHelp } from "./help.js";
 import {
   innerResume,
   innerStatus,
@@ -67,105 +68,7 @@ import {
 import { serve } from "./serve.js";
 import { runSkillsCommand, UnknownSkillError } from "./skills.js";
 
-export const HELP = `Usage: switchboard <command> [options]
-
-Commands:
-  serve --client <id> Run the MCP server on stdin/stdout for one configured MCP client (logs go to stderr)
-  doctor              Check the environment and probe adapters (Claude Code, Codex and the fake test adapter)
-  runs list           List runs, newest first (--state <STATE>, --limit <n>)
-  runs show <id>      Show one run and its events
-  runs cancel <id>    Cancel a run (written as an operator record the daemon applies)
-  capacity [--provider <id>]
-                      Per-provider capacity: controller estimates (score, confidence, throttle risk) with their
-                      sources, provider-reported reset and remaining figures when a provider reported them, free
-                      slots and breaker state; the same data as the get_capacity MCP tool (read-only)
-  affinity list       List each project's provider affinity: provider, reported model, since when, last switch reason
-  affinity reset <project_key>
-                      Make the next routing step for the project choose afresh among eligible providers
-                      (recorded as user_request); the project key is as affinity list prints it
-  index status [<project>|global]
-                      Retrieval index per store: mode, backend kind and locality, files, chunks, size, revision,
-                      complete or incomplete, build time, staleness and pending requests (read-only)
-  index rebuild [<project>]
-                      Request a full rebuild of a project's index (all projects with retrieval on by default); the
-                      serve daemon builds it in the background
-  index clear [<project>|global]
-                      Delete a store's vectors and chunk text (every store by default); the ledger keeps only counts.
-                      Applied at once when serve is not running, else by the daemon
-  gc [--apply]        Retention clean-up: dry run by default (lists what would go); --apply collects, and is refused
-                      while serve runs or when retention.days is not set in the config
-  projects list       List configured and dynamic projects (source config|dynamic; read-only, no lock)
-  projects show <id>  Show one project: environment and contexts; for a dynamic project its creator and revisions
-  projects approve <id> [--revision <n>] [--reject]
-                      Approve (or reject) the revision of a dynamic project that waits for approval; --revision is
-                      required once the project has more than one revision (review it with projects show first)
-  projects validate [<id>]
-                      Check project configuration and repository paths; exit 1 if any check fails
-  git push <id>       Push a meta-session's published commits (sess_... or one of its run_...) to the context's
-                      configured remote branch; only with push.policy "branch", never forced; refused while serve runs
-  adapters validate <provider>
-                      Accept the installed version of a provider CLI: runs its probe, status check and conformance
-                      checks, including a structured-output smoke test that makes ONE provider call (a trivial
-                      read-only prompt; may use your quota). Never starts a sign-in. On success only, writes the
-                      version, date, range and an evidence line into the provider's manifest file in the source
-                      checkout for you to review and commit; on any failure writes nothing. Exit 1 on failure
-  adapters version-canary
-                      Compare each enabled provider's installed CLI version to the last recorded value; on change
-                      report ADAPTER_VERSION_UNVERIFIED until adapters validate succeeds (for cron or systemd timers)
-  inner status        Show the inner agent: backend, locality, per-task call counts, fallback rates and suspension
-                      (read-only; never contacts the backend)
-  inner test <task>   Run one task on a built-in synthetic fixture through the configured backend; sends no repository
-                      data; exit 1 if the result would fall back
-  inner resume <task> Re-enable a task that the quality monitor suspended
-  approve <run_id>    Approve the privileged run that requested an approval (review it with runs show first)
-  deny <run_id>       Deny the privileged run that requested an approval; the run ends CANCELLED
-  pause               Pause every project: no new run is admitted (queued work waits, running runs finish) until
-                      resume; applied at once when serve is not running, else by the daemon on its next poll.
-                      Operator-only; an MCP client can pause only its own projects (pause_project)
-  resume              Lift the operator pause set by pause (a project paused by an MCP client stays paused)
-  consent hash-passphrase
-                      Read the HTTP consent-page passphrase from stdin and print its hash for
-                      transport.http.passphrase_hash (Switchboard's own; touches no provider sign-in)
-  consent pair        Print a one-time pairing code for the HTTP consent page (valid once, for 10 minutes)
-  schedule list [--project <id>]
-                      List schedules (read-only, no lock)
-  schedule show <sch_id>
-                      Show one schedule including cron expression, template and next fire time
-  schedule enable <sch_id>
-                      Enable a schedule for future cron firing (requires APPROVED status)
-  schedule disable <sch_id>
-                      Disable a schedule and stop future fires
-  schedule approve <sch_id>
-                      Approve a widening schedule created by a chat client
-  schedule deny <sch_id>
-                      Reject a widening schedule
-  schedule create <cron> <project> <template_json>
-                      Create a new schedule (off by default)
-  skills list [--all] Skill names with newest version, state, origin, size and hash prefix; --all adds retired names
-  skills show <name>[@n] [--body]
-                      Metadata and event history; the body only with --body
-  skills add <name> --file <path> [--from-repository] [--note <text>]
-                      Validate and store a new version (draft) and print <name>@<n>; a source inside a project
-                      context or allowed root needs --from-repository and is marked repository_path. A refusal
-                      exits 65 with one reason; unchanged content adds no version (exit 0)
-  skills approve <name>@<n> [--note <text>]
-                      Approve a version for new runs
-  skills revoke <name>@<n> [--note <text>]
-                      Revoke a version; runs already admitted keep their delivery
-  skills retire <name> / skills unretire <name>
-                      Retire a name (resolves to nothing for new runs) or lift that
-  skills diff <name>@<a> <name>@<b>
-                      Line diff of two versions' canonical text
-
-Options:
-  --json              Machine-readable output (not for serve)
-  --client <id>       serve only: the mcp_clients entry this stdio session is bound to
-  --note <text>       skills add, approve and revoke: an operator note of at most 280 characters
-  --config <path>     Config file (default: $SWITCHBOARD_CONFIG, then $XDG_CONFIG_HOME/switchboard/config.json)
-  -h, --help          Show this help
-
-Exit codes: 0 success, 1 failure, 2 usage error, 65 skills add refused.
-`;
+export { HELP };
 
 const OPTIONS = {
   json: { type: "boolean" },
@@ -187,6 +90,41 @@ const OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+/**
+ * Find the command a `--help`/`-h`/`help` request targets, before any option validation runs, so
+ * `switchboard runs --apply --help` prints help instead of a usage error. Returns undefined for the
+ * global help, or null when no help was requested.
+ */
+function findHelpTarget(argv: readonly string[]): string | undefined | null {
+  if (argv[0] === "help") {
+    const topic = argv[1];
+    if (topic === undefined || topic.startsWith("-")) return undefined;
+    return topic;
+  }
+  if (!argv.includes("--help") && !argv.includes("-h")) return null;
+  const positional = argv.find((a) => !a.startsWith("-"));
+  if (positional === undefined || positional === "help") return undefined;
+  return positional;
+}
+
+export async function runCli(
+  argv: readonly string[],
+  io: CliIo,
+  run: (argv: readonly string[], io: CliIo) => Promise<number> = main,
+): Promise<number> {
+  try {
+    return await run(argv, io);
+  } catch (err) {
+    // Anything escaping main (import/init failure: main's own try cannot catch those). Exit 1, the
+    // internal-error code fail() already uses; no stack unless SWITCHBOARD_DEBUG=1.
+    const debug = io.env.SWITCHBOARD_DEBUG === "1";
+    const message = err instanceof Error ? err.message : String(err);
+    const text = debug && err instanceof Error && err.stack ? err.stack : message;
+    io.stderr.write(`switchboard: ${text}\n`);
+    return 1;
+  }
+}
+
 export async function main(argv: readonly string[], io: CliIo): Promise<number> {
   if (argv[0] === "tool-shim") {
     // T9.4 (FR-GIT-02, LLD §12.2): internal subcommand started by a provider CLI from the per-run MCP definition, not an
@@ -194,8 +132,24 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     const { runToolShim } = await import("./tool-shim.js");
     return runToolShim(argv.slice(1), io);
   }
+  // Help beats option validation (and unknown-option parse errors): decide before parseArgs runs.
   let json = argv.includes("--json");
   try {
+    const helpTarget = findHelpTarget(argv);
+    if (helpTarget !== null) {
+      if (helpTarget === undefined) {
+        io.stdout.write(HELP);
+        return 0;
+      }
+      const text = renderCommandHelp(helpTarget);
+      if (text === undefined) {
+        throw new UsageError(
+          `unknown help topic ${JSON.stringify(helpTarget)}; commands: ${commandNames().join(", ")}`,
+        );
+      }
+      io.stdout.write(text);
+      return 0;
+    }
     const { values, positionals } = parseArgs({
       args: [...argv],
       options: OPTIONS,
@@ -229,10 +183,6 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       throw new UsageError("--all, --body, --file, --from-repository and --note are only valid with skills");
     }
 
-    if (values.help) {
-      io.stdout.write(HELP);
-      return 0;
-    }
     if (cmd === undefined) {
       io.stderr.write(HELP);
       return 2;
@@ -515,7 +465,8 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           try {
             template = JSON.parse(rawTemplate);
           } catch (err) {
-            throw new UsageError(`invalid template JSON: ${String(err)}`);
+            const reason = err instanceof Error ? err.message : String(err);
+            throw new UsageError(`invalid JSON in template: ${reason.slice(0, 200)}`);
           }
           const report = createSchedule(io, loaderArgv, {
             projectId,
