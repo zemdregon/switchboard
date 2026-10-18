@@ -79,9 +79,9 @@ state machine or schema.
 | `docs/research/` | Research inputs. Historical record; do not rewrite their findings. |
 | `package.json`, `package-lock.json` | Package metadata, scripts and pinned dependencies (`npm ci` installs them). |
 | `src/` | Application code: config, ledger, lifecycle, adapters (`claude`, `codex`, `fake`), MCP server, CLI, policy, Git, inner-agent port and fake backend (`inner`), capacity estimator (`capacity`), derived control-plane flags and notification sinks (`control`), environment port with the `host` identity and the `container` backend over a rootless Docker driver (`environment`), CI-failure trigger over the operator's `gh` (`ci`), skill store with migration 0021, state derivation, configuration, admission and the native-delivery framework with leak prevention (`skills`, `src/workspace/native-skills.ts`) and the operator skills CLI (`cli/skills.ts`). |
-| `test/` | Cross-cutting tests: live smoke test (opt-in) and the malicious-fixture suite. |
+| `test/` | Cross-cutting tests: live smoke test (opt-in), the `npm pack` smoke test (`test/pack-smoke.test.ts`, pure file-list rules for `scripts/pack-smoke.mjs`) and the malicious-fixture suite. |
 | `scripts/check-docs.mjs` | Documentation consistency checker (Node.js, no dependencies). |
-| `scripts/copy-build-assets.mjs`, `scripts/bench-perf.mjs`, `scripts/live-smoke.mjs` | Build asset copy, the performance benchmark and the opt-in live smoke test. Live provider plug-ins: `scripts/live/providers/`. |
+| `scripts/copy-build-assets.mjs`, `scripts/bench-perf.mjs`, `scripts/live-smoke.mjs`, `scripts/pack-smoke.mjs` | Build asset copy, the performance benchmark, the opt-in live smoke test and the `npm pack` smoke test (`npm run pack:smoke`; `scripts/pack-smoke.d.mts` types its pure helpers for `test/pack-smoke.test.ts`). Live provider plug-ins: `scripts/live/providers/`. |
 | `CLAUDE.md` | Imports this file for Claude Code. Do not add separate instructions there. |
 | `LICENSE` | Apache License 2.0. |
 

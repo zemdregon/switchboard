@@ -344,7 +344,8 @@ to fetch a prebuild you need a C/C++ toolchain (make, g++, python3) so it can co
 
 The commands below write `switchboard` for `node /path/to/switchboard/dist/cli/bin.js`. Replace it with the absolute
 path of your checkout; an orchestrator launching `serve` needs the absolute path too. Switchboard is not published to
-npm, so there is no `npm install switchboard`.
+npm, so there is no `npm install switchboard`. `npm pack` produces an installable tarball (`npm install
+./switchboard-0.0.0.tgz`); the package is not published to npm.
 
 ## Log in to the providers (natively)
 
