@@ -3,9 +3,9 @@
 ![Switchboard logo](assets/switchboard-logo.png)
 
 Switchboard is a headless controller that lets one orchestrating agent delegate coding work to AI coding CLIs
-(Claude Code and Codex in this stage) through their documented automation surfaces, behind a single MCP tool surface.
-It runs on your own machine and reuses the logins you already made with those CLIs. Switchboard itself never handles
-provider credentials.
+(Claude Code, Codex, Grok Build, Antigravity, Cursor, OpenCode, Kimi Code and Muse Code adapters) through their
+documented automation surfaces, behind a single MCP tool surface. It runs on your own machine and reuses the logins
+you already made with those CLIs. Switchboard itself never handles provider credentials.
 
 ## Status
 
@@ -300,8 +300,9 @@ Pre-release. The package is private and is not published to any registry; you bu
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`, `affinity list|reset`,
 `index status|rebuild|clear`, `projects list|show|validate|approve`, `git push`, `inner status|test|resume`,
 `skills list|show|add|approve|revoke|retire|unretire|diff`, and
-`serve` exposing nine MCP tools over stdio (ten when retrieval is on for at least one of the client's projects,
-thirteen with `manage_projects`). The five trust
+`serve` exposing seventeen MCP tools over stdio (eighteen when retrieval is on for at least one of the client's
+projects, twenty with skills enabled, twenty-three with `manage_projects`, plus two approval-proxy tools for an
+`approval_proxy` client; a `console` client sees only the console set). The five trust
 profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
 `list_capabilities`. Read
 [Known limitations](#known-limitations) before relying on it.
@@ -324,17 +325,22 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
   profile is eligible on macOS.
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
-- For real work, at least one provider CLI installed and logged in natively: Claude Code and/or Codex. `doctor` does not
-  require any particular one.
+- For real work, at least one provider CLI installed and logged in natively: Claude Code, Codex, Grok Build,
+  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex and Kimi Code admit a version today;
+  the other manifests admit no version until `switchboard adapters validate` passes a live CLI (see
+  [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks)). `doctor` does not require any particular one.
 
 ## Install from source
 
 ```sh
-git clone <this repository> switchboard
+git clone https://github.com/zemdregon/switchboard.git switchboard
 cd switchboard
 npm ci && npm run build
 node dist/cli/bin.js --help
 ```
+
+`npm ci` installs `better-sqlite3` from its published prebuilds when one matches your platform; without network access
+to fetch a prebuild you need a C/C++ toolchain (make, g++, python3) so it can compile instead.
 
 The commands below write `switchboard` for `node /path/to/switchboard/dist/cli/bin.js`. Replace it with the absolute
 path of your checkout; an orchestrator launching `serve` needs the absolute path too. Switchboard is not published to
@@ -407,10 +413,10 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
 | `outer_sandbox.required_profiles` | no | List of distinct non-privileged profile names (default empty, which changes nothing). A listed profile is refused with `ELIGIBILITY_NONE` unless bubblewrap and `prlimit` work on the host; because this build does not yet wrap the provider process, a listed profile is refused even when both work (`OUTER_SANDBOX_NOT_ENFORCED`). `doctor` reports the check. See [Trust profiles](#trust-profiles) and LLD section 8.4. |
 
-`<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`. Only
-`claude-code` and `codex` pass the version gate on `main` today; the other ids name registered M4 adapters whose
-manifests admit no version until `switchboard adapters validate` passes a live CLI (ROADMAP §6.8.2). `<id>` is the
-*config* id. The *provider* id used in
+`<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`, `muse-code`. Only
+`claude-code`, `codex` and `kimi-code` pass the version gate on `main` today; the other ids name registered M4
+adapters whose manifests admit no version until `switchboard adapters validate` passes a live CLI (ROADMAP §6.8.2).
+`<id>` is the *config* id. The *provider* id used in
 `routing.provider_preference` of `delegate_task` is the adapter id: `claude`
 for Claude Code (config id `claude-code`), `codex` for Codex. `max_trust_profile` accepts any of the five profile
 names, but see [Trust profiles](#trust-profiles).
@@ -824,19 +830,37 @@ Only one `serve` can hold a data directory at a time.
 
 ### MCP tools
 
-| Tool | What it does |
-| --- | --- |
-| `delegate_task` | Starts a coding task in a new meta-session; returns a `run_id` at once (optional `wait_seconds`, 0 to 60, waits without cancelling). Give exactly one of `workspace_path` and `project` (see `list_projects`). |
-| `continue_task` | Continues an idle meta-session with a new instruction: resumes the same provider's native session, or hands off to another provider (or a fresh session) with a bundle built from Switchboard's own records. A `privileged` meta-session continues on its own provider only. |
-| `get_run` | Returns a run's status, failure code, provider, summary, changed-file count and artifact ids, optionally with events. A run that was retried or failed over names its successor in `superseded_by`; the successor names the run it follows in `retry_of`. |
-| `cancel_run` | Requests cancellation of a run (asynchronous; poll `get_run`). |
-| `get_artifacts` | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. |
-| `list_capabilities` | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. |
-| `get_capacity` | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model. When subscriptions are configured, a `pacing` block lists one entry per subscription with each window's figures and source, `deferred_until` and the gate verdict; a deferred candidate is left out when an undeferred eligible one remains, otherwise the run waits in `QUEUED` until the gate-open time. Read-only; it never calls a provider. |
-| `explain_route` | Why a run went to its provider, from Switchboard's stored route decision: candidates with eligibility reasons, the recorded task features, weights and per-candidate scores, the selection rule and short deciding factors. Price, model quality and sandbox strength are not sourced, so those terms are equal for every provider. Read-only; no model is asked. |
-| `list_projects` | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. |
-| `search_project_context` | Read-only semantic search over a project's indexed contexts (and optionally the global index once the tool is wired for `global`/`both`). Listed only when `rag.embedding` is set and this client has at least one project with retrieval on. See [Retrieval index](#retrieval-index-milestone-12). |
-| `create_project`, `update_project`, `delete_project` | Only for a client with `manage_projects`. Create, revise or delete a dynamic project this client owns. See [Dynamic projects](#dynamic-projects). |
+| Tool | Family | What it does | Availability |
+| --- | --- | --- | --- |
+| `delegate_task` | run | Starts a coding task in a new meta-session; returns a `run_id` at once (optional `wait_seconds`, 0 to 60, waits without cancelling). Give exactly one of `workspace_path` and `project` (see `list_projects`). | Always |
+| `continue_task` | run | Continues an idle meta-session with a new instruction: resumes the same provider's native session, or hands off to another provider (or a fresh session) with a bundle built from Switchboard's own records. A `privileged` meta-session continues on its own provider only. | Always |
+| `get_run` | run | Returns a run's status, failure code, provider, summary, changed-file count and artifact ids, optionally with events. A run that was retried or failed over names its successor in `superseded_by`; the successor names the run it follows in `retry_of`. | Always; `console` sees it |
+| `cancel_run` | run | Requests cancellation of a run (asynchronous; poll `get_run`). | Always (orchestrator only) |
+| `get_artifacts` | run | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. | Always (orchestrator only) |
+| `list_capabilities` | capability | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. | Always (orchestrator only) |
+| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription. Read-only; it never calls a provider. | Always (orchestrator only) |
+| `explain_route` | capability | Why a run went to its provider, from Switchboard's stored route decision: candidates with eligibility reasons, the recorded task features, weights and per-candidate scores, the selection rule and short deciding factors. Price, model quality and sandbox strength are not sourced, so those terms are equal for every provider. Read-only; no model is asked. | Always (orchestrator only) |
+| `list_runs` | control | Runs visible to this client, newest first, with optional project, status and time filters. | Always; `console` sees it |
+| `get_digest` | control | A per-project digest since a cursor: paused state, budgets, needs-attention runs, finished and failed runs, pending approvals and untrusted summaries. | Always; `console` sees it |
+| `pause_project` | control | Pause one of the client's projects: no new run is admitted (running runs finish) until resume. | Always; `console` sees it |
+| `resume_project` | control | Lift a pause this client set on one of its projects. | Always; `console` sees it |
+| `steer_run` | control | Append a note to a run; on a fake adapter it continues the same native session. | Always; `console` sees it |
+| `list_projects` | project | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. | Always (orchestrator only) |
+| `enqueue_work` | queue | Queue a `delegate_task` request on one project this client may use; the controller admits it later under the creating client's ceiling. | stdio only (not on the network transport) |
+| `list_work` | queue | Work items this client queued, highest priority first, then oldest, with optional project and state filters. | stdio only (not on the network transport) |
+| `cancel_work` | queue | Cancel a `PENDING` or `READY` item this client queued; an admitted item stops with `cancel_run` on its run. | stdio only (not on the network transport) |
+| `search_project_context` | retrieval | Read-only semantic search over a project's indexed contexts. See [Retrieval index](#retrieval-index-milestone-12). | Only when retrieval is on for at least one of the client's projects |
+| `list_skills` | skills | Operator-approved skill names this client may inject, with the newest usable version's metadata (no bodies). | Only when `skills.enabled` |
+| `get_skill` | skills | The text of one visible skill version. | Only when `skills.enabled` |
+| `create_project` | project management | Define a client-owned dynamic project (same shape and checks as a configured one). See [Dynamic projects](#dynamic-projects). | Only with `manage_projects: true` |
+| `update_project` | project management | Write a new revision of a dynamic project; a widening revision stays unusable until `projects approve`. | Only with `manage_projects: true` |
+| `delete_project` | project management | Remove a dynamic project once none of its runs is going; its history stays. | Only with `manage_projects: true` |
+| `list_pending_approvals` | approval | Pending approvals for this client, with digests (never scope bodies). | Only with `approval_proxy: true`; `console` sees it |
+| `decide_approval` | approval | Decide a pending approval with its matching digest. | Only with `approval_proxy: true`; `console` sees it |
+
+A `console` tool-profile client sees only `get_digest`, `list_runs`, `get_run`, `delegate_task`, `steer_run`,
+`pause_project` and `resume_project`, plus the two approval tools when it has `approval_proxy`; every other tool needs
+the default `orchestrator` profile. See [Control plane](#control-plane-milestone-14).
 
 Tool schemas are published through MCP `tools/list`.
 
@@ -1059,6 +1083,34 @@ its `remote` is a remote name, never a URL (details below). With `"sign": true` 
 commit with your own Git signing configuration; only GnuPG with a throwaway key has been tried. Approved bypass runs
 are exempt from the push credential rule and from the finalize-only size limits (owner decisions 37 and 44).
 
+### Command reference
+
+Every top-level `switchboard` command, with its purpose, key options and a link to the section that describes it
+(`node scripts/check-docs.mjs` checks that this table names every command in `src/cli/main.ts`). `--config <path>`
+and `--json` work with every command except `serve` (which rejects `--json`: stdout carries MCP framing only). The
+subsections below give the full behaviour; `switchboard --help` prints the same list.
+
+| Command | Purpose | Key options | Details |
+| --- | --- | --- | --- |
+| `serve --client <id>` | Run the MCP server on stdin/stdout for one configured MCP client (logs go to stderr) | `--client` (required), `--config` | [Run as an MCP server](#run-as-an-mcp-server) |
+| `doctor` | Check Node, Git, config, data directory, ledger, retention and disk, then probe each adapter | `--json`, `--config` | [Check the setup with `doctor`](#check-the-setup-with-doctor) |
+| `runs list`, `runs show <id>`, `runs cancel <id>` | List runs newest first, show one run and its events, request cancellation | `--state`, `--limit`, `--json` | [Operator commands](#operator-commands) |
+| `capacity [--provider <id>]` | Per-provider capacity projection: the same data as the `get_capacity` MCP tool (read-only) | `--provider`, `--json` | [Capacity, retries and failover](#capacity-retries-and-failover) |
+| `affinity list`, `affinity reset <project_key>` | Show each project's provider affinity; make the next routing step choose afresh | `--json` | [Routing and affinity](#routing-and-affinity) |
+| `index status`, `index rebuild`, `index clear` | Retrieval index state per store; request a rebuild; delete a store's vectors | project/global argument, `--json` | [Retrieval index](#retrieval-index-milestone-12) |
+| `gc [--apply] [--dry-run]` | Retention clean-up: dry run by default; `--apply` collects (refused while `serve` runs or without `retention.days`) | `--apply`, `--dry-run`, `--json` | [Operator commands](#operator-commands) |
+| `projects list`, `projects show <id>`, `projects validate [<id>]`, `projects approve <id>` | List and inspect configured and dynamic projects, check them, approve or reject a pending dynamic revision | `--revision`, `--reject`, `--json` | [Dynamic projects](#dynamic-projects) |
+| `git push <id>` | Push a meta-session's published commits to the context's configured remote branch (never forced; refused while `serve` runs) | `--json` | [How commits reach Git](#how-commits-reach-git) |
+| `adapters validate <provider>`, `adapters version-canary` | Accept the installed version of a provider CLI (runs one real read-only smoke call); flag CLI upgrades for re-validation | `--json` | [Operator commands](#operator-commands) |
+| `inner status`, `inner test <task>`, `inner resume <task>` | Inner-agent state (read-only), one synthetic fixture through the backend, re-enable a suspended task | `--json` | [Operator commands](#operator-commands) |
+| `approve <run_id>` | Approve the `privileged` run waiting for approval (review it with `runs show` first) | `--json` | [Operator commands](#operator-commands) |
+| `deny <run_id>` | Deny the waiting `privileged` run; it ends `CANCELLED` | `--json` | [Operator commands](#operator-commands) |
+| `pause` | Pause every project: no new run is admitted until resume (an MCP client can pause only its own projects) | `--json` | [Control plane](#control-plane-milestone-14) |
+| `resume` | Lift the operator pause set by `pause` (a project paused by an MCP client stays paused) | `--json` | [Control plane](#control-plane-milestone-14) |
+| `consent hash-passphrase`, `consent pair` | Hash the HTTP consent-page passphrase for config; print a one-time pairing code (Switchboard's own secrets, never a provider sign-in) | `--json` | [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks) |
+| `schedule list`, `schedule show <id>`, `schedule enable <id>`, `schedule disable <id>`, `schedule approve <id>`, `schedule deny <id>`, `schedule create <cron> <project> <template_json>` | List, inspect, enable, disable, approve, reject and create UTC cron schedules (off by default) | `--project` (list), `--json` | [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks) |
+| `skills list`, `skills show <name>[@n]`, `skills add <name>`, `skills approve <name>@<n>`, `skills revoke <name>@<n>`, `skills retire <name>`, `skills unretire <name>`, `skills diff <name>@<a> <name>@<b>` | Skill store: list, inspect, validate and store a version, approve, revoke, retire and diff | `--all`, `--body`, `--file`, `--from-repository`, `--note`, `--json` | [Switchboard-controlled skills](#switchboard-controlled-skills-milestone-16) |
+
 ### Operator commands
 
 ```text
@@ -1070,7 +1122,25 @@ switchboard affinity list
 switchboard affinity reset <project_key>
 switchboard approve <run_id>
 switchboard deny <run_id>
-switchboard gc [--apply]
+switchboard pause
+switchboard resume
+switchboard consent hash-passphrase
+switchboard consent pair
+switchboard schedule list [--project <id>]
+switchboard schedule show <sch_id>
+switchboard schedule enable <sch_id>
+switchboard schedule disable <sch_id>
+switchboard schedule approve <sch_id>
+switchboard schedule deny <sch_id>
+switchboard schedule create <cron> <project> <template_json>
+switchboard skills list [--all]
+switchboard skills show <name>[@n] [--body]
+switchboard skills add <name> --file <path> [--from-repository] [--note <text>]
+switchboard skills approve <name>@<n> [--note <text>]
+switchboard skills revoke <name>@<n> [--note <text>]
+switchboard skills retire <name> / skills unretire <name>
+switchboard skills diff <name>@<a> <name>@<b>
+switchboard gc [--apply] [--dry-run]
 switchboard git push <session_or_run_id>
 switchboard projects list
 switchboard projects show <id>

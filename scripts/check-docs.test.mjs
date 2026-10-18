@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { checkRoadmapTaskStatuses } from "./check-docs.mjs";
+import { checkReadmeReference, checkRoadmapTaskStatuses, extractCliCommands, extractToolNames } from "./check-docs.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(ROOT, "scripts", "check-docs.mjs");
@@ -113,4 +113,105 @@ test("CLI execution on fixture roadmaps enforces status markers and exits with c
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test("extractToolNames reads every tool-name list in the schemas source", () => {
+  const schemas = [
+    "export const TOOL_NAMES = [",
+    '  "delegate_task",',
+    '  "get_run",',
+    "] as const;",
+    'export const PROJECT_TOOL_NAMES = ["create_project", "delete_project"] as const;',
+    'export const SEARCH_TOOL_NAMES = ["search_project_context"] as const;',
+    'export const WORK_QUEUE_TOOL_NAMES = ["enqueue_work"] as const;',
+    'export const SKILL_TOOL_NAMES = ["list_skills", "get_skill"] as const;',
+  ].join("\n");
+  assert.deepEqual(extractToolNames(schemas), [
+    "delegate_task",
+    "get_run",
+    "create_project",
+    "delete_project",
+    "search_project_context",
+    "enqueue_work",
+    "list_skills",
+    "get_skill",
+  ]);
+});
+
+test("extractCliCommands reads the dispatch cases and skips tool-shim", () => {
+  const main = [
+    'if (argv[0] === "tool-shim") {',
+    "  return runToolShim(argv.slice(1), io);",
+    "}",
+    "switch (cmd) {",
+    '  case "serve": {',
+    "    return 0;",
+    "  }",
+    '  case "approve":',
+    '  case "deny": {',
+    "    return 0;",
+    "  }",
+    "  default:",
+    "}",
+  ].join("\n");
+  assert.deepEqual(extractCliCommands(main), ["serve", "approve", "deny"]);
+});
+
+const REFERENCE_README = [
+  "# Title",
+  "",
+  "## Run as an MCP server",
+  "",
+  "### MCP tools",
+  "",
+  "| Tool | Family | What it does | Availability |",
+  "| --- | --- | --- | --- |",
+  "| `get_run` | run | One run. | Always |",
+  "| `steer_run` | control | A note. | Always |",
+  "",
+  "### Command reference",
+  "",
+  "| Command | Purpose | Key options | Details |",
+  "| --- | --- | --- | --- |",
+  "| `serve --client <id>` | The server. | `--client` | [Server](#run-as-an-mcp-server) |",
+  "| `runs list` | Runs. | `--limit` | [Ops](#operator-commands) |",
+  "",
+  "## Next",
+  "",
+].join("\n");
+
+test("checkReadmeReference passes when every tool and command has a row", () => {
+  assert.deepEqual(
+    checkReadmeReference(REFERENCE_README, ["get_run", "steer_run"], ["serve", "runs"], "README.md"),
+    [],
+  );
+});
+
+test("checkReadmeReference failure names the missing MCP tool", () => {
+  const errors = checkReadmeReference(REFERENCE_README, ["get_run", "missing_tool"], ["serve"], "README.md");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /MCP tool `missing_tool` missing from the MCP tools table/);
+});
+
+test("checkReadmeReference failure names the missing CLI command", () => {
+  const errors = checkReadmeReference(REFERENCE_README, ["get_run"], ["serve", "consent"], "README.md");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /CLI command `consent` missing from the command reference table/);
+});
+
+test("checkReadmeReference ignores the control-plane MCP profile matrix", () => {
+  const readme = [
+    "# Title",
+    "",
+    "## Control plane (milestone 14)",
+    "",
+    "### MCP tools",
+    "",
+    "| Surface | Orchestrator (default) |",
+    "| --- | --- |",
+    "| `get_digest`, `list_runs` | yes |",
+    "",
+    ...REFERENCE_README.split("\n").slice(1),
+  ].join("\n");
+  assert.deepEqual(checkReadmeReference(readme, ["get_run"], ["serve", "runs"], "README.md"), []);
 });

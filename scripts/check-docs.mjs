@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Checks the documentation set for broken relative links, broken heading
 // anchors, undefined requirement IDs, roadmap/SRS milestone mismatches,
-// and roadmap task status markers (NFR-MAINT-04, T8.8).
+// roadmap task status markers (NFR-MAINT-04, T8.8), and README reference
+// completeness: every MCP tool in the src/mcp/schemas.ts tool-name lists and
+// every top-level CLI command in the src/cli/main.ts dispatch (except
+// tool-shim) must have a row in README's MCP tools and command reference
+// tables.
 // Usage: node scripts/check-docs.mjs   (exit code 1 on any error)
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
@@ -132,6 +136,89 @@ export function checkRoadmapTaskStatuses(roadmapText, roadmapFile = "docs/ROADMA
     order,
     table,
   };
+}
+
+/** Tool-name lists published by src/mcp/schemas.ts (the check reads them all). */
+export const README_TOOL_LISTS = [
+  "TOOL_NAMES",
+  "PROJECT_TOOL_NAMES",
+  "SEARCH_TOOL_NAMES",
+  "WORK_QUEUE_TOOL_NAMES",
+  "SKILL_TOOL_NAMES",
+];
+
+/** Every tool name in the `export const <LIST> = [...]` arrays of the schemas source text. */
+export function extractToolNames(schemasText) {
+  const out = [];
+  for (const name of README_TOOL_LISTS) {
+    const m = new RegExp(`export const ${name} = \\[([\\s\\S]*?)\\]`).exec(schemasText);
+    if (!m) continue;
+    for (const q of m[1].matchAll(/"([^"]+)"/g)) out.push(q[1]);
+  }
+  return out;
+}
+
+/** Every top-level command of the `switch (cmd)` dispatch in the CLI source text, except tool-shim. */
+export function extractCliCommands(mainText) {
+  const start = mainText.indexOf("switch (cmd)");
+  const body = start === -1 ? mainText : mainText.slice(start);
+  const out = [];
+  for (const m of body.matchAll(/case "([^"]+)":/g)) {
+    if (m[1] === "tool-shim") continue;
+    if (!out.includes(m[1])) out.push(m[1]);
+  }
+  return out;
+}
+
+/**
+ * The body lines of the last section titled `heading` whose text contains a
+ * table headed by `headerPattern`. README has two "### MCP tools" sections (a
+ * profile matrix and the reference table); the header pattern picks the table.
+ */
+export function findReadmeTable(readmeText, heading, headerPattern) {
+  const title = heading.replace(/^#+\s*/, "");
+  const sections = [];
+  let cur = null;
+  for (const line of readmeText.split("\n")) {
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      if (cur) sections.push(cur);
+      cur = { title: h[2].trim(), lines: [] };
+    } else if (cur) cur.lines.push(line);
+  }
+  if (cur) sections.push(cur);
+  const cands = sections.filter((s) => s.title === title && headerPattern.test(s.lines.join("\n")));
+  return cands.length ? cands[cands.length - 1].lines.join("\n") : null;
+}
+
+/**
+ * README must give every MCP tool a `| \`tool\`` row in its MCP tools table
+ * and every top-level CLI command a `| \`command\`` row in its command
+ * reference table. Returns error strings (empty when complete).
+ */
+export function checkReadmeReference(readmeText, toolNames, cliCommands, readmeFile = "README.md") {
+  const errors = [];
+  const mcp = findReadmeTable(readmeText, "### MCP tools", /^\|\s*Tool\s*\|/m);
+  if (mcp === null) {
+    errors.push(`${readmeFile}: missing MCP tools reference table`);
+  } else {
+    for (const t of toolNames) {
+      if (!new RegExp(`^\\|\\s*\`${t}\``, "m").test(mcp)) {
+        errors.push(`${readmeFile}: MCP tool \`${t}\` missing from the MCP tools table`);
+      }
+    }
+  }
+  const ref = findReadmeTable(readmeText, "### Command reference", /^\|\s*Command\s*\|/m);
+  if (ref === null) {
+    errors.push(`${readmeFile}: missing command reference table`);
+  } else {
+    for (const c of cliCommands) {
+      if (!new RegExp(`^\\|\\s*\`${c}\\b`, "m").test(ref)) {
+        errors.push(`${readmeFile}: CLI command \`${c}\` missing from the command reference table`);
+      }
+    }
+  }
+  return errors;
 }
 
 export function runDocsCheck({ roadmapPathOverride, taskStatusesOnly = false } = {}) {
@@ -291,6 +378,23 @@ export function runDocsCheck({ roadmapPathOverride, taskStatusesOnly = false } =
     if (result.table) {
       console.log(result.table);
     }
+  }
+
+  // 6. README reference completeness: every MCP tool in the schemas tool-name
+  // lists and every top-level CLI command in the main dispatch (except
+  // tool-shim) has a row in README's reference tables.
+  const readmePath = join(root, "README.md");
+  const schemasPath = join(root, "src/mcp/schemas.ts");
+  const mainPath = join(root, "src/cli/main.ts");
+  if (existsSync(readmePath) && existsSync(schemasPath) && existsSync(mainPath)) {
+    const toolNames = extractToolNames(readFileSync(schemasPath, "utf8"));
+    const cliCommands = extractCliCommands(readFileSync(mainPath, "utf8"));
+    for (const e of checkReadmeReference(readFileSync(readmePath, "utf8"), toolNames, cliCommands)) {
+      errors.push(e);
+    }
+  } else {
+    if (!existsSync(schemasPath)) err(schemasPath, "schemas.ts missing");
+    if (!existsSync(mainPath)) err(mainPath, "cli main.ts missing");
   }
 
   if (errors.length) {
