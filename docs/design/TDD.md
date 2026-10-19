@@ -300,7 +300,10 @@ fallback. The cells are the adapters' own compiled cells:
 - Grok Build uses its narrowest writable cell (network `off`, `--sandbox strict`), because the read-only fallback cell
   cannot hold the edit.
 - Kimi Code uses its ACP cell (`privileged` without `bypass`, shell `none`) for the smoke, and `--prompt` for its
-  bypass run.
+  bypass run. *Update 2026-10-19 (bypass-only gate, owner-level ruling relayed 2026-10-19 08:45 CDT):* the ACP smoke
+  cell no longer compiles (`Ineligible: PROFILE_UNSUPPORTED`, `kimiBypassOnlyGate` in
+  `src/adapters/kimi/adapter.ts`), so a `live-test kimi` run stops at the gate until the plug-in moves the smoke cell
+  to the bypass cell (see [ROADMAP T4.68](../ROADMAP.md#68-m4-adapter-expansion-tasks)).
 
 The stream checks read the adapter's normalized events (`session_bound`, `result`, `tool_call`, `unknown`); Kimi's
 `parseLine` hook feeds stored ACP messages to `parseEvent` as objects and skips control-plane responses. Each plug-in
@@ -310,7 +313,8 @@ operator's `live-run-ext.sh` meters):
 - `A-M1`, `O-M1`, `U-M1`, `G-M1`, `K-M1`: a Git-write attempt (FR-GIT-01).
 - `A-M2`, `O-M2`, `U-M2`, `G-M2`: the out-of-worktree canary (FR-POL-06).
 - `A-M3`, `O-M3`, `U-M3`, `G-M3`: the fake-HOME credential canary (FR-POL-06).
-- `K-M2`: both canaries in the ACP cell.
+- `K-M2`: both canaries in the ACP cell (likewise `Ineligible` since the 2026-10-19 08:45 CDT bypass-only ruling;
+  the plug-in must move it to the bypass cell — see [ROADMAP T4.68](../ROADMAP.md#68-m4-adapter-expansion-tasks)).
 - `K-M3`: the approved `--prompt` bypass run, with a commit and both canaries.
 
 Kimi Code adds two evidence checks for T4.68 ([ROADMAP §4.2](../ROADMAP.md#42-owner-decisions) decision 74, pure
@@ -1677,7 +1681,7 @@ once verified; it is always a fresh `switchboard-` path inside the worktree, nev
 | Antigravity | Approved bypass only ([§4.4](#44-antigravity-agy-m4)) | `GEMINI.md`, `AGENTS.md`, `.agents/*` (live) | none verified (`.agents` skills directory is a third-party report) | `prompt_prefix` | The only documented locations are tracked instruction files or config the ADR-0039 guard refuses in `disabled` cells |
 | Cursor | Approved bypass only, `--trust` ([§4.5](#45-cursor-cli-m4)) | `AGENTS.md`, `CLAUDE.md`, `.cursor/rules` (live: `AGENTS.md` and `.cursor/rules` reach the model) | `.cursor/rules/switchboard-<name>.mdc` (Unverified: rule file front matter); `NOT_CHECKED` 2026-10-19 (decision 70) | `prompt_prefix` | Strongest candidate; the rule file format needs T16.8 |
 | OpenCode | Approved bypass with `enabled` only ([§4.6](#46-opencode-m4)) | `AGENTS.md`; `CLAUDE.md` fallback; `opencode.json` `instructions` | none | `prompt_prefix` | Native would mean editing `AGENTS.md` or writing `opencode.json` (repository config); both are forbidden |
-| Kimi Code | Approved bypass (`-p`) and restricted ACP cells ([§4.7](#47-kimi-code-m4-blocked-by-b-1)) | `.kimi-code/*` agent files once trusted; `AGENTS.md` unknown | `--skills-dir <data_dir>/runs/<run_id>/skills` outside the worktree (Q-108) | `prompt_prefix` | `--skills-dir` is never emitted today; using it changes the argv and needs ADR-0035/0037 registry work and a live check |
+| Kimi Code | Approved bypass (`-p`) only (bypass-only since the 2026-10-19 08:45 CDT ruling; restricted ACP cells no longer compile — [§4.7](#47-kimi-code-m4-blocked-by-b-1)) | `.kimi-code/*` agent files once trusted; `AGENTS.md` unknown | `--skills-dir <data_dir>/runs/<run_id>/skills` outside the worktree (Q-108) | `prompt_prefix` | `--skills-dir` is never emitted today; using it changes the argv and needs ADR-0035/0037 registry work and a live check |
 | Muse Code | Approved bypass with `enabled` (`--trust-workspace`) ([§4.8](#48-muse-code-m4)) | `AGENTS.md` (first found), `.agents/skills`, `.codex/skills`, `.claude/skills` in a trusted workspace | `.agents/skills/switchboard-<name>/SKILL.md` (Unverified); `NOT_CHECKED` 2026-10-19 (decision 70) | `prompt_prefix` | Workspace skills load only in the trusted cell; needs T16.8 |
 | Fake | Every cell | Test-declared | `.fake/skills/switchboard-<name>.md` | `native` in tests only | Exercises the native path, exclusions and cleanup in CI (T16.6) |
 
