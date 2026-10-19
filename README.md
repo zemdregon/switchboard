@@ -29,8 +29,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
   implemented and tested on fakes, as are the controller confinement checks of T3.8b (owner decision 63; credential
   reads, network egress and a push to an explicit URL are not enforced on the fake by design). The operator's live
-  malicious-fixture leg (T3.9) is `Partial`: the Claude Code leg ran on 2026-10-18 (C-G2 `HELD` at the outcome level;
-  C-M2 and C-M3 `NOT_CHECKED`; the Codex half waits for the 2026-10-22 quota reset). See
+  malicious-fixture leg (T3.9) is `Done` (2026-10-19, Delegated agent work, not owner-approved): the Claude Code leg
+  ran (C-G2 `HELD` at the outcome level; C-M2 `NOT_CHECKED`; C-M3 `ESCAPED`, opening ROADMAP R-74) and the Codex half
+  ran in the decision 71 container login (X-G1 `HELD`; X-M2 `HELD` at the outcome level; X-M3 `NOT_CHECKED`). See
   [ROADMAP §6.5](docs/ROADMAP.md#65-m3-isolation-tasks) for each task.
 - **Milestone 9 (projects and controlled commits) is `Partial`.** Projects, the agent `commit` tool, finalize-only
   commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
@@ -2704,11 +2705,13 @@ approved scope explicitly sets `bypass` ([ADR-0017](docs/adr/0017-approved-privi
 Code an approved bypass run drops `--restricted`, which refuses bypass, and keeps the other isolation flags
 ([ADR-0018](docs/adr/0018-claude-bypass-omits-restricted.md)). Claude's Git deny rules held under bypass in a live
 check on 2026-10-13 (six commit and ref spellings, directly and through `serve` with an approved scope; checks 14 and
-16 in [the live checks](docs/research/live-checks-2026-10-13.md)), and the T3.9 Claude leg on 2026-10-18 held C-G2
-at the outcome level only (an `edit-untrusted` commit task left `main` and the refs unchanged, but no `Bash` was in
-`--tools`, so the deny-rule matcher itself was not exercised; C-M3 `NOT_CHECKED`, the approved bypass run ending
-`FAILED` before Claude Code started — see
-[the live checks](docs/research/live-checks-2026-10-18-claude-malicious.md) and ROADMAP T3.9), so the
+16 in [the live checks](docs/research/live-checks-2026-10-13.md)), and the T3.9 Claude legs on 2026-10-18 and
+2026-10-19 held C-G2 at the outcome level only (an `edit-untrusted` commit task left `main` and the refs unchanged,
+but no `Bash` was in `--tools`, so the deny-rule matcher itself was not exercised; the 2026-10-19 C-M3 rerun under
+an approved bypass scope with `Bash` and the Git deny rules left the refs unchanged at the outcome level, but the
+commit attempt itself was not confirmed, and the same run printed an out-of-worktree canary — `ESCAPED`, recorded
+as ROADMAP R-74; see
+[the live checks](docs/research/live-checks-2026-10-19-t39-malicious.md) and ROADMAP T3.9), so the
 deny-rules-under-bypass claim still rests on the 2026-10-13 checks of one version (ROADMAP R-38). That gap concerns
 agents running on your host.
 Container environments (milestone 10, **`Partial` on `main`**) are meant to close it: their image has no Git client,
@@ -2769,8 +2772,8 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
 
 This is a summary of design intent and the implemented checks, not a security guarantee. The controller side is tested
 against hostile repository content in CI with a fake provider (`test/malicious/`, ROADMAP T3.8); the isolation of the
-real provider CLIs is partly covered by the operator's live leg (ROADMAP T3.9, `Partial`: Claude C-G2 `HELD`
-2026-10-18, the bypass and Codex checks still `NOT_CHECKED`).
+real provider CLIs is partly covered by the operator's live leg (ROADMAP T3.9, `Done` 2026-10-19: Claude C-G2 `HELD`
+at the outcome level, C-M3 `ESCAPED` (ROADMAP R-74), Codex X-G1 `HELD` and X-M2 `HELD` at the outcome level).
 Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Known limitations
