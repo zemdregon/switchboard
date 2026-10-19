@@ -1,4 +1,5 @@
 import type { AdapterRegistry } from "../adapters/index.js";
+import type { LoadReader } from "../capacity/host-load.js";
 import type { ContainerRuntime } from "../environment/runtime.js";
 import type { GraderExec } from "../eval/grader.js";
 import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
@@ -37,6 +38,8 @@ export interface CliIo {
   readonly diskProbe?: DiskProbe;
   /** Test seam (T8.14): spawns the evaluation grader's runtime argv instead of the real runtime client. */
   readonly graderExec?: GraderExec;
+  /** Test seam (T3.24): the load reader `doctor` uses for `host.max_load1` instead of `os.loadavg()`. */
+  readonly loadReader?: LoadReader;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */
