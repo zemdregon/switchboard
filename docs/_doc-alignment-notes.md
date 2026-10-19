@@ -813,3 +813,16 @@ as history.
   (`src/exec/proc-info.ts`, `src/reconcile/process.test.ts` over injected macOS tables) still run in Linux
   CI, so the verification method still holds; narrowing it is the SRS owner's call. SDD NFR-PORT-02 row
   still points at TDD §2, which still documents the CI history.
+
+## 45. HLD COMP-TEL row still cites `FR-TEL-01..03` (from PR #769, not blocking)
+
+- [HLD §2](design/HLD.md) COMP-TEL cites `FR-TEL-01..03`, while [SDD](design/SDD.md) (updated by this PR) maps
+  FR-TEL-06 to COMP-TEL, COMP-ADP and COMP-RTE. FR-TEL-05/FR-TEL-06 postdate the HLD row (both added 2026-10-19
+  by the enhancement discovery), so this PR widens a coverage gap it did not create: the row already excluded
+  both IDs before the branch.
+- Left unchanged: extending the HLD component range is the HLD owner's call (cf. items 8 and 9 for the same
+  precedent), the SDD covers FR-TEL-06, and `node scripts/check-docs.mjs` passes. The TB-6 mitigation cell on
+  the same page is scoped in this pass ("no export listener; the T8.15 receiver is separate") because this PR
+  otherwise makes its "no listener" parenthetical read as global. It does not block PR #769 (the T8.15 status,
+  evidence and as-built behaviour are cited in the ROADMAP T8.15 row, the M8 row, LLD §20.13, the SDD FR-TEL-06
+  row, the SRS FR-TEL-06 note, TDD §3.1, the README telemetry section and config table, and ADR-0062).

@@ -2787,11 +2787,12 @@ credential-like values (including OAuth access or refresh tokens, API keys and w
 paths (use run-relative paths), provider reasoning text (NFR-PRIV-02), MCP request or response bodies, and inner-agent
 prompt or response text. Large payloads are artifacts referenced by ID and hash only, never inlined on spans.
 
-**Configuration (FR-TEL-02, NFR-PRIV-01).** One optional key, documented in [TDD §3.1](TDD.md#31-configuration):
+**Configuration (FR-TEL-02, FR-TEL-06, NFR-PRIV-01).** Two optional keys, documented in [TDD §3.1](TDD.md#31-configuration):
 
 | Key | Default | Behaviour |
 | --- | --- | --- |
 | `telemetry.otlp_endpoint` | absent (no export) | When omitted or empty, Switchboard does not load `@opentelemetry/api` or an OTLP exporter at startup, opens no telemetry listener, and makes no outbound OTLP connection (NFR-PRIV-01). When set, it must be an `http` or `https` URL validated at config load (T8.1); traces export to that endpoint only. |
+| `telemetry.provider_otlp` | `false` (no receiver) | When anything but `true`, no per-run receiver opens for any run. When `true`, a run whose provider manifest cites `otlp_metrics` gets one loopback listener (FR-TEL-06, T8.15, [ADR-0062](../adr/0062-per-run-provider-otlp-metrics-receiver.md); [§20.13](#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417)). |
 
 **Lazy load and export pipeline (T8.1, ADR-0012).** OTel packages are imported only after a non-empty
 `telemetry.otlp_endpoint` is loaded, on first span export, not at module top level, so configs without telemetry match
