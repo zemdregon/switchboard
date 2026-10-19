@@ -2086,7 +2086,8 @@ Config id `opencode`; routing and `list_capabilities` id `opencode`. Switchboard
 2026-10-14 in [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md),
 `opencode v2.0.23`). The prompt is one argv word after `--`, not stdin (an Assumption in the adapter). Every compiled
 invocation sets `OPENCODE_DISABLE_AUTOUPDATE=1` with an environment allowlist of `PATH` and `HOME` only. Switchboard never
-sets `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` (ignored on that version in the live check).
+sets `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` (env/inline config ignored on that version in the live
+checks, reconfirmed 2026-10-18).
 
 The compliance manifest range admits no version until an operator runs `switchboard adapters validate opencode` and
 commits the manifest diff (ROADMAP T4.58). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for OpenCode. The
@@ -2104,7 +2105,8 @@ runs `opencode auth list --format json --standalone` during preflight.
 
 The adapter compiles only what [TDD §4.6.1](docs/design/TDD.md#461-opencode-native-controls-per-profile-and-platform-t450)
 records for the 2026-10-14 live check (Q-64, Q-83): every profile other than an approved `privileged` bypass scope is
-refused (`PROFILE_UNSUPPORTED`), because no per-run deny took effect, the default runs shell commands including Git
+refused (`PROFILE_UNSUPPORTED`), because no env/inline per-run deny took effect (a project-config deny takes effect but
+matches lexically only: row 7 ESCAPED on 2026-10-18), the default runs shell commands including Git
 writes, no sandbox is documented and a repository's `opencode.json` and `AGENTS.md` load.
 
 | Profile | Available now | Effect in this version |
@@ -2154,8 +2156,9 @@ they stay unset ([#290](https://github.com/zemdregon/switchboard/pull/290)). The
 live check (`error.status`, `error.response`, `timestamp`, `messageID`, `step_start.snapshot`) never widen the usage
 record or reach an event; HTTP 429 `status` on an unmapped error type is never `RATE_LIMIT_TRANSIENT`; session ID
 aliases (`sessionId`, `session_id`) never bind a session; model aliases (`model_id`, `modelId`) never set model;
-and input aliases (`cmd`, `CommandLine`, `file_path`, `AbsolutePath`) never populate command or target (Assumption
-gap: input keys unrecorded). `ParseState` instances isolate `seenParts` WeakMap state across separate runs. Clean
+and input aliases (`cmd`, `CommandLine`, `file_path`, `AbsolutePath`) never populate command or target (input key
+names recorded 2026-10-18: `command` was the only key on every shell `tool_use`; values never captured, so other
+spellings stay Assumptions). `ParseState` instances isolate `seenParts` WeakMap state across separate runs. Clean
 turns without text leave summary undefined; long text is clipped to 2,000 characters; and bounds clipping limits tool
 name to 64 chars and target to 512 chars ([#311](https://github.com/zemdregon/switchboard/pull/311)). The
 `classifyFailure` precedence chain is pinned on synthetic fixtures: supervisor exit outcomes (`protocol_error`,
@@ -2171,9 +2174,12 @@ clean run without summary, an error with structured `type` and no string message
 none or non-string, root session ID wins over part on the same line, empty id is absent, `backing_provider`/`model`
 fall back to part while a non-string root value shadows the part (dropped, never merged), and `step_finish` without a
 part id is counted every time while one with no readable counters emits no usage but still the result.
-Rate-limit and permission-denial stream shapes and the keys of `tool_use.part.state.input` are still unrecorded (no real
+Rate-limit and sandbox stream shapes are still unrecorded (no real
 OpenCode limit capture exists yet; a limitation carried by ROADMAP T4.58 under owner decision 65 (a), with T4.53 Done
-against its Done-when on synthetic fixtures). Supervisor-replayed JSONL fixtures pin today's gaps without inventing
+against its Done-when on synthetic fixtures). A project-config denial shape was recorded on 2026-10-18 (plain
+`git commit`/`git push` denied as a shell `error` with refusal text; spelling variants escaped), and shell
+`tool_use` input key names are recorded (`command` the only key; values never captured). Supervisor-replayed JSONL
+fixtures pin today's gaps without inventing
 native fields
 ([#274](https://github.com/zemdregon/switchboard/pull/274),
 [#290](https://github.com/zemdregon/switchboard/pull/290),
@@ -2201,14 +2207,17 @@ replays a non-string `part.type` followed by `stop` to `OUTPUT_PROTOCOL_ERROR`
 no message at exit 1 to `AUTH_REQUIRED` ([#357](https://github.com/zemdregon/switchboard/pull/357)); and
 `part_session_empty_text` replays a part-only `sessionID`, empty text and an id-less `stop` at exit 0 to success with
 the id bound and no summary ([#357](https://github.com/zemdregon/switchboard/pull/357)). Closing the remaining gaps
-needs operator captures of native refusal fields and of `tool_use` input keys (ROADMAP T4.58). T4.53 is `Done` against
+needs operator captures of native refusal field values and of `tool_use` input values (key names recorded
+2026-10-18; ROADMAP T4.58). T4.53 is `Done` against
 its Done-when on synthetic fixtures (owner decision 65 (a)) with those native shapes carried by T4.58; T4.52, T4.54,
 T4.55 and T4.57 are `Done` against their Done-when on synthetic fixtures.
 
 ### Git and commits
 
 `list_capabilities` reports `gitWriteControl` **`none-documented`**: OpenCode documents `bash` deny patterns in
-configuration, but on opencode v2.0.23 no per-run deny took effect in the live check, so Switchboard does not emit a
+configuration, but on opencode v2.0.23 a project-config deny holds only for lexical matches (row 7 ESCAPED on
+2026-10-18: plain `git commit`/`git push` denied, `git -C . commit`, `env git commit` and `sh -c 'git commit'`
+committed), so Switchboard does not emit a
 deny rule. Shell allowlist entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01),
 including on an approved bypass scope.
 
@@ -2786,8 +2795,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   of those keys stays invisible to the guard; a hostile call without a Git write still ends `ok` in bypass runs
   (pinned). Live blocked outcomes need T4.38. See ROADMAP T4.36 for the full gap list.
 - **OpenCode malicious-fixture leg is Done against its Done-when on fixtures only (ROADMAP T4.56, owner decision 65 (b));
-  the OpenCode parser likewise (ROADMAP T4.53, owner decision 65 (a)): no native rate-limit, denial or sandbox shape
-  exists (no real OpenCode limit capture has been made), the `tool_use` input keys are unrecorded, and a native vendor
+  the OpenCode parser likewise (ROADMAP T4.53, owner decision 65 (a)): no native rate-limit or sandbox shape
+  exists (no real OpenCode limit capture has been made); a project-config denial shape and shell `tool_use` input
+  key names were recorded on 2026-10-18 (`command` the only key; values never captured), and a native vendor
   or model in the stream was observed absent on 2026-10-17, all carried by T4.58.** CI runs
   `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/opencode.case.ts` on synthetic `--format json` streams (no `opencode` installed; no
