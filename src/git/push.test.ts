@@ -20,6 +20,7 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "../artifacts/index.js";
+import { needsAttentionOf } from "../control/needs-attention.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
 import type { PolicySnapshot } from "../policy/types.js";
@@ -36,6 +37,7 @@ import {
   publishRefFor,
   pushArgs,
   pushEnv,
+  SecretScanAllowError,
 } from "./index.js";
 
 const GIT_ENV = {
@@ -722,5 +724,222 @@ describe("credential-reach rule (BR-31, FR-GIT-06)", () => {
       ok: false,
       reason: "bypass_run",
     });
+  });
+});
+
+describe("pre-push secret scan (T9.14; FR-GIT-11, FR-CTL-03; ADR-0061; LLD §20.9)", () => {
+  // Synthetic canaries (fake shapes, never real credentials). `CANARY` is an AWS access-key-id shape.
+  const CANARY = "AKIACANARY0000000000";
+  const CANARY_RULE = "aws_access_key_id";
+  const TOKEN = `ghp_canary${"0".repeat(30)}`;
+
+  /** A RUNNING run that committed `content` at `file` through the commit library. */
+  async function committedContent(content: string, file = "creds.txt", r?: Awaited<ReturnType<typeof running>>) {
+    const run = r ?? (await running());
+    const full = path.join(run.wt, file);
+    mkdirSync(path.dirname(full), { recursive: true });
+    writeFileSync(full, content);
+    const c = await publisher.commit({
+      runId: run.runId,
+      message: `Add ${file}`,
+      identity: IDENTITY,
+      projectId: "web",
+      contextId: "main",
+    });
+    return { ...run, sha: c.sha };
+  }
+
+  const hitEvents = () =>
+    db
+      .prepare("SELECT run_id, payload_json FROM run_event WHERE type = 'secret_scan_hit' ORDER BY ts, id")
+      .all()
+      .map((r) => {
+        const row = r as { run_id: string; payload_json: string };
+        return { run_id: row.run_id, p: JSON.parse(row.payload_json) as Record<string, unknown> };
+      });
+
+  const attention = (runId: string) =>
+    needsAttentionOf(ledger, ledger.getRunRecord(runId) as NonNullable<ReturnType<Ledger["getRunRecord"]>>, {
+      now: NOW,
+    });
+
+  it("a clean diff pushes and the git_push event records the scan summary from the base checkpoint", async () => {
+    const c = await committedContent("nothing secret\n", "notes.txt");
+    const r = await pusher().push({ metaSessionId: c.sessionId, requestedBy: "operator" });
+    expect(r).toMatchObject({ outcome: "ACCEPTED", pushed: true, headSha: c.sha });
+    expect(remoteRefs(bare).sort()).toEqual(["refs/heads/main", `refs/heads/sb/${c.sessionId}`].sort());
+    const base = refSha(repo, "main");
+    expect(pushEvents()[0]?.p.secret_scan).toEqual({
+      from: base,
+      hit_count: 0,
+      allowed_count: 0,
+      binary_count: 0,
+      binary_paths: [],
+    });
+    expect(hitEvents()).toEqual([]);
+    expect(attention(c.runId)).toEqual({ active: false });
+  });
+
+  it("a canary in an added line refuses with SECRET_SCAN_BLOCKED under policy branch and nothing reaches the remote", async () => {
+    const c = await committedContent(`first line\n${CANARY}\n`);
+    const before = remoteRefs(bare);
+    const r = await pusher().push({
+      metaSessionId: c.sessionId,
+      requestedBy: "agent_tool",
+      runId: c.runId,
+      agentReach: { ok: true },
+    });
+    expect(r).toMatchObject({
+      outcome: "REFUSED_POLICY",
+      reason: "SECRET_SCAN_BLOCKED",
+      toolCode: "SECRET_SCAN_BLOCKED",
+      pushed: false,
+      headSha: c.sha,
+    });
+    expect(remoteRefs(bare)).toEqual(before);
+    expect(refSha(bare, `refs/heads/sb/${c.sessionId}`)).toBe("");
+    expect(refSha(repo, `refs/remotes/origin/sb/${c.sessionId}`)).toBe("");
+    // The record: one row, the event with the summary, one hit event with rule id, path and line; never the value.
+    expect(pushRows()).toHaveLength(1);
+    expect(pushRows()[0]).toMatchObject({ outcome: "REFUSED_POLICY", detail: "SECRET_SCAN_BLOCKED", run_id: c.runId });
+    expect(pushEvents()[0]?.p).toMatchObject({
+      reason: "SECRET_SCAN_BLOCKED",
+      secret_scan: { hit_count: 1, allowed_count: 0, binary_count: 0 },
+    });
+    expect(hitEvents()).toEqual([
+      {
+        run_id: c.runId,
+        p: { stage: "push", rule_id: CANARY_RULE, path: "creds.txt", line: 2, ref: `refs/heads/sb/${c.sessionId}` },
+      },
+    ]);
+    expect(ledgerText()).not.toContain(CANARY);
+    // FR-CTL-03: the run needs attention with the closed reason.
+    expect(attention(c.runId)).toEqual({ active: true, reason: "secret_scan_blocked" });
+  });
+
+  it("an exempt approved bypass run is refused the same way: no request field or scope changes the result", async () => {
+    const c = await committedContent(`token: ${TOKEN}\n`, "src/config.ts");
+    const r = await pusher().push({
+      metaSessionId: c.sessionId,
+      requestedBy: "agent_tool",
+      runId: c.runId,
+      agentReach: { ok: true, reason: "bypass_exempt" },
+    });
+    expect(r).toMatchObject({
+      outcome: "REFUSED_POLICY",
+      reason: "SECRET_SCAN_BLOCKED",
+      toolCode: "SECRET_SCAN_BLOCKED",
+    });
+    expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+    expect(pushEvents()[0]?.p).toMatchObject({ credential_reach: "bypass_exempt", reason: "SECRET_SCAN_BLOCKED" });
+    expect(hitEvents().map((e) => e.p)).toEqual([
+      { stage: "push", rule_id: "github_token", path: "src/config.ts", line: 1, ref: `refs/heads/sb/${c.sessionId}` },
+    ]);
+    expect(ledgerText()).not.toContain(TOKEN);
+    expect(attention(c.runId)).toEqual({ active: true, reason: "secret_scan_blocked" });
+    // Repeating the push with any other verdict shape gives the same answer; the push library has no override input.
+    const again = await pusher().push({ metaSessionId: c.sessionId, requestedBy: "operator" });
+    expect(again).toMatchObject({ outcome: "REFUSED_POLICY", reason: "SECRET_SCAN_BLOCKED" });
+    expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+  });
+
+  it("only the outgoing diff is scanned: a canary already in the base tree does not block a clean push", async () => {
+    writeFileSync(path.join(repo, "legacy.txt"), `${CANARY}\n`);
+    g(repo, "add", "-A");
+    g(repo, "commit", "-q", "-m", "operator's own history");
+    g(repo, "push", "-q", "origin", "main");
+    const c = await committedContent("clean\n", "clean.txt");
+    const r = await pusher().push({ metaSessionId: c.sessionId, requestedBy: "operator" });
+    expect(r).toMatchObject({ outcome: "ACCEPTED", pushed: true });
+    expect(pushEvents()[0]?.p.secret_scan).toMatchObject({ hit_count: 0, from: refSha(repo, "main") });
+  });
+
+  it("after an accepted push the scan starts at the remote-tracking tip; a later clean push clears the flag", async () => {
+    const a = await committedContent("clean\n", "a.txt");
+    const first = await pusher().push({ metaSessionId: a.sessionId, requestedBy: "operator" });
+    expect(first).toMatchObject({ outcome: "ACCEPTED", pushed: true });
+    expect(refSha(repo, `refs/remotes/origin/sb/${a.sessionId}`)).toBe(a.sha);
+
+    const b = await committedContent(`${CANARY}\n`, "b.txt", a);
+    const second = await pusher().push({ metaSessionId: a.sessionId, requestedBy: "operator" });
+    expect(second).toMatchObject({ outcome: "REFUSED_POLICY", reason: "SECRET_SCAN_BLOCKED", headSha: b.sha });
+    expect(pushEvents()[1]?.p.secret_scan).toMatchObject({ from: a.sha, hit_count: 1 });
+    expect(refSha(bare, `refs/heads/sb/${a.sessionId}`)).toBe(a.sha); // the remote did not move
+    expect(attention(a.runId)).toEqual({ active: true, reason: "secret_scan_blocked" });
+
+    // A commit that removes the canary again: the outgoing diff (tracking tip..head) is clean, the push goes through.
+    rmSync(path.join(a.wt, "b.txt"));
+    const c = await publisher.commit({
+      runId: a.runId,
+      message: "Remove b.txt",
+      identity: IDENTITY,
+      projectId: "web",
+      contextId: "main",
+    });
+    const third = await pusher().push({ metaSessionId: a.sessionId, requestedBy: "operator" });
+    expect(third).toMatchObject({ outcome: "ACCEPTED", pushed: true, headSha: c.sha });
+    expect(pushEvents()[2]?.p.secret_scan).toMatchObject({ from: a.sha, hit_count: 0 });
+    expect(refSha(bare, `refs/heads/sb/${a.sessionId}`)).toBe(c.sha);
+    expect(attention(a.runId)).toEqual({ active: false });
+    expect(ledgerText()).not.toContain(CANARY);
+  });
+
+  it("an operator allowlist entry (rule id and path glob) lets the push through and is counted; other paths stay blocked", async () => {
+    const c = await committedContent(`${CANARY}\n`, "fixtures/sample.txt");
+    const allowed = new GitPusher({
+      db,
+      resolveContext: () => ctx,
+      sourceEnv: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: path.join(home, ".config") },
+      secretScanAllow: [{ rule_id: CANARY_RULE, path: "fixtures/**" }],
+      ids: createIdGenerator(),
+      now: () => NOW,
+    });
+    const r = await allowed.push({ metaSessionId: c.sessionId, requestedBy: "operator" });
+    expect(r).toMatchObject({ outcome: "ACCEPTED", pushed: true });
+    expect(pushEvents()[0]?.p.secret_scan).toMatchObject({ hit_count: 0, allowed_count: 1 });
+
+    const d = await committedContent(`${CANARY}\n`, "src/real.txt");
+    const r2 = await allowed.push({ metaSessionId: d.sessionId, requestedBy: "operator" });
+    expect(r2).toMatchObject({ outcome: "REFUSED_POLICY", reason: "SECRET_SCAN_BLOCKED" });
+    expect(hitEvents().map((e) => e.p.path)).toEqual(["src/real.txt"]);
+
+    expect(
+      () =>
+        new GitPusher({
+          db,
+          resolveContext: () => ctx,
+          secretScanAllow: [{ rule_id: "no_such_rule", path: "**" }],
+        }),
+    ).toThrow(SecretScanAllowError);
+  });
+
+  it("the scan runs after every other refusal: policy none still refuses as POLICY_NONE and scans nothing", async () => {
+    const c = await committedContent(`${CANARY}\n`);
+    ctx = { ...ctx, policy: "none" };
+    const r = await pusher().push({ metaSessionId: c.sessionId, requestedBy: "operator" });
+    expect(r).toMatchObject({ outcome: "REFUSED_POLICY", reason: "POLICY_NONE" });
+    expect(pushEvents()[0]?.p.secret_scan).toBeUndefined();
+    expect(hitEvents()).toEqual([]);
+  });
+});
+
+describe("pre-push secret scan range trust (T9.14, LLD §20.9)", () => {
+  it("a remote-tracking ref not written by a controller push does not shorten the range", async () => {
+    const CANARY = "AKIACANARY0000000000";
+    const r = await running();
+    writeFileSync(path.join(r.wt, "creds.txt"), `${CANARY}\n`);
+    const c = await publisher.commit({
+      runId: r.runId,
+      message: "Add creds.txt",
+      identity: IDENTITY,
+      projectId: "web",
+      contextId: "main",
+    });
+    // Something other than a controller push points the tracking ref at the head: scanning head..head would be empty.
+    g(repo, "update-ref", `refs/remotes/origin/sb/${r.sessionId}`, c.sha);
+    const res = await pusher().push({ metaSessionId: r.sessionId, requestedBy: "operator" });
+    expect(res).toMatchObject({ outcome: "REFUSED_POLICY", reason: "SECRET_SCAN_BLOCKED" });
+    expect(pushEvents()[0]?.p.secret_scan).toMatchObject({ from: refSha(repo, "main"), hit_count: 1 });
+    expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
   });
 });

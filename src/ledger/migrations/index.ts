@@ -21,6 +21,7 @@ import { sql as sql0020 } from "./0020_project_schedule.js";
 import { sql as sql0021 } from "./0021_skill_store.js";
 import { sql as sql0022 } from "./0022_dependency_seed.js";
 import { sql as sql0023 } from "./0023_ci_fix_cap.js";
+import { sql as sql0024 } from "./0024_ci_transient.js";
 import { sql as sql0025 } from "./0025_eval_result.js";
 
 export interface Migration {
@@ -56,5 +57,6 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 21, name: "skill_store", sql: sql0021 },
   { version: 22, name: "dependency_seed", sql: sql0022, foreignKeysOff: true },
   { version: 23, name: "ci_fix_cap", sql: sql0023 },
+  { version: 24, name: "ci_transient", sql: sql0024 },
   { version: 25, name: "eval_result", sql: sql0025 },
 ];

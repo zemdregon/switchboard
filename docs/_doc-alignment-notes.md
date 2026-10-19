@@ -115,6 +115,12 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   COMP-RTE `FR-QUE-01..02`. Left unchanged for the same reason: re-attribution is the HLD owner's call, the SDD
   covers FR-CTL-14, and `node scripts/check-docs.mjs` passes. It does not block PR #759.
 
+  **Update 2026-10-19 (doc-align gate for PR #764, T9.14):** this PR widens the same gap by one more ID. Its SDD
+  row maps FR-GIT-11 to COMP-GIT, COMP-POL and COMP-LED while the HLD COMP-GIT row still reads `FR-GIT-01..09`
+  (which already excluded FR-GIT-10, pre-existing). Left unchanged for the same reason: re-attribution is the
+  HLD owner's call, the SDD covers FR-GIT-11, and `node scripts/check-docs.mjs` passes. It does not block
+  PR #764.
+
 ## 10. M7 wave-B planning notes vs Done rows (pre-existing, not from PR #645)
 
 - The §6.12 sequencing notes still say "T7.8 is blocked on T7.12 (its row)", that T7.9 and T7.12 "wait for
@@ -653,7 +659,7 @@ as history.
 ## 38. CI Linux job timeout 10 -> 20 minutes (PR #751, no doc impact, checked 2026-10-19)
 
 - PR #751 changes only `timeout-minutes: 10` to `20` for the Linux job in
-  `.github/workflows/ci.yml` (the macOS job already uses 20).
+  `.github/workflows/ci.yml` (the macOS job also used 20 before its removal in PR #761).
 - No document states a CI job timeout value: [TDD §3.8](design/TDD.md#38-ci-pipeline)
   describes the pipeline jobs without timeouts, and greps for `timeout-minutes`,
   `10 minutes` and `20 minutes` across `docs/`, `README.md`, `CONTRIBUTING.md`
@@ -718,6 +724,28 @@ as history.
   range is stated in the T4.48 row, TDD §4.5.6, the README Cursor section
   and the manifest itself. It does not block PR #757.
 
+## 41. ADR-0061 Consequences still says binary secrets "are not caught" (from PR #764, blocks)
+
+- [ADR-0061](adr/0061-pre-push-secret-scan-blocks-every-run.md) Consequences says "A secret in a binary file or in
+  an encoding the rules do not match is not caught; binary files are listed in the event."
+- The code T9.14 builds diffs every file as text: `outgoingDiffArgs` in `src/git/secret-scan.ts` passes `--text`,
+  the hardened helper adds `--no-textconv --no-ext-diff` and neutralises every driver
+  (`src/workspace/git.ts`), and `scanDiffText` tests the added lines of every file against every rule; paths Git
+  counts as binary are still scanned and are separately listed from `numstat`. The HLD threat row and
+  [LLD §20.9](design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061) "Implemented" on this branch agree:
+  binary-counted files "are still scanned and are listed in the event".
+- Before this PR the documents were consistent (the ADR's Proposed mechanism and the HLD row both said binary
+  files are not scanned); the implementation's Delegated `--text` choice introduced the contradiction, and this
+  branch updates HLD and LLD but not the ADR. The encoding half of the sentence is still true; the binary half
+  is contradicted by the code.
+- Left unchanged: ADR-0061 carries Accepted status for the direction, and AGENTS.md forbids editing an accepted
+  ADR's decision (supersede with a new ADR instead). Rewording the consequence, or accepting the Delegated
+  `--text` behaviour as the mechanism in a superseding note, is the design owner's call. The error direction is
+  safe (the documents understate the protection), but the code contradicts a decision record and this PR
+  introduces it, so per the gate rule it blocks PR #764 until the owner resolves it.
+- Resolved 2026-10-19 by Linus ruling (DOC-CONFLICT #764): ADR-0061 Amendment 2026-10-19 added; code kept
+  (--text scans binaries).
+
 ## 41. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
 
 - [HLD §1.2](design/HLD.md#12-explicit-exclusions) still excludes "No network
@@ -749,3 +777,34 @@ as history.
   only adds the as-built note and marks T3.24 Done. Left unchanged:
   narrowing the SRS guarantee to "from an allowed client" is the SRS
   owner's call. It does not block PR #760.
+
+## 43. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
+
+- PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
+  owner's macOS merge waiver" / "under the owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux
+  job".
+- No [§4.2 Owner decisions](ROADMAP.md#42-owner-decisions) entry (§4.2 runs to decision 77) records such a waiver,
+  and the §5 document table says owner decisions are "Listed in §4.2 only".
+- Left unchanged: writing a §4.2 entry would mean restating zemdregon's words and minting decision context this
+  gate cannot verify and must not invent (cf. items 18 and 39 for the same precedent). Recording that entry is
+  the roadmap owner's call. It does not block PR #761: the operative fact — CI is Linux-only
+  (`.github/workflows/ci.yml` holds one job, `Typecheck, lint, test, docs check (Linux)`) — is verified against
+  the code, and the merge-gate reading agrees with ADR-0060, which already recorded the macOS leg as dropped from
+  gating, and with the AGENTS.md "seven checks" merge routine, which lists the Linux job only.
+- Resolution (doc-align gate on the PR #761 branch): TDD §2 and §3.8 reworded to cite the ruling recorded in
+  ADR-0060 ("the macOS leg was dropped from gating by a ruling") instead of a dated owner waiver, so no §4.2
+  entry is needed and no owner approval is implied. Resolved, not outstanding.
+
+## 44. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
+
+- TDD §5 (implementation strategy, M4 row) listed "macOS CI leg (NFR-PORT-02)" in the present tense as the
+  technical approach; past-tensed to "ran 2026-10-14, removed 2026-10-19 when CI went Linux-only, §3.8",
+  matching the T4.10 owner row in ROADMAP §6.8 (ROADMAP owns status; TDD §5 gives the approach only).
+- AGENTS.md verify-and-merge routine step 5 still said "the macOS runner"; no macOS runner exists in
+  `.github/workflows/ci.yml` any more. Reworded to "a Mac with native logins", matching the T4.12 row
+  ("reopen when a Mac with native logins is available"). Step 3 already lists the Linux job only, so the
+  "seven checks" count is unchanged and verified.
+- Checked and left unchanged: SRS NFR-PORT-02 still reads Verify `T (CI)` — the macOS code-path unit tests
+  (`src/exec/proc-info.ts`, `src/reconcile/process.test.ts` over injected macOS tables) still run in Linux
+  CI, so the verification method still holds; narrowing it is the SRS owner's call. SDD NFR-PORT-02 row
+  still points at TDD §2, which still documents the CI history.

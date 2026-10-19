@@ -124,8 +124,8 @@ const adapters = await dist("adapters/index.js");
 const { privilegedScopeHash, resolveProfile, resolveTrustProfile } = await dist("policy/index.js");
 const { defaultRedactor } = await dist("artifacts/redact.js");
 const { PROBE_ENV_ALLOWLIST } = await dist("cli/io.js");
-const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+const { Client } = await import("@modelcontextprotocol/client");
+const { StdioClientTransport } = await import("@modelcontextprotocol/client/stdio");
 const { default: Database } = await import("better-sqlite3");
 
 const out = (s = "") => process.stdout.write(`${s}\n`);

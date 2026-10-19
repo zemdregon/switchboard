@@ -1,7 +1,9 @@
 # ADR-0061: A pre-push secret scan blocks publication in every run, bypass included
 
-- Status: Accepted for the direction (owner decision 77, answer 2, 2026-10-19); the mechanism below is Proposed until
-  ROADMAP T9.14 builds it
+- Status: Accepted for the direction (owner decision 77, answer 2, 2026-10-19). Mechanism: points 1 to 3 (the push
+  side) are built by ROADMAP T9.14 (2026-10-19, Delegated agent work, not owner-approved;
+  [LLD §20.9](../design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061) "Implemented"); point 4 (the
+  commit-time warning) stays Proposed until a later change builds it
 - Date: 2026-10-19
 - Decided by: zemdregon for the direction. The question in the
   [enhancement discovery](../research/enhancement-discovery-2026-10-19.md) §9 was "Should the pre-push secret scan block
@@ -49,10 +51,18 @@ keeps the Git-write denial and worktree isolation (owner decision 22); this ADR 
 ## Consequences
 
 - A false positive blocks a push until the operator allowlists the rule and path or pushes by hand.
-- A secret in a binary file or in an encoding the rules do not match is not caught; binary files are listed in the event.
+- A secret in a binary file or in an encoding the rules do not match is not caught; binary files are listed in the
+  event. (superseded, see Amendment 2026-10-19)
 - Bypass runs now keep three controls: the Git-write denial, worktree isolation and this scan.
 
 ## Revisit when
 
 - False positives block normal work often enough that the operator asks for a different rule set.
 - A maintained scanner is available that can run without a new execution path.
+
+## Amendment 2026-10-19 (Linus, owner-delegated ruling, PR #764)
+
+The earlier Consequences line "A secret in a binary file or in an encoding the rules do not match is not caught" is
+superseded. The implementation diffs every file with `git diff --text --no-textconv --no-ext-diff`, so
+binary-counted files ARE scanned and their hits are listed in the event. The Decision is unchanged. No other part of
+this ADR is changed.

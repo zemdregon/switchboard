@@ -2,7 +2,10 @@
 
 - Status: Accepted (Delegated, 2026-10-14: orchestrator Linus under owner decision 25; Q-67 is Yes); the statement in
   item 6 that approval stays with the operator CLI is superseded in part by [ADR-0047](0047-approval-proxy-over-mcp.md)
-  for clients the operator marks `approval_proxy` (Proposed, 2026-10-15)
+  for clients the operator marks `approval_proxy` (Proposed, 2026-10-15); the SDK and protocol-era statements (the
+  2025-11-25-only era in Context and the T13.1 answer mounting the v1 `StreamableHTTPServerTransport`) are superseded
+  by [ADR-0062](0062-mcp-sdk-v2-dual-era-http.md) (2026-10-19), which keeps every numbered decision here, item 7 as
+  built included
 - Date: 2026-10-14
 - Decided by: Delegated (Linus, 2026-10-14), recording the owner decision that Switchboard will be embedded in
   Grok Bot as a public-facing MCP server, so HTTP transport and OAuth are critical. Under [owner

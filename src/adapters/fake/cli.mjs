@@ -286,8 +286,8 @@ async function gitCommitScenario() {
 
 async function connectTools(raw, token) {
   const { command } = JSON.parse(raw);
-  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const { Client } = await import("@modelcontextprotocol/client");
+  const { StdioClientTransport } = await import("@modelcontextprotocol/client/stdio");
   const transport = new StdioClientTransport({
     command: command[0],
     args: command.slice(1),

@@ -154,7 +154,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [HLD §2.1](docs/design/HLD.md#21-comp-rag-implementation-evidence-m12-t121t123),
   [LLD §14](docs/design/LLD.md#14-retrieval-index) and [TDD §3.13](docs/design/TDD.md#313-retrieval-index).
 - **Milestone 13 (network MCP transport) is `Partial`** (reopened 2026-10-19 for owner decision 77: T13.10
-  and T13.11 are Planned; the M13 scope below stays Done). `serve` can expose the MCP tools over Streamable HTTP with OAuth
+  is Done (2026-10-19, ADR-0062) and T13.11 is Planned; the M13 scope below stays Done). `serve` can expose the MCP
+  tools over Streamable HTTP with OAuth
   2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
   approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
   front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed
@@ -169,7 +170,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
-  decisions 76 and 77: T15.6 to T15.8 are Planned and T15.9 is Done; the M15 scope below stays Done on fakes
+  decisions 76 and 77: T15.6 is Done on fakes (2026-10-19, Delegated agent work, not owner-approved), T15.7
+  and T15.8 are Planned and T15.9 is Done; the M15 scope below stays Done on fakes
   (2026-10-18, Delegated
   agent work,
   not owner-approved; the `serve` low-water wiring below is a separate open fix)). The durable per-project work queue
@@ -182,6 +184,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   ceiling. Switchboard reads no GitHub token. Consecutive fix-up items per published ref are capped (T15.5:
   `ci_trigger.max_consecutive_fixes`, Assumption default 2): further failures are recorded without a work item and the
   project is flagged needs-attention (`ci_fix_stuck`) until CI passes or the operator resets the counter.
+  Transient CI faults are handled (T15.6: `cancelled`/`timed_out` are recorded as `CI_INFRA` with no fix-up and never
+  count toward the cap; per-project `rerun_failed` and `cancel_stale_queued` switches, both off by default, enable one
+  `gh run rerun --failed` per (ref, head, job) and cancel of queued runs on superseded heads).
   A project may set a queue low-water mark (T15.4: `projects.<id>.queue.low_water`, off by default): when the
   admissible count (`READY` items, or `PENDING` items whose dependencies can still be met) drops below the mark, one
   `queue_low` sink event fires, re-armed only when the count rises back to the mark. The detector is covered on fakes
@@ -206,7 +211,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
-  client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
+  client and a macOS CI leg (T4.10; ran 2026-10-14, removed 2026-10-19 when CI went Linux-only) are done; Grok Build,
+  Antigravity, Cursor and OpenCode each have a module, compile matrix
   and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (T4.23, `Done` against its
   Done-when on synthetic fixtures under owner decision 65; every Done-when case has a supervisor-replayed JSONL fixture
   on `main` ([#260](https://github.com/zemdregon/switchboard/pull/260)); native shapes are T4.28's work),
@@ -387,7 +393,7 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 ## Requirements
 
 - Linux. Other operating systems are not supported yet. macOS process handling (process tree and PID-reuse guard
-  through `ps`) runs in a macOS CI leg (typecheck, lint, tests and docs check on a GitHub-hosted runner), and no trust
+  through `ps`) passed a macOS CI leg (T4.10; the leg was removed on 2026-10-19 and CI is Linux only), and no trust
   profile is eligible on macOS.
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
@@ -481,6 +487,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `telemetry.otlp_endpoint` | no | `http` or `https` URL for OTLP/HTTP trace export. When omitted or empty, Switchboard does not load OpenTelemetry at startup and makes no outbound telemetry connection. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [LLD §7](docs/design/LLD.md#7-telemetry-spans). |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
+| `git.secret_scan.allow` | no | Up to 64 entries `{ "rule_id", "path" }` for the pre-push secret scan ([LLD §20.9](docs/design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061)). Every push, by the agent's `push` tool or `git push` on the CLI and in every profile including an approved bypass run, scans the added lines it would publish with the built-in rules (`src/artifacts/redact.ts`: private-key blocks, AWS, GitHub, `sk-`, Slack and JWT shapes, Switchboard's own tokens, `Bearer` headers and `password=`-style assignments) and refuses with `SECRET_SCAN_BLOCKED` on a hit, recording the rule id, path and line and never the value. An entry lets a hit of `rule_id` through at paths the glob matches (`fixtures/**`); an unknown rule id stops startup. There is no other switch: to publish anyway, push by hand. |
 | `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query, and `shares_subscription_with` must be one of the provider config ids listed below this table (`claude-code`, `codex`, ...) or `null`: any other string stops startup, so `doctor` fails its config check naming the key and `inner test` exits 1 before sending anything. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
 | `rag` | no | The optional retrieval index (ADR-0031): off unless you configure an `embedding` backend. No credential fields; `mode` defaults to `auto` (on only when a backend exists and the project allows). Projects and contexts may narrow caps and exclusions; `use_global` and `contribute_to_global` default to false and cannot be set on dynamic projects. Full shape: [LLD §14.1](docs/design/LLD.md#141-configuration-shape) and [Retrieval index](#retrieval-index-milestone-12). |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |

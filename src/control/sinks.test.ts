@@ -13,8 +13,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
@@ -177,6 +176,7 @@ describe("closed payload (ADR-0048 item 3)", () => {
       "budget_exhausted",
       "ci_fix_stuck",
       "skill_cleanup_failed",
+      "secret_scan_blocked",
     ]);
     // The sink filter and the T14.2 derivation agree as a set (FR-CTL-03); a reason added to one must reach the other.
     expect([...SINK_REASON_CODES.needs_attention].sort()).toEqual([...NEEDS_ATTENTION_PRIORITY].sort());

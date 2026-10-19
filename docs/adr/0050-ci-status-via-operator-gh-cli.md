@@ -55,8 +55,9 @@ every verb below, and each write verb is behind its own project switch, off by d
 
 - **Item 7, rerun failed jobs once** (FR-QUE-06): `gh run rerun <run-id> --failed`, only with
   `ci_trigger.rerun_failed: true`, at most once per (published ref, head SHA, job), and only for a run on a ref the
-  project published. A conclusion of `cancelled` or `timed_out`, or a runner or infrastructure fault, is classed
-  `CI_INFRA` and never counts toward the FR-QUE-05 cap.
+  project published. A conclusion of `cancelled` or `timed_out` is classed
+  `CI_INFRA` and never counts toward the FR-QUE-05 cap (T15.6 settled against `gh` 2.102.0 that no allowlisted
+  field marks a runner fault inside a `failure`, so those stay code failures, fail closed).
 - **Item 8, cancel stale queued runs** (FR-QUE-06): `gh run cancel <run-id>`, only with
   `ci_trigger.cancel_stale_queued: true`, only for a run whose status is `queued` (never `in_progress`) on a published
   ref whose head SHA is no longer that ref's head. This stays inside "branches the project published".
@@ -67,6 +68,7 @@ every verb below, and each write verb is behind its own project switch, off by d
 
 Every other `gh` verb stays refused, and the argv allowlist test keeps proving it. Exact field names and flags are
 checked against the installed `gh` in ROADMAP T15.6 to T15.8 before code relies on them
+(T15.6 done: `gh` 2.102.0, `--help` only, no call to GitHub; T15.7–T15.8 pending)
 ([LLD §20.1](../design/LLD.md#201-ci-transient-handling-fr-que-06-t156),
 [§20.4](../design/LLD.md#204-published-ref-conflicts-and-supersede-fr-que-07-t157),
 [§20.7](../design/LLD.md#207-opt-in-merge-policy-and-ref-events-fr-sub-01-fr-sub-02-t158-adr-0060)).
