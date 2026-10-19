@@ -9,7 +9,8 @@ commit hash, as in `2026.10.16-e3cb207`) or `+<anything>`. A raw probe line such
 `validated_cli_version` of `0.162.0`, and `2026.10.16-e3cb207` matches `2026.10.16`. A change in `x.y.z`, or any other
 attached suffix (`-beta`, `-rc1`, unknown text) on either side, counts as a bump and fails closed; identical strings
 always match. The command's JSON output records the full observed and baseline strings next to their cores
-(`canary_evidence`: `observed_raw`, `observed_core`, `baseline_raw`, `baseline_core`).
+(`canary_evidence`: `observed_raw`, `observed_core`, `baseline_raw`, `baseline_core`; `null` when the
+canary did not run for that adapter: skipped `fake`/disabled adapter, or a failed or errored probe).
 When the version changes, the adapter is
 treated as `ADAPTER_VERSION_UNVERIFIED` until you run
 `switchboard adapters validate <provider>` successfully. The controller does not auto-validate or route the new version.
