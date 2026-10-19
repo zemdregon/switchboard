@@ -526,7 +526,7 @@ Every enforced row held on 2026-10-18 (no `ESCAPED` row). Line numbers are as of
 Scope: the checks are about the controller only; whether a real provider CLI's own sandbox stops a credential read,
 network use or a push is the live leg (T3.9, T4.n8).
 
-#### 3.6.3 Property-based tests and coverage (NFR-MAINT-06, Proposed 2026-10-19)
+#### 3.6.3 Property-based tests and coverage (NFR-MAINT-06, T8.11)
 
 *Built (Delegated, 2026-10-19; ROADMAP T8.11 for owner decision 77's discovery rows).* The parsers that carry the "no
 Git write, no bypass flag, no secret out" guarantees have generated-input tests beside their example tests:
