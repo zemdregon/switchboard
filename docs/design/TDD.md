@@ -1747,6 +1747,9 @@ checks on 2026-10-13 ([live checks](../research/live-checks-2026-10-13.md), not 
 assumptions: under `--dangerously-skip-permissions` the Git deny rules and `--tools` held (checks 14 and 16, R-38), and
 omitting `--safe-mode` and `--strict-mcp-config` loads the repository's `CLAUDE.md`, hooks and `.mcp.json` (check 15,
 R-41). Every remaining `Unknown: live check in T3.9` cell is still unknown ([ROADMAP §6.5.2](../ROADMAP.md#652-what-m3-cannot-complete-without-live-providers)).
+*Update 2026-10-18 (T3.9 `Partial`, Delegated):* the Claude leg ran once
+([live checks](../research/live-checks-2026-10-18-claude-malicious.md)) with no cell changes (C-G2 `HELD`
+at the outcome level only; C-M2 and C-M3 `NOT_CHECKED`); R-10, R-26, R-38 and R-41 stay open.
 
 ### 4.2 Codex (M2)
 
@@ -1795,7 +1798,9 @@ observed under `--sandbox workspace-write`: writes outside the workspace blocked
 HELD), network blocked (12c), reads of a canary outside the workspace **not** blocked (12d ESCAPED, R-23), Unix sockets
 blocked (12e) and `git commit` refused on Git metadata (12f, X-G1 HELD). So the "Native sandbox" and "Network" cells'
 open questions are partly answered for that version; FR-POL-06 for Codex is not met (reads are not confined), and the
-cells are unchanged until T3.9 records results ([ROADMAP §6.5.2](../ROADMAP.md#652-what-m3-cannot-complete-without-live-providers)).
+Codex cells are unchanged (T3.9 recorded partial Claude results on 2026-10-18 with no Codex bearing; the Codex
+half stays `NOT_CHECKED` until the 2026-10-22 quota reset)
+([ROADMAP §6.5.2](../ROADMAP.md#652-what-m3-cannot-complete-without-live-providers)).
 
 ### 4.3 Grok Build (M4)
 
