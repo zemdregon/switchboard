@@ -325,7 +325,8 @@ directory (redacted streams, ledger, serve log) as `SWITCHBOARD_LIVE_KEEP=1` doe
 Every run of the first four providers is an approved bypass run, because that is their only kind of cell. OpenCode's
 `O-M2` and `O-M3` are expected to escape (FR-POL-04/06 under owner decision 46): the report marks them, and they open a
 risk but do not set the exit code. Until `adapters validate <id>` writes a manifest range, every check stops at the
-version gate as `NOT_CHECKED`; only the Kimi Code, OpenCode and Cursor manifests admit a version today (`>=2.1.1 <2.2.0`
+version gate as `NOT_CHECKED`; only the Antigravity, Kimi Code, OpenCode and Cursor manifests admit a version today
+(`>=1.4.2 <1.5.0` since the T4.38 live pass on 2026-10-18, `>=2.1.1 <2.2.0`
 since the T4.68 live pass, `>=2.0.23 <2.1.0` since the T4.58 live pass on 2026-10-18 under owner decisions 60 and 68,
 `>=2026.10.16 <2026.11.0` since the T4.48 `adapters validate` pass on 2026-10-19). The live runs are the operator rows
 T4.28, T4.38, T4.48, T4.58 and T4.68. Tests are hermetic: `test/live-smoke.test.ts` and `test/live-malicious.test.ts`
