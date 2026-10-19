@@ -1,5 +1,5 @@
 /**
- * `search_project_context` (T12.6; FR-RAG-06, FR-RAG-08, LLD §14.7, §14.8). Temporary Git repositories, stores built by
+ * `search_project_context` (T12.6, T12.7; FR-RAG-06, FR-RAG-08, FR-RAG-10, LLD §14.7, §14.8). Temporary Git repositories, stores built by
  * the T12.4 build with the deterministic in-process fake embedder; no network, no provider. Server-level cases go
  * through the SDK client, so every result is checked against the published output schema.
  */
@@ -33,9 +33,10 @@ import {
 } from "../config/index.js";
 import type { Ledger, RagRecordInput, TrustProfile } from "../ledger/index.js";
 import type { RunLifecycle } from "../lifecycle/index.js";
-import { buildProjectIndex } from "../retrieval/build.js";
+import { type BuildProject, buildProjectIndex } from "../retrieval/build.js";
 import type { EmbeddingBackend } from "../retrieval/embedding.js";
 import { createFakeEmbedder, FAKE_EMBEDDING_MODEL, type FakeEmbedder } from "../retrieval/fake-embedder.js";
+import { buildGlobalIndex, globalOrigins } from "../retrieval/global.js";
 import { ragStoreDir } from "../retrieval/store.js";
 import { TOOL_NAMES, WORK_QUEUE_TOOL_NAMES } from "./schemas.js";
 import {
@@ -305,7 +306,7 @@ describe("searchProjectContext (T12.6, FR-RAG-06)", () => {
     expect((await searchProjectContext(deps(), capped, { query: "alpha" })).status).toBe("incomplete");
   });
 
-  it("needs use_global for scope global or both; the global store is not read before T12.7", async () => {
+  it("needs use_global for scope global or both; without global origins the global store is not read", async () => {
     const p = target("demo", repo);
     await build(p);
     await expect(searchProjectContext(deps(), p, { query: "x", scope: "global" })).rejects.toMatchObject({
@@ -455,5 +456,217 @@ describe("search_project_context on the MCP server (T12.6, FR-RAG-06)", () => {
       isError: false,
       body: { status: "unavailable", reason: "TIMEOUT", index_revision: 1, results: [] },
     });
+  });
+});
+
+// ---- T12.7: scope "global" and "both" read the global store ------------------------------------------------------
+
+describe("searchProjectContext over the global store (T12.7, FR-RAG-09, FR-RAG-10)", () => {
+  let repoA: string;
+  let handbook: string;
+  let settings: ReturnType<typeof resolveRag>;
+  beforeEach(() => {
+    repoA = newRepo("alpha", {
+      "lib/ledger.ts": "export function reconcileLedgerBalances(entries) { return settleLedgerEntries(entries); }\n",
+    });
+    handbook = path.join(tmp, "handbook");
+    put(handbook, "style.md", "Colour palette guidance: prefer teal accents and muted slate backgrounds.\n");
+    settings = resolveRag({ ...RAG, global: { enabled: true, sources: [{ path: handbook, label: "handbook" }] } });
+  });
+
+  const toBuild = (p: SearchProject): BuildProject => ({
+    id: p.id,
+    effective: effectiveProjectRag(settings, p.rag),
+    contexts: p.contexts.map((c) => ({ ...c, primary: true })),
+  });
+  /** alpha contributes, bravo (the default repo) uses the global index; both project stores and the global one built. */
+  async function setup(alphaRag: ProjectRagConfig = { contribute_to_global: true }) {
+    const alpha = target("alpha", repoA, alphaRag);
+    const bravo = target("bravo", repo, { use_global: true });
+    await build(alpha, settings);
+    await build(bravo, settings);
+    const r = await buildGlobalIndex(
+      {
+        dataDir,
+        backend: fake,
+        embedding: { model: FAKE_EMBEDDING_MODEL, allowRemote: false, allowSourceContent: false },
+        homeDir: "/nonexistent-home",
+      },
+      {
+        global: settings.global,
+        caps: settings.caps,
+        exclude: settings.exclude,
+        projects: [toBuild(alpha), toBuild(bravo)],
+        allowedRoots: [tmp],
+      },
+    );
+    expect(r.outcome).toBe("ok");
+    return { alpha, bravo };
+  }
+  const gdeps = (projects: SearchProject[]) =>
+    deps({ settings, globalOrigins: () => globalOrigins(settings.global, projects.map(toBuild)) });
+
+  it("scope global returns global-index results labelled with their origin, never the reader's own store", async () => {
+    const { alpha, bravo } = await setup();
+    const r = await searchProjectContext(gdeps([alpha, bravo]), bravo, {
+      query: "reconcileLedgerBalances settleLedgerEntries",
+      scope: "global",
+    });
+    expect(r.status).toBe("ok");
+    expect(r.reason).toBeUndefined();
+    expect(r.index_revision).toBeGreaterThan(0);
+    expect(r.results[0]).toMatchObject({
+      context_id: "project:alpha/main",
+      path: "lib/ledger.ts",
+      origin_project: "alpha",
+      untrusted: true,
+    });
+    expect(r.results[0]?.text).toContain("reconcileLedgerBalances");
+    expect(r.results[0]?.source).toBeUndefined();
+    // bravo's own files are not in the global store, so the global scope never returns them
+    expect(r.results.some((h) => h.path === "src/parser.ts")).toBe(false);
+    for (const h of r.results) expect(h.origin_project !== undefined || h.source !== undefined).toBe(true);
+
+    const s = await searchProjectContext(gdeps([alpha, bravo]), bravo, {
+      query: "Colour palette teal accents slate",
+      scope: "global",
+    });
+    expect(s.results[0]).toMatchObject({ context_id: "source:handbook", path: "style.md", source: "handbook" });
+    expect(s.results[0]?.origin_project).toBeUndefined();
+    expect(records.at(-1)).toMatchObject({ kind: "retrieval", projectKey: "bravo", outcome: "ok" });
+  });
+
+  it("scope both merges project and global hits by score under one limit", async () => {
+    const { alpha, bravo } = await setup();
+    const query = "parseInvoiceHeader tokenizeInvoice reconcileLedgerBalances settleLedgerEntries";
+    const r = await searchProjectContext(gdeps([alpha, bravo]), bravo, { query, scope: "both", limit: 32 });
+    expect(r.status).toBe("ok");
+    expect(r.reason).toBeUndefined();
+    const own = r.results.find((h) => h.path === "src/parser.ts");
+    const shared = r.results.find((h) => h.path === "lib/ledger.ts");
+    expect(own).toMatchObject({ context_id: "main" });
+    expect(own?.origin_project).toBeUndefined();
+    expect(own?.source).toBeUndefined();
+    expect(shared).toMatchObject({ context_id: "project:alpha/main", origin_project: "alpha" });
+    const scores = r.results.map((h) => h.score);
+    expect(scores).toEqual([...scores].sort((a, b) => b - a));
+    // the revision is the project store's
+    const projectOnly = await searchProjectContext(gdeps([alpha, bravo]), bravo, { query });
+    expect(r.index_revision).toBe(projectOnly.index_revision);
+    expect(projectOnly.results.some((h) => h.origin_project !== undefined || h.source !== undefined)).toBe(false);
+
+    const one = await searchProjectContext(gdeps([alpha, bravo]), bravo, { query, scope: "both", limit: 1 });
+    expect(one.results).toHaveLength(1);
+    expect(one.results[0]?.snippet_id).toBe(r.results[0]?.snippet_id);
+  });
+
+  it("serves no row of a project that stopped contributing, and never a project its own contribution", async () => {
+    const { bravo } = await setup();
+    const query = "reconcileLedgerBalances settleLedgerEntries";
+    // alpha's configuration no longer contributes; its rows are still in the store until the next global build
+    const stopped = target("alpha", repoA);
+    const r = await searchProjectContext(gdeps([stopped, bravo]), bravo, { query, scope: "global", limit: 32 });
+    expect(r.status).toBe("ok");
+    expect(r.results.some((h) => h.origin_project === "alpha")).toBe(false);
+    expect(JSON.stringify(r.results)).not.toContain("reconcileLedgerBalances");
+
+    const self = target("alpha", repoA, { contribute_to_global: true, use_global: true });
+    const mine = await searchProjectContext(gdeps([self, bravo]), self, { query, scope: "global", limit: 32 });
+    expect(mine.results.some((h) => h.origin_project === "alpha")).toBe(false);
+  });
+
+  it("drops a global hit whose origin file changed since the build", async () => {
+    const { alpha, bravo } = await setup();
+    put(repoA, "lib/ledger.ts", "export const replaced = true;\n");
+    const r = await searchProjectContext(gdeps([alpha, bravo]), bravo, {
+      query: "reconcileLedgerBalances settleLedgerEntries",
+      scope: "global",
+      limit: 32,
+    });
+    expect(r.results.some((h) => h.path === "lib/ledger.ts")).toBe(false);
+  });
+
+  it("scope global stays fail-closed GLOBAL_NOT_AVAILABLE when the global index is unavailable", async () => {
+    const alpha = target("alpha", repoA, { contribute_to_global: true });
+    const bravo = target("bravo", repo, { use_global: true });
+    await build(alpha, settings);
+    await build(bravo, settings);
+    const globalFile = path.join(ragStoreDir(dataDir, { kind: "global" }), "index.db");
+    expect(existsSync(globalFile)).toBe(false);
+    const none = { status: "unavailable", reason: "GLOBAL_NOT_AVAILABLE", results: [] };
+
+    // the global store was never built
+    const calls = fake.requests.length;
+    expect(await searchProjectContext(gdeps([alpha, bravo]), bravo, { query: "x", scope: "global" })).toEqual(none);
+    expect(fake.requests.length).toBe(calls); // the query is not embedded
+    // no global origins wired, or the origins cannot be resolved
+    await setup();
+    expect(await searchProjectContext(deps({ settings }), bravo, { query: "x", scope: "global" })).toEqual(none);
+    const throwing = deps({
+      settings,
+      globalOrigins: () => {
+        throw new Error("ledger unreadable");
+      },
+    });
+    expect(await searchProjectContext(throwing, bravo, { query: "x", scope: "global" })).toEqual(none);
+    expect(existsSync(globalFile)).toBe(true);
+
+    // scope both keeps the project's results and names the global failure
+    rmSync(globalFile);
+    const both = await searchProjectContext(gdeps([alpha, bravo]), bravo, {
+      query: "parseInvoiceHeader reconcileLedgerBalances",
+      scope: "both",
+      limit: 32,
+    });
+    expect(both).toMatchObject({ status: "ok", reason: "GLOBAL_NOT_AVAILABLE" });
+    expect(both.results.some((h) => h.path === "src/parser.ts")).toBe(true);
+    expect(both.results.some((h) => h.origin_project !== undefined || h.source !== undefined)).toBe(false);
+  });
+});
+
+describe("search_project_context scope global on the MCP server (T12.7)", () => {
+  it("returns origin-labelled global hits that match the published output schema", async () => {
+    const repoA = newRepo("alpha", { "lib/ledger.ts": "export function reconcileLedgerBalances() { return 1; }\n" });
+    const settings = resolveRag({ ...RAG, global: { enabled: true, sources: [] } });
+    const alpha = project("alpha", repoA, { contribute_to_global: true });
+    const bravo = project("bravo", repo, { use_global: true });
+    const builds = [alpha, bravo].map((p) => ({
+      id: p.id,
+      effective: effectiveProjectRag(settings, p.rag),
+      contexts: [{ id: "main", path: p.id === "alpha" ? repoA : repo, primary: true }],
+    }));
+    await build(target("alpha", repoA, { contribute_to_global: true }), settings);
+    await build(target("bravo", repo, { use_global: true }), settings);
+    await buildGlobalIndex(
+      {
+        dataDir,
+        backend: fake,
+        embedding: { model: FAKE_EMBEDDING_MODEL, allowRemote: false, allowSourceContent: false },
+        homeDir: "/nonexistent-home",
+      },
+      {
+        global: settings.global,
+        caps: settings.caps,
+        exclude: settings.exclude,
+        projects: builds,
+        allowedRoots: [tmp],
+      },
+    );
+    const s = await connect({
+      clientId: "orch",
+      projects: [alpha, bravo],
+      clients: { orch: ["bravo"] },
+      search: deps({ settings, globalOrigins: () => globalOrigins(settings.global, builds) }),
+    });
+    for (const scope of ["global", "both"]) {
+      const r = await s.call({ project: "bravo", query: "reconcileLedgerBalances", scope, limit: 32 });
+      expect(r.isError).toBe(false);
+      expect(r.body.status).toBe("ok");
+      expect(r.body.results.find((h: Json) => h.path === "lib/ledger.ts")).toMatchObject({
+        origin_project: "alpha",
+        context_id: "project:alpha/main",
+      });
+    }
+    await s.close();
   });
 });
