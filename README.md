@@ -367,8 +367,9 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
 - For real work, at least one provider CLI installed and logged in natively: Claude Code, Codex, Grok Build,
-  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex, OpenCode, Kimi Code and Antigravity
-  admit a version today; the other manifests admit no version until `switchboard adapters validate` passes a live CLI (see
+  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex, OpenCode, Kimi Code, Antigravity
+  and Cursor admit a version today; the other manifests admit no version until
+  `switchboard adapters validate` passes a live CLI (see
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks)). `doctor` does not require any particular one.
 
 ## Install from source
