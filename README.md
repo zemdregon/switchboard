@@ -36,7 +36,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   against a live provider through Switchboard's own tool channel, signing was tried only with a throwaway GnuPG key,
   pushing from dynamic projects is refused by design (`CONTEXT_UNKNOWN`, owner decision 62; Q-46 answered), and
   the `container` clauses stay **Partial** until milestone 10 is `Done`
-  (mounting and MCP admission are on fakes; T10.0 live and opt-in Docker remain open — see milestone 10 below). The
+  (mounting and MCP admission are on fakes; T10.0 operator login checks are Done; opt-in Docker and a live container run
+  remain open — see milestone 10 below). The
   exceptions are listed in
   [ROADMAP §6.3](docs/ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
 - **Milestone 5 (continuity) is `Partial`.** `continue_task` resumes the provider's native session or hands off to
@@ -88,13 +89,15 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
   for `container` projects ([PR #554](https://github.com/zemdregon/switchboard/pull/554)), orphan sweep,
   malicious-fixture container leg, `projects validate` container checks and retention GC are implemented and tested on
-  fakes (and emulated runtime in CI). It is not `Done`: operator live checks for in-volume provider login (T10.0), the
-  opt-in Docker mount legs (`SWITCHBOARD_CONTAINER_TESTS=1`), and no live end-to-end run through a real provider CLI.
+  fakes (and emulated runtime in CI). It is not `Done`: the opt-in Docker mount legs (`SWITCHBOARD_CONTAINER_TESTS=1`)
+  and a live end-to-end run through a
+  real provider CLI remain open.
   See [Container environments (milestone 10)](#container-environments-milestone-10) and
   [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
-- **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
+- **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.13 are done on fakes: an optional HTTP backend, privacy
   gates, quality monitoring with automatic suspension (T11.6), `doctor` and `inner` reporting, commit-message drafting,
-  handoff condensation (T11.10, a service function) and record-only routing classification (T11.11). The T11.6 roadmap
+  handoff condensation (T11.10, a service function), record-only routing classification (T11.11), and the `cli` backend
+  gate (T11.13, shipped `Ineligible`). The T11.6 roadmap
   row carries its `Done on fakes` status since [#586](https://github.com/zemdregon/switchboard/pull/586), which also
   added `src/inner/suspension.test.ts`: on a scripted fake backend, every call after a suspension falls back without
   reaching a now-good backend, and the first call after the task is re-enabled is accepted from it. The T11.9
@@ -111,15 +114,18 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#569](https://github.com/zemdregon/switchboard/pull/569), citing `src/config/config.test.ts`,
   `src/inner/inner.test.ts`, `src/inner/import-boundary.test.ts`, `src/inner/port.ts`, `src/inner/fake-backend.ts` and
   `src/ledger/migrations/0005_inner_call.ts` (milestone row and README reconcile
-  [#574](https://github.com/zemdregon/switchboard/pull/574)). T11.13 (the `cli` backend) is `Partial` (fakes only; the
-  installed `opencode v2.0.23` offers no tool-free one-shot, so the kind stays `Ineligible`:
+  [#574](https://github.com/zemdregon/switchboard/pull/574)). T11.13 (the `cli` backend) is `Done` (2026-10-18,
+  owner decision 66; the gate is met on fakes — the backend runs only inside the manifest range with verified
+  tool-free flags and otherwise reports `Ineligible`, with an argv audit — and no OpenCode release through v2.0.32
+  offers a tool-free control, so the shipped kind stays `Ineligible`:
   [TDD §4.6.7](docs/design/TDD.md#467-t110-live-result-2026-10-17)) and no live backend
   has been exercised. Two tasks are wired into production `serve` run paths: the commit-message
   task (the optional `message` on the `commit` tool) and routing classification (`serve` admission, continuation and
   quota failover, with heuristic fallback when inner is off or unavailable). Handoff condensation, PR drafting,
   verification-summary, run-title and a live backend are not: their designs name no run-path call site, so they stay
   service functions, and `src/inner/run-path-reach.test.ts` pins both lists. T11.14 (README and roadmap status for
-  M11) is `Done` on that basis, with T11.13 still `Partial`. T11.5 usage-surface pins merged
+  M11) is `Done` on that basis (T11.0 to T11.13 Done on fakes; the shipped `cli` backend stays `Ineligible`).
+  T11.5 usage-surface pins merged
   [#362](https://github.com/zemdregon/switchboard/pull/362) (suspended-task and project-off denials, re-ask deadline
   counts, shared-subscription label routing, whole `inner_shared_subscription` doctor checks, `enabled: false` with the
   flag set, capacity collector `source` exclusion), [#396](https://github.com/zemdregon/switchboard/pull/396)
@@ -217,14 +223,16 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#354](https://github.com/zemdregon/switchboard/pull/354),
   [#372](https://github.com/zemdregon/switchboard/pull/372)) leave the parser unchanged; none of them validate the
   live CLI or close T4.23's or T4.26's gaps. Antigravity has a
-  parser (partial: T4.33; unrecorded-shape, fallback and own-property hardening pins plus structured
+  parser (Done against its Done-when under owner decision 65 (a): T4.33; unrecorded-shape, fallback and own-property
+  hardening pins plus structured
   `backing_provider`/`model` on `session_bound`, all synthetic,
   [#272](https://github.com/zemdregon/switchboard/pull/272),
   [#276](https://github.com/zemdregon/switchboard/pull/276),
   [#297](https://github.com/zemdregon/switchboard/pull/297)),
   a conformance suite (partial: native resume, T4.35; replay dialect edge cases
   [#281](https://github.com/zemdregon/switchboard/pull/281) and Go `flag`-boundary walking
-  [#292](https://github.com/zemdregon/switchboard/pull/292)), a malicious-fixture leg (partial: synthetic refusal,
+  [#292](https://github.com/zemdregon/switchboard/pull/292)), a malicious-fixture leg (Done against its Done-when
+  under owner decision 65 (b): synthetic refusal,
   guard-blocked and trailing-tool fail-closed replay streams, hostile repository entries and FR-POL-04, T4.36;
   [#257](https://github.com/zemdregon/switchboard/pull/257),
   [#262](https://github.com/zemdregon/switchboard/pull/262),
@@ -296,10 +304,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
   Antigravity reach the smoke step in the adapter's only compiled cell instead (T4.4));
    rows waiting on uncaptured live shapes
-  (T4.33, T4.35, T4.36, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66; owner decision 65 sets when parser, CI
-  malicious-leg and README rows are `Done` against their Done-when); README rows final after their
-  live legs
-  (T4.39, T4.59, T4.69, T4.79; T4.29 and T4.49 are `Done` except the post-T4.n8 update); Muse Code (Should) has module,
+  (T4.35, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66; owner decision 65 sets when parser, CI
+  malicious-leg and README rows are `Done` against their Done-when; T4.33 and T4.36 are `Done`
+  under decision 65 (a) and (b), remaining native shapes carried by T4.38); README rows final
+  after their live legs
+  (T4.59, T4.69, T4.79; T4.29, T4.39 and T4.49 are `Done` except the post-T4.n8 update); Muse Code (Should) has module,
   compile matrix, auth preflight,
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
   [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
@@ -635,7 +644,7 @@ A `container` project runs the provider inside a rootless Docker container that 
 and declared read-only contexts, applies limits and network policy, and is torn down when the run ends. The image must
 have no `git` or `gh` on its `PATH` ([ADR-0020](docs/adr/0020-container-image-without-git-client.md)). On `main` today
 the port, security legs and MCP admission are tested on fakes ([PR #554](https://github.com/zemdregon/switchboard/pull/554));
-operator live login (T10.0) and opt-in Docker legs remain open.
+opt-in Docker legs remain open (operator in-volume login, T10.0, is Done since 2026-10-18).
 
 ### Status and tests
 
@@ -1278,7 +1287,8 @@ then run `switchboard projects approve <id>` (add `--revision <n>` once the proj
 is refused while one of its runs is still going; its history stays. By design a push from a dynamic project
 is refused (`CONTEXT_UNKNOWN`) even after approval (owner decision 62; Q-46 answered). Approved `container`
 dynamic projects can run when `serve` composes placement (milestone 10,
-[PR #554](https://github.com/zemdregon/switchboard/pull/554)); operator live login (T10.0) is still open.
+[PR #554](https://github.com/zemdregon/switchboard/pull/554)); operator in-volume login (T10.0) is Done since
+2026-10-18; the container backend does not mount a login volume yet.
 
 `gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than
 `retention.days` (all their runs finished, no lease) and any orphans, and changes nothing. `gc --apply` removes each
@@ -1376,8 +1386,8 @@ output in `src/inner/cli-doctor-surfaces.test.ts`; the `no_backend` state is rea
 through the `cli` kind, because the config refuses `enabled: true` without a backend. No hosted or live backend has
 been exercised: every test uses a scripted fake or a local fake server. The per-task test and module
 evidence behind these statements, and the list of what is not built, is in
-[HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes),
-[SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) and the
+[HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes),
+[SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) and the
 [TDD §3.12](docs/design/TDD.md#312-inner-agent) as-built note
 ([PR #353](https://github.com/zemdregon/switchboard/pull/353)).
 
@@ -1726,7 +1736,8 @@ synthetic checks, not native captures of rate limiting, sandbox enforcement or `
 [#272](https://github.com/zemdregon/switchboard/pull/272)). Tool parameter aliases remain **Assumptions** until
 operator captures confirm their native shapes. Later updates that supply or change a command or path reach the
 guard again; commands under unrecorded parameter keys remain unseen. Native resume, blocked outcomes and provider
-validation stay open under ROADMAP T4.33, T4.35, T4.36 and T4.38.
+validation stay open under ROADMAP T4.35 and T4.38 (T4.33 and T4.36 are Done against their Done-when under owner
+decision 65; their remaining native shapes are carried by T4.38).
 
 Residual parser pins ([#344](https://github.com/zemdregon/switchboard/pull/344), "antigravity parser residual pins
 (T4.33, synthetic shapes)") record a second guard gap: tool parameters on a step whose `step_type` is not exactly
@@ -1788,7 +1799,7 @@ null `denied_actions` and partial streams cut before, inside and after the hosti
 ([#368](https://github.com/zemdregon/switchboard/pull/368)). In an approved bypass run the guard still enforces Git
 writes only: the same hostile call without a Git write still ends `ok` (pinned), as does a Git write on a step that
 is not a `tool` step (above); live blocked outcomes and FR-POL-04
-need operator work (ROADMAP T4.36, T4.38).
+need operator work (ROADMAP T4.38).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
 flag is documented). In the only compiled scope, repository `.agents/mcp_config.json`, `.agents/hooks.json`, `GEMINI.md`
@@ -1816,7 +1827,8 @@ resume-refusal matrices ([#297](https://github.com/zemdregon/switchboard/pull/29
 `backing_provider.jsonl` and the unrecorded-shape pins `agy_error_exit3.jsonl`,
 `sandbox_violation_unrecorded.jsonl` and `usage_unrecorded.jsonl`; CI also runs
 `test/malicious/adapters/antigravity.case.ts` and `test/malicious/adapter-leg.test.ts` ("adapter malicious leg:
-antigravity", T4.36 partial — see [Known limitations](#known-limitations); guard-blocked streams
+antigravity", T4.36 Done against its Done-when under owner decision 65 (b) — see [Known limitations](#known-limitations);
+guard-blocked streams
 [#257](https://github.com/zemdregon/switchboard/pull/257), trailing-tool streams
 [#262](https://github.com/zemdregon/switchboard/pull/262), exit-code and hostile-repository-entry coverage
 [#280](https://github.com/zemdregon/switchboard/pull/280), widened malicious matrix
@@ -2745,7 +2757,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   blocked by the bypass guard. Scrubbed native `tool_call` and `tool_call_update` command/target and status fields, live
   blocked outcomes and `adapters validate` remain operator work (T4.21 extension / T4.28). See ROADMAP T4.26 for the
   full gap list.
-- **Antigravity malicious-fixture leg is partial (ROADMAP T4.36).** CI runs `test/malicious/adapter-leg.test.ts` with
+- **Antigravity malicious-fixture leg is Done against its Done-when (ROADMAP T4.36, owner decision 65 (b)).** CI runs
+  `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/antigravity.case.ts` on synthetic `stream-json` streams (no `agy` installed; no `replayGap`).
   Compile, isolation-flag and argv checks pass for the approved bypass cell; hostile replay blocking covers every
   hostile category with both recorded soft-denial shapes (shell `run_command` without bypass, live check C7) and
@@ -2863,8 +2876,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   [LLD §13.8](docs/design/LLD.md#138-telemetry-and-events) is not emitted (no span exporter exists); the pipeline
   writes a body-free `inner.call` log line instead. What the suite proves per task, and what is not built, is recorded
   in the [TDD §3.12](docs/design/TDD.md#312-inner-agent) as-built note,
-  [HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) and
-  [SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) (merged as
+  [HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) and
+  [SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) (merged as
   [PR #353](https://github.com/zemdregon/switchboard/pull/353)). See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 
