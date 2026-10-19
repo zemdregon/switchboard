@@ -153,11 +153,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   [PRD CAP-13](docs/requirements/PRD.md#implementation-evidence-partial-m12--cap-13),
   [HLD §2.1](docs/design/HLD.md#21-comp-rag-implementation-evidence-m12-t121t123),
   [LLD §14](docs/design/LLD.md#14-retrieval-index) and [TDD §3.13](docs/design/TDD.md#313-retrieval-index).
-- **Milestone 13 (network MCP transport) is `Partial`** (reopened 2026-10-19 for owner decision 77: T13.10
-  is Done (2026-10-19, ADR-0062) and T13.11 is Planned; the M13 scope below stays Done). `serve` can expose the MCP
+- **Milestone 13 (network MCP transport) is `Done`** (2026-10-19, Delegated agent work, not owner-approved:
+  T13.10 (ADR-0062) and T13.11 (ADR-0063) are Done; the M13 scope below stays Done). `serve` can expose the MCP
   tools over Streamable HTTP with OAuth
   2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
-  approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
+  approves — by Dynamic Client Registration or, since T13.11, a Client ID Metadata Document fetched under SSRF
+  limits — audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
   front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed
   under [HLD TB-12](docs/design/HLD.md#3-trust-boundaries). See
   [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks).
