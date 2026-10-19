@@ -949,8 +949,8 @@ gap is left on purpose and nothing is renumbered.
 71\. The ext live channel runs Codex through the in-volume container login (2026-10-19). **Relayed by the orchestrator
 (Linus, owner-delegated standing authority), not owner-approved.** The relayed ruling ("CODEX AVAILABLE VIA CONTAINER
 LOGIN", 2026-10-18 19:10 CT) says that the in-volume Codex login works and that the host Codex limit applies only to
-the host login. Entries 67 to 69 are in open pull requests and are not on `main` yet (70 has since merged); the gap is left on purpose and
-nothing is renumbered.
+the host login. Entries 67 to 69 are in open pull requests and are not on `main` yet (70 has since merged);
+the gap is left on purpose and nothing is renumbered.
     *Delegated reading, not zemdregon's words.* The operator's `live-run-ext.sh` channel runs every Codex call of a check
     that involves Codex (`resume codex`, `pair`, `live-test codex`, `validate codex`, `malicious codex`) inside a container,
     never through the host login. The container uses the image `sb-live-codex:t10.0-git`: the T10.0 login image
