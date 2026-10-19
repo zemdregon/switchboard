@@ -1989,7 +1989,9 @@ NFR-DATA-01 can be shown on fakes.
   Git metadata (X-G1 held), but **not reads** (12d ESCAPED, R-23), so FR-POL-06 for Codex is not met.
 - **Codex cannot yet run the leg through Switchboard.** On 2026-10-14 `adapters validate codex` failed at its smoke step
   because the operator's Codex login had expired while `codex login status` still exited 0 (Q-10 finding); the operator
-  must log in again natively before any Codex leg.
+  must log in again natively before any Codex leg. *Update 2026-10-19 (T3.9 `Done`, Delegated):* superseded for this
+  leg: Codex ran X-G1 and X-M2 through the decision 71 container login, and the host login was not used (see the
+  2026-10-19 update below).
 - **Claude `test-sandboxed` stays `Ineligible`.** T3.1 detects bubblewrap and `prlimit` but wraps no provider process
   (ADR-0051 item 6, no roadmap task yet), so neither T3.9 nor T3.1 can yet move R-10.
 - **Controller confinement checks run on the fake provider (T3.8b, owner decision 63).** The controller leg (T3.8) and
@@ -1999,6 +2001,8 @@ NFR-DATA-01 can be shown on fakes.
   stays `NOT_CHECKED` until a real escape is staged (T3.9).
 - **Live runs are budgeted.** Workers may not run T3.9; it is an operator task, and agent probes go only through the
   budgeted channel (AGENTS.md), one scoped question per run. M3 therefore stays `Partial` until the operator runs T3.9.
+  *Update 2026-10-19 (T3.9 `Done`, Delegated):* T3.9 has run (see below); the M3 row records T3.9 `Done` and keeps its
+  own `Partial` status, so the "until" above no longer moves M3.
 
 *Update 2026-10-18 (T3.9 `Partial`, Delegated, not owner-approved).* The Claude Code half of the T3.9 suite ran once
 through the operator's `live-run-ext.sh malicious claude` channel (Claude Code 2.1.294, cheapest model, one model
