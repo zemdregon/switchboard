@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type AuthResult, ClaudeAdapter, CodexAdapter } from "../adapters/index.js";
 import type { OuterSandboxMechanism } from "../exec/outer-sandbox.js";
-import { createLedger, type Ledger, openLedger, type RunState } from "../ledger/index.js";
+import { createLedger, LEDGER_FILE_NAME, type Ledger, openLedger, type RunState } from "../ledger/index.js";
 import { acquireDataDirLock, LOCK_FILE_NAME } from "../lock/index.js";
 import { canonicalScopeJson, parsePrivilegedScope, privilegedScopeHash } from "../policy/index.js";
 import { defaultAdapters } from "./doctor.js";
@@ -128,6 +129,7 @@ describe("doctor", () => {
       "config",
       "data_dir",
       "ledger",
+      "ledger_chain",
       "lock",
       "gc",
       "orphans",
@@ -157,6 +159,38 @@ describe("doctor", () => {
     expect(Object.keys(j.adapters[0].probe).sort()).toEqual(["binary_version", "failed_steps", "ok"]);
   });
 
+  it("verifies the ledger hash chains: OK when untouched, names the row a direct SQL edit changed (T8.13, FR-TEL-05)", async () => {
+    const s = seed(["QUEUED"]);
+    const runId = s.ids[0] as string;
+    const events = [1, 2, 3].map((i) => s.ledger.appendRunEvent({ runId, type: "note", payload: { i } }));
+    const apv = s.ledger.createApproval({ runId, scopeJson: "{}", scopeHash: "h" });
+    s.ledger.decideApproval({ id: apv.id, status: "APPROVED", decidedBy: "op" });
+    s.close();
+    const chainCheck = (out: string) =>
+      (JSON.parse(out) as { checks: { id: string; status: string; detail: string }[] }).checks.find(
+        (c) => c.id === "ledger_chain",
+      );
+
+    const ok = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() });
+    expect(ok.code).toBe(0);
+    expect(chainCheck(ok.out)?.status).toBe("ok");
+    expect(chainCheck(ok.out)?.detail).toMatch(
+      /^run_event: \d+ row\(s\) linked, head [0-9a-f]{64}; approval: 1 row\(s\) linked, head [0-9a-f]{64}$/u,
+    );
+
+    // Someone with the ledger file drops the append-only guard and edits one event in place.
+    const raw = new Database(path.join(dataDir, LEDGER_FILE_NAME));
+    raw.exec("DROP TRIGGER run_event_no_update");
+    raw.prepare("UPDATE run_event SET payload_json = ? WHERE id = ?").run('{"i":99}', events[1]?.id);
+    raw.close();
+    const bad = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() });
+    expect(bad.code).toBe(1);
+    expect(chainCheck(bad.out)).toMatchObject({ status: "fail" });
+    expect(chainCheck(bad.out)?.detail).toContain(`run_event chain broken at row ${events[1]?.id}`);
+    const text = await run(["doctor", ...cfg()], { adapters: fakeOnly() });
+    expect(text.out).toContain(`[FAIL] Ledger hash chain: run_event chain broken at row ${events[1]?.id}`);
+  });
+
   it("fails (exit 1) on an invalid config and skips dependent checks", async () => {
     writeFileSync(configPath, "{}");
     const r = await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() });
@@ -164,7 +198,7 @@ describe("doctor", () => {
     const j = JSON.parse(r.out);
     expect(j.ok).toBe(false);
     const by = Object.fromEntries(j.checks.map((c: { id: string; status: string }) => [c.id, c.status]));
-    expect(by).toMatchObject({ config: "fail", data_dir: "skip", ledger: "skip", lock: "skip" });
+    expect(by).toMatchObject({ config: "fail", data_dir: "skip", ledger: "skip", ledger_chain: "skip", lock: "skip" });
   });
 
   it("fails on an old Node, a failing probe, and warns (exit 0) on AUTH_REQUIRED", async () => {
@@ -252,6 +286,7 @@ describe("doctor", () => {
         "config",
         "data_dir",
         "ledger",
+        "ledger_chain",
         "lock",
         "gc",
         "orphans",
