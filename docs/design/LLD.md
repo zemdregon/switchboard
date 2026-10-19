@@ -5351,9 +5351,9 @@ fixes `version: 1` and its "Regenerability" consequence makes regeneration per b
 every field is always present, so a new top-level field is a schema change even when its list may be empty; it bumps
 both numbers rather than adding an optional field to version 1. Version 1 stays buildable: `regenerateHandoffBundle`
 rebuilds a stored view with the version recorded in it (a version 1 view byte for byte, without `skills`), and the
-renderer reads both versions (`version` must equal `builder_version`; version 2 must carry `skills` as a list of
-objects). `skills` is not rendered: the receiving run gets its skills through its own delivery (§19.5 step 1, §19.6),
-so the rendered prompt is the same for both versions and `RENDERER_VERSION` stays `1`. `skills` is taken from the
+renderer reads all three versions (`version` must equal `builder_version`; version 2 must carry `skills` as a list of
+objects; version 3 additionally carries `brief`, which is likewise never rendered — see "Version 3" below). `skills` is not rendered: the receiving run gets its skills through its own delivery (§19.5 step 1, §19.6),
+so the rendered prompt is the same for all three versions and `RENDERER_VERSION` stays `1`. `skills` is taken from the
 newest run's `skill_resolved` event (no `run_skill` read, no skill file; a malformed entry fails the build closed) and
 is dropped from the last after every other §15.4 drop step. Code: `src/continuity/bundle-schema.ts` (`BUNDLE_VERSIONS`,
 `BundleSkill`, `BUNDLE_FIELDS_V1`), `src/continuity/bundle.ts`, `src/continuity/render.ts`. Tests:
@@ -7499,9 +7499,11 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
   (UTF-8 bytes / 4, block plus separator) are reserved from `max_context_tokens` before retrieval runs, so retrieval is
   trimmed first; retrieval is raced against `admission_timeout_ms`, so a slow index drops snippets, never the brief. The
   `rag_retrieval` event gains `brief_sha256` and `brief_tokens_est` (outcome `skipped`, reason `INERT`, when retrieval
-  is off). A run without a brief compiles byte for byte as before. The brief goes with fresh project runs, like the pack
-  (§14.6): a native resume continues a session that already had it, and a handoff run's bundle lists the hash only
-  (Delegated: the handoff prompt's layout, instruction last, is unchanged). The handoff bundle becomes version 3
+  is off). A run without a brief compiles byte for byte as before. The brief goes with every run admitted on a
+  briefed project, like the pack (§14.6): a handoff successor re-resolves the meta-session's project under the same
+  checks as a new request, so it freezes its own hash at its admission and gets the block too, while its bundle lists
+  the hash only; a native resume continues a session that already had it (Delegated: the handoff prompt's layout,
+  instruction last, is unchanged). The handoff bundle becomes version 3
   (§15.1 "Version 3"). The brief's text never reaches the ledger, an artifact, a log or the bundle. Code:
   `src/projects/brief.ts`, `src/config/load.ts`, `src/cli/brief-pack.ts`, `src/cli/rag-index.ts` (`reservedTokens`),
   one refusal hook in `src/lifecycle/lifecycle.ts` (`ContextPackOutcome.refuse`). Tests: `src/projects/brief.test.ts`,

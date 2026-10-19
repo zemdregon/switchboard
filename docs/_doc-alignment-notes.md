@@ -746,7 +746,7 @@ as history.
 - Resolved 2026-10-19 by Linus ruling (DOC-CONFLICT #764): ADR-0061 Amendment 2026-10-19 added; code kept
   (--text scans binaries).
 
-## 41. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
+## 42. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
 
 - [HLD §1.2](design/HLD.md#12-explicit-exclusions) still excludes "No network
   listener: MCP is stdio only; HTTP/SSE is deferred", while the M13 network
@@ -777,3 +777,33 @@ as history.
   only adds the as-built note and marks T3.24 Done. Left unchanged:
   narrowing the SRS guarantee to "from an allowed client" is the SRS
   owner's call. It does not block PR #760.
+
+## 43. T5.14 "fresh project runs only" misstatement and bundle-version-3 staleness (from PR #767, fixed in this gate)
+
+- The T5.14 row as merged on this branch said, under "Not covered", that
+  "the brief text goes with fresh project runs only (a handoff run's bundle
+  carries the hash ...)". The code admits every project run — fresh and
+  handoff successor alike — through the same snapshot builder with
+  `admitBrief` (`resolveProject` in `src/mcp/server.ts` and in
+  `src/queue/admission.ts`; `continueTask` re-resolves the meta-session's
+  project under the same checks as a new request and submits the successor
+  with that snapshot), and the lifecycle-wide `briefContextPack` port
+  (`src/cli/brief-pack.ts`, wired in `src/cli/serve.ts`) prepends the block
+  to any run whose snapshot carries `brief_sha256`. So a handoff successor
+  on a briefed project freezes its own hash at its admission and gets the
+  block too; only the bundle carries the hash alone, and a native resume
+  reuses the session that already had it. SRS FR-SES-07 ("each run's
+  context") already said this; the row contradicted it.
+- Fixed in this gate (docs only, no owner decision needed — code is the
+  source of truth for what is implemented): the T5.14 "Not covered" note
+  and LLD §20.13 "As built" now say every admitted run; the LLD §15.1
+  "Version 2" paragraph ("renderer reads both versions", "same for both
+  versions") now reads all three; the ADR index row for ADR-0038
+  ("versions 1–2") now names version 3; SRS FR-SES-07 "by version hash" now
+  reads "by SHA-256 hash" to match `brief: { run_id, sha256 }`.
+- Also fixed here (mechanical): the second of the two items numbered 41
+  is now item 42, so this entry is item 43. Only §24 is linked from other
+  documents, so no link breaks.
+- It does not block PR #767 (the task's own evidence — `src/projects/brief.test.ts`,
+  `src/cli/brief-pack.test.ts`, `src/continuity/bundle.test.ts` "project
+  brief as a hash" — is cited in-row and matches the named tests).
