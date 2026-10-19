@@ -1005,7 +1005,7 @@ Implements FR-INN-01..17 and [ADR-0016](../adr/0016-inner-agent.md) for M11 (COM
 contracts are in [LLD §13](LLD.md#13-inner-agent). Status: **Proposed**. zemdregon decided that an inner agent exists and
 which tasks motivate it (owner decision 14); everything below is Delegated and unverified until M11 lands.
 
-*As built (2026-10-15, T11.14, Delegated; T11.1 to T11.12 are Done on fakes, [ROADMAP
+*As built (2026-10-15, T11.14, Delegated; T11.1 to T11.13 are Done on fakes, [ROADMAP
 §6.6](../ROADMAP.md#66-m11-inner-agent-tasks)).* The design text above and below is unchanged; this note says what the
 tests on `main` prove against each bullet and what is not built. No live inner backend, provider CLI or network host has
 been used anywhere in the suite.
@@ -1060,7 +1060,8 @@ been used anywhere in the suite.
   described, and `inner resume <task>` is built too (FR-INN-17; `src/cli/inner.test.ts`).
 - *OpenCode `cli` kind*: documentation spike [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16) and the
   live result [§4.6.7](#467-t110-live-result-2026-10-17) (2026-10-17: no tool-free one-shot on v2.0.23); `Ineligible`
-  in code; unchanged in `src/cli/inner.test.ts`.
+  in code; unchanged in `src/cli/inner.test.ts`; the gate is pinned in `src/inner/cli-backend.test.ts` (T11.13 Done
+  2026-10-18 on the gate, owner decision 66; shipped stays `Ineligible`).
 
 - **Technology (Proposed).** The `http` kind uses the Node built-in `fetch`/HTTP client (and `node:net`/`node:http`
   for a Unix socket); no new dependency and no vendor SDK, so the controller does not pick a provider or carry a provider's

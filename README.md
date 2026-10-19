@@ -93,9 +93,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   real provider CLI remain open.
   See [Container environments (milestone 10)](#container-environments-milestone-10) and
   [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
-- **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
+- **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.13 are done on fakes: an optional HTTP backend, privacy
   gates, quality monitoring with automatic suspension (T11.6), `doctor` and `inner` reporting, commit-message drafting,
-  handoff condensation (T11.10, a service function) and record-only routing classification (T11.11). The T11.6 roadmap
+  handoff condensation (T11.10, a service function), record-only routing classification (T11.11), and the `cli` backend
+  gate (T11.13, shipped `Ineligible`). The T11.6 roadmap
   row carries its `Done on fakes` status since [#586](https://github.com/zemdregon/switchboard/pull/586), which also
   added `src/inner/suspension.test.ts`: on a scripted fake backend, every call after a suspension falls back without
   reaching a now-good backend, and the first call after the task is re-enabled is accepted from it. The T11.9
