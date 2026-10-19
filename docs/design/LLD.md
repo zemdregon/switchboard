@@ -7534,9 +7534,15 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
 
 - **Chain (FR-TEL-05).** An ADR (persistence format) first. Proposed: a `chain_hash` column, SHA-256 over the previous
   row's hash and the row's canonical JSON, backfilled in id order by the migration; `doctor` verifies.
-- **Provider OTLP (FR-TEL-06).** An ADR (new local listener, per-provider environment additions) first. Proposed: one
-  listener per run on `127.0.0.1:0`, metrics only, attribute allowlist, the provider's documented OTLP variables named
-  in its manifest after they are checked against the provider's documentation.
+- **Provider OTLP (FR-TEL-06).** Done (2026-10-19, T8.15, Delegated agent work, not owner-approved):
+  [ADR-0062](../adr/0062-per-run-provider-otlp-metrics-receiver.md) (new local listener) landed in the same PR, committed
+  first. One listener per run on `127.0.0.1:0` for the run's lifetime, metrics only over OTLP/HTTP JSON (no protobuf
+  or gRPC, no new dependency), 1 MiB body cap (Assumption), a closed token/cost metric allowlist mapped to
+  `provider_reported` usage observations for that run, forbidden attributes dropped, run/task ids injected by the
+  controller and never trusted from the payload. `telemetry.provider_otlp` defaults off (off opens no socket); a
+  provider gets a listener only with a cited `otlp_metrics` manifest declaration, and none declares one yet. Tests:
+  `src/telemetry/provider-otlp.test.ts`, the T8.15 block in `src/lifecycle/lifecycle.test.ts`, and the config and
+  manifest declaration tests.
 - **Evaluation (FR-OPS-06).** `switchboard eval run <suite>`: a suite file in the data directory, each task replayed as
   a normal run, graded in a network-off container through the ADR-0052 driver with the tests outside the agent's
   worktree; results in a new `eval_result` table.

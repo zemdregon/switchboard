@@ -198,8 +198,8 @@ export interface ResolvedConfig {
   notificationSinks: NotificationSinkSettings[];
   /** `ci_trigger` (T15.3; FR-QUE-03, LLD §18.6), always set; disabled unless the operator turns it on. */
   ciTrigger: CiTriggerSettings;
-  /** Validated OTLP/HTTP endpoint (LLD §7); absent means no export or dependency load. */
-  telemetry?: { otlpEndpoint: string };
+  /** Validated OTLP settings (LLD §7, LLD §20.13); absent means no export, no per-run receiver, no dependency load. */
+  telemetry?: { otlpEndpoint?: string; providerOtlp?: boolean };
   /**
    * Switchboard-controlled skills (T16.3; FR-SKL-03, FR-SKL-04, FR-SKL-08, LLD §19.3). Always set. An absent section
    * resolves to `enabled: false` and the LLD defaults, and no other field of this object changes because of it.
@@ -596,7 +596,13 @@ export function loadConfig(
   if (capacityErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${capacityErrors.map((l) => `  ${l}`).join("\n")}`);
   }
-  const otlpEndpoint = cfg.telemetry?.otlp_endpoint;
+  // T8.15 (FR-TEL-06, LLD §20.13, ADR-0062): per-run loopback OTLP metrics receiver, off unless explicitly on.
+  const otlpEndpoint = cfg.telemetry?.otlp_endpoint === "" ? undefined : cfg.telemetry?.otlp_endpoint;
+  const providerOtlp = cfg.telemetry?.provider_otlp === true;
+  const telemetry =
+    otlpEndpoint !== undefined || providerOtlp
+      ? { ...(otlpEndpoint ? { otlpEndpoint } : {}), ...(providerOtlp ? { providerOtlp } : {}) }
+      : undefined;
   if (otlpEndpoint) {
     let valid = false;
     try {
@@ -689,7 +695,7 @@ export function loadConfig(
     controlPlane: resolveControlPlane(cfg.control_plane),
     notificationSinks: resolveNotificationSinks(cfg.notification_sinks),
     ciTrigger: resolveCiTrigger(cfg.ci_trigger),
-    ...(otlpEndpoint ? { telemetry: { otlpEndpoint } } : {}),
+    ...(telemetry ? { telemetry } : {}),
     claudeCodeGitChannel: cfg.providers?.["claude-code"]?.git_channel === true,
     profileOverrides,
     outerSandboxRequiredProfiles: [...(cfg.outer_sandbox?.required_profiles ?? [])],
