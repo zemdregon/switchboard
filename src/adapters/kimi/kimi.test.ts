@@ -25,6 +25,7 @@ import {
   RESUMED_SESSION_ID,
   replayAdapter,
 } from "./fixtures/cases.js";
+import { deferredAcpInvocation } from "./fixtures/deferred-acp.js";
 
 const EXE = "/opt/synthetic/kimi";
 const request = (over: Partial<CompileRequest> = {}): CompileRequest => ({
@@ -57,9 +58,9 @@ describe("kimi compile matrix (T4.62)", () => {
     }
   });
 
-  it("privileged: the bypass cell compiles --prompt only for the widest approved scope; restricted cells use ACP", () => {
+  it("privileged: the bypass cell compiles --prompt only for the widest approved scope; every non-bypass cell is refused (T4.68 bypass-only)", () => {
     let bypassCells = 0;
-    let acpCells = 0;
+    let refusedCells = 0;
     for (const scope of scopeShapes()) {
       const profile = privilegedProfile(scope);
       for (const approved of [false, true]) {
@@ -89,32 +90,17 @@ describe("kimi compile matrix (T4.62)", () => {
           expect(auditInvocation(inv), label).toEqual([]);
           continue;
         }
-        if (!common) {
-          expect(r, label).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
-          continue;
-        }
-        acpCells += 1;
-        const inv = compiled(r);
-        expect(inv.transport, label).toBe("acp-stdio");
-        expect(inv.outputFormat, label).toBe("acp");
-        expect(inv.argv, label).toEqual([EXE, "acp"]);
-        expect(inv.policyFlags, label).toEqual([]);
-        expect(inv.stdin, label).toEqual({ kind: "none" });
-        expect(inv.acp, label).toEqual({
-          protocolVersion: 1,
-          prompt: "--yolo fix the failing test",
-          session: { kind: "new" },
-          mcpServers: [],
-          ...(readOnly ? { modeId: "plan" } : {}),
-          loginCommand: "kimi login",
-          requirePermissionRequest: true,
+        // Approval cell (privileged without bypass): refused by the T4.68 bypass-only gate, never compiled to ACP.
+        refusedCells += 1;
+        expect(r, label).toMatchObject({
+          ineligible: true,
+          reason: "PROFILE_UNSUPPORTED",
+          detail: expect.stringContaining("Kimi has no permission requests"),
         });
-        expect(auditInvocation(inv), label).toEqual([]);
-        expect(auditAcpPlan(inv, "kimi"), label).toEqual([]);
       }
     }
     expect(bypassCells).toBe(1); // worktree + broad + on + enabled, approved
-    expect(acpCells).toBe(12); // 2 file modes x 3 shell modes x approval on/off, with network on and repo enabled
+    expect(refusedCells).toBe(108); // every non-bypass scope shape x approval on/off is refused (no ACP cell compiles)
   });
 
   it("an unapproved bypass, a missing scope, a Git-writing allowlist and a missing binary are Ineligible", () => {
@@ -140,13 +126,16 @@ describe("kimi compile matrix (T4.62)", () => {
     });
   });
 
-  it("a requested model is one --model= word (bypass) or the ACP model option; an unsafe one is refused", () => {
+  it("a requested model is one --model= word (bypass); the ACP model cell is refused; an unsafe model is refused", () => {
     const approved = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
     const bypass = compiled(adapter().compile(request({ model: "kimi-code/k3", bypassApproved: true }), approved));
     expect(bypass.argv.slice(1, 3)).toEqual(["--model=kimi-code/k3", "--prompt=--yolo fix the failing test"]);
     const restricted = privilegedProfile({ ...BYPASS_SCOPE, bypass: false });
-    const acp = compiled(adapter().compile(request({ model: "kimi-code/k3" }), restricted));
-    expect(acp.acp?.configOptions).toEqual([{ configId: "model", value: "kimi-code/k3" }]);
+    expect(adapter().compile(request({ model: "kimi-code/k3" }), restricted)).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: expect.stringContaining("Kimi has no permission requests"),
+    });
     for (const model of ["--yolo", "-y", "a b", ""]) {
       expect(adapter().compile(request({ model, bypassApproved: true }), approved), model).toMatchObject({
         reason: "CAPABILITY_MISSING",
@@ -154,15 +143,17 @@ describe("kimi compile matrix (T4.62)", () => {
     }
   });
 
-  it("never emits an excluded flag, keeps KIMI_CODE_HOME out and never sets a bypass-class ACP mode", () => {
+  it("never emits an excluded flag and keeps KIMI_CODE_HOME out; the ACP cell is refused", () => {
     const never = ["-p", "--yolo", "-y", "--auto", "--plan", "--continue", "-c", "--agent", "--agent-file"];
     const more = ["--skills-dir", "--add-dir", "--login", "--session", "-S"];
     const approved = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
     const restricted = privilegedProfile({ ...BYPASS_SCOPE, files: { access: "read-only" }, bypass: false });
-    for (const inv of [
-      compiled(adapter().compile(request({ bypassApproved: true }), approved)),
-      compiled(adapter().compile(request(), restricted)),
-    ]) {
+    expect(adapter().compile(request(), restricted)).toMatchObject({
+      ineligible: true,
+      reason: "PROFILE_UNSUPPORTED",
+      detail: expect.stringContaining("Kimi has no permission requests"),
+    });
+    for (const inv of [compiled(adapter().compile(request({ bypassApproved: true }), approved))]) {
       expect(inv.argv[0]).toBe(EXE);
       for (const a of inv.argv.slice(1)) expect([...never, ...more].includes(a), a).toBe(false);
       expect(inv.envAllowlist).toEqual(["PATH", "HOME"]);
@@ -186,7 +177,7 @@ describe("kimi compile matrix (T4.62)", () => {
     expect(auditInvocation(argv("-yp"), undefined, "kimi")).toEqual(["-y", "-p"]);
     expect(auditInvocation(argv("-p", "x"), undefined, "kimi")).toEqual(["-p"]);
     expect(auditInvocation(argv("--prompt", "x"), undefined, "kimi")).toEqual(["--prompt"]);
-    const restricted = compiled(adapter().compile(request(), privilegedProfile({ ...BYPASS_SCOPE, bypass: false })));
+    const restricted = deferredAcpInvocation({ exe: EXE, cwd: "/work/tree", prompt: "--yolo fix the failing test" });
     const plan = restricted.acp as NonNullable<Invocation["acp"]>;
     for (const mode of ["auto", "yolo", "YOLO"]) {
       expect(auditAcpPlan({ ...restricted, acp: { ...plan, modeId: mode } }, "kimi"), mode).toHaveLength(1);

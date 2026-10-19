@@ -625,7 +625,9 @@ adapter does, ADR-0049 item 3), a `tool_call` or `tool_call_update` whose `statu
 the turn, so the run ends `PERMISSION_BLOCKED`; an approved bypass run is exempt. *Outcome 2026-10-19 (owner
 ruling 05:22 CDT): Kimi 2.1.1 raises no ACP permission requests, so T4.68 is closed Partial-by-ruling and gating is
 the Deferred [ROADMAP §8](../ROADMAP.md#8-deferred-and-excluded-work) row "Kimi ACP permission gating (ADR-0049
-item 3)".* Tests:
+item 3)".* *Update 2026-10-19 (bypass-only gate, owner-level ruling relayed 2026-10-19 08:45 CDT, PR #755):* the
+adapter now refuses restricted compiles at compile time (`kimiBypassOnlyGate` in `src/adapters/kimi/adapter.ts`), so
+no run reaches this runtime check; the check stays in code for the Deferred row. Tests:
 `src/adapters/kimi/acp-stream.test.ts`, `src/exec/acp/client.test.ts`.
 
 `parseEvent` receives the `session/update` notifications and the final `session/prompt` response as `AcpMessage`s.
