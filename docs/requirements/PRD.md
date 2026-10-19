@@ -112,7 +112,9 @@ operator file may set sharing flags is implemented in T12.1 ([TDD
 [PR #198](https://github.com/zemdregon/switchboard/pull/198). Component mapping: [SDD
 §5](../design/SDD.md#5-requirements-to-design-traceability) (`FR-RAG-09`, `FR-RAG-10`); [ADR-0031](../adr/0031-retrieval-index.md).
 
-**Runtime (implemented, T12.7, Done on fakes; ROADMAP §6.7).** A separate global SQLite store is built by
+**Runtime (implemented, T12.7, Partial; ROADMAP §6.7).** T12.7 is Partial (2026-10-19, owner ruling): global/both scope
+returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f).
+A separate global SQLite store is built by
 `serve` after the projects from operator `sources` and contributing projects, with admission search merge when
 `use_global` is set and `index rebuild global`, `index clear global`, `index status global` and the `doctor`
 `rag_index_global` check (`src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). Not implemented yet on
@@ -371,7 +373,9 @@ and `get_skill` in `src/mcp/` with the §19.5 steps 2 to 4 resolver in `src/skil
 
 **Implementation note (partial M12).** UJ-11 is the target operator and orchestrator experience for CAP-13. On `main`,
 T12.4–T12.5 deliver background indexing, `doctor`/`index` visibility and labelled per-project snippets at admission on
-fakes, and T12.7 (Done on fakes) delivers the alternate path with `use_global: true` and deployment-wide snippets at
+fakes, and T12.7 (Partial; global/both scope returns GLOBAL_NOT_AVAILABLE on main; fix in #728 /
+sb/2026-10-18-fix-t127-search-global (f8c3fc5f)) delivers the alternate path with `use_global: true` and
+deployment-wide snippets at
 admission ([§3 implementation evidence](#implementation-evidence-partial-m12--cap-13)). Agent-callable search is T12.6
 (Done on fakes; its `global`/`both` scopes still answer `GLOBAL_NOT_AVAILABLE`).
 

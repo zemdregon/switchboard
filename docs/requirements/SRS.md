@@ -362,7 +362,9 @@ that only the operator file may set sharing flags (dynamic projects cannot widen
 `src/mcp/project-tools.test.ts`). Component mapping: [SDD §5](../design/SDD.md#5-requirements-to-design-traceability)
 (`FR-RAG-09`, `FR-RAG-10`); [ADR-0031](../adr/0031-retrieval-index.md).
 
-**Runtime (implemented, T12.7, Done on fakes; ROADMAP §6.7).** A separate global SQLite store is built by
+**Runtime (implemented, T12.7, Partial; ROADMAP §6.7).** T12.7 is Partial (2026-10-19, owner ruling): global/both scope
+returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f).
+A separate global SQLite store is built by
 `serve` after the projects from operator `sources` and contributing projects (`src/retrieval/global.ts`,
 `src/retrieval/global.test.ts`); admission merges global hits when `use_global` is set
 (`src/retrieval/admission.ts`); `index rebuild global`, `index clear global`, `index status global` and the `doctor`
