@@ -956,7 +956,8 @@ verified by the M10 spike (T10.0 Done 2026-10-18; Accepted in ADR-0013); mountin
   startup before worktrees are assessed (FR-PRJ-07).
 
 *As built (2026-10-16, T10.1, Delegated; [ADR-0052](../adr/0052-container-environment-docker-backend.md); the text
-above is unchanged except for the 2026-10-18 T10.0 updates on the runtime, image and login bullets).* What `src/environment/` does against each bullet:
+above is unchanged except for the 2026-10-18 T10.0 updates on the runtime, image and login bullets).*
+What `src/environment/` does against each bullet:
 
 - *Runtime*: rootless **Docker** through its CLI (`docker-runtime.ts`), observed on the operator host in the
   [T10.0 spike](../research/container-runtime-spike-2026-10-16.md); Podman is not installed there. A daemon that does
