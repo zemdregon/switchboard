@@ -18,8 +18,9 @@ import { FAKE_ACP_AGENT_PATH } from "../fake/adapter.js";
 import { privilegedProfile } from "../fixtures/privileged.js";
 import { startAdapterRun } from "../run.js";
 import { type Invocation, isIneligible, type NormalizedEvent } from "../types.js";
-import { KimiAdapter } from "./adapter.js";
+import { KIMI_NO_PERMISSION_REQUESTS, KimiAdapter } from "./adapter.js";
 import { fixturePath } from "./fixtures/cases.js";
+import { deferredAcpInvocation } from "./fixtures/deferred-acp.js";
 
 const root = mkdtempSync(path.join(tmpdir(), "sb-kimi-acp-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -69,20 +70,9 @@ async function run(steps: (wt: string) => Step[]) {
   writeFileSync(fixture, JSON.stringify({ steps: steps(wt) }));
   const adapter = new KimiAdapter({ executable: "/opt/synthetic/kimi" });
   const profile = privilegedProfile(ACP_SCOPE);
-  const compiled = adapter.compile(
-    { runId: `run_${n}`, objective: "Create SMOKE.md", constraints: [], workspace: { cwd: wt, writable: true } },
-    profile,
-  );
-  if (isIneligible(compiled)) throw new Error(compiled.detail);
-  expect(compiled.transport).toBe("acp-stdio");
-  expect(compiled.acp?.requirePermissionRequest).toBe(true);
-  // The adapter's own plan, with the fake agent in place of `kimi acp`.
-  const inv: Invocation = {
-    ...compiled,
-    argv: [process.execPath, FAKE_ACP_AGENT_PATH, "--fixture", fixture, "--record", record],
-    envAllowlist: ["PATH"],
-    timeouts: { wallClockMs: 20_000, idleMs: 20_000, killGraceMs: 300 },
-  };
+  const inv: Invocation = deferredAcpInvocation({ cwd: wt });
+  inv.argv = [process.execPath, FAKE_ACP_AGENT_PATH, "--fixture", fixture, "--record", record];
+  inv.envAllowlist = ["PATH"];
   const out = await startAdapterRun(adapter, inv, {
     profile,
     bypassApproved: false,
@@ -99,6 +89,22 @@ async function run(steps: (wt: string) => Step[]) {
 }
 
 const kinds = (events: readonly NormalizedEvent[]) => events.map((e) => e.kind);
+
+describe("kimi ACP: the approval scope is refused since the bypass-only gate", () => {
+  it("compile of the ACP scope is Ineligible PROFILE_UNSUPPORTED: Kimi has no permission requests", () => {
+    const adapter = new KimiAdapter({ executable: "/opt/synthetic/kimi" });
+    const compiled = adapter.compile(
+      { runId: "run_gate", objective: "x", constraints: [], workspace: { cwd: root, writable: true } },
+      privilegedProfile(ACP_SCOPE),
+    );
+    expect(isIneligible(compiled)).toBe(true);
+    if (isIneligible(compiled)) {
+      expect(compiled.reason).toBe("PROFILE_UNSUPPORTED");
+      expect(compiled.detail).toContain("Kimi has no permission requests");
+      expect(compiled.detail).toContain(KIMI_NO_PERMISSION_REQUESTS);
+    }
+  });
+});
 
 describe("kimi ACP: the captured session start (w1408 live smoke, CLI 2.1.1; redacted, replayed offline)", () => {
   it("the fixture is the two recorded records: initialize result, then available_commands_update for the session", () => {
