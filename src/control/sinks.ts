@@ -30,6 +30,10 @@ import https from "node:https";
 import type { NotificationSinkSettings, SinkEventKind } from "../config/notification-sinks.js";
 import { PROJECT_ID_PATTERN } from "../config/schema.js";
 import { isPrefixedId } from "../ids/index.js";
+import { type RunState, WORK_ITEM_STATES, type WorkItemState } from "../ledger/index.js";
+import { RUN_STATES } from "../lifecycle/states.js";
+import { NEEDS_ATTENTION_PRIORITY, type NeedsAttentionReason } from "./needs-attention.js";
+import { STALLED_PROGRESS } from "./progress-stall.js";
 
 /** `project_id` of an event for a run admitted without a project (workspace path only). Not a valid project id. */
 export const NO_PROJECT_ID = "-";
@@ -58,23 +62,79 @@ export const SINK_REASON_CODES: { readonly [K in SinkEventKind]: readonly string
   budget_exhausted: ["budget_exhausted"],
   project_paused: ["project_paused", "global_paused"],
   queue_low: ["queue_low"],
+  digest: ["digest"],
 };
 
-/** LLD §3.4.1 `notification_payload`: exactly these five fields. */
+/** Reasons a pushed digest counts: the run-level list plus the project-level `stalled_progress` (FR-CTL-14). */
+export const DIGEST_ATTENTION_REASONS: readonly (NeedsAttentionReason | typeof STALLED_PROGRESS)[] = [
+  ...NEEDS_ATTENTION_PRIORITY,
+  STALLED_PROGRESS,
+];
+
+/**
+ * T14.16 (FR-CTL-14, ADR-0048 item 3 as amended, LLD §20.5): the `counts` object of a `digest` event. Every leaf is a
+ * non-negative integer under a key from a closed list; there is no string anywhere in it, so no objective, agent text,
+ * decision text, path or id can travel in it. Hold and open-decision counts join when T3.24 and T14.15 build them.
+ */
+export interface DigestCounts {
+  readonly runs_by_state: Readonly<Record<RunState, number>>;
+  readonly needs_attention_by_reason: Readonly<Record<(typeof DIGEST_ATTENTION_REASONS)[number], number>>;
+  readonly queue_by_state: Readonly<Record<WorkItemState, number>>;
+  readonly pending_approvals: number;
+  readonly paused_projects: number;
+}
+
+const DIGEST_COUNT_GROUPS = {
+  runs_by_state: RUN_STATES,
+  needs_attention_by_reason: DIGEST_ATTENTION_REASONS,
+  queue_by_state: WORK_ITEM_STATES,
+} as const;
+const DIGEST_COUNT_SCALARS = ["pending_approvals", "paused_projects"] as const;
+
+const isCount = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+
+/** Exactly the closed keys with integer values, rebuilt key by key; undefined when anything is missing or extra. */
+function closedCounts(input: unknown): DigestCounts | undefined {
+  if (typeof input !== "object" || input === null) return undefined;
+  const src = input as Record<string, unknown>;
+  const top = [...Object.keys(DIGEST_COUNT_GROUPS), ...DIGEST_COUNT_SCALARS];
+  if (Object.keys(src).length !== top.length) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [group, keys] of Object.entries(DIGEST_COUNT_GROUPS)) {
+    const g = src[group];
+    if (typeof g !== "object" || g === null || Object.keys(g).length !== keys.length) return undefined;
+    const built: Record<string, number> = {};
+    for (const k of keys) {
+      const v = (g as Record<string, unknown>)[k];
+      if (!isCount(v)) return undefined;
+      built[k] = v;
+    }
+    out[group] = built;
+  }
+  for (const k of DIGEST_COUNT_SCALARS) {
+    if (!isCount(src[k])) return undefined;
+    out[k] = src[k];
+  }
+  return out as unknown as DigestCounts;
+}
+
+/** LLD §3.4.1 `notification_payload`: these five fields, plus `counts` on a `digest` event only (ADR-0048 item 3). */
 export interface NotificationPayload {
   readonly project_id: string;
   readonly event_kind: SinkEventKind;
   readonly reason_code: string;
   readonly run_id: string | null;
   readonly link: string;
+  readonly counts?: DigestCounts;
 }
 
-/** What a producer hands the dispatcher: ids and closed codes only. */
+/** What a producer hands the dispatcher: ids and closed codes only (and integer counts for `digest`). */
 export interface SinkEvent {
   readonly projectId: string;
   readonly eventKind: SinkEventKind;
   readonly reasonCode: string;
   readonly runId: string | null;
+  readonly counts?: DigestCounts;
 }
 
 const PROJECT_ID_RE = new RegExp(PROJECT_ID_PATTERN);
@@ -104,7 +164,11 @@ export function buildNotificationPayload(
   const link = sinkLink(linkBase, event.runId);
   if (link.length > MAX_LINK) return undefined;
   // Fixed key order; built from the checked fields only.
-  return { project_id: p, event_kind: event.eventKind, reason_code: event.reasonCode, run_id: event.runId, link };
+  const base = { project_id: p, event_kind: event.eventKind, reason_code: event.reasonCode, run_id: event.runId, link };
+  // T14.16: `counts` exactly on `digest` (required there, refused elsewhere), rebuilt from the closed keys.
+  if (event.eventKind !== "digest") return event.counts === undefined ? base : undefined;
+  const counts = event.runId === null ? closedCounts(event.counts) : undefined;
+  return counts === undefined ? undefined : { ...base, counts };
 }
 
 /**
@@ -151,7 +215,9 @@ export function sinkRequestFor(
   const body = {
     topic: sink.topic,
     title: `Switchboard: ${payload.event_kind}`,
-    message: `project_id=${payload.project_id} reason_code=${payload.reason_code} run_id=${payload.run_id ?? "none"}`,
+    message:
+      `project_id=${payload.project_id} reason_code=${payload.reason_code} run_id=${payload.run_id ?? "none"}` +
+      (payload.counts === undefined ? "" : ` ${digestCountsLine(payload.counts)}`),
     click: payload.link,
     tags: ["switchboard"],
   };
@@ -163,6 +229,16 @@ export function sinkRequestFor(
     },
     body: JSON.stringify(body),
   };
+}
+
+/** The ntfy message tail of a digest: `group.key=n` for every non-zero integer, closed keys only. */
+function digestCountsLine(counts: DigestCounts): string {
+  const parts: string[] = [];
+  for (const group of Object.keys(DIGEST_COUNT_GROUPS) as (keyof typeof DIGEST_COUNT_GROUPS)[]) {
+    for (const [k, n] of Object.entries(counts[group])) if (n > 0) parts.push(`${group}.${k}=${n}`);
+  }
+  for (const k of DIGEST_COUNT_SCALARS) parts.push(`${k}=${counts[k]}`);
+  return parts.join(" ");
 }
 
 /**

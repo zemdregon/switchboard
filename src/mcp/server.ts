@@ -1405,7 +1405,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       },
       a.since_cursor as string | undefined,
       scrub,
-      attentionAt(),
+      {
+        ...attentionAt(),
+        // T14.16 (FR-CTL-14): the configured project's `queue.stall_hours`; unset means no `stalled_progress`.
+        stallHours: (id: string) => deps.config.projects?.find((p) => p.id === id)?.queue?.stallHours,
+      },
     );
 
   /** T14.6 (FR-CTL-05, LLD §3.4.4): see the module comment; the row is written as `mcp:<client_id>`. */

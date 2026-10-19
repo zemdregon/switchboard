@@ -73,6 +73,7 @@ import {
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { CiTriggerPoller, GhCiStatusPort, resolveGithubRemote } from "../ci/index.js";
 import { ConfigError, loadConfig, primaryContext, type ResolvedConfig } from "../config/index.js";
+import { collectDigestCounts, digestPushFor } from "../control/digest-push.js";
 import {
   ALL_PROJECTS_ID,
   type ApprovalAnnouncement,
@@ -1181,7 +1182,23 @@ async function runDaemon(
         () => (now ? now() : new Date()).getTime(),
       )
     : undefined;
+  // T14.16 (FR-CTL-14, LLD §20.5, ADR-0048): the metadata-only digest push, only when the operator set
+  // `control_plane.digest_schedule` and a sink exists to receive it; otherwise nothing is collected or sent.
+  const digestCron = config.controlPlane.digestSchedule?.cron;
+  const digestPush = digestPushFor({
+    cron: digestCron,
+    sinks,
+    counts: (at) => collectDigestCounts(ledger, { now: at, projects: config.projects }),
+  });
+  if (digestCron !== undefined && sinks === undefined) {
+    log.warn("control_plane.digest_schedule is set but no notification sink is configured; no digest is sent");
+  }
   const runSchedulerTick = async () => {
+    try {
+      digestPush?.tick(now ? now() : new Date());
+    } catch (err) {
+      log.error("digest push tick failed", { error: message(err) });
+    }
     // T15.2 (FR-QUE-02, LLD §18.7 step 1): due schedules enqueue before the CI poll and the queue dequeue.
     try {
       fireDueSchedules(ledger, { ...(now ? { nowUtc: new Date(now()) } : {}) });

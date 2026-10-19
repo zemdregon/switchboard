@@ -1716,14 +1716,16 @@ Extend `$defs` in §3.0:
       "scope_summary": { "type": "string", "maxLength": 512 },   // controller-generated only
       "requested_at": { "type": "string" } } },
   "sink_event_kind": { "enum": [
-      "run_terminal","needs_attention","approval_pending","approval_decided","budget_exhausted","project_paused","queue_low" ] },
+      "run_terminal","needs_attention","approval_pending","approval_decided","budget_exhausted","project_paused","queue_low",
+      "digest" ] },                         // digest: T14.16, FR-CTL-14, §20.5
   "notification_payload": { "type": "object", "required": [
       "project_id","event_kind","reason_code","run_id","link" ], "properties": {
       "project_id": { "type": "string" },
       "event_kind": { "$ref": "#/$defs/sink_event_kind" },
       "reason_code": { "type": "string" },   // needs_attention reason or approval_kind
       "run_id": { "type": ["string","null"] },
-      "link": { "type": "string", "maxLength": 2048 } } } } }
+      "link": { "type": "string", "maxLength": 2048 },
+      "counts": { "type": "object" } } } } }   // digest only, required there: integer leaves only (§20.5)
 ```
 
 The compact **envelope** (§3.0) gains optional `needs_attention` (FR-CTL-03) on `get_run`, `list_runs` and digest run
@@ -1773,6 +1775,8 @@ always present: a string when more rows match, else `null`. The cursor is the la
     "projects": { "type": "array", "items": { "type": "object", "required": ["project_id"], "properties": {
       "project_id": { "type": "string" },
       "paused": { "type": "boolean" },
+      "project_needs_attention": { "type": "object", "properties": {   // T14.16 (§20.5): only while stalled
+          "active": { "const": true }, "reason": { "const": "stalled_progress" } } },
       "budget": { "type": "object", "properties": {
           "exhausted": { "type": "boolean" },
           "caps": { "type": "array", "items": { "type": "object", "required": ["key","limit","used"], "properties": {
@@ -2160,7 +2164,9 @@ counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
 - Reason codes per `event_kind`: `needs_attention` takes a `needs_attention_reason`; `approval_pending` and
   `approval_decided` an `approval_kind`; `run_terminal` the terminal state (`SUCCEEDED`, `FAILED`, `CANCELLED`);
   `budget_exhausted` the literal `budget_exhausted`; `project_paused` `project_paused` or `global_paused`;
-  `queue_low` the literal `queue_low` (T15.4, FR-QUE-04; `run_id` null). `project_id`
+  `queue_low` the literal `queue_low` (T15.4, FR-QUE-04; `run_id` null); `digest` the literal `digest` (T14.16,
+  FR-CTL-14; `project_id` `*`, `run_id` null, and the integer-only `counts` object of §20.5, which no other kind may
+  carry). `project_id`
   is a project id, `-` (a run admitted without a project) or `*` (all projects). An event with any other value, or a
   `run_id` that is not `run_` + ULID, is dropped, not sent.
 - Link: the configured `public_url` resource itself when the HTTP transport is set (`sinkLink` returns it unchanged
@@ -7277,6 +7283,31 @@ provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and par
 - **Stall.** `projects.<id>.queue.stall_hours` (unset by default). `stalled_progress` is derived on read: the project has
   `READY` items and no item reached `DONE` within the window (the window starts at the later of the last `DONE` and the
   first `READY`). The next `DONE` clears it.
+
+**As built (T14.16, 2026-10-19, Delegated agent work, not owner-approved).**
+
+- **Digest schedule** is operator configuration, `control_plane.digest_schedule: { "cron": "<five fields, UTC>" }`, in
+  the §18.5 cron syntax; absent means off. It is not a `project_schedule` row: a sink is an operator-chosen egress path
+  (ADR-0048 item 1), so a chat client cannot create one, and no migration is added. An invalid expression or an unknown
+  key aborts startup. `serve` builds the schedule only when the key is set and a notification sink exists (it logs a
+  warning when the key is set without a sink), and checks it at the start of every scheduler tick (§18.7) on the
+  injected clock: a matching UTC minute fires once per process (`src/control/digest-push.ts`).
+- **Event.** One aggregate `digest` event per fire: `project_id` `*`, `reason_code` `digest`, `run_id` null, the usual
+  link, and `counts` with exactly these integer leaves: `runs_by_state` (every run state, all time),
+  `needs_attention_by_reason` (the run-level reasons over non-terminal runs, plus `stalled_progress` per configured
+  project), `queue_by_state` (work items of every state), `pending_approvals` and `paused_projects`. Holds by reason
+  and open decisions join when T3.24 and T14.15 build them. The payload builder rebuilds `counts` key by key from the
+  closed lists and drops the event when a key is missing or extra or a value is not a non-negative integer; `counts`
+  on any other kind is dropped too (`src/control/sinks.ts`). The ntfy message appends the non-zero counts as
+  `group.key=n`.
+- **Stall** reads `READY` count, the oldest `READY` item's `created_at` and the newest `DONE` item's `terminal_at`
+  (`readProgressStallFacts`, `src/ledger/work-queue.ts`). "First `READY`" is the oldest `READY` item's `created_at`,
+  so an item cycling `READY` → `ADMITTING` → `READY` on admission retries does not restart the window. `stall_hours` is
+  an integer from 1 to 720 (the upper bound is an **Assumption**, a sanity limit); any other value aborts startup.
+  `get_digest` lists `project_needs_attention: { "active": true, "reason": "stalled_progress" }` on a stalled project
+  and omits the key otherwise (`src/control/progress-stall.ts`, `src/mcp/digest.ts`). No separate `needs_attention`
+  sink event is sent for it; the pushed digest counts it.
+- Tests: `src/control/digest-push.test.ts`, `src/config/digest-stall-config.test.ts`.
 
 ### 20.6 Head-pinned verification evidence and the docs-alignment skill (FR-EXE-10, FR-SKL-11, T8.10)
 
