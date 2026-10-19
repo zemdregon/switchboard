@@ -7365,10 +7365,11 @@ The network transport lists `enqueue_work`, `list_work` and `cancel_work` for a 
   id; no entropy-only rule by default (false positives), Assumption. No external scanner binary.
 - **Scope.** Added lines of the outgoing diff (`git diff -U0 --inter-hunk-context=0 --text --no-renames --no-color
   --no-relative --src-prefix=a/ --dst-prefix=b/ --end-of-options <from> <head>` through the hardened helper, which adds
-  `--no-textconv --no-ext-diff` and neutralises every driver), where `<from>` is the remote-tracking tip when the ledger holds an ACCEPTED push of
-  exactly that SHA and it is an ancestor of the head, else the base checkpoint (after a push by hand the next
-  controller push scans everything since the base again). Every file is diffed as text, so a `.gitattributes` line
-  cannot hide added lines; paths Git counts as binary are still scanned and are listed in the event.
+  `--no-textconv --no-ext-diff` and neutralises every driver), where `<from>` is the remote-tracking tip when the
+  ledger holds an ACCEPTED push of exactly that SHA and it is an ancestor of the head, else the base checkpoint (after
+  a push by hand the next controller push scans everything since the base again). Every file is diffed as text, so
+  a `.gitattributes` line cannot hide added lines; paths Git counts as binary are still scanned and are listed in
+  the event.
 - **Outcome.** A hit refuses the push with `SECRET_SCAN_BLOCKED`, appends `secret_scan_hit {stage: "push", rule_id,
   path, line}` (never the value) and flags `secret_scan_blocked` until a clean push of that ref (an operator
   acknowledgement through the CLI is Proposed, not built). The commit tool appends the same event with `stage:
