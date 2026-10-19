@@ -694,7 +694,8 @@ the Q-84 bypass cell: `--prompt=<objective>`, `--output-format stream-json`, `--
   `antigravity registry entry and manifest gate (T4.32)`); `src/adapters/providers.test.ts` (declared
   bypass spellings).
 
-**As built (T4.33, Partial).** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `adapter.ts`; event
+**As built (T4.33, Done against its Done-when under owner decision 65 (a)).** `parseEvent`, `extractResult`,
+`classifyFailure` and `resumeArgs` in `adapter.ts`; event
 names and status prefixes in `protocol.ts`. Structured JSONL only (FR-ADP-04): `session_bound` from `init`, never from
 free text. Success needs a clean expected exit, a `result` with `status` `SUCCESS`, run-total `total_tokens` above zero,
 and no `denied_actions` or `error` text (Q-86); envelope usage is emitted once as `provider_reported` (a second `result`
@@ -712,9 +713,11 @@ The stderr-only `AGY_ERROR` line has since been captured for real (seven quota s
 captures (pinned in `src/adapters/antigravity/limit-signals.test.ts`).
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`,
-  `antigravity parser hardening (T4.33, synthetic shapes)`).
+  `antigravity parser hardening (T4.33, synthetic shapes)`, `antigravity cases with no recorded native shape (T4.33,
+  synthetic shapes)`, `antigravity parser fallbacks and exact matching (T4.33, synthetic shapes)`);
+  `src/adapters/antigravity/parser-residual.test.ts` (residual pins, parser unchanged).
 - **Design sourcing:** [TDD §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433); HLD [§2.2
-  T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-partial).
+  T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 **As built (T4.37).** Git declarations and Done-when for FR-GIT-01, FR-GIT-02 and FR-GIT-09
 ([TDD §4.4](TDD.md#44-antigravity-agy-m4) "Git writes and injected tools",
@@ -3341,7 +3344,8 @@ section was silent or the build differs:
   `container` (`src/cli/serve.ts`); MCP and work-queue admission refuse a `container` project only when placement is
   missing (`TOOL_FAILURE`, `ENVIRONMENT_NOT_IMPLEMENTED`, `src/mcp/server.ts`, `src/queue/admission.ts`). A passing
   container run through MCP is therefore reachable on fakes when `serve` wires placement; live provider CLIs in the
-  image remain on the operator's T10.0 checklist.
+  image were checked by the operator (T10.0 Done 2026-10-18, spike §6). A Switchboard container run that uses a login
+  volume is still open under M10.
 - **Still open after T10.1:** the injected Git tool channel is not reachable from inside a container (host-side socket
   and shim only). Tests: `src/environment/container.test.ts`, `src/environment/docker-runtime.test.ts`,
   `src/lifecycle/environment.test.ts`, opt-in `src/environment/container-docker.test.ts`.
