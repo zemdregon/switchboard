@@ -40,7 +40,10 @@ export const NO_PROJECT_ID = "-";
 /** `project_id` of an event that applies to every project (a global pause, T14.6). Not a valid project id. */
 export const ALL_PROJECTS_ID = "*";
 
-/** FR-CTL-03 / LLD §3.4.1 `needs_attention_reason` (seven values; `skill_cleanup_failed` from T16.6). */
+/**
+ * FR-CTL-03 / LLD §3.4.1 `needs_attention_reason` (eight values; `skill_cleanup_failed` from T16.6, `secret_scan_blocked`
+ * from T9.14).
+ */
 export const NEEDS_ATTENTION_REASONS = [
   "awaiting_approval",
   "parked_loop",
@@ -49,6 +52,7 @@ export const NEEDS_ATTENTION_REASONS = [
   "budget_exhausted",
   "ci_fix_stuck",
   "skill_cleanup_failed",
+  "secret_scan_blocked",
 ] as const;
 /** ADR-0047 / LLD §3.4.1 `approval_kind`. */
 export const APPROVAL_KINDS = ["privileged_scope", "dynamic_project", "push_revision"] as const;

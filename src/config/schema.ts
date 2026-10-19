@@ -134,6 +134,8 @@ export interface SwitchboardConfig {
      * An empty list means none. Pins (`name@n`) are not visibility keys.
      */
     skills?: string[];
+    /** T3.24 (FR-CAP-12, LLD §20.2): honour `light: true` on this client's requests during a host load hold. Default false. */
+    allow_light?: boolean;
   }[];
   limits?: {
     global_concurrency?: number;
@@ -173,7 +175,15 @@ export interface SwitchboardConfig {
    * expression source in the restricted subset of `src/git/safe-pattern.ts` (at most 16, 200 characters each); a line
    * that matches is removed from the message.
    */
-  git?: { sanitize_patterns?: string[] };
+  git?: {
+    sanitize_patterns?: string[];
+    /**
+     * Pre-push secret scan (FR-GIT-11, LLD §20.9, ADR-0061; T9.14). `allow` is the operator allowlist: a hit of
+     * `rule_id` (a stable id of `src/artifacts/redact.ts`) at a repository-relative path the glob matches does not
+     * refuse the push. The only in-band way past the scan; at most 64 entries.
+     */
+    secret_scan?: { allow?: { rule_id: string; path: string }[] };
+  };
   /** Inner agent (M11, T11.1; FR-INN-01, LLD §13.1). Absent means off and nothing else changes. */
   inner_agent?: InnerAgentConfig;
   /** Retrieval index (M12, T12.1; FR-RAG-01, LLD §14.1). Absent, or no `embedding`, means off and nothing else changes. */
@@ -200,6 +210,11 @@ export interface SwitchboardConfig {
   ci_trigger?: CiTriggerConfigInput;
   /** Optional OTLP/HTTP trace destination; absent or empty disables telemetry (LLD §7, T8.1). */
   telemetry?: { otlp_endpoint?: string };
+  /**
+   * Host load hold (T3.24; FR-CAP-12, LLD §20.2). Absent means off: no load is read and dispatch is unchanged. Both keys
+   * are required together and `resume_load1` must be lower than `max_load1` (`load.ts` refuses anything else).
+   */
+  host?: { max_load1: number; resume_load1: number };
   /**
    * Outer sandbox (T3.1; LLD §8.4, ADR-0051). A profile listed in `required_profiles` is refused at admission unless
    * it can run inside the outer sandbox; absent or empty means nothing changes. `privileged` cannot be listed.
@@ -820,6 +835,7 @@ export const configSchema = {
           },
           tool_profile: { enum: [...TOOL_PROFILES] },
           skills: clientSkillListSchema(),
+          allow_light: { type: "boolean" },
         },
       },
     },
@@ -847,6 +863,16 @@ export const configSchema = {
         // T9.13 (FR-WS-10, LLD §5.1). Bounds are Proposed sanity limits (Delegated).
         seed_store_mb: { type: "integer", minimum: 1, maximum: 1_000_000_000 },
         seed_entries_per_seed: { type: "integer", minimum: 1, maximum: 100 },
+      },
+    },
+    // T3.24 (FR-CAP-12, LLD §20.2): 1-minute load averages; the upper bound is a typo guard (Assumption, Delegated).
+    host: {
+      type: "object",
+      additionalProperties: false,
+      required: ["max_load1", "resume_load1"],
+      properties: {
+        max_load1: { type: "number", exclusiveMinimum: 0, maximum: 100_000 },
+        resume_load1: { type: "number", exclusiveMinimum: 0, maximum: 100_000 },
       },
     },
     providers: {
@@ -886,6 +912,25 @@ export const configSchema = {
       additionalProperties: false,
       properties: {
         sanitize_patterns: { type: "array", maxItems: 16, items: { type: "string", minLength: 1, maxLength: 200 } },
+        secret_scan: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            allow: {
+              type: "array",
+              maxItems: 64,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["rule_id", "path"],
+                properties: {
+                  rule_id: { type: "string", minLength: 1, maxLength: 64 },
+                  path: { type: "string", minLength: 1, maxLength: 400 },
+                },
+              },
+            },
+          },
+        },
       },
     },
     transport: {

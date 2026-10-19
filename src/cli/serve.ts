@@ -71,6 +71,7 @@ import {
   type VersionGateResult,
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
+import { osLoadReader } from "../capacity/host-load.js";
 import { CiTriggerPoller, GhCiStatusPort, resolveGithubRemote } from "../ci/index.js";
 import { ConfigError, loadConfig, primaryContext, type ResolvedConfig } from "../config/index.js";
 import { collectDigestCounts, digestPushFor } from "../control/digest-push.js";
@@ -668,6 +669,7 @@ async function runDaemon(
         db,
         resolveContext: pushContextResolver(config.projects),
         sourceEnv: io.env,
+        secretScanAllow: config.secretScanAllow,
         ids,
         ...(now ? { now } : {}),
       }),
@@ -947,6 +949,8 @@ async function runDaemon(
           },
         }
       : {}),
+    // T3.24 (FR-CAP-12, LLD §20.2): the host load hold over `os.loadavg()`; absent when `host` is not set.
+    ...(config.hostLoad !== undefined ? { hostLoad: { ...config.hostLoad, reader: osLoadReader } } : {}),
     // T6.8 (FR-CAP-10, LLD §16.9): the pacing gate; absent unless the file sets `capacity.subscriptions` or `pacing`.
     ...(config.capacity.subscriptions !== undefined && config.capacity.pacing !== undefined
       ? { pacing: { subscriptions: config.capacity.subscriptions, pacing: config.capacity.pacing } }

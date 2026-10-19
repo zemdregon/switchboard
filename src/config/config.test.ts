@@ -306,6 +306,56 @@ describe("limits.min_free_disk_mb (T3.23, FR-WS-11)", () => {
   });
 });
 
+describe("host.max_load1 and host.resume_load1, mcp_clients[].allow_light (T3.24, FR-CAP-12)", () => {
+  it("is off by default: no hostLoad and no allowLight are resolved", () => {
+    const c = loadConfig({ configPath: write(base()) });
+    expect("hostLoad" in c).toBe(false);
+    for (const client of c.mcpClients.values()) expect("allowLight" in client).toBe(false);
+  });
+
+  it("resolves both values and allow_light: true", () => {
+    const cfg = base();
+    const c = loadConfig({
+      configPath: write({
+        ...cfg,
+        mcp_clients: [{ ...cfg.mcp_clients[0], allow_light: true }],
+        host: { max_load1: 10, resume_load1: 7.5 },
+      }),
+    });
+    expect(c.hostLoad).toStrictEqual({ maxLoad1: 10, resumeLoad1: 7.5 });
+    expect([...c.mcpClients.values()][0]?.allowLight).toBe(true);
+    const off = loadConfig({
+      configPath: write({ ...cfg, mcp_clients: [{ ...cfg.mcp_clients[0], allow_light: false }] }),
+    });
+    expect("allowLight" in ([...off.mcpClients.values()][0] ?? {})).toBe(false);
+  });
+
+  it("fails closed on a resume value not below the maximum, a missing key, an unknown key or a non-positive number", () => {
+    const load = (host: unknown) => () => loadConfig({ configPath: write({ ...base(), host }) });
+    expect(load({ max_load1: 8, resume_load1: 8 })).toThrow(
+      /\$\.host\.resume_load1: must be lower than \$\.host\.max_load1/,
+    );
+    expect(load({ max_load1: 8, resume_load1: 9 })).toThrow(ConfigError);
+    for (const host of [
+      { max_load1: 10 },
+      { resume_load1: 8 },
+      { max_load1: 10, resume_load1: 8, extra: 1 },
+      { max_load1: 0, resume_load1: -1 },
+      { max_load1: 10, resume_load1: 0 },
+      { max_load1: "10", resume_load1: 8 },
+      { max_load1: 10, resume_load1: null },
+      {},
+      null,
+    ]) {
+      expect(load(host)).toThrow(ConfigError);
+    }
+    const cfg = base();
+    expect(() =>
+      loadConfig({ configPath: write({ ...cfg, mcp_clients: [{ ...cfg.mcp_clients[0], allow_light: "yes" }] }) }),
+    ).toThrow(ConfigError);
+  });
+});
+
 describe("providers.claude-code.git_channel (T9.4b, ADR-0029 item 7)", () => {
   it("defaults to off, is true only when set to true, and is refused on other providers or as a non-boolean", () => {
     expect(loadConfig({ configPath: write(base()) }).claudeCodeGitChannel).toBe(false);
@@ -784,6 +834,31 @@ describe("git.sanitize_patterns (FR-GIT-04, T9.3)", () => {
     expect(() => loadConfig({ configPath: write({ ...base(), git: { sanitize_patterns: [1] } }) })).toThrow(
       /sanitize_patterns/u,
     );
+  });
+});
+
+describe("git.secret_scan.allow (FR-GIT-11, T9.14, LLD §20.9)", () => {
+  it("defaults to none and resolves entries in order", () => {
+    expect(loadConfig({ configPath: write(base()) }).secretScanAllow).toEqual([]);
+    const allow = [
+      { rule_id: "aws_access_key_id", path: "fixtures/**" },
+      { rule_id: "jwt", path: "docs/*.md" },
+    ];
+    const cfg = { ...base(), git: { secret_scan: { allow } } };
+    expect(loadConfig({ configPath: write(cfg) }).secretScanAllow).toEqual(allow);
+  });
+
+  it("refuses an unknown rule id, a missing field, an unknown key and more than 64 entries at load", () => {
+    const at = (allow: unknown, extra: Record<string, unknown> = {}) =>
+      loadConfig({ configPath: write({ ...base(), git: { secret_scan: { allow, ...extra } } }) });
+    expect(() => at([{ rule_id: "not_a_rule", path: "**" }])).toThrow(
+      /\$\.git\.secret_scan\.allow\[0\]\.rule_id: unknown rule "not_a_rule"/u,
+    );
+    expect(() => at([{ rule_id: "jwt" }])).toThrow(/secret_scan/u);
+    expect(() => at([{ rule_id: "jwt", path: "x", extra: 1 }])).toThrow(/secret_scan/u);
+    expect(() => at([], { bypass: true })).toThrow(/\$\.git\.secret_scan\.bypass: unknown key/u);
+    const many = Array.from({ length: 65 }, () => ({ rule_id: "jwt", path: "x" }));
+    expect(() => at(many)).toThrow(/secret_scan/u);
   });
 });
 
