@@ -26,6 +26,7 @@ import type { CompileRequest, ProbeRunner, ResolvedProfile, TrustProfile } from 
 import { isIneligible } from "../types.js";
 import { KIMI_GIT_CAPABILITIES, KIMI_GIT_WRITE_CONTROL, KimiAdapter } from "./adapter.js";
 import { BYPASS_SCOPE, replayAdapter } from "./fixtures/cases.js";
+import { deferredAcpInvocation } from "./fixtures/deferred-acp.js";
 import {
   ACP_SUBCOMMAND,
   AUTH_PROBE_INITIALIZE_ID,
@@ -154,16 +155,25 @@ describe("kimi Git declaration (T4.67, FR-GIT-01, FR-GIT-02, FR-GIT-09)", () => 
     }
   });
 
-  it("no compiled invocation (bypass or ACP, first run or resume) carries a git command or Git env", () => {
+  it("no compiled bypass invocation (first run or resume) carries a git command or Git env; the ACP cells are Ineligible", () => {
     const bypass = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
     const acp = privilegedProfile(ACP_SCOPE);
     const binding = { provider: "kimi" as const, nativeSessionId: "session_00000000-0000-4000-8000-000000000042" };
     const cells = [
       ["bypass initial", adapter().compile(request({ bypassApproved: true }), bypass), bypass, true],
       ["bypass resumed", adapter().resumeArgs(binding, request({ bypassApproved: true }), bypass), bypass, true],
-      ["acp initial", adapter().compile(request(), acp), acp, false],
-      ["acp resumed", adapter().resumeArgs(binding, request(), acp), acp, false],
     ] as const;
+    // T4.68 bypass-only gate: the ACP (approval) cells are refused, first run and resume.
+    for (const r of [adapter().compile(request(), acp), adapter().resumeArgs(binding, request(), acp)]) {
+      expect(r).toMatchObject({
+        ineligible: true,
+        reason: "PROFILE_UNSUPPORTED",
+        detail: expect.stringContaining("Kimi has no permission requests"),
+      });
+    }
+    // The Deferred ACP plan (ROADMAP section 8) still audits clean.
+    const deferred = deferredAcpInvocation({ exe: EXE, cwd: "/work/tree", prompt: OBJECTIVE });
+    expect(auditAcpPlan(deferred, "kimi")).toEqual([]);
     for (const [name, r, profile, bypassApproved] of cells) {
       if (isIneligible(r)) throw new Error(`${name}: unexpected ineligible: ${r.detail}`);
       expect(auditInvocation(r, { profile, bypassApproved }), name).toEqual([]);
@@ -237,7 +247,7 @@ describe("kimi Git declaration (T4.67, FR-GIT-01, FR-GIT-02, FR-GIT-09)", () => 
     }
   });
 
-  it("read-only Git commands in a shell allowlist do not trigger the FR-GIT-01 refusal", () => {
+  it("read-only Git commands in a shell allowlist do not trigger the FR-GIT-01 refusal (the ACP cell is refused by the bypass-only gate)", () => {
     const readOnly = ["git status", "git diff", "git log", "npm test"];
     const r = adapter().compile(request(), { ...profileOf("edit-untrusted"), shellAllowlist: readOnly });
     expect(r).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
@@ -246,7 +256,11 @@ describe("kimi Git declaration (T4.67, FR-GIT-01, FR-GIT-02, FR-GIT-09)", () => 
       expect(r.detail).toContain(NON_PRIVILEGED_UNSUPPORTED_DETAIL);
     }
     const acp = adapter().compile(request(), { ...privilegedProfile(ACP_SCOPE), shellAllowlist: readOnly });
-    expect(isIneligible(acp)).toBe(false);
+    expect(acp).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
+    if (isIneligible(acp)) {
+      expect(acp.detail).not.toContain("FR-GIT-01");
+      expect(acp.detail).toContain("Kimi has no permission requests");
+    }
   });
 
   it("a replayed write run in a finalize-only project gets the controller commit at FINALIZING", async () => {
