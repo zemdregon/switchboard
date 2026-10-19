@@ -134,9 +134,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   run) and [#407](https://github.com/zemdregon/switchboard/pull/407) (`get_run` byte-identical over Streamable HTTP
   and from a second session; a `shares_subscription_with` value that is no provider config id refused at `doctor`
   and `inner test`). See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
-- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.6 are done on fakes and T12.7 is `Partial`
-  (2026-10-19, owner ruling: global/both scope returns GLOBAL_NOT_AVAILABLE on main; fix in #728 /
-  sb/2026-10-18-fix-t127-search-global (f8c3fc5f)): the spike, `rag`
+- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes (T12.7 is `Done`
+  on 2026-10-19 as Delegated agent work, not owner-approved; it was `Partial` the same day after an owner ruling that
+  `global` and `both` scope answered only `GLOBAL_NOT_AVAILABLE`): the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
   behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
   and a `doctor` section, an untrusted context pack at admission that never changes the stored request or the
@@ -563,9 +563,11 @@ is applied immediately under the data-directory lock; `rebuild` is queued for th
 The MCP tool `search_project_context` exists only when an embedding backend is configured **and** the client may use at
 least one project with retrieval on. It is read-only, scoped to that client's projects, and bounds result count and
 size. `scope: "project"` searches the project's index; `global` and `both` need `use_global` on the project, but
-`global` and the global half of `both` still return `unavailable` with `GLOBAL_NOT_AVAILABLE` until a follow-up wires
-the global store into the tool (admission and the global build already use it). Treat every returned `text` field as
-untrusted reference data, not instructions.
+`global` reads only the global index and `both` merges project and global hits by score under one limit. A global hit
+is served only while its origin still contributes (a project never gets its own contribution back) and carries
+`origin_project` or `source`. When the global index is unavailable, `global` returns `unavailable` with
+`GLOBAL_NOT_AVAILABLE` and `both` keeps the project results with the global failure code as the reason. Treat every
+returned `text` field as untrusted reference data, not instructions.
 
 The same search is also an agent tool inside a run (ROADMAP T12.9) **only under the bypass-only Claude Code channel
 opt-in** `providers.claude-code.git_channel`: in an approved `privileged` bypass run whose project has retrieval on, the
@@ -2901,8 +2903,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   rate gate: no provider publishes an enforceable limit for the logins used, so the pacing gate
   paces usage per subscription window from observed usage instead (ROADMAP T6.8, `Done` 2026-10-17).
 - Retrieval is tested with a deterministic in-process fake embedder and scripted HTTP fixtures; no live embedding model
-  runs in CI. `search_project_context` with `scope: "global"` or `"both"` does not read the global store yet (admission
-  merge with `use_global` does).
+  runs in CI. `search_project_context` with `scope: "global"` reads the global store and `"both"` merges project and
+  global hits (each needs `use_global`; `GLOBAL_NOT_AVAILABLE` only when the global index is unavailable), as does the
+  admission merge with `use_global`.
 - The inner agent (milestone 11) is tested on a scripted in-process fake backend and a loopback fake HTTP server only.
   No live inner backend has been exercised, and `npm run test:live` has no inner-agent leg. The `cli` backend kind is
   reported `Ineligible` by `doctor` and never started (`src/cli/inner.test.ts`; ROADMAP T11.0, T11.13). T11.0 ran the

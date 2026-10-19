@@ -1311,6 +1311,8 @@ const SEARCH_RESULT = {
           file_sha256: { type: "string" },
           untrusted: { type: "boolean", const: true },
           text: { type: "string" },
+          origin_project: { type: "string" },
+          source: { type: "string" },
         },
       },
     },
