@@ -1901,4 +1901,91 @@ describe("pre-spawn refusals (ADR-0039, Q-62, Q-63)", () => {
       neverSpawned(r.runId);
     });
   });
+
+  describe("repository-configuration preflight (T3.25, FR-POL-11, LLD §20.10)", () => {
+    const CANARY = "SB-CANARY-T325-PREFLIGHT";
+    const FIXTURE = [
+      ".claude/settings.json",
+      ".mcp.json",
+      ".cursor/mcp.json",
+      ".vscode/tasks.json",
+      ".envrc",
+      ".env",
+      "opencode.json",
+    ];
+    const EXPECTED = [
+      { path: ".claude", kind: "claude_config" },
+      { path: ".cursor", kind: "cursor_config" },
+      { path: ".env", kind: "env_file" },
+      { path: ".envrc", kind: "envrc" },
+      { path: ".mcp.json", kind: "mcp_config" },
+      { path: "opencode.json", kind: "provider_config" },
+      { path: ".vscode/tasks.json", kind: "vscode_tasks" },
+    ];
+    beforeEach(() => {
+      for (const rel of FIXTURE) {
+        mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+        writeFileSync(path.join(repo, rel), `${CANARY}\n`);
+      }
+      g(repo, "add", "-A");
+      g(repo, "commit", "-q", "-m", "agent-readable config");
+    });
+    const snapshot = (runId: string) => JSON.parse(run(runId).policy_snapshot_json) as Record<string, unknown>;
+    const warnings = (runId: string) => events(runId).filter((e) => e.type === "repo_config_warning");
+
+    it("an approved bypass run records each path and kind, gets one repo_config_warning and runs", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      asProvider("fake", { baseEnv: { ...ENV, HOME: path.join(root, "elsewhere") } });
+      const r = await submit("writer", { trustProfile: "privileged", privileged: { scope: SCOPE } });
+      approve(r.runId);
+      lifecycle.start();
+      expect((await lifecycle.waitForTerminal(r.runId)).state).toBe("SUCCEEDED");
+      expect(snapshot(r.runId).repo_config_seen).toEqual(EXPECTED);
+      expect(snapshot(r.runId).repo_config_truncated).toBe(false);
+      expect(run(r.runId).policy_snapshot_json).not.toContain(CANARY);
+      const w = warnings(r.runId);
+      expect(w).toHaveLength(1);
+      expect(w[0]?.p).toEqual({
+        count: EXPECTED.length,
+        kinds: ["claude_config", "cursor_config", "env_file", "envrc", "mcp_config", "provider_config", "vscode_tasks"],
+        truncated: false,
+      });
+      expect(w[0]?.payload_json).not.toContain(CANARY);
+    });
+
+    it("an untrusted run records the list with no warning and behaves as before", async () => {
+      asProvider("fake", { baseEnv: { ...ENV, HOME: path.join(root, "elsewhere") } });
+      lifecycle.start();
+      const r = await submit("writer");
+      expect((await lifecycle.waitForTerminal(r.runId)).state).toBe("SUCCEEDED");
+      expect(snapshot(r.runId).repo_config_seen).toEqual(EXPECTED);
+      expect(warnings(r.runId)).toHaveLength(0);
+    });
+
+    it("FR-POL-04 still refuses an untrusted grok run on .mcp.json; the list is recorded, no warning", async () => {
+      asProvider("grok", { baseEnv: { ...ENV, HOME: path.join(root, "elsewhere") } });
+      lifecycle.start();
+      const r = await submit("writer", { provider: "grok" });
+      const done = await lifecycle.waitForTerminal(r.runId);
+      expect(done).toMatchObject({ state: "FAILED", failure_code: "PERMISSION_BLOCKED" });
+      expect(failureReason(r.runId)).toBe("REPO_AGENT_CONFIG_REFUSED");
+      neverSpawned(r.runId);
+      expect(snapshot(r.runId).repo_config_seen).toEqual(EXPECTED);
+      expect(warnings(r.runId)).toHaveLength(0);
+    });
+
+    it("an approved privileged run without bypass gets no warning", async () => {
+      adapter.privilegedAs = "edit-untrusted";
+      asProvider("fake", { baseEnv: { ...ENV, HOME: path.join(root, "elsewhere") } });
+      const r = await submit("writer", {
+        trustProfile: "privileged",
+        privileged: { scope: { ...SCOPE, bypass: false } },
+      });
+      approve(r.runId);
+      lifecycle.start();
+      expect((await lifecycle.waitForTerminal(r.runId)).state).toBe("SUCCEEDED");
+      expect(snapshot(r.runId).repo_config_seen).toEqual(EXPECTED);
+      expect(warnings(r.runId)).toHaveLength(0);
+    });
+  });
 });

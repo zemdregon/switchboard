@@ -7493,6 +7493,30 @@ At admission, after the worktree exists, a bounded walk (depth and count capped,
 bypass run it appends one `repo_config_warning` event; under the untrusted profiles the existing FR-POL-04 handling
 applies unchanged.
 
+Implemented by T3.25 (`src/policy/repo-config-preflight.ts`, called from `execute` in `src/lifecycle/lifecycle.ts` once
+the working directory exists, before compile and the FR-POL-04 refusal):
+
+- **Walk.** Breadth-first in name order over the working directory with `readdir` file types only: no file is opened,
+  read or hashed. A symbolic link whose name matches a kind below is listed by name (`symlink: true`); any other
+  name — including a non-matching symlink — is not listed; no symlink is followed or entered. `.git/` and
+  `node_modules/` are not entered. A listed directory (`.claude/`, `.cursor/`) is recorded once and not entered. A
+  directory that cannot be read is skipped.
+- **Caps** (Linus decision, WORK QUEUE v10, Delegated, Assumption). Paths of at most 4 segments, 200 entries, 5,000
+  directory entries visited. Hitting any cap sets `policy_snapshot_json.repo_config_truncated` to `true` (always
+  written, `false` otherwise).
+- **Kinds.** `claude_config` (`.claude`), `mcp_config` (`.mcp.json`), `cursor_config` (`.cursor`), `vscode_tasks`
+  (`.vscode/tasks.json`), `envrc` (`.envrc`), `env_file` (`.env`, `.env.*`) and `provider_config` for the provider
+  project files that can set a base-URL override (**Assumption**, contents not read so "may set": `.codex/config.toml`,
+  `.grok/config.toml`, `.gemini/settings.json`, `opencode.json`, `opencode.jsonc`). Every name matches at any depth
+  within the cap.
+- **Record.** The ledger sets both keys with `json_set` (other snapshot keys untouched) for every run, in the same
+  transaction as the warning event when there is one. A retry successor copies the snapshot and overwrites both keys
+  at its own dispatch.
+- **Warning.** Only an approved bypass run (`bypassApproved` from the dispatch verdict and `bypassApprovedFor`, as the
+  argv audit gate uses) with at least one entry appends one `repo_config_warning` event `{count, kinds, truncated}`
+  (sorted unique kinds, no paths, no contents); the run proceeds (owner decision 77 answer 1). No other profile gets an
+  event.
+
 ### 20.11 MCP SDK v2 and Client ID Metadata Documents (FR-MCP-18, FR-MCP-19, T13.10, T13.11)
 
 An ADR superseding the affected part of [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) comes first and
@@ -7547,6 +7571,54 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
 - **Evaluation (FR-OPS-06).** `switchboard eval run <suite>`: a suite file in the data directory, each task replayed as
   a normal run, graded in a network-off container through the ADR-0052 driver with the tests outside the agent's
   worktree; results in a new `eval_result` table.
+
+  *As built (T8.14, 2026-10-19, Delegated agent work, not owner-approved).* `src/eval/` and `src/cli/eval.ts`;
+  operator guide [docs/operations/evaluation.md](../operations/evaluation.md).
+
+  - **Command.** `switchboard eval run <suite> --provider <id> [--live-budget <file>] [--json]` and
+    `switchboard eval results <suite>`. With `CI` set to anything but empty, `false` or `0`, `eval run` reports
+    `EVAL_SKIPPED_IN_CI`, exits 0 and opens nothing. It takes the data-directory lock for the whole suite (refused
+    while `serve` runs, as `gc --apply`).
+  - **Live budget** (Linus decision, WORK QUEUE v10, Delegated). Every provider but the test fake needs
+    `--live-budget <file>`, a JSON object `{"provider": "<id>", "max_runs": <integer > 0>}` naming the same provider;
+    anything else is `EVAL_LIVE_BUDGET_REQUIRED`, and a suite with more tasks than `max_runs` is
+    `EVAL_LIVE_BUDGET_EXCEEDED`. Both are checked before the lock is taken, so no run is admitted.
+  - **Suite file.** `<data_dir>/eval/<suite>.json` (the name matches `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`):
+
+    ```json
+    {
+      "schema_version": 1,
+      "project": "web",
+      "trust_profile": "edit-untrusted",
+      "grader": { "image_digest": "sha256:<64 hex>", "timeout_seconds": 600, "test_command": ["npm", "test"] },
+      "tasks": [
+        { "id": "fix-123", "base_ref": "v1.4.0", "objective": "...", "hidden_tests": "bundles/fix-123",
+          "test_command": ["node", "/eval/tests/run.mjs"] }
+      ]
+    }
+    ```
+
+    `project` names a configured project; `trust_profile` defaults to `edit-untrusted` and may not be `privileged`
+    or exceed the project's ceiling; `hidden_tests` is a directory resolved (through `realpath`) inside
+    `<data_dir>/eval/` and not overlapping any project context; a task's `test_command` overrides the grader's. At
+    most 200 tasks; unknown keys are refused.
+  - **Replay.** Each task is submitted as a new run through `RunLifecycle.submit` (client id `switchboard-eval`,
+    priority `batch`) under the project's snapshot with `base_ref` replaced by the task's, without commit identity or
+    push (`writable: false`, push `none`), one at a time; the runner waits for the terminal state. The lifecycle is
+    unchanged.
+  - **Grader.** Only after a `SUCCEEDED` run: the worktree (without `.git`) and the bundle are copied into a
+    staging directory under `<data_dir>/eval/grading/`; the container runs through the ADR-0052 port and Docker
+    driver: rootless runtime required, the digest resolved among local images (never pulled), two mounts only (the
+    staged output writable at `/eval/work`, the staged bundle read-only at `/eval/tests`), no forwarded environment,
+    no login volume, `--network none`. The runner refuses an argv without `--network none`
+    (`EVAL_GRADER_NETWORK_NOT_OFF`). Before and after grading it asserts the hidden tests are absent from the agent's
+    worktree: no bundle file at the same relative path with the same content (`EVAL_TESTS_IN_WORKTREE`; content alone
+    would flag a correct answer equal to an expected-output file). The container and the staging copy are removed.
+  - **`eval_result`** (migration 0025): `id` (`evl_*`), `suite`, `task_id`, `provider`, `run_id`, `run_state`,
+    `pass` (1 exactly when the test command exited 0, Linus decision; a `CHECK` ties it to `test_exit_code = 0`),
+    `test_exit_code`, `grade_error` (`EVAL_RUN_<state>`, `EVAL_RUN_NOT_ADMITTED` or a grader code), `wall_clock_ms`
+    (submit to terminal), `usage_json` (the run's provider-reported usage metrics, `[]` when none), `created_at`.
+    Test output is not stored.
 - **Brief (FR-SES-07).** `projects.<id>.brief_file`, a path outside the repository, at most 4 KiB, delivered as a
   labelled block before retrieved context and counted in its budget; the handoff bundle lists its SHA-256.
 - **Critic (FR-CTL-15).** `projects.<id>.critic`: `enabled` (default `false`), `min_diff_lines` (Assumption 400), always
