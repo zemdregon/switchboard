@@ -450,6 +450,7 @@ export async function admitWorkItemRequest(
       priority: request.priority,
       ...(scope?.ok ? { privileged_scope: scope.scope } : {}),
       ...skillFields,
+      ...(request.light === true ? { light: true } : {}), // T3.24: as delegate_task
     };
     const hash = requestHash(canonical);
     const required = routing.require_provider === true ? (routing.provider_preference as ProviderId) : undefined;
@@ -560,6 +561,8 @@ export async function admitWorkItemRequest(
           }
         : {}),
       ...(verification.length > 0 ? { verificationCommands: verification } : {}),
+      // T3.24 (FR-CAP-12): the creating client's `allow_light`, read at the item's admission as its other settings.
+      ...(request.light === true && client.allowLight === true ? { light: true } : {}),
       ...(scope?.ok
         ? {
             privileged: {

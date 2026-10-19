@@ -430,6 +430,13 @@ const ENVELOPE = {
         },
       ],
     },
+    // T3.24 (FR-CAP-12, LLD §20.2): present only while a QUEUED run is held by the host load hold.
+    hold: {
+      type: "object",
+      additionalProperties: false,
+      required: ["reason", "since"],
+      properties: { reason: { const: "held_load" }, since: { type: "string" } },
+    },
     replayed: { type: "boolean" },
     // T16.4 (FR-SKL-07, LLD §19.2): `get_run` only, a run's pinned skills; never text. `delivery` is null until dispatch.
     skills: {
@@ -549,6 +556,16 @@ const DIGEST = {
           },
           finished: { type: "array", items: ENVELOPE },
           failed: { type: "array", items: ENVELOPE },
+          // T3.24 (FR-CAP-12): queued runs the host load hold keeps; present only when there is one.
+          held: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["run_id", "reason"],
+              properties: { run_id: RUN_ID, reason: { const: "held_load" }, envelope: ENVELOPE },
+            },
+          },
           pending_approvals: {
             type: "array",
             items: {
@@ -649,6 +666,8 @@ const INPUTS = {
       // Required exactly when trust_profile is privileged (FRD V13, checked after the ceiling, V5); LLD §3.1.
       privileged_scope: PRIVILEGED_SCOPE_SCHEMA,
       ...SKILL_FIELDS,
+      // T3.24 (FR-CAP-12, LLD §20.2): exempt from a host load hold; honoured only for a client with `allow_light`.
+      light: { type: "boolean" },
     },
   },
   continue_task: {
@@ -780,6 +799,7 @@ const WORK_INPUTS = {
           skills: DELEGATE.skills,
           role: DELEGATE.role,
           skill_defaults: DELEGATE.skill_defaults,
+          light: DELEGATE.light,
         },
       },
       // LLD §18.3: queue priority, independent of request.priority.
