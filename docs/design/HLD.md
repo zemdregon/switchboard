@@ -242,8 +242,9 @@ Git behaviour is declared (`gitWriteControl`
 Outside an approved `privileged` scope with `bypass`, every profile is `Ineligible` (`PROFILE_UNSUPPORTED`) because
 `toolPermission` is a settings value, not a per-run control ([TDD
 §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430)). Only the approved bypass cell compiles
-on synthetic fixtures; argv spellings and `--prompt=` are cited in source to TDD §4.4 or marked Assumption until
-operator live capture (T4.38).
+on synthetic fixtures; argv spellings and `--prompt=` are cited in source to TDD §4.4 or marked Assumption
+(the T4.38 live smoke ran the compiled `--prompt=<prompt>` cell successfully on 1.4.2, but the Assumption
+marking in `src/adapters/antigravity/adapter.ts` stands until cleared in source).
 
 #### T4.33 — parser, result, failure classification and resume (Done against its Done-when)
 
@@ -266,7 +267,8 @@ check: `resumeArgs` compiles only where `compile` does, T4.35, owner decision 67
   a denial, denial over envelope error and non-zero exit, guard over all). Sourcing: [TDD
   §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433).
 
-**Gaps (carried by T4.38 under owner decision 65 (a); this subsection is Done).** Resume now compiles with a fail-closed
+**Gaps (carried by the T4.38 operator remainder under owner decision 65 (a); this subsection is Done).** Resume
+now compiles with a fail-closed
 `conversation_id` check (T4.35, owner decision 67; was not compiled, Q-86). Rate-limit and sandbox-violation
 shapes were not observed in the live check, so those failures end `TOOL_FAILURE` rather than dedicated taxonomy
 codes. The stderr
@@ -316,7 +318,8 @@ component-level outcome. Mirrors the Grok Build declaration ([TDD
   `gitWriteRisks` in `src/adapters/git-write.ts`
 
 **Not shown by this evidence.** Whether settings deny rules hold under `--dangerously-skip-permissions` was not
-observed (T4.31 C8; operator task T4.38). T4.36 recorded a finding that `extractResult` returned `ok` for a clean
+observed (T4.31 C8; T4.38 operator remainder, still unrun after T4.38 Done 2026-10-19). T4.36 recorded a finding
+that `extractResult` returned `ok` for a clean
 `SUCCESS` envelope without reading a guard `violation` on a Git write, although ADR-0039 ends such a run
 `PERMISSION_BLOCKED`; that gap is now fixed (`extractResult` treats a flagged `tool_call` as not clean) and the former
 known-gap test passes as a plain test, as recorded in the [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks)
