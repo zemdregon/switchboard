@@ -1617,9 +1617,14 @@ argv (exactly one `--sandbox` and its value, `--disable-web-search` exactly when
 target-only Git write, an empty `id` beside `call_id`, a duplicate `type` key, an empty text chunk) in each hostile
 category at exits `0` and `1`, and adds case-variant and duplicate-`type` `unknown_events` lines. With the target-only
 shell gap closed in the parser (2026-10-15), the 6 streams #449 kept outside the blocked count, plus 6 for a nameless
-target-only update on a shell call, replay in the blocked batch: 337 streams (316 blocked — 106 `credential_read`, 106
-`out_of_worktree_write`, 104 `network` — and 21 unknown-event; 24 `grokPartialStreams`; 180 `grokResidualStreams`,
-which a positive control shows none end `PERMISSION_BLOCKED` without the guard verdict). Bare, non-string and
+target-only update on a shell call, replay in the blocked batch (337 streams at that point: 316 blocked — 106
+`credential_read`, 106 `out_of_worktree_write`, 104 `network` — and 21 unknown-event; 24 `grokPartialStreams`;
+180 `grokResidualStreams`, which a positive control shows none end `PERMISSION_BLOCKED` without the guard verdict).
+[#478](https://github.com/zemdregon/switchboard/pull/478) replays the #470 eighth-pass controls (a non-string command
+beside a hostile shell target; a read renamed with a new target before a nameless hostile update) in each hostile
+category at exits `0` and `1`, bringing the matrix to 349 streams (328 blocked — 110 `credential_read`, 110
+`out_of_worktree_write`, 108 `network` — and 21 unknown-event; 24 `grokPartialStreams`; 192 `grokResidualStreams`,
+under the same positive control). Bare, non-string and
 prototype-key tool lines remain `unknown`; cut-line streams end `OUTPUT_PROTOCOL_ERROR`, which outranks a guard
 verdict. Apart from that target-only fix, these case-file updates change neither the parser nor the compiled matrix;
 fields other than `type` remain hypothetical. No end-to-end run through Switchboard against a logged-in `grok` has
@@ -2704,7 +2709,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   implied. The gap [#449](https://github.com/zemdregon/switchboard/pull/449) pinned (a Git write past the
   512-character clip of a target-only shell call was not guarded) is closed in the parser on synthetic lines
   (2026-10-15): those streams, plus a nameless target-only update on a shell call, now replay blocked (337 streams, 316
-  blocked). A bare `tool_call` before a clean `end_turn` still succeeds;
+  blocked; [#478](https://github.com/zemdregon/switchboard/pull/478) replays the #470 eighth-pass controls, bringing
+  the matrix to 349 streams, 328 blocked). A bare `tool_call` before a clean `end_turn` still succeeds;
   path keys, tool `content`, shadowed lower-precedence command keys and a command in a container shadowed by an earlier
   object container without one (#372) are invisible to the guard. A bare unreadable `tool_call_update` after a clean
   `end_turn` still succeeds at exit 0 (T4.26 residual). Partial lines end `OUTPUT_PROTOCOL_ERROR`, not a proven
