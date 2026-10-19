@@ -308,12 +308,13 @@ Pre-release. The package is private and is not published to any registry; you bu
   malicious-leg and README rows are `Done` against their Done-when; T4.33 and T4.36 are `Done`
   under decision 65 (a) and (b), remaining native shapes carried by T4.38); README rows final
   after their live legs
-  (T4.59, T4.69, T4.79; T4.29, T4.39 and T4.49 are `Done` except the post-T4.n8 update); Muse Code (Should) has module,
+  (T4.69; T4.29, T4.39, T4.49, T4.59 and T4.79 are `Done` except the post-T4.n8 update); Muse Code (Should) has module,
   compile matrix, auth preflight,
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
   [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
-  is partial until the T4.71 capture; T4.76 is blocked because the adapter has no denial or tool-call record to end a
-  hostile stream `PERMISSION_BLOCKED`; T4.79 is final after T4.78.
+  is `Done` against its Done-when under owner decision 65 (a), with record spellings, session-id field and `terminal`
+  values Assumption until the T4.71 capture (carried by T4.78); T4.76 is blocked because the adapter has no denial or
+  tool-call record to end a hostile stream `PERMISSION_BLOCKED`; T4.79 is `Done` except the post-T4.78 update.
   Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
   Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
@@ -2584,7 +2585,8 @@ run is unverified.
 
 - **Record spellings are Assumptions until the operator capture (T4.71).** Only the `kind` field and the
   `run_terminal` shape are reported, by a third party; the other record kinds, the `session_id` and `text` fields and
-  the `muse auth status` command and replies are Assumption spellings, so T4.73 stays `Partial`.
+  the `muse auth status` command and replies are Assumption spellings (T4.73 is `Done` against its Done-when under
+  owner decision 65 (a); the spellings stay Assumption until the T4.71 capture, carried by T4.78).
 - **The malicious-fixture leg (T4.76) is blocked.** The parser emits no `tool_call` event, so Switchboard's tool-call
   guard never sees a command and a synthetic Git write in a Muse command or tool record at exit 0 ends in success
   rather than `PERMISSION_BLOCKED`; closing it needs a parser change that reads commands out of those records, whose
@@ -2593,8 +2595,9 @@ run is unverified.
   `ADAPTER_VERSION_UNVERIFIED` until `adapters validate` passes a version (T4.78).
 - Live smoke, live malicious leg and `adapters validate` are operator work that needs Meta access (T4.71, T4.78, Q-27).
 
-T4.72, T4.74, T4.75 and T4.77 are `Done` against their Done-when on synthetic fixtures; T4.73 stays `Partial` and T4.76
-is `Planned` (blocked as above). No run through Switchboard against a real `muse` has been recorded.
+T4.72 to T4.75, T4.77 and T4.79 are `Done` against their Done-when on synthetic fixtures (T4.73 under owner decision
+65 (a); T4.79 under owner decision 65 (c), README updated again after T4.78); T4.76 is `Planned` (blocked as above). No
+run through Switchboard against a real `muse` has been recorded.
 
 ## Trust profiles
 
