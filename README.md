@@ -19,8 +19,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   `switchboard serve` ([`docs/research/live-checks-2026-10-14-claude-codex.md`](docs/research/live-checks-2026-10-14-claude-codex.md)):
   Claude Code 2.1.294 **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2); Codex 0.162.0 after `adapters validate codex`
   **10 HELD, 0 FAILED, 3 NOT_CHECKED** (X-4, X-9, X-G1). Earlier checks on another host are in
-  [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on the remaining residual
-  operator cells (C-G2 and X-G1 deliberate attempts ran 2026-10-19 through the T3.9 leg, both `HELD`; see below); `doctor` with both providers installed and logged in passed on 2026-10-17
+  [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on the
+  remaining residual operator cells (C-G2 and X-G1 deliberate attempts ran 2026-10-19 through the T3.9 leg, both
+  `HELD`; see below); `doctor` with both providers installed and logged in passed on 2026-10-17
   ([`docs/research/live-checks-2026-10-17-claude-codex.md`](docs/research/live-checks-2026-10-17-claude-codex.md)). The
   §6.2 "Blocks Done" narrative matches the 2026-10-14 live smoke on main
   ([PR #570](https://github.com/zemdregon/switchboard/pull/570)). See
