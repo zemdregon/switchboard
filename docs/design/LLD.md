@@ -822,7 +822,7 @@ even when `result` is `success` at exit 0). `backingProvider` stays unset (no ve
   T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 **Not covered here:** conformance (T4.45 Done), malicious leg (T4.46 Done), Git declaration (T4.47 Done), operator live
-validate (T4.48 Partial).
+validate (T4.48 Done 2026-10-19 per owner decision 77).
 
 ### 2.0.2 OpenCode adapter implementation evidence (M4 T4.52, T4.53)
 

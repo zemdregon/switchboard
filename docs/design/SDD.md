@@ -251,7 +251,7 @@ unrecorded native `tool_call` parameter shapes and operator capture gaps remain 
 Cursor T4.43: ADR-0039 `extractResult` guard over a flagged `tool_call` landed in
 [#238](https://github.com/zemdregon/switchboard/pull/238); Done against its Done-when under owner decision 65 (a):
 the recorded `stream-json` quota-stop and sandbox shapes and any native backing-vendor field remain open under
-(ROADMAP T4.48).
+(ROADMAP T4.48 Done 2026-10-19 per owner decision 77 without capturing these shapes; now a T4.41 extension or owner decision).
 
 OpenCode T4.53: Done against its Done-when under owner decision 65 (a): the recorded permission-denial and
 rate-limit event shapes, the `tool_use` input key names and any native backing-vendor field remain open

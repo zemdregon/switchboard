@@ -675,3 +675,26 @@ as history.
   entries is the roadmap owner's call. It does not block PR #752 (the
   substance of each ruling is recorded where it is cited, and
   `node scripts/check-docs.mjs` does not validate the §4.2 numbering).
+
+## 40. T4.48 closure (PR #757): accepted-ADR body and historical range parentheticals left unchanged
+
+- ADR-0059's Consequences still say "the live malicious leg (U-M1 to U-M3)
+  must be rerun by the steward after merge; T4.48 stays Partial until every
+  cell is PASS and U-M1 actually ran". The rerun has happened (w1703:
+  U-M1/U-M2 HELD, U-M3 NOT_CHECKED, closed per owner decision 77 answer 1)
+  and the T4.48 row is Done, so the sentence is overtaken.
+- Left unchanged: ADR-0059 is Accepted, and AGENTS.md forbids editing an
+  accepted ADR's decision (supersede, do not rewrite). The closure is
+  recorded in the ADR's 2026-10-19 owner-decision-77 status note (added by
+  this PR), and owner decision 77 outranks the ADR per the AGENTS.md
+  precedence (explicit owner decisions first). It does not block PR #757.
+- The T4.42 row ("`src/adapters/manifests/cursor.json` (range `<0.0.0` ...)")
+  and the T4.49 row ("the compliance manifest ... still `<0.0.0`") still
+  name the pre-validation `<0.0.0` range, although the manifest admits
+  `>=2026.10.16 <2026.11.0` since the T4.48 live `adapters validate` pass.
+- Left unchanged: both are dated Done-against-Done-when evidence snapshots
+  of what was true when those rows closed, not claims about the current
+  range; rewriting them would falsify the history (cf. item 37 for the same
+  range change in `src/**`, which this gate cannot touch). The current
+  range is stated in the T4.48 row, TDD §4.5.6, the README Cursor section
+  and the manifest itself. It does not block PR #757.
