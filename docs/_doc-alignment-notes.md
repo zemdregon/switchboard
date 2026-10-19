@@ -365,3 +365,32 @@ as history.
 - No action: there is nothing to reconcile, so no other lane's Done claim
   is endorsed or disturbed (cf. item 8 above for the precedent). It does
   not block PR #713.
+
+## 25. Kimi manifest `notes` still says `-p`/`--prompt` are unaudited (pre-existing, not from PR #713)
+
+- `src/adapters/manifests/kimi.json` `notes` says "`-p` and `--prompt`
+  are not declared to the audit ... the compile gate alone keeps
+  `--prompt` to the approved bypass cell", while the code
+  (`providerScopedBypassFlags` in `src/adapters/providers.ts`,
+  `src/adapters/audit.ts`), the T4.62 row ("As built (2026-10-16)"),
+  ADR-0049, ADR-0035, LLD §2, TDD §4.7, the README Kimi section and the
+  Q-95 resolution all record the provider-scoped declaration.
+  Verified 2026-10-19: the stale sentence is already on `origin/main`
+  (the scoped-flags code and the T4.62 "As built" note landed before
+  this PR), so PR #713 neither introduces nor worsens it.
+- Left unchanged: the manifest lives in `src/` and the doc-align gate
+  edits documentation only (`*.md`, `docs/**`). A code-lane follow-up
+  should sync the `notes` sentence (mechanical; no owner decision
+  needed). It does not block PR #713.
+
+## 26. README Status waiting-list still names T4.53/T4.56 (pre-existing, other lanes, not from PR #713)
+
+- The README Status bullet lists T4.53 and T4.56 among the "rows waiting
+  on uncaptured live shapes", while ROADMAP §6.8.2 item 2 and the M4 row
+  open-items list (b) record both as `Done` against their Done-when
+  under owner decision 65 (a)/(b), with remaining shapes carried by
+  T4.58. The README sentence predates those Done markers (PR #713 only
+  removed the Kimi rows from that list) and the rows belong to the
+  OpenCode lane.
+- Left unchanged: re-wording another lane's waiting list would endorse
+  its Done claims (cf. items 8 and 24 above). It does not block PR #713.
