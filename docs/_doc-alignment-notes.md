@@ -687,7 +687,21 @@ as history.
   substance of each ruling is recorded where it is cited, and
   `node scripts/check-docs.mjs` does not validate the §4.2 numbering).
 
-## 40. T4.48 closure (PR #757): accepted-ADR body and historical range parentheticals left unchanged
+## 40. FR-ADP-09 enable-condition vs Kimi adapter staying disabled (pre-existing, not from PR #755)
+
+- [SRS FR-ADP-09](requirements/SRS.md) says the Kimi adapter "shall be enabled once that contract is pinned".
+  The contract is pinned since 2026-10-18 (`adapters validate kimi` passed on CLI 2.1.1, manifest range
+  `>=2.1.1 <2.2.0`), conformance is Done (T4.65), yet the adapter stays disabled: T4.68 closed Partial-by-ruling
+  (owner ruling 05:22 CDT, then the 08:45 CDT bypass-only ruling implemented by PR #755), with permission gating
+  Deferred to ROADMAP §8.
+- [HLD §2](design/HLD.md) ("Disabled until the CLI contract is pinned (FR-ADP-09)") reads as if pinning alone
+  enables; it predates the validate pass and neither it nor FR-ADP-09 records the ruling that keeps the adapter
+  disabled past pinning.
+- Left unchanged: reconciling "enabled once pinned" with "disabled by ruling" (amend FR-ADP-09, or record the
+  ruling as the superseding condition) is the SRS/HLD owners' call, and it predates PR #755, which changes no
+  enablement. It does not block PR #755.
+
+## 41. T4.48 closure (PR #757): accepted-ADR body and historical range parentheticals left unchanged
 
 - ADR-0059's Consequences still say "the live malicious leg (U-M1 to U-M3)
   must be rerun by the steward after merge; T4.48 stays Partial until every
@@ -729,3 +743,37 @@ as history.
   `--text` behaviour as the mechanism in a superseding note, is the design owner's call. The error direction is
   safe (the documents understate the protection), but the code contradicts a decision record and this PR
   introduces it, so per the gate rule it blocks PR #764 until the owner resolves it.
+- Resolved 2026-10-19 by Linus ruling (DOC-CONFLICT #764): ADR-0061 Amendment 2026-10-19 added; code kept
+  (--text scans binaries).
+
+## 41. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
+
+- [HLD §1.2](design/HLD.md#12-explicit-exclusions) still excludes "No network
+  listener: MCP is stdio only; HTTP/SSE is deferred", while the M13 network
+  transport (Streamable HTTP with OAuth 2.1, ADR-0041 Accepted 2026-10-14,
+  T13.1 to T13.9 Done) is built and this PR extends it to the work-queue
+  tools (T15.9). Likewise the [FRD actor table](requirements/FRD.md) still
+  gives the Orchestrator upstream agent "MCP over stdio (COMP-MCP)".
+- PR #762 neither introduces nor worsens either: both were already overtaken
+  by M13 before this branch. Left unchanged: restating the transport
+  exclusion is the HLD/FRD owners' call (cf. item 13 for the same
+  as-built-vs-review-label precedent). It does not block PR #762 (the live
+  transport facts are stated in the M13 row, LLD §3.3 and LLD §20.8, which
+  this PR updates where it touches them).
+
+## 42. SRS FR-CAP-12 "light admitted" vs the `allow_light` gate (pre-existing, not from PR #760)
+
+- [SRS FR-CAP-12](requirements/SRS.md) says "A request or work item marked
+  `light` is admitted while held", unconditionally.
+- The code honours `light` only for a client whose configuration sets
+  `mcp_clients[].allow_light: true` (default `false`); from any other
+  client the flag is ignored, not refused (`src/mcp/server.ts`,
+  `src/queue/admission.ts`, `src/lifecycle/lifecycle.ts`). [LLD
+  §20.2](design/LLD.md#202-host-load-hold-fr-cap-12-t324) (text predating
+  PR #760), the README config table and TDD §3.1 all document the gate as
+  Delegated least privilege.
+- PR #760 neither introduces nor worsens this: the SRS sentence and the
+  LLD gate text were both already on `main` before the branch; the PR
+  only adds the as-built note and marks T3.24 Done. Left unchanged:
+  narrowing the SRS guarantee to "from an allowed client" is the SRS
+  owner's call. It does not block PR #760.

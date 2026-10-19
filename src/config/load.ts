@@ -118,6 +118,11 @@ export interface ResolvedConfig {
    * key, so an unconfigured controller verifies exactly as before. Unset keys take the Assumption defaults.
    */
   verificationLimits?: ResolvedVerificationLimits;
+  /**
+   * T3.24 (FR-CAP-12, LLD §20.2): the host load hold; present only when the config sets `host`, so an unconfigured
+   * controller never reads the load average.
+   */
+  hostLoad?: { maxLoad1: number; resumeLoad1: number };
   /** Keyed by config provider id. `concurrency` is the T6.9 per-provider slot limit, absent when not set. */
   providers: ReadonlyMap<string, { enabled: boolean; weight: number | undefined; concurrency?: number }>;
   /** `providers.<id>.models` blocks (T4.5, FR-ADP-05, LLD §2.1), keyed by config provider id; only providers that set one. */
@@ -261,6 +266,11 @@ export interface ResolvedMcpClient {
    * name. Present, including empty, is the allow-list. `loadConfig` sets it only when the config sets the key.
    */
   readonly skills?: readonly string[];
+  /**
+   * `allow_light` (FR-CAP-12, T3.24, LLD §20.2): this client's `light: true` is honoured during a host load hold.
+   * `loadConfig` sets it only when the key is true; absent is read as false (least privilege).
+   */
+  readonly allowLight?: boolean;
 }
 
 const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
@@ -609,6 +619,13 @@ export function loadConfig(
   if (controlPlaneErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${controlPlaneErrors.map((l) => `  ${l}`).join("\n")}`);
   }
+  // T3.24 (FR-CAP-12): hysteresis needs a resume value strictly below the maximum; anything else is refused (fail closed).
+  if (cfg.host !== undefined && !(cfg.host.resume_load1 < cfg.host.max_load1)) {
+    throw new ConfigError(
+      `Invalid config: $.host.resume_load1: must be lower than $.host.max_load1 (got ${cfg.host.resume_load1} and ` +
+        `${cfg.host.max_load1})`,
+    );
+  }
   const sinkErrors = checkNotificationSinks(cfg.notification_sinks);
   if (sinkErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${sinkErrors.map((l) => `  ${l}`).join("\n")}`);
@@ -637,6 +654,7 @@ export function loadConfig(
           ...(c.approval_proxy === true ? { approvalProxyTargets: [...(c.approval_proxy_targets ?? [c.id])] } : {}),
           toolProfile: c.tool_profile ?? DEFAULT_TOOL_PROFILE,
           ...(c.skills !== undefined ? { skills: [...c.skills] } : {}),
+          ...(c.allow_light === true ? { allowLight: true } : {}),
         },
       ]),
     ),
@@ -650,6 +668,9 @@ export function loadConfig(
         : {}),
     },
     ...resolveVerificationLimits(cfg.limits),
+    ...(cfg.host !== undefined
+      ? { hostLoad: { maxLoad1: cfg.host.max_load1, resumeLoad1: cfg.host.resume_load1 } }
+      : {}),
     retention: {
       days: cfg.retention?.days ?? DEFAULT_RETENTION_DAYS,
       intervalMs: parseRetentionInterval(cfg.retention?.interval ?? DEFAULT_RETENTION_INTERVAL),

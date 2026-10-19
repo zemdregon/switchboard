@@ -297,6 +297,60 @@ describe("doctor", () => {
     });
   });
 
+  describe("host load line (T3.24, FR-CAP-12)", () => {
+    const withHost = () =>
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          ...(JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>),
+          host: { max_load1: 10, resume_load1: 8 },
+        }),
+      );
+    const ids = (out: string) => (JSON.parse(out).checks as { id: string }[]).map((c) => c.id);
+
+    it("is absent when host is not set, and the reader is never called (byte-identical to main)", async () => {
+      let reads = 0;
+      const r = await run(["doctor", "--json", ...cfg()], {
+        adapters: fakeOnly(),
+        loadReader: {
+          load1: () => {
+            reads++;
+            return 99;
+          },
+        },
+      });
+      expect(r.code).toBe(0);
+      expect(ids(r.out)).not.toContain("host_load");
+      expect(reads).toBe(0);
+    });
+
+    it("prints [ok] at or below the maximum, [warn] above it and [warn] when the load cannot be read (exit 0)", async () => {
+      withHost();
+      const at = (load: number) => ({ load1: () => load });
+      const limits = "max 10, resume 8 (host.max_load1, host.resume_load1)";
+      const ok = await run(["doctor", ...cfg()], { adapters: fakeOnly(), loadReader: at(3) });
+      expect(ok.code).toBe(0);
+      expect(ok.out).toContain(`[ok]   Host load: 1-minute load 3; ${limits}`);
+      const high = await run(["doctor", ...cfg()], { adapters: fakeOnly(), loadReader: at(12.5) });
+      expect(high.code).toBe(0);
+      expect(high.out).toContain(
+        `[warn] Host load: 1-minute load 12.5 is above the ${limits}: serve holds new runs in QUEUED (held_load)`,
+      );
+      const unreadable = await run(["doctor", ...cfg()], {
+        adapters: fakeOnly(),
+        loadReader: {
+          load1: () => {
+            throw new Error("no loadavg");
+          },
+        },
+      });
+      expect(unreadable.code).toBe(0);
+      expect(unreadable.out).toContain(
+        `[warn] Host load: cannot read the 1-minute load average; ${limits} is not enforced`,
+      );
+    });
+  });
+
   it("registers the fake, Claude Code and Codex adapters by default", () => {
     expect(
       defaultAdapters()

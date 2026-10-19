@@ -134,6 +134,8 @@ export interface SwitchboardConfig {
      * An empty list means none. Pins (`name@n`) are not visibility keys.
      */
     skills?: string[];
+    /** T3.24 (FR-CAP-12, LLD §20.2): honour `light: true` on this client's requests during a host load hold. Default false. */
+    allow_light?: boolean;
   }[];
   limits?: {
     global_concurrency?: number;
@@ -208,6 +210,11 @@ export interface SwitchboardConfig {
   ci_trigger?: CiTriggerConfigInput;
   /** Optional OTLP/HTTP trace destination; absent or empty disables telemetry (LLD §7, T8.1). */
   telemetry?: { otlp_endpoint?: string };
+  /**
+   * Host load hold (T3.24; FR-CAP-12, LLD §20.2). Absent means off: no load is read and dispatch is unchanged. Both keys
+   * are required together and `resume_load1` must be lower than `max_load1` (`load.ts` refuses anything else).
+   */
+  host?: { max_load1: number; resume_load1: number };
   /**
    * Outer sandbox (T3.1; LLD §8.4, ADR-0051). A profile listed in `required_profiles` is refused at admission unless
    * it can run inside the outer sandbox; absent or empty means nothing changes. `privileged` cannot be listed.
@@ -828,6 +835,7 @@ export const configSchema = {
           },
           tool_profile: { enum: [...TOOL_PROFILES] },
           skills: clientSkillListSchema(),
+          allow_light: { type: "boolean" },
         },
       },
     },
@@ -855,6 +863,16 @@ export const configSchema = {
         // T9.13 (FR-WS-10, LLD §5.1). Bounds are Proposed sanity limits (Delegated).
         seed_store_mb: { type: "integer", minimum: 1, maximum: 1_000_000_000 },
         seed_entries_per_seed: { type: "integer", minimum: 1, maximum: 100 },
+      },
+    },
+    // T3.24 (FR-CAP-12, LLD §20.2): 1-minute load averages; the upper bound is a typo guard (Assumption, Delegated).
+    host: {
+      type: "object",
+      additionalProperties: false,
+      required: ["max_load1", "resume_load1"],
+      properties: {
+        max_load1: { type: "number", exclusiveMinimum: 0, maximum: 100_000 },
+        resume_load1: { type: "number", exclusiveMinimum: 0, maximum: 100_000 },
       },
     },
     providers: {

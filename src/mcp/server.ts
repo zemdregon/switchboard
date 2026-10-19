@@ -104,8 +104,9 @@
  *   `queue.max_items_per_project` is INVALID_REQUEST (LLD §18.1); an MCP idempotency key is stored as `mcp:<key>`, so
  *   it cannot collide with a schedule's or CI trigger's key, and is replayed only for the same project, request,
  *   priority and `depends_on`; `depends_on` names this client's own items. `cancel_work` cancels a PENDING or READY
- *   item and returns any other item unchanged (an admitted item is stopped with `cancel_run`). Delegated, fail closed:
- *   the tools are not offered over the network transport, since a work item records its client but no HTTP subject.
+ *   item and returns any other item unchanged (an admitted item is stopped with `cancel_run`). T15.9 (FR-QUE-08,
+ *   LLD §20.8): the tools are also offered over the network transport, but only to an `orchestrator` client, under
+ *   the same scope check as `delegate_task` (FR-MCP-14); the mapped client's ceiling applies exactly as on stdio.
  * - Skill tools (T16.9; FR-SKL-08, FR-CTL-11, LLD §19.9, ADR-0056 item 12): `list_skills` and `get_skill` exist only
  *   when the skill store is wired (`deps.skills`) and `skills.enabled` is true, and only for an `orchestrator` client
  *   (they are outside the console set). Both read the T16.1 store and write nothing. Visibility is
@@ -1000,6 +1001,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       priority: a.priority,
       ...(scope?.ok ? { privileged_scope: scope.scope } : {}),
       ...skillFields, // T16.4: part of request_hash (FR-MCP-08)
+      ...(a.light === true ? { light: true } : {}), // T3.24: absent unless given, so other hashes are unchanged
     };
     const hash = requestHash(canonical);
     const key = a.idempotency_key as string | undefined;
@@ -1100,6 +1102,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(key !== undefined ? { idempotencyKey: key } : {}),
       ...(verification.length > 0 ? { verificationCommands: verification } : {}),
       ...(skills !== undefined ? { skills } : {}),
+      // T3.24 (FR-CAP-12, LLD §20.2): `light` is honoured only for a client configured `allow_light: true`.
+      ...(a.light === true && client.allowLight === true ? { light: true } : {}),
       ...(scope?.ok
         ? {
             privileged: {
@@ -1425,8 +1429,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
   // ---- T15.1 project work queue (FR-QUE-01, LLD §18.4): see the module comment ------------------------------------
 
-  /** Over HTTP the tools do not exist (fail closed: a work item records no subject). */
-  const workQueueOffered = deps.subject === undefined;
+  /** T15.9 (FR-QUE-08, LLD §20.8): offered over HTTP to an orchestrator client (the mapped client's ceiling
+   *  applies, as for `delegate_task`); a console client never sees the tools, over either transport. */
+  const workQueueOffered = client.toolProfile !== "console";
   const workValidators = compileWorkValidators();
 
   const ownWorkItem = (id: string): WorkItemRow => {
@@ -1961,7 +1966,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         return ok(await skillHandlers[tool](args));
       }
       if ((WORK_QUEUE_TOOL_NAMES as readonly string[]).includes(name) && workQueueOffered) {
-        // T15.1 (FR-QUE-01): over HTTP it is answered exactly like an unknown tool.
+        // T15.9 (FR-QUE-08): when not offered (a console client) it is answered exactly like an unknown tool.
         const tool = name as WorkQueueToolName;
         const args = structuredClone(rawArgs ?? {}) as Args;
         const validate = workValidators[tool];

@@ -306,6 +306,56 @@ describe("limits.min_free_disk_mb (T3.23, FR-WS-11)", () => {
   });
 });
 
+describe("host.max_load1 and host.resume_load1, mcp_clients[].allow_light (T3.24, FR-CAP-12)", () => {
+  it("is off by default: no hostLoad and no allowLight are resolved", () => {
+    const c = loadConfig({ configPath: write(base()) });
+    expect("hostLoad" in c).toBe(false);
+    for (const client of c.mcpClients.values()) expect("allowLight" in client).toBe(false);
+  });
+
+  it("resolves both values and allow_light: true", () => {
+    const cfg = base();
+    const c = loadConfig({
+      configPath: write({
+        ...cfg,
+        mcp_clients: [{ ...cfg.mcp_clients[0], allow_light: true }],
+        host: { max_load1: 10, resume_load1: 7.5 },
+      }),
+    });
+    expect(c.hostLoad).toStrictEqual({ maxLoad1: 10, resumeLoad1: 7.5 });
+    expect([...c.mcpClients.values()][0]?.allowLight).toBe(true);
+    const off = loadConfig({
+      configPath: write({ ...cfg, mcp_clients: [{ ...cfg.mcp_clients[0], allow_light: false }] }),
+    });
+    expect("allowLight" in ([...off.mcpClients.values()][0] ?? {})).toBe(false);
+  });
+
+  it("fails closed on a resume value not below the maximum, a missing key, an unknown key or a non-positive number", () => {
+    const load = (host: unknown) => () => loadConfig({ configPath: write({ ...base(), host }) });
+    expect(load({ max_load1: 8, resume_load1: 8 })).toThrow(
+      /\$\.host\.resume_load1: must be lower than \$\.host\.max_load1/,
+    );
+    expect(load({ max_load1: 8, resume_load1: 9 })).toThrow(ConfigError);
+    for (const host of [
+      { max_load1: 10 },
+      { resume_load1: 8 },
+      { max_load1: 10, resume_load1: 8, extra: 1 },
+      { max_load1: 0, resume_load1: -1 },
+      { max_load1: 10, resume_load1: 0 },
+      { max_load1: "10", resume_load1: 8 },
+      { max_load1: 10, resume_load1: null },
+      {},
+      null,
+    ]) {
+      expect(load(host)).toThrow(ConfigError);
+    }
+    const cfg = base();
+    expect(() =>
+      loadConfig({ configPath: write({ ...cfg, mcp_clients: [{ ...cfg.mcp_clients[0], allow_light: "yes" }] }) }),
+    ).toThrow(ConfigError);
+  });
+});
+
 describe("providers.claude-code.git_channel (T9.4b, ADR-0029 item 7)", () => {
   it("defaults to off, is true only when set to true, and is refused on other providers or as a non-boolean", () => {
     expect(loadConfig({ configPath: write(base()) }).claudeCodeGitChannel).toBe(false);

@@ -625,7 +625,9 @@ adapter does, ADR-0049 item 3), a `tool_call` or `tool_call_update` whose `statu
 the turn, so the run ends `PERMISSION_BLOCKED`; an approved bypass run is exempt. *Outcome 2026-10-19 (owner
 ruling 05:22 CDT): Kimi 2.1.1 raises no ACP permission requests, so T4.68 is closed Partial-by-ruling and gating is
 the Deferred [ROADMAP §8](../ROADMAP.md#8-deferred-and-excluded-work) row "Kimi ACP permission gating (ADR-0049
-item 3)".* Tests:
+item 3)".* *Update 2026-10-19 (bypass-only gate, owner-level ruling relayed 2026-10-19 08:45 CDT, PR #755):* the
+adapter now refuses restricted compiles at compile time (`kimiBypassOnlyGate` in `src/adapters/kimi/adapter.ts`), so
+no run reaches this runtime check; the check stays in code for the Deferred row. Tests:
 `src/adapters/kimi/acp-stream.test.ts`, `src/exec/acp/client.test.ts`.
 
 `parseEvent` receives the `session/update` notifications and the final `session/prompt` response as `AcpMessage`s.
@@ -6635,8 +6637,11 @@ is unknown, `INVALID_REQUEST`). Only the creator may cancel over MCP; the operat
 - `cancel_work { work_item_id }` moves a `PENDING` or `READY` item to `CANCELLED` and returns any other item unchanged.
   `ADMITTING` is not cancelled, so a run never sits behind a `CANCELLED` item; an admitted item is stopped with
   `cancel_run`.
-- Fail closed: the three tools are listed only on stdio sessions, right after the base tools. They are not offered
-  over the network transport (FR-MCP-15), because a work item records its client but no HTTP subject.
+- Fail closed: the three tools are listed right after the base tools. They are offered over stdio, and since
+  T15.9 (FR-QUE-08, §20.8) also over the network transport, but only to an `orchestrator` client under the same scope
+  check as `delegate_task` over HTTP; a `console` client neither lists nor calls them over either transport (answered
+  exactly like an unknown tool, FR-CTL-11). Ownership is by the authenticated client id, and admission stays under the
+  creating client's ceiling.
 
 ### 18.5 Schedules (FR-QUE-02)
 
@@ -7249,6 +7254,20 @@ provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and par
   everything light, the flag is honoured only for a client whose configuration sets `mcp_clients[].allow_light: true`
   (default `false`, Delegated least privilege); the operator CLI may always set it.
 - **Unreadable load.** A reader error never holds; `doctor` warns.
+- **As built (T3.24, 2026-10-19, Delegated agent work, not owner-approved).** `host` needs both keys together, each a
+  number above 0 and at most 100 000 (a typo guard, Assumption); `resume_load1 >= max_load1` is refused at load. The
+  port is `LoadReader` in `src/capacity/host-load.ts` (`osLoadReader` reads `os.loadavg()[0]`); a thrown error, a
+  non-finite or a negative value counts as unreadable. The hold starts when the load is above `max_load1` and ends when
+  it is below `resume_load1`; an unreadable read also ends it. While held, `pump()` re-reads every 15 s (Assumption).
+  The `load_hold` payload is `{reason: "LOAD_ABOVE_MAX", load1, max, resume}`. When the episode ends, each held run
+  that is still queued gets one `load_release {load1}`. The envelope (`get_run`, `list_runs`) carries
+  `hold: {reason: "held_load", since}` while a `QUEUED` run's latest `load_hold` has no later `load_release`. Each
+  `get_digest` project carries `held: [{run_id, reason, envelope}]`, present only when non-empty, so an unconfigured
+  controller returns the same digest as before. After a restart, open holds are adopted on the first read, so
+  hysteresis survives it. `light` is a `delegate_task` and `enqueue_work.request` field. It is honoured (a `light_run`
+  admission event) only for a client with `allow_light: true` and is otherwise ignored, not refused. It is part of
+  the request hash only when given. No operator CLI command submits runs today, so the CLI clause has nothing to
+  attach to yet. `doctor` adds a `Host load` line only when `host` is set.
 
 ### 20.3 Decision requests (FR-CTL-13, T14.15)
 
@@ -7354,10 +7373,16 @@ provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and par
 
 ### 20.8 Work queue over HTTP (FR-QUE-08, T15.9)
 
-The network transport lists `enqueue_work`, `list_work` and `cancel_work` for a client whose `tool_profile` is
-`orchestrator`, with the same scope check as `delegate_task` over HTTP (FR-MCP-14). The stdio-only filter beside
-`WORK_QUEUE_TOOL_NAMES` in `src/mcp/schemas.ts` is removed; admission stays under the creating client's ceiling
-(§18.4).
+Built (T15.9 Done): the network transport lists `enqueue_work`, `list_work` and `cancel_work` for a client whose
+`tool_profile` is `orchestrator`, under the same scope check as `delegate_task` over HTTP (FR-MCP-14: bearer token
+with the `mcp` scope, an approved and mapped OAuth client). The stdio-only filter (`workQueueOffered` in
+`src/mcp/server.ts`, beside `WORK_QUEUE_TOOL_NAMES` in `src/mcp/schemas.ts`) is now profile-gated instead of
+transport-gated: an `orchestrator` client is offered the tools over either transport, while a `console` client sees
+and calls none of them over either transport (answered exactly like an unknown tool, FR-CTL-11). Ownership is by the
+authenticated client id (the mapped MCP client over HTTP): `list_work` returns only the caller's own items and
+`cancel_work` of another client's item fails exactly like an unknown id, so ids are not an existence oracle; an item
+with no recorded owner is operator-owned and therefore invisible and uncancellable over HTTP. Admission stays under
+the creating client's ceiling (§18.4).
 
 ### 20.9 Pre-push secret scan (FR-GIT-11, T9.14, ADR-0061)
 

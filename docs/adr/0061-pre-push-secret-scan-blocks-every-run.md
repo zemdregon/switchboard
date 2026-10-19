@@ -51,10 +51,18 @@ keeps the Git-write denial and worktree isolation (owner decision 22); this ADR 
 ## Consequences
 
 - A false positive blocks a push until the operator allowlists the rule and path or pushes by hand.
-- A secret in a binary file or in an encoding the rules do not match is not caught; binary files are listed in the event.
+- A secret in a binary file or in an encoding the rules do not match is not caught; binary files are listed in the
+  event. (superseded, see Amendment 2026-10-19)
 - Bypass runs now keep three controls: the Git-write denial, worktree isolation and this scan.
 
 ## Revisit when
 
 - False positives block normal work often enough that the operator asks for a different rule set.
 - A maintained scanner is available that can run without a new execution path.
+
+## Amendment 2026-10-19 (Linus, owner-delegated ruling, PR #764)
+
+The earlier Consequences line "A secret in a binary file or in an encoding the rules do not match is not caught" is
+superseded. The implementation diffs every file with `git diff --text --no-textconv --no-ext-diff`, so
+binary-counted files ARE scanned and their hits are listed in the event. The Decision is unchanged. No other part of
+this ADR is changed.
