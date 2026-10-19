@@ -471,3 +471,21 @@ as history.
   edits documentation only (`*.md`, `docs/**`). A code-lane follow-up
   should sync the comments (mechanical; no owner decision needed).
   It does not block PR #713.
+
+## 31. README Status waiting-list still names T4.35/T4.51 (pre-existing, other lanes, not from PR #713)
+
+- The README Status bullet lists T4.35 and T4.51 among the "rows
+  waiting on uncaptured live shapes", while the roadmap records both
+  as `Done`: T4.35 (Antigravity conformance incl. resume) under owner
+  decision 67 ([PR #724](https://github.com/zemdregon/switchboard/pull/724),
+  on `main`; §6.8.2 item 2 decision-67 update carries the live resume
+  run by T4.38) and T4.51 (OpenCode operator live checks) as `Done`
+  2026-10-18 with live evidence
+  (`docs/research/live-checks-2026-10-18-opencode.md`;
+  [PR #721](https://github.com/zemdregon/switchboard/pull/721), on
+  `main`). The README sentence predates those Done markers (PR #713
+  only removed the Kimi rows from that list) and the rows belong to
+  the Antigravity and OpenCode lanes.
+- Left unchanged: re-wording another lane's waiting list would endorse
+  its Done claims (cf. items 8, 24 and 28 above). It does not block
+  PR #713.
