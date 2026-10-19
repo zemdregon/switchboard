@@ -369,7 +369,35 @@ as history.
   [FR-CAP-11](requirements/SRS.md) one-exception amendments and the Q-100 answer. SDD FR-CAP-11 and LLD §16.9 now
   point at ADR-0058 instead of here; this note stands as the resolved history. PR #700 is unblocked on this item.
 
-## 25. TDD §4.7 heading still says "blocked by B-1" (pre-existing, not from PR #713)
+## 25. `antigravity.json` manifest notes still read "admits no version" (from the T4.38 re-implementation, out of gate scope)
+
+- The T4.38 re-implementation updates `src/adapters/manifests/antigravity.json` to
+  `validated_cli_version` `1.4.2`, range `>=1.4.2 <1.5.0`, with a dated
+  `Evidence (adapters validate, 2026-10-18)` line appended to `notes`.
+- The same `notes` string still opens with the T4.32 sentence "The range admits
+  no version (ADR-0009, ROADMAP 6.8 conventions): the adapter fails the version
+  gate with ADAPTER_VERSION_UNVERIFIED until `switchboard adapters validate
+  antigravity` passes a version, so nothing here is a claim that any agy version
+  is validated." That condition is now satisfied, so the sentence is
+  stale against the range in the same file.
+- Left unchanged: the manifest is `src/**`, and this gate edits documentation
+  only (`*.md`, `docs/**`). Refreshing that sentence needs a one-line manifest
+  edit by the PR author (or a code-touching follow-up), not an owner decision.
+  It does not block the T4.38 re-implementation (the range fields and the evidence line, which are
+  what the gate and the version check read, are correct).
+- Same staleness, same scope: the header comments in
+  `src/adapters/antigravity/adapter.ts` ("The manifest range admits no
+  version, so none of this runs before `adapters validate` passes a version")
+  and `src/adapters/antigravity/protocol.ts` ("The manifest range admits no
+  version, so none of this runs until `adapters validate` passes a version")
+  were true under the old `<0.0.0` range and are overtaken by the new
+  `>=1.4.2 <1.5.0` range the same way. They need a code-touching follow-up,
+  not an owner decision, and do not block the T4.38 re-implementation. (Kimi has the identical
+  shape since PR #694: `kimi.json` admits `>=2.1.1 <2.2.0` while
+  `src/adapters/kimi/adapter.ts` and `src/adapters/kimi/protocol.ts` still
+  say the range admits no version; see item 15.)
+
+## 26. TDD §4.7 heading still says "blocked by B-1" (pre-existing, not from PR #713)
 
 - [TDD §4.7](design/TDD.md#47-kimi-code-m4-blocked-by-b-1) is headed
   "Kimi Code (M4, blocked by B-1)", while its body says B-1 is cleared
@@ -380,7 +408,7 @@ as history.
   documents cite; renaming it would break those links and
   `scripts/check-docs.mjs`. It does not block PR #713.
 
-## 26. T4.43 waiting-list claim withdrawn: no contradiction found (checked on this branch for PR #713)
+## 27. T4.43 waiting-list claim withdrawn: no contradiction found (checked on this branch for PR #713)
 
 - A draft of this note claimed the T4.43 (Cursor parser) row records
   `Done against its Done-when` under owner decision 65 (a) while §6.8.2
@@ -396,7 +424,7 @@ as history.
   is endorsed or disturbed (cf. item 8 above for the precedent). It does
   not block PR #713.
 
-## 27. Kimi manifest `notes` still says `-p`/`--prompt` are unaudited (pre-existing, not from PR #713)
+## 28. Kimi manifest `notes` still says `-p`/`--prompt` are unaudited (pre-existing, not from PR #713)
 
 - `src/adapters/manifests/kimi.json` `notes` says "`-p` and `--prompt`
   are not declared to the audit ... the compile gate alone keeps
@@ -413,7 +441,7 @@ as history.
   should sync the `notes` sentence (mechanical; no owner decision
   needed). It does not block PR #713.
 
-## 28. README Status waiting-list still names T4.53/T4.56 (pre-existing, other lanes, not from PR #713)
+## 29. README Status waiting-list still names T4.53/T4.56 (pre-existing, other lanes, not from PR #713)
 
 - The README Status bullet lists T4.53 and T4.56 among the "rows waiting
   on uncaptured live shapes", while ROADMAP §6.8.2 item 2 and the M4 row
@@ -425,7 +453,7 @@ as history.
 - Left unchanged: re-wording another lane's waiting list would endorse
   its Done claims (cf. items 8 and 24 above). It does not block PR #713.
 
-## 29. ADR-0049 item 1 compile spelling vs as-built `=` form (pre-existing, not from PR #713)
+## 30. ADR-0049 item 1 compile spelling vs as-built `=` form (pre-existing, not from PR #713)
 
 - [ADR-0049](adr/0049-kimi-code-transport-and-bypass-class.md) item 1
   (Accepted 2026-10-15) says the approved bypass compile is exactly
@@ -445,7 +473,7 @@ as history.
   spelling difference changes no bypass behaviour). It does not block
   PR #713.
 
-## 30. Kimi adapter code comments still label `tool_calls` fields an Assumption (pre-existing, not from PR #713)
+## 31. Kimi adapter code comments still label `tool_calls` fields an Assumption (pre-existing, not from PR #713)
 
 - `src/adapters/kimi/protocol.ts` (header comment on the `stream-json`
   records: "their field names below are an **Assumption** ... until
@@ -472,7 +500,7 @@ as history.
   should sync the comments (mechanical; no owner decision needed).
   It does not block PR #713.
 
-## 31. README Status waiting-list still names T4.35/T4.51 (pre-existing, other lanes, not from PR #713)
+## 32. README Status waiting-list still names T4.35/T4.51 (pre-existing, other lanes, not from PR #713)
 
 - The README Status bullet lists T4.35 and T4.51 among the "rows
   waiting on uncaptured live shapes", while the roadmap records both
@@ -487,5 +515,5 @@ as history.
   only removed the Kimi rows from that list) and the rows belong to
   the Antigravity and OpenCode lanes.
 - Left unchanged: re-wording another lane's waiting list would endorse
-  its Done claims (cf. items 8, 24 and 28 above). It does not block
+  its Done claims (cf. items 8, 24 and 29 above). It does not block
   PR #713.

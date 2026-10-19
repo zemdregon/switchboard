@@ -244,8 +244,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   and a Git declaration on synthetic fixtures (README [Antigravity CLI](#antigravity-cli-milestone-4), ROADMAP T4.32 to
   T4.37); [#295](https://github.com/zemdregon/switchboard/pull/295) through
   [#373](https://github.com/zemdregon/switchboard/pull/373) extend synthetic parser, conformance and malicious replay
-  only and do not validate the live CLI.
-  Live smoke, live malicious leg and `adapters validate` for Antigravity remain operator work (T4.38). Cursor has
+  only and do not validate the live CLI; the T4.38 live `adapters validate` pass followed on 2026-10-18 (CLI 1.4.2,
+  manifest range `>=1.4.2 <1.5.0`).
+  Live smoke and the live malicious leg for Antigravity remain operator work (T4.38). Cursor has
   module, compile-matrix, parser (Done against its Done-when under owner decision 65 (a): T4.43;
   supervisor-replayed JSONL fixtures,
   [#283](https://github.com/zemdregon/switchboard/pull/283),
@@ -301,9 +302,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   on synthetic fixtures except the T4.64 probe's two live `validate` runs (auth `OK`) and the
   T4.68 live `adapters validate` pass on 2026-10-18 (CLI 2.1.1, manifest range `>=2.1.1 <2.2.0`) (README
   [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke and the live malicious leg
-  remain operator work (T4.68). The Grok Build, Antigravity, Cursor, OpenCode and Muse Code manifests still admit
-  no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex and
-  Kimi Code already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
+  remain operator work (T4.68). The Grok Build, Cursor, OpenCode and Muse Code manifests still admit
+  no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex,
+  Kimi Code and Antigravity already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
   Delegated). Open items, by blocker: operator live legs (T4.12 on a Mac, T4.28, T4.38, T4.48, T4.58, T4.68; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
@@ -353,8 +354,8 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
 - For real work, at least one provider CLI installed and logged in natively: Claude Code, Codex, Grok Build,
-  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex and Kimi Code admit a version today;
-  the other manifests admit no version until `switchboard adapters validate` passes a live CLI (see
+  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex, Kimi Code and Antigravity admit a
+  version today; the other manifests admit no version until `switchboard adapters validate` passes a live CLI (see
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks)). `doctor` does not require any particular one.
 
 ## Install from source
@@ -445,9 +446,9 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `outer_sandbox.required_profiles` | no | List of distinct non-privileged profile names (default empty, which changes nothing). A listed profile is refused with `ELIGIBILITY_NONE` unless bubblewrap and `prlimit` work on the host; because this build does not yet wrap the provider process, a listed profile is refused even when both work (`OUTER_SANDBOX_NOT_ENFORCED`). `doctor` reports the check. See [Trust profiles](#trust-profiles) and LLD section 8.4. |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`, `muse-code`. Only
-`claude-code`, `codex` and `kimi-code` pass the version gate on `main` today; the other ids name registered M4
-adapters whose manifests admit no version until `switchboard adapters validate` passes a live CLI (ROADMAP §6.8.2).
-`<id>` is the *config* id. The *provider* id used in
+`claude-code`, `codex`, `kimi-code` and `antigravity` pass the version gate on `main` today; the other ids name
+registered M4 adapters whose manifests admit no version until `switchboard adapters validate` passes a live CLI
+(ROADMAP §6.8.2). `<id>` is the *config* id. The *provider* id used in
 `routing.provider_preference` of `delegate_task` is the adapter id: `claude`
 for Claude Code (config id `claude-code`), `codex` for Codex. `max_trust_profile` accepts any of the five profile
 names, but see [Trust profiles](#trust-profiles).
@@ -1671,8 +1672,10 @@ passes only `PATH` and `HOME` from the parent environment and
 sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` on every run and never puts `GEMINI_API_KEY`, `GOOGLE_API_KEY` or
 `GOOGLE_GEMINI_BASE_URL` in the child environment (API-key mode stays disabled).
 
-The compliance manifest range admits no version until an operator runs `switchboard adapters validate antigravity` and
-commits the manifest diff (ROADMAP T4.38). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Antigravity.
+The compliance manifest range (`src/adapters/manifests/antigravity.json`) admits `>=1.4.2 <1.5.0`
+since `switchboard adapters validate antigravity` passed on CLI 1.4.2 on 2026-10-18 (ROADMAP T4.38).
+Other versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`; the live smoke and the live
+malicious leg stay operator-only (T4.38).
 
 ### Login
 
@@ -1745,10 +1748,11 @@ synthetic checks, not native captures of rate limiting, sandbox enforcement or `
 (the quota line shape follows the T6.11 capture key names, but the fixture is hand-written;
 [#272](https://github.com/zemdregon/switchboard/pull/272)). Tool parameter aliases remain **Assumptions** until
 operator captures confirm their native shapes. Later updates that supply or change a command or path reach the
-guard again; commands under unrecorded parameter keys remain unseen. A live resume run, live blocked outcomes and
-provider validation stay open under ROADMAP T4.38 (T4.33 and T4.36 are Done against their Done-when under owner
-decision 65, and T4.35 is Done on synthetic fixtures including resume per owner decision 67; their remaining native
-shapes are carried by T4.38).
+guard again; commands under unrecorded parameter keys remain unseen. A live resume run, live blocked outcomes,
+the live smoke and the live malicious leg stay open under ROADMAP T4.38 (T4.33 and T4.36 are Done against their
+Done-when under owner decision 65, and T4.35 is Done on synthetic fixtures including resume per owner decision 67;
+their remaining native shapes are carried by T4.38); the `adapters validate` leg passed live on 2026-10-18, CLI
+1.4.2.
 
 Residual parser pins ([#344](https://github.com/zemdregon/switchboard/pull/344), "antigravity parser residual pins
 (T4.33, synthetic shapes)") record a second guard gap: tool parameters on a step whose `step_type` is not exactly
@@ -1855,8 +1859,10 @@ list (T4.35, T4.33 fixtures)";
 [#347](https://github.com/zemdregon/switchboard/pull/347), [#361](https://github.com/zemdregon/switchboard/pull/361),
 [#373](https://github.com/zemdregon/switchboard/pull/373)). None of these changed the parser; the compiled matrix gains
 only the resume path (T4.35, owner decision 67).
-The conformance `resume` case runs through `resumeArgs`. No end-to-end run through Switchboard against a logged-in
-`agy` has been recorded yet (T4.38).
+The conformance `resume` case runs through `resumeArgs`. The only end-to-end run through Switchboard against a logged-in
+`agy` so far is the T4.38 live `adapters validate` smoke call on CLI 1.4.2 on 2026-10-18 (one
+structured-output call through `startAdapterRun` in the approved privileged bypass cell); the full live
+smoke, the live resume run and the live malicious leg stay operator-only (T4.38).
 
 ## Cursor CLI (milestone 4)
 
@@ -2807,13 +2813,16 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   [#368](https://github.com/zemdregon/switchboard/pull/368) adds conversation-id and `total_tokens` anomalies, empty
   or null `denied_actions` and cuts inside the hostile line. Fields other than the recorded and Assumption shapes
   remain hypothetical, a Git write on a step whose `step_type` is not `tool` is not seen by the guard (pinned,
-  [#344](https://github.com/zemdregon/switchboard/pull/344)), and no live CLI validation is implied. FR-POL-04
+  [#344](https://github.com/zemdregon/switchboard/pull/344)); besides the live `adapters validate` pass on
+  CLI 1.4.2 on 2026-10-18 (ROADMAP T4.38: manifest, probe, auth `OK`, static conformance and one
+  structured-output smoke call), no further live CLI validation is implied. FR-POL-04
   cannot hold in the only
   compiled scope because repository configuration is `enabled` and `GEMINI.md`, `AGENTS.md` and the `.agents` MCP server
   and hooks load with no approval (live check C11). The blocked streams still rest on unrecorded
   `tool_info.parameters` keys — the parser's accepted key set is pinned on synthetic fixtures, and a command under none
   of those keys stays invisible to the guard; a hostile call without a Git write still ends `ok` in bypass runs
-  (pinned). Live blocked outcomes need T4.38. See ROADMAP T4.36 for the full gap list.
+  (pinned). Live blocked outcomes need the T4.38 live malicious leg (operator work).
+  See ROADMAP T4.36 for the full gap list.
 - **OpenCode malicious-fixture leg is Done against its Done-when on fixtures only (ROADMAP T4.56, owner decision 65 (b));
   the OpenCode parser likewise (ROADMAP T4.53, owner decision 65 (a)): no native rate-limit or sandbox shape
   exists (no real OpenCode limit capture has been made); a project-config denial shape and shell `tool_use` input
@@ -2880,9 +2889,10 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
-- `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex and Kimi Code
-  manifests admit a version on `main` today. Grok Build, Antigravity, Cursor, OpenCode and the other M4 adapters
-  still need operator captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58, T4.68 and §6.8.2).
+- `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex, Kimi Code
+  and Antigravity manifests admit a version on `main` today. Grok Build, Cursor, OpenCode and the other M4
+  adapters still need operator captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58,
+  T4.68 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
   fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the
