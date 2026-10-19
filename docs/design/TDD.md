@@ -415,8 +415,13 @@ benchmark uses the fake adapter only; a real provider CLI's probe cost is unmeas
   (Assumption: initial installs from a Git checkout or tarball).
 - **Single executable** (Node SEA or a bundler) is a later hardening item per ADR-0010; `better-sqlite3`'s native addon
   is the main obstacle and may favour `node:sqlite` at that point.
-- **Release.** Tagged from the main branch by CI after checks pass; changelog kept by hand. No dates or cadence are
-  committed.
+- **Release.** Pushing a tag `vX.Y.Z` (equal to `v` plus the `package.json` `version`; the workflow fails otherwise)
+  runs the `release` workflow (`.github/workflows/release.yml`), which re-runs typecheck, lint, tests, the build and
+  the pack smoke test, then drafts a GitHub release carrying the `npm pack` tarball with the matching `CHANGELOG.md`
+  section as its notes (section extractor `scripts/release-notes.mjs`; process in
+  [CONTRIBUTING](../../CONTRIBUTING.md#releasing)). The changelog is kept by hand. The workflow never runs
+  `npm publish`, so publishing the package to a registry stays an open owner decision, as above. No dates or cadence
+  are committed.
 
 ### 3.8 CI pipeline
 
@@ -438,7 +443,9 @@ no provider CLI.
 
 Package: SemVer, pre-1.0 until the MCP tool schemas stabilise after M2/M6. Independent version numbers: config
 `schema_version`, DB migration number, MCP tool schema version (in `list_capabilities`), per-adapter validated
-provider-version range ([LLD §6](LLD.md#6-compliance-manifest)).
+provider-version range ([LLD §6](LLD.md#6-compliance-manifest)). The MCP server reports the package version at runtime
+(`SERVER_VERSION` in `src/mcp/server.ts`, read from the root `package.json` so it holds from `src/`, `dist/` and the
+packed tarball, with a `"0.0.0"` fallback when the file is missing or unparsable).
 
 ### 3.10 Git commits, attribution and publication
 
