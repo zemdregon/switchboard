@@ -4559,7 +4559,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#393](https://github.com/zemdregon/switchboard/pull/393),
   [#422](https://github.com/zemdregon/switchboard/pull/422),
   [#449](https://github.com/zemdregon/switchboard/pull/449)) and Git declaration fixture tests on
-  synthetic fixtures (README [Grok Build CLI](../README.md#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
+  synthetic fixtures (README [Grok Build CLI](../README.md#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27);
+  live smoke, live
   malicious leg and `adapters validate` remain operator work (T4.28: the 2026-10-18 `adapters validate grok` run
   passed probe, auth and conformance but stopped at the smoke step on a provider usage limit, so the manifest range
   still admits no version).
@@ -4588,7 +4589,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#257](https://github.com/zemdregon/switchboard/pull/257),
   [#262](https://github.com/zemdregon/switchboard/pull/262),
   [#280](https://github.com/zemdregon/switchboard/pull/280))
-  and a Git declaration on synthetic fixtures (README [Antigravity CLI](../README.md#antigravity-cli-milestone-4), ROADMAP T4.32 to
+  and a Git declaration on synthetic fixtures
+  (README [Antigravity CLI](../README.md#antigravity-cli-milestone-4), ROADMAP T4.32 to
   T4.37); [#295](https://github.com/zemdregon/switchboard/pull/295) through
   [#373](https://github.com/zemdregon/switchboard/pull/373) extend synthetic parser, conformance and malicious replay
   only and do not validate the live CLI; the T4.38 live `adapters validate` pass followed on 2026-10-18 (CLI 1.4.2,
@@ -4614,7 +4616,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#315](https://github.com/zemdregon/switchboard/pull/315)), malicious-fixture leg (T4.46; category/exit matrix and
   12 partial streams, [#316](https://github.com/zemdregon/switchboard/pull/316); residual cells at exits 2 and 137 and
   guard-only Git writes, [#367](https://github.com/zemdregon/switchboard/pull/367)) and Git declaration
-  fixture tests on synthetic fixtures (README [Cursor CLI](../README.md#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
+  fixture tests on synthetic fixtures
+  (README [Cursor CLI](../README.md#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
   smoke passed and the live malicious leg closed on 2026-10-19 per owner decision 77 (smoke `outcome=ok`, 11 held; post-merge
   malicious rerun w1703 inside the wrapper: U-M1/U-M2 `HELD`, U-M3 `NOT_CHECKED` as expected bypass
   behaviour), so T4.48 is `Done`;
@@ -4689,7 +4692,8 @@ the 2026-10-19 `adapters validate cursor` run passed
   (T4.29, T4.39, T4.49, T4.69 and T4.79 are `Done` except the post-T4.n8 update; T4.59 is `Done`);
   Muse Code (Should) has module, compile matrix, auth preflight,
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
-  [Muse Code CLI](../README.md#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
+  [Muse Code CLI](../README.md#muse-code-cli-milestone-4), ROADMAP
+  T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
   is `Done` against its Done-when under owner decision 65 (a), with record spellings, session-id field and `terminal`
   values Assumption until the T4.71 capture (carried by T4.78); T4.76 is `Done` against its Done-when under owner
   decision 65 (b), on Switchboard's ADR-0039 tool-call guard alone, with tool-record field names Assumption until
