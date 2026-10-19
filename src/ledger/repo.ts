@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { approvalCausePrefix, type DecisionInput, renderDecisionSummary } from "../continuity/decisions.js";
 import { deriveOpenWork, type OpenWorkRun } from "../continuity/open-work.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
+import { insertChainedRunEvent, nextChainLink } from "./chain.js";
 import { type ControlPlaneLedgerSlice, createControlPlaneLedgerSlice } from "./control-plane.js";
 import { DecisionRefusedError } from "./errors.js";
 import { createScheduleLedgerSlice, type ScheduleLedgerSlice } from "./schedule.js";
@@ -1150,14 +1151,14 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     when: string,
     artifactId: string | null = null,
   ): string => {
-    const row = db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_event WHERE run_id = ?").get(runId) as {
-      next: number;
-    };
-    const id = ids.id("evt");
-    db.prepare(
-      "INSERT INTO run_event (id, run_id, seq, ts, type, payload_json, artifact_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).run(id, runId, row.next, when, type, JSON.stringify(payload ?? {}), artifactId);
-    return id;
+    return insertChainedRunEvent(db, {
+      id: ids.id("evt"),
+      runId,
+      ts: when,
+      type,
+      payloadJson: JSON.stringify(payload ?? {}),
+      artifactId,
+    }).id;
   };
 
   const patchSql = (set: RunFieldPatch): { cols: string; values: unknown[] } => {
@@ -1962,10 +1963,26 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         throw new Error(`an approval can only be decided APPROVED or DENIED, not ${String(input.status)}`);
       }
       if (typeof input.decidedBy !== "string" || input.decidedBy.length === 0) throw new Error("decidedBy is required");
-      const res = db
-        .prepare("UPDATE approval SET status = ?, decided_at = ?, decided_by = ? WHERE id = ? AND status = 'PENDING'")
-        .run(input.status, input.decidedAt ?? ts(), input.decidedBy, input.id);
-      return res.changes === 1 ? getApproval(input.id) : undefined;
+      // FR-TEL-05 (ADR-0064): the decision links the row into the approval chain in the same transaction.
+      const decide = (): ApprovalRow | undefined => {
+        const current = getApproval(input.id);
+        if (current === undefined || current.status !== "PENDING") return undefined;
+        const decided = {
+          ...current,
+          status: input.status,
+          decided_at: input.decidedAt ?? ts(),
+          decided_by: input.decidedBy,
+        };
+        const link = nextChainLink(db, "approval", decided);
+        const res = db
+          .prepare(
+            `UPDATE approval SET status = ?, decided_at = ?, decided_by = ?, chain_seq = ?, chain_hash = ?
+             WHERE id = ? AND status = 'PENDING'`,
+          )
+          .run(decided.status, decided.decided_at, decided.decided_by, link.chain_seq, link.chain_hash, input.id);
+        return res.changes === 1 ? getApproval(input.id) : undefined;
+      };
+      return immediate(decide);
     },
 
     listRunsCoveredByApproval(approvalId) {
@@ -2144,27 +2161,17 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
 
     appendRunEvent(input) {
       const id = ids.id("evt");
-      const append = db.transaction((): RunEventRow => {
-        const row = db
-          .prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM run_event WHERE run_id = ?")
-          .get(input.runId) as {
-          next: number;
-        };
-        const payload = JSON.stringify(input.payload ?? {});
-        const when = ts();
-        db.prepare(
-          "INSERT INTO run_event (id, run_id, seq, ts, type, payload_json, artifact_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ).run(id, input.runId, row.next, when, input.type, payload, input.artifactId ?? null);
-        return {
-          id,
-          run_id: input.runId,
-          seq: row.next,
-          ts: when,
-          type: input.type,
-          payload_json: payload,
-          artifact_id: input.artifactId ?? null,
-        };
-      });
+      const append = db.transaction(
+        (): RunEventRow =>
+          insertChainedRunEvent(db, {
+            id,
+            runId: input.runId,
+            ts: ts(),
+            type: input.type,
+            payloadJson: JSON.stringify(input.payload ?? {}),
+            artifactId: input.artifactId ?? null,
+          }),
+      );
       return append.immediate();
     },
 
