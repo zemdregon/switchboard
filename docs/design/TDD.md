@@ -2242,10 +2242,11 @@ live validate (T4.39), and tool-step parameter keys for the Switchboard tool-cal
 #### 4.4.7 Antigravity parser implementation evidence (M4, T4.33)
 
 Live-check context: [§4.4.5](#445-note-2026-10-14-contradictions-found-by-the-t431-live-checks-delegated-cells-above-not-edited).
-Task boundary and remaining gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.33`, `Partial`).
+Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.33`, Done against its Done-when
+under owner decision 65 (a); remaining native shapes carried by T4.38).
 Adapter contract and taxonomy: [LLD §2](LLD.md#2-adapter-contract), [LLD §4](LLD.md#4-failure-taxonomy). Requirements:
 FR-ADP-04, FR-CAP-01 (`provider_reported` once), FR-SES-03 (resume not compiled, Q-86). HLD: [§2.2
-T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-partial). LLD as-built: [§2.0](LLD.md#20-antigravity-adapter-implementation-evidence-m4-t432-t433-t437).
+T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-done-against-its-done-when). LLD as-built: [§2.0](LLD.md#20-antigravity-adapter-implementation-evidence-m4-t432-t433-t437).
 
 **Implementation evidence (on `origin/main`, [#227](https://github.com/zemdregon/switchboard/pull/227); Delegated agent
 work, not owner-approved; synthetic lines only; no `agy` in CI).**
@@ -2259,9 +2260,12 @@ work, not owner-approved; synthetic lines only; no `agy` in CI).**
   never bind the session; classification precedence pinned; negative or non-number usage dropped; unrecorded rate-limit
   text ends `TOOL_FAILURE`.
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`"antigravity parser and result (T4.33)"`, `"antigravity
-  parser hardening (T4.33, synthetic shapes)"`).
+  parser hardening (T4.33, synthetic shapes)"`, `"antigravity cases with no recorded native shape (T4.33, synthetic
+  shapes)"`, `"antigravity parser fallbacks and exact matching (T4.33, synthetic shapes)"`);
+  `src/adapters/antigravity/parser-residual.test.ts` (residual pins, parser unchanged).
 
-**Out of scope (stay `Partial` until operator capture).** Resume with `--conversation`; stdout shapes for rate limit,
+**Out of scope (carried by T4.38 under owner decision 65 (a); this section is Done).** Resume with
+`--conversation`; stdout shapes for rate limit,
 sandbox violation and stderr `AGY_ERROR`; recorded `tool_info.parameters` keys.
 
 ### 4.5 Cursor CLI (M4)

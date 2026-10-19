@@ -304,3 +304,15 @@ as history.
   to the abandon-only form and accepting it) is the SRS owner's call and
   is the queued amendment follow-up that closes E7's FR-WS-09 part. It
   does not block PR #712 (no code change; docs agree with the code).
+
+## 21. HLD T4.34 subsection still reads "not implemented" (pre-existing, not from PR #709)
+
+- [HLD §2.2](design/HLD.md) T4.34 ("auth preflight (placeholder)") says `authPreflight` returns `UNKNOWN` until T4.34
+  and cites the test "auth is UNKNOWN until T4.34".
+- The [T4.34 row](ROADMAP.md#68-m4-adapter-expansion-tasks) records `Done` (2026-10-14, Delegated; fixtures only):
+  `authPreflight` is implemented in `src/adapters/antigravity/adapter.ts` and the suite is now "antigravity auth
+  preflight (T4.34; SYNTHETIC outputs in the shapes of the 2026-10-14 live check C3b, C3c)" in
+  `src/adapters/antigravity/antigravity.test.ts`.
+- Left unchanged: restating the as-built preflight in the HLD is the design owner's call, and the gap predates
+  PR #709 (which touches only T4.33, T4.36 and T4.39). It does not block PR #709 (T4.33's own evidence is the
+  T4.33 status block and the suites cited there).

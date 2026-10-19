@@ -243,14 +243,17 @@ Outside an approved `privileged` scope with `bypass`, every profile is `Ineligib
 on synthetic fixtures; argv spellings and `--prompt=` are cited in source to TDD §4.4 or marked Assumption until
 operator live capture (T4.38).
 
-#### T4.33 — parser, result, failure classification and resume (`Partial`)
+#### T4.33 — parser, result, failure classification and resume (Done against its Done-when)
 
-**Evidence (`Partial`, synthetic lines in the shapes of the T4.31 live check).** FR-ADP-04, FR-CAP-01 (envelope
+**Evidence (Done against its Done-when under owner decision 65 (a); synthetic lines in the shapes of the T4.31 live
+check).** FR-ADP-04, FR-CAP-01 (envelope
 run-total usage recorded `provider_reported` once), FR-SES-03 (resume not compiled: `resumeArgs` is `Ineligible` for
 every profile and binding).
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("antigravity parser and result (T4.33)", "antigravity
-  parser hardening (T4.33, synthetic shapes)")
+  parser hardening (T4.33, synthetic shapes)", "antigravity cases with no recorded native shape (T4.33, synthetic
+  shapes)", "antigravity parser fallbacks and exact matching (T4.33, synthetic shapes)");
+  `src/adapters/antigravity/parser-residual.test.ts` (residual pins, parser unchanged)
 - **Modules:** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `src/adapters/antigravity/adapter.ts`;
   event names and error prefixes in `src/adapters/antigravity/protocol.ts`; failure codes per [LLD
   §4](LLD.md#4-failure-taxonomy)
@@ -261,7 +264,8 @@ every profile and binding).
   a denial, denial over envelope error and non-zero exit, guard over all). Sourcing: [TDD
   §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433).
 
-**Gaps (remain `Partial`, not `Done`).** Resume is not compiled (Q-86). Rate-limit and sandbox-violation shapes were not
+**Gaps (carried by T4.38 under owner decision 65 (a); this subsection is Done).** Resume is not compiled (Q-86).
+Rate-limit and sandbox-violation shapes were not
 observed in the live check, so those failures end `TOOL_FAILURE` rather than dedicated taxonomy codes. The stderr
 `AGY_ERROR` shape has since been observed for real (seven quota stops at exit 3, T6.11
 [limit captures](../research/limit-captures-2026-10-17.md)) and mapped in `classifyFailure` to `QUOTA_EXHAUSTED` (T6.15,
