@@ -644,3 +644,14 @@ as history.
   `>=2026.10.16 <2026.11.0` range the same way. They need a code-touching
   follow-up, not an owner decision, and do not block PR #747 (cf. items 15,
   25 and 33 for the identical Kimi, Antigravity and OpenCode shape).
+
+## 38. CI Linux job timeout 10 -> 20 minutes (PR #751, no doc impact, checked 2026-10-19)
+
+- PR #751 changes only `timeout-minutes: 10` to `20` for the Linux job in
+  `.github/workflows/ci.yml` (the macOS job already uses 20).
+- No document states a CI job timeout value: [TDD §3.8](design/TDD.md#38-ci-pipeline)
+  describes the pipeline jobs without timeouts, and greps for `timeout-minutes`,
+  `10 minutes` and `20 minutes` across `docs/`, `README.md`, `CONTRIBUTING.md`
+  and `SECURITY.md` find nothing CI-related. No document is stale.
+- `node scripts/check-docs.mjs` passes; no doc edits needed for this PR.
+  Recorded here only; it does not block PR #751.
