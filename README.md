@@ -2389,9 +2389,10 @@ the `privileged` cells below (Delegated, fail closed; T4.62).
 (with the shared `--yolo`) and the short `-y` as bypass flags, and the ACP modes `auto` and `yolo` (as a mode id or the
 `mode` config option) as bypass modes, so the argv and ACP plan audits refuse them outside an approved bypass run. The
 adapter never emits them even inside one, and never emits `--continue`, `--agent`, `--agent-file`, `--skills-dir` or
-`--add-dir`. `-p`/`--prompt` are not declared to the shared argv audit, because Claude Code's `-p` and Antigravity's
-`--prompt` are ordinary flags in their runs; the Kimi compile gate alone keeps `--prompt` to the approved bypass cell
-(open question Q-95, ROADMAP T4.62).
+`--add-dir`. `-p`/`--prompt` are declared as provider-scoped bypass flags (`providerScopedBypassFlags` in
+`src/adapters/providers.ts`, ADR-0049 item 1, Q-95, ROADMAP T4.62): the argv audit refuses them outside the approved
+bypass cell only in Kimi argv (argv of an adapter id the table does not know is checked against every scoped list,
+fail closed), so Claude Code's `-p` and Antigravity's `--prompt` stay accepted in their own runs.
 
 Resume (FR-SES-03) runs the stored native id through the same matrix, with the same refusals: `--session <id>` after
 the bypass cell's flags (nothing else added), or ACP `session/resume` for a restricted run. A binding of another
