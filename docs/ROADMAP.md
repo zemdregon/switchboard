@@ -3025,7 +3025,8 @@ no change.
   Provider groups can run in parallel because each lives in its own module directory once T4.1 is done.
 - **Wave C:** `T4.n3` to `T4.n7` and `T4.n9` per provider. Kimi Code T4.62 to T4.67 and T4.69 are unblocked (B-1
   cleared 2026-10-15); Muse Code (Should) goes last.
-- **Operator, whenever the CLIs are available:** T4.11, T4.12, each `T4.n1` (after its spike) and each `T4.n8`.
+- **Operator, whenever the CLIs are available:** each `T4.n1` (after its spike) and each `T4.n8` (T4.11 Done
+  2026-10-14; T4.12 Deferred under decision 69 until a Mac with native logins is available).
 - **Hot files:** `src/adapters/audit.ts`, `src/adapters/registry.ts`, `src/adapters/types.ts`, `src/config/schema.ts`
   and `src/routing/collect.ts` (T4.1 only; afterwards a provider adds one registry entry); `src/exec/` (T4.8, T4.9);
   `src/adapters/conformance.ts` and `test/malicious/` (T4.3 before any `T4.n5` or `T4.n6`); `src/cli/` (T4.4);

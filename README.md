@@ -302,7 +302,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   remain operator work (T4.68). The Grok Build, Antigravity, Cursor, OpenCode and Muse Code manifests still admit
   no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex and
   Kimi Code already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
-  Delegated). Open items, by blocker: operator live legs (T4.12 on a Mac, T4.28, T4.38, T4.48, T4.58, T4.68; the
+  Delegated). Open items, by blocker: operator live legs (T4.28, T4.38, T4.48, T4.58, T4.68; T4.12 is Deferred
+  under decision 69 — it needed a Mac and was optional for criterion 2; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
   Antigravity reach the smoke step in the adapter's only compiled cell instead (T4.4));
