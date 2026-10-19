@@ -1,9 +1,9 @@
 import type { AdapterRegistry } from "../adapters/index.js";
+import type { LoadReader } from "../capacity/host-load.js";
 import type { ContainerRuntime } from "../environment/runtime.js";
 import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import type { InnerBackend } from "../inner/port.js";
 import type { EmbeddingBackend } from "../retrieval/embedding.js";
-import type { LoadReader } from "../capacity/host-load.js";
 import type { DiskProbe } from "../workspace/disk.js";
 
 /** Injectable process surface so tests call `main` directly (no spawn). */
