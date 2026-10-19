@@ -313,6 +313,15 @@ operator's `live-run-ext.sh` meters):
 - `K-M2`: both canaries in the ACP cell.
 - `K-M3`: the approved `--prompt` bypass run, with a commit and both canaries.
 
+Kimi Code adds two evidence checks for T4.68 ([ROADMAP §4.2](../ROADMAP.md#42-owner-decisions) decision 74, pure
+helpers in `scripts/live/acp-evidence.mjs`). `K-P1` is the `session/request_permission` round trip of each ACP-cell run
+(the smoke run, `K-M1` and `K-M2`). It records the request count, the `toolCall` field names (never values) and the
+controller's `acp_permission` answer kinds, and fails closed: no request is FAILED. `K-F1`, in the smoke test only, is
+one turn in the approved `--prompt` cell resuming a `--session` id no session has, run outside `serve` the way
+`adapters validate` runs its cell. It records the CLI's exit code apart from the script's, and exit 0 on that turn is
+FAILED. The extra invocation makes the smoke test ask the budget guard for two runs. Both Kimi legs keep their temp
+directory (redacted streams, ledger, serve log) as `SWITCHBOARD_LIVE_KEEP=1` does.
+
 Every run of the first four providers is an approved bypass run, because that is their only kind of cell. OpenCode's
 `O-M2` and `O-M3` are expected to escape (FR-POL-04/06 under owner decision 46): the report marks them, and they open a
 risk but do not set the exit code. Until `adapters validate <id>` writes a manifest range, every check stops at the
@@ -2922,7 +2931,11 @@ whose manifest admitted no version until the live `adapters validate` pass on 20
 denial and MCP tool exposure. The earlier T4.60 text above is superseded by this paragraph. *Update 2026-10-16 (T4.68
 follow-up 2, Delegated):* the `stream-json` tool-call and tool records and the exit code of a turn whose tool call
 failed (0) are now observed; the ACP permission round trip, Git-write denial, MCP tool exposure and the live malicious leg
-remain operator cells (`adapters validate kimi` passed live on 2026-10-18 and is struck from this list).
+remain operator cells (`adapters validate kimi` passed live on 2026-10-18 and is struck from this list). *Update
+2026-10-19 (Delegated, decision 74):* per-run MCP tool exposure is descoped from T4.68 (N/A, owner ruling relayed
+2026-10-19 02:42 CT; Deferred [ROADMAP §8](../ROADMAP.md#8-deferred-and-excluded-work) row "Kimi ACP per-run MCP
+exposure"), so it is no longer an open `Unverified: T4.68` cell; the permission round trip and the failed-turn exit
+code are the repo-side checks `K-P1`/`K-F1` (`scripts/live/acp-evidence.mjs`), still needing the operator live legs.
 
 ### 4.8 Muse Code (M4)
 

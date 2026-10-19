@@ -9,7 +9,13 @@ import { CursorAdapter } from "../src/adapters/cursor/adapter.js";
 import { GrokAdapter } from "../src/adapters/grok/adapter.js";
 import { KimiAdapter } from "../src/adapters/kimi/adapter.js";
 import { OpenCodeAdapter } from "../src/adapters/opencode/adapter.js";
-import { type Ineligible, type Invocation, isIneligible, type ProviderAdapter } from "../src/adapters/types.js";
+import {
+  type Ineligible,
+  type Invocation,
+  isIneligible,
+  type ProviderAdapter,
+  type ProviderId,
+} from "../src/adapters/types.js";
 import { type PrivilegedScope, privilegedScopeHash, resolveTrustProfile } from "../src/policy/index.js";
 
 const FAKE_EXE = "/nonexistent/live-cells/bin";
@@ -29,8 +35,11 @@ export interface CellCompile {
   readonly bypassFlags: string[];
 }
 
-/** Compile `scope` as an approved `privileged` cell of `adapterId` (approved: `bypassApproved` when the scope bypasses). */
-export function compileCell(adapterId: string, scope: PrivilegedScope): CellCompile {
+/**
+ * Compile `scope` as an approved `privileged` cell of `adapterId` (approved: `bypassApproved` when the scope bypasses).
+ * With `resumeSessionId`, compile the cell's resume of that native session id instead (`resumeArgs`).
+ */
+export function compileCell(adapterId: string, scope: PrivilegedScope, resumeSessionId?: string): CellCompile {
   const make = ADAPTERS[adapterId];
   if (make === undefined) throw new Error(`no adapter for ${adapterId}`);
   const profile = resolveTrustProfile("privileged", {
@@ -40,15 +49,16 @@ export function compileCell(adapterId: string, scope: PrivilegedScope): CellComp
       approvalId: "apv_0000000000000000000000TEST",
     },
   });
-  const result = make().compile(
-    {
-      runId: "run_live_cells",
-      objective: "x",
-      constraints: [],
-      workspace: { cwd: "/tmp", writable: true },
-      ...(scope.bypass ? { bypassApproved: true } : {}),
-    },
-    profile,
-  );
+  const request = {
+    runId: "run_live_cells",
+    objective: "x",
+    constraints: [],
+    workspace: { cwd: "/tmp", writable: true },
+    ...(scope.bypass ? { bypassApproved: true } : {}),
+  };
+  const result =
+    resumeSessionId === undefined
+      ? make().compile(request, profile)
+      : make().resumeArgs({ provider: adapterId as ProviderId, nativeSessionId: resumeSessionId }, request, profile);
   return { result, bypassFlags: isIneligible(result) ? [] : findBypassFlags(result, adapterId) };
 }
