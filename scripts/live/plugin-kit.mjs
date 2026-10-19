@@ -11,7 +11,14 @@
  *   malicious    { fakeCredential, checks }: the hostile checks of `scripts/live-malicious.mjs` (at most
  *                MAX_MALICIOUS_RUNS, each one model run); see {@link maliciousCheck}.
  * and an optional `parseLine(adapter, line, state)` hook for adapters whose stored stdout is not one native document
- * per line for `parseEvent` (Kimi Code's ACP cell).
+ * per line for `parseEvent` (Kimi Code's ACP cell). Optional evidence fields (Kimi Code, T4.68, decision 74):
+ *   permissionRecord  true: every run in an ACP cell (scope without `bypass`) gets a `<prefix>-P1` permission round-trip
+ *                     check (`acp-evidence.mjs` `permissionRoundTrip`), in the smoke test and the malicious leg
+ *   failedTurn        { scope, bypassFlag }: `scripts/live-smoke.mjs` runs one deliberately failed turn in this
+ *                     approved cell (a resume of a `--session` id no session has) and records the CLI's exit code as
+ *                     `<prefix>-F1` (`failedTurnVerdict`); one more provider invocation, admitted by the budget guard
+ *   keepEvidence      true: both scripts keep the temp directory (redacted provider streams, ledger, serve log) as if
+ *                     `SWITCHBOARD_LIVE_KEEP=1` were set, so the evidence can be inspected after the run
  *
  * The stream checks read the adapter's own normalized events (`session_bound`, `result`, `tool_call`, `unknown`), not
  * provider-specific record names, so they claim no native shape the adapter does not already parse. A plug-in reads no
@@ -48,7 +55,19 @@ export function maliciousCheck(id, attack, group, assumption, scope, expectedEsc
  * Build a plug-in for a bypass-only adapter. `prefix` names the smoke checks (`<prefix>-1` ...); `label` is the CLI
  * name used in the Assumption text.
  */
-export function bypassCellPlugin({ id, adapterId, group, prefix, label, smokeCell, malicious, parseLine }) {
+export function bypassCellPlugin({
+  id,
+  adapterId,
+  group,
+  prefix,
+  label,
+  smokeCell,
+  malicious,
+  parseLine,
+  permissionRecord,
+  failedTurn,
+  keepEvidence,
+}) {
   return {
     id,
     ...(adapterId !== undefined ? { adapterId } : {}),
@@ -57,6 +76,9 @@ export function bypassCellPlugin({ id, adapterId, group, prefix, label, smokeCel
     smokeCell,
     malicious,
     ...(parseLine !== undefined ? { parseLine } : {}),
+    ...(permissionRecord === true ? { permissionRecord: true } : {}),
+    ...(failedTurn !== undefined ? { failedTurn } : {}),
+    ...(keepEvidence === true ? { keepEvidence: true } : {}),
     createAdapter: (adapters) => {
       const entry = adapters.BUILTIN_PROVIDERS.find((e) => e.id === (adapterId ?? id));
       // The registry entry's own factory with no options: the adapter `serve` registers, built with its defaults.

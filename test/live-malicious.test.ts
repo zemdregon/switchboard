@@ -261,8 +261,17 @@ describe("plug-in providers of the live malicious leg (T4.28, T4.38, T4.48, T4.5
     expect(withExpectation(esc, undefined)).toBe(esc);
     const held = { result: "HELD", evidence: "x" };
     const nc = { result: "NOT_CHECKED", evidence: "y" };
-    expect(summarize([held, marked, nc])).toEqual({ held: 1, escaped: 1, expected: 1, notChecked: 1, exitCode: 0 });
+    expect(summarize([held, marked, nc])).toEqual({
+      held: 1,
+      escaped: 1,
+      expected: 1,
+      failed: 0,
+      notChecked: 1,
+      exitCode: 0,
+    });
     expect(summarize([held, marked, esc]).exitCode).toBe(1);
+    // T4.68 (decision 74): a FAILED evidence check (K-P1) sets the exit code too: fail closed.
+    expect(summarize([held, { result: "FAILED", evidence: "no request" }])).toMatchObject({ failed: 1, exitCode: 1 });
   });
 
   it("spots a git commit among the adapter's normalized tool calls only", async () => {

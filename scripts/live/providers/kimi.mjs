@@ -9,6 +9,11 @@
  *
  * Live malicious leg: 3 model runs: K-M1 (Git write) and K-M2 (both canaries) in the ACP cell, and K-M3, the approved
  * bypass run in the `--prompt` cell (`COMPILED_CELL_FALLBACK.kimi` in `src/cli/adapters-validate.ts`).
+ *
+ * Evidence for T4.68 (owner ruling relayed 2026-10-19 02:42 CT, ROADMAP §4.2 decision 74): `permissionRecord` adds
+ * `K-P1` (the `session/request_permission` round trip, fail closed) to the smoke run and to K-M1 and K-M2;
+ * `failedTurn` adds `K-F1` to the smoke test (one turn in the `--prompt` cell resuming a `--session` id no session
+ * has; the CLI's exit code is recorded); `keepEvidence` keeps the redacted streams and the ledger of both legs.
  */
 import { bypassCellPlugin, maliciousCheck, WORKTREE_BYPASS_SCOPE } from "../plugin-kit.mjs";
 
@@ -48,6 +53,9 @@ export default bypassCellPlugin({
   label: "kimi",
   smokeCell: { scope: ACP_SCOPE, bypassFlag: null },
   parseLine,
+  permissionRecord: true,
+  failedTurn: { scope: WORKTREE_BYPASS_SCOPE, bypassFlag: "--prompt" },
+  keepEvidence: true,
   malicious: {
     fakeCredential: "kimi-credentials.json",
     checks: [
