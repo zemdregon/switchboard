@@ -369,6 +369,126 @@ describe("commit algorithm (LLD §12.3, FR-GIT-07, FR-GIT-08)", () => {
   });
 });
 
+describe("repository filter drivers and submodules (TDD §3.10, LLD §12.3)", () => {
+  const EVIL_ATTRS = "*.dat filter=evil diff=evil\n*.proc filter=evilproc\n";
+
+  /** Repository-configured drivers that append a canary line and pass content through (T3.8 shape, local). */
+  function configureEvilDrivers(cwd: string, log: string): void {
+    const script = (name: string, body: string) => {
+      const p = path.join(root, `${name}.sh`);
+      writeFileSync(p, `#!/bin/sh\necho "filter ${name} in $PWD" >> '${log}'\n${body}\n`);
+      chmodSync(p, 0o755);
+      return p;
+    };
+    g(cwd, "config", "filter.evil.clean", script("clean", "cat"));
+    g(cwd, "config", "filter.evil.smudge", script("smudge", "cat"));
+    g(cwd, "config", "filter.evil.required", "true");
+    g(cwd, "config", "filter.evilproc.process", script("process", "cat"));
+    g(cwd, "config", "diff.evil.textconv", script("textconv", 'cat "$1"'));
+    g(cwd, "config", "diff.evil.command", script("extdiff", "exit 0"));
+    g(cwd, "config", "diff.external", script("external", "exit 0"));
+  }
+
+  /** Plain Git as an operator shell would run it: the repository's own drivers all apply (positive controls only). */
+  const plainGit = (cwd: string, ...args: string[]): string =>
+    execFileSync("git", ["-c", "commit.gpgsign=false", ...args], { cwd, env: GIT_ENV, encoding: "utf8" }).trim();
+
+  const canary = (log: string): string => {
+    try {
+      return readFileSync(log, "utf8");
+    } catch {
+      return "";
+    }
+  };
+
+  it("commits working-tree bytes without running repository clean/smudge/process or textconv/external drivers", async () => {
+    const log = path.join(root, "filters.log");
+    writeFileSync(path.join(repo, ".gitattributes"), EVIL_ATTRS);
+    writeFileSync(path.join(repo, "payload.dat"), "plain data\n");
+    writeFileSync(path.join(repo, "payload.proc"), "process data\n");
+    configureEvilDrivers(repo, log);
+    g(repo, "add", "-A");
+    g(repo, "commit", "-q", "-m", "drivers");
+    expect(g(repo, "show", "HEAD:payload.dat")).toBe("plain data\n");
+    rmSync(log, { force: true });
+
+    const { run, wt } = await running();
+    // Seeding the worktree ran no smudge or process driver and checked out the raw bytes.
+    expect(canary(log)).toBe("");
+    expect(readFileSync(path.join(wt, "payload.dat"), "utf8")).toBe("plain data\n");
+
+    writeFileSync(path.join(wt, "payload.dat"), "changed by the run (dat)\n");
+    writeFileSync(path.join(wt, "payload.proc"), "changed by the run (proc)\n");
+    writeFileSync(path.join(wt, "new.dat"), "new by the run (dat)\n");
+    const res = await publisher().commit(input(run.id));
+    // Neither the temporary-index `git add` (clean, process) nor the `diff-tree` calls behind the patch id
+    // (textconv, external) ran any repository-configured driver.
+    expect(canary(log)).toBe("");
+    expect(res.filesChanged).toBe(3);
+    expect(g(repo, "show", `${res.sha}:payload.dat`)).toBe("changed by the run (dat)\n");
+    expect(g(repo, "show", `${res.sha}:payload.proc`)).toBe("changed by the run (proc)\n");
+    expect(g(repo, "show", `${res.sha}:new.dat`)).toBe("new by the run (dat)\n");
+
+    // Positive controls: the same drivers really run under unhardened Git in this worktree.
+    writeFileSync(path.join(wt, "payload.dat"), "changed again (dat)\n");
+    plainGit(wt, "add", "-A");
+    expect(canary(log)).toMatch(/filter clean/);
+    expect(canary(log)).toMatch(/filter process/);
+    plainGit(wt, "diff", "--cached", "--no-ext-diff", "HEAD");
+    expect(canary(log)).toMatch(/filter textconv/);
+    rmSync(log, { force: true });
+    plainGit(wt, "diff", "--cached", "HEAD");
+    expect(canary(log)).toMatch(/filter extdiff/);
+  });
+
+  it("leaves submodule pointers alone: an initialized submodule is excluded and never recursed into", async () => {
+    const fileEnv = { ...GIT_ENV, GIT_ALLOW_PROTOCOL: "file" };
+    const sgit = (cwd: string, ...args: string[]): string =>
+      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], { cwd, env: fileEnv, encoding: "utf8" }).trim();
+    const subsrc = path.join(root, "subsrc");
+    mkdirSync(subsrc);
+    g(subsrc, "init", "-q", "-b", "main");
+    writeFileSync(path.join(subsrc, "lib.txt"), "v1\n");
+    g(subsrc, "add", "-A");
+    g(subsrc, "commit", "-q", "-m", "sub v1");
+    const v1 = g(subsrc, "rev-parse", "HEAD").trim();
+    sgit(repo, "submodule", "add", "-q", subsrc, "vendor/sub");
+    g(repo, "add", "-A");
+    g(repo, "commit", "-q", "-m", "add submodule");
+
+    const { run, wt } = await running();
+    sgit(wt, "submodule", "update", "--init", "--quiet", "vendor/sub");
+    // Advance the submodule upstream and move the worktree's pointer there, plus a top-level change.
+    writeFileSync(path.join(subsrc, "lib.txt"), "v2\n");
+    g(subsrc, "add", "-A");
+    g(subsrc, "commit", "-q", "-m", "sub v2");
+    const v2 = g(subsrc, "rev-parse", "HEAD").trim();
+    sgit(wt, "submodule", "update", "--remote", "--quiet", "vendor/sub");
+    expect(g(path.join(wt, "vendor", "sub"), "rev-parse", "HEAD").trim()).toBe(v2);
+    writeFileSync(path.join(wt, "a.txt"), "top change\n");
+    const libBefore = sha256(path.join(wt, "vendor", "sub", "lib.txt"));
+
+    // Naming the submodule (or a directory above it) is refused, like any nested repository.
+    await expect(publisher().commit(input(run.id, { paths: ["vendor/sub"] }))).rejects.toMatchObject({
+      code: "PATH_REFUSED",
+      refused: [{ path: "vendor/sub", reason: "nested_repository" }],
+    });
+    await expect(publisher().commit(input(run.id, { paths: ["vendor"] }))).rejects.toMatchObject({
+      code: "PATH_REFUSED",
+      refused: [{ path: "vendor", reason: "contains_nested_repository" }],
+    });
+
+    // Committing everything stages the top-level change but not the moved gitlink: no recursion, no fetch.
+    const res = await publisher().commit(input(run.id));
+    expect(res.filesChanged).toBe(1);
+    expect(g(repo, "show", `${res.sha}:a.txt`)).toBe("top change\n");
+    const parentLink = g(repo, "ls-tree", `${res.sha}~1`, "--", "vendor/sub").trim();
+    expect(parentLink).toBe(`160000 commit ${v1}\tvendor/sub`);
+    expect(g(repo, "ls-tree", res.sha, "--", "vendor/sub").trim()).toBe(parentLink);
+    expect(sha256(path.join(wt, "vendor", "sub", "lib.txt"))).toBe(libBefore);
+  });
+});
+
 describe("hardened Git helper", () => {
   it("accepts only the plumbing variables as extra environment", async () => {
     await expect(git(["--version"], { env: { GIT_INDEX_FILE: "/tmp/x" } })).resolves.toBeTruthy();

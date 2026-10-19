@@ -1323,8 +1323,12 @@ deletions staged, worktree index, `HEAD`, run branch and `git status` unchanged,
 with one
 retry and then `PUBLISH_CONFLICT`, a crash after each of five steps recovered by `recover()`, hooks and signing config in
 the repository ignored, operator patterns including rejected pathological ones (`src/git/sanitize.test.ts`,
-`src/config/config.test.ts` "git.sanitize_patterns"), and the migration from version 2 (`src/ledger/ledger.test.ts`, "0003
-adds ..."). Where: `src/git/` (`commit.ts`, `sanitize.ts`, `safe-pattern.ts`, `publish-ref.ts`), `src/ledger/migrations/0003_git_commit.ts`,
+`src/config/config.test.ts` "git.sanitize_patterns"), the migration from version 2 (`src/ledger/ledger.test.ts`, "0003
+adds ..."), and repository-configured clean/smudge/process filters, textconv/external diff drivers and submodules
+through the commit tool (`src/git/commit.test.ts`, "repository filter drivers and submodules": canary drivers never
+run and the working-tree bytes are committed; an initialised submodule's gitlink stays at the parent's, and naming it
+is refused as a nested repository). Where: `src/git/` (`commit.ts`, `sanitize.ts`, `safe-pattern.ts`,
+`publish-ref.ts`), `src/ledger/migrations/0003_git_commit.ts`,
 `Ledger.recordGitCommit`, `git.sanitize_patterns` in the config schema, and an `env`/`input` option on the hardened Git
 helper restricted to the plumbing variables. Persistence and mechanisms: [ADR-0025](adr/0025-git-commit-provenance-and-sanitiser.md),
 decision 32. Scope kept out on purpose: the shim, socket and `COMP-GIT` service and calling `recover()` at start-up
