@@ -28,7 +28,7 @@ including auto-merge."
 
 ## Decision
 
-1. **Off by default, per project.** `projects.<id>.merge_policy.enabled` defaults to `false`. Turning it on is an
+1. **Off by default, per project.** `projects[].merge_policy.enabled` defaults to `false`. Turning it on is an
    operator configuration change. An orchestrator that turns it on through project management waits for operator
    approval, as other widenings under FR-PRJ-10 do.
 2. **Only refs the project published.** The policy applies only to a pull request whose head is a ref Switchboard
