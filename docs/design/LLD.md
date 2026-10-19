@@ -797,7 +797,9 @@ path, or the last probe on this adapter failed.
 
 - **Tests:** `src/adapters/cursor/confinement.test.ts` (argument shape and refusals; `ELIGIBILITY_NONE` through
   `RunLifecycle` with `bwrap` unavailable and with a failing probe; real-host wrapper with a fake CLI and synthetic
-  canaries, skipped where the host's `bwrap` cannot start a sandbox).
+  canaries, skipped where the host's `bwrap` cannot start a sandbox; the tool-runtime case uses Cursor's symlinked
+  launcher layout and a `git worktree add` worktree: `ls` and `cat` work, Git and both canaries fail closed, refs
+  unchanged; ADR-0059 status note of 2026-10-19).
 
 - **Tests:** `src/adapters/cursor/cursor.test.ts` (`cursor compile matrix (T4.42)`, `cursor bypass-class declarations
   (ADR-0035, ADR-0037)`, `cursor probe and auth preflight (T4.42, T4.44)`, `cursor registry entry and manifest gate
