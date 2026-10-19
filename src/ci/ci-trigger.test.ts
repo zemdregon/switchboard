@@ -202,11 +202,13 @@ describe("CI-failure trigger on a fake CiStatusPort (T15.3)", () => {
     });
   });
 
-  it.each(["cancelled", "timed_out"] as const)("C1: conclusion %s also enqueues", async (conclusion) => {
+  // T15.6 (FR-QUE-06) superseded the T15.3 "also enqueues" case: these conclusions are CI_INFRA and admit nothing.
+  it.each(["cancelled", "timed_out"] as const)("C1: conclusion %s is CI_INFRA and enqueues nothing", async (c) => {
     f = openFixture();
     recordPush(f);
-    const r = await pollCiTriggers(deps(f, new FakeCiStatusPort().set(REF, obs("7", conclusion))));
-    expect(r.enqueued).toHaveLength(1);
+    const r = await pollCiTriggers(deps(f, new FakeCiStatusPort().set(REF, obs("7", c))));
+    expect(r.enqueued).toEqual([]);
+    expect(r.infra).toEqual([{ projectId: "app", publishRef: REF, externalId: "7" }]);
   });
 
   it.each(["success", "skipped", "neutral", "pending"] as const)("C2: conclusion %s enqueues nothing", async (c) => {
@@ -622,7 +624,7 @@ describe("GhCiStatusPort over a fake gh runner (T15.3, ADR-0050)", () => {
     }
   });
 
-  it("C16: the argv audit admits only G1–G3 and every builder fails closed", () => {
+  it("C16: the argv audit admits only G1–G8 and every builder fails closed", () => {
     expect(isAllowedGhArgv(ghRunListArgv("acme", "app", "sb/fix-1"))).toBe(true);
     expect(isAllowedGhArgv(ghRunViewArgv("acme", "app", "42"))).toBe(true);
     expect(isAllowedGhArgv(ghCheckRunsArgv("acme", "app", SHA_A))).toBe(true);
@@ -1167,6 +1169,9 @@ describe("CI-fix cap per FR-QUE-05 and ADR-0050 (T15.5)", () => {
       recordedOnly: [],
       duplicates: 0,
       errors: [],
+      infra: [],
+      reruns: [],
+      cancelled: [],
     });
     expect(isCiFixStuck(f.db, "app")).toBe(false);
   });
