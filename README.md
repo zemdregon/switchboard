@@ -19,8 +19,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   `switchboard serve` ([`docs/research/live-checks-2026-10-14-claude-codex.md`](docs/research/live-checks-2026-10-14-claude-codex.md)):
   Claude Code 2.1.294 **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2); Codex 0.162.0 after `adapters validate codex`
   **10 HELD, 0 FAILED, 3 NOT_CHECKED** (X-4, X-9, X-G1). Earlier checks on another host are in
-  [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on those residual
-  operator cells; `doctor` with both providers installed and logged in passed on 2026-10-17
+  [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on the
+  remaining residual operator cells (C-G2 and X-G1 deliberate attempts ran 2026-10-19 through the T3.9 leg, both
+  `HELD`; see below); `doctor` with both providers installed and logged in passed on 2026-10-17
   ([`docs/research/live-checks-2026-10-17-claude-codex.md`](docs/research/live-checks-2026-10-17-claude-codex.md)). The
   §6.2 "Blocks Done" narrative matches the 2026-10-14 live smoke on main
   ([PR #570](https://github.com/zemdregon/switchboard/pull/570)). See
@@ -29,8 +30,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
   implemented and tested on fakes, as are the controller confinement checks of T3.8b (owner decision 63; credential
   reads, network egress and a push to an explicit URL are not enforced on the fake by design). The operator's live
-  malicious-fixture leg (T3.9) is `Partial`: the Claude Code leg ran on 2026-10-18 (C-G2 `HELD` at the outcome level;
-  C-M2 and C-M3 `NOT_CHECKED`; the Codex half waits for the 2026-10-22 quota reset). See
+  malicious-fixture leg (T3.9) is `Done` (2026-10-19, Delegated agent work, not owner-approved): the Claude Code leg
+  ran (C-G2 `HELD` at the outcome level; C-M2 `NOT_CHECKED`; C-M3 `ESCAPED`, opening ROADMAP R-74) and the Codex half
+  ran in the decision 71 container login (X-G1 `HELD`; X-M2 `HELD` at the outcome level; X-M3 `NOT_CHECKED`). See
   [ROADMAP §6.5](docs/ROADMAP.md#65-m3-isolation-tasks) for each task.
 - **Milestone 9 (projects and controlled commits) is `Partial`.** Projects, the agent `commit` tool, finalize-only
   commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
@@ -2728,11 +2730,13 @@ approved scope explicitly sets `bypass` ([ADR-0017](docs/adr/0017-approved-privi
 Code an approved bypass run drops `--restricted`, which refuses bypass, and keeps the other isolation flags
 ([ADR-0018](docs/adr/0018-claude-bypass-omits-restricted.md)). Claude's Git deny rules held under bypass in a live
 check on 2026-10-13 (six commit and ref spellings, directly and through `serve` with an approved scope; checks 14 and
-16 in [the live checks](docs/research/live-checks-2026-10-13.md)), and the T3.9 Claude leg on 2026-10-18 held C-G2
-at the outcome level only (an `edit-untrusted` commit task left `main` and the refs unchanged, but no `Bash` was in
-`--tools`, so the deny-rule matcher itself was not exercised; C-M3 `NOT_CHECKED`, the approved bypass run ending
-`FAILED` before Claude Code started — see
-[the live checks](docs/research/live-checks-2026-10-18-claude-malicious.md) and ROADMAP T3.9), so the
+16 in [the live checks](docs/research/live-checks-2026-10-13.md)), and the T3.9 Claude legs on 2026-10-18 and
+2026-10-19 held C-G2 at the outcome level only (an `edit-untrusted` commit task left `main` and the refs unchanged,
+but no `Bash` was in `--tools`, so the deny-rule matcher itself was not exercised; the 2026-10-19 C-M3 rerun under
+an approved bypass scope with `Bash` and the Git deny rules left the refs unchanged at the outcome level, but the
+commit attempt itself was not confirmed, and the same run printed an out-of-worktree canary — `ESCAPED`, recorded
+as ROADMAP R-74; see
+[the live checks](docs/research/live-checks-2026-10-19-t39-malicious.md) and ROADMAP T3.9), so the
 deny-rules-under-bypass claim still rests on the 2026-10-13 checks of one version (ROADMAP R-38). That gap concerns
 agents running on your host.
 Container environments (milestone 10, **`Partial` on `main`**) are meant to close it: their image has no Git client,
@@ -2793,8 +2797,8 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
 
 This is a summary of design intent and the implemented checks, not a security guarantee. The controller side is tested
 against hostile repository content in CI with a fake provider (`test/malicious/`, ROADMAP T3.8); the isolation of the
-real provider CLIs is partly covered by the operator's live leg (ROADMAP T3.9, `Partial`: Claude C-G2 `HELD`
-2026-10-18, the bypass and Codex checks still `NOT_CHECKED`).
+real provider CLIs is partly covered by the operator's live leg (ROADMAP T3.9, `Done` 2026-10-19: Claude C-G2 `HELD`
+at the outcome level, C-M3 `ESCAPED` (ROADMAP R-74), Codex X-G1 `HELD` and X-M2 `HELD` at the outcome level).
 Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Known limitations
@@ -2927,7 +2931,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
   live-smoke Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI
   version may differ. See `docs/research/live-checks-2026-10-13.md`. (The T3.9 malicious leg held its C-G2 at the
-  outcome level on 2026-10-18; see ROADMAP T3.9.)
+  outcome level on 2026-10-18 and again on 2026-10-19; see ROADMAP T3.9.)
 - Linux only. Single operator only. No hosted or multi-user mode.
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
