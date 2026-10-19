@@ -5916,7 +5916,7 @@ the CLI labels the stop `provider.auth_error`), both to `QUOTA_EXHAUSTED` in `cl
 and frozen. Both signals are free text under T6.11's classification (no structured field); they map as
 structured-enough captured distinctive signatures under owner decision 64
 ([ADR-0058](../adr/0058-captured-limit-signatures.md), which supersedes ADR-0055 item 11 in part and answers Q-100;
-history in `docs/_doc-alignment-notes.md` §21). As with Antigravity, the mapping is reached only through
+history in `docs/_doc-alignment-notes.md` §23). As with Antigravity, the mapping is reached only through
 `FailureEvidence.stderrTail`, which `extractResult` cannot supply (pinned in `src/adapters/cursor/limit-signals.test.ts`
 and `src/adapters/kimi/limit-signals.test.ts`).
 
