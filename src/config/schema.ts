@@ -173,7 +173,15 @@ export interface SwitchboardConfig {
    * expression source in the restricted subset of `src/git/safe-pattern.ts` (at most 16, 200 characters each); a line
    * that matches is removed from the message.
    */
-  git?: { sanitize_patterns?: string[] };
+  git?: {
+    sanitize_patterns?: string[];
+    /**
+     * Pre-push secret scan (FR-GIT-11, LLD §20.9, ADR-0061; T9.14). `allow` is the operator allowlist: a hit of
+     * `rule_id` (a stable id of `src/artifacts/redact.ts`) at a repository-relative path the glob matches does not
+     * refuse the push. The only in-band way past the scan; at most 64 entries.
+     */
+    secret_scan?: { allow?: { rule_id: string; path: string }[] };
+  };
   /** Inner agent (M11, T11.1; FR-INN-01, LLD §13.1). Absent means off and nothing else changes. */
   inner_agent?: InnerAgentConfig;
   /** Retrieval index (M12, T12.1; FR-RAG-01, LLD §14.1). Absent, or no `embedding`, means off and nothing else changes. */
@@ -886,6 +894,25 @@ export const configSchema = {
       additionalProperties: false,
       properties: {
         sanitize_patterns: { type: "array", maxItems: 16, items: { type: "string", minLength: 1, maxLength: 200 } },
+        secret_scan: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            allow: {
+              type: "array",
+              maxItems: 64,
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["rule_id", "path"],
+                properties: {
+                  rule_id: { type: "string", minLength: 1, maxLength: 64 },
+                  path: { type: "string", minLength: 1, maxLength: 400 },
+                },
+              },
+            },
+          },
+        },
       },
     },
     transport: {

@@ -1,7 +1,9 @@
 # ADR-0061: A pre-push secret scan blocks publication in every run, bypass included
 
-- Status: Accepted for the direction (owner decision 77, answer 2, 2026-10-19); the mechanism below is Proposed until
-  ROADMAP T9.14 builds it
+- Status: Accepted for the direction (owner decision 77, answer 2, 2026-10-19). Mechanism: points 1 to 3 (the push
+  side) are built by ROADMAP T9.14 (2026-10-19, Delegated agent work, not owner-approved;
+  [LLD §20.9](../design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061) "Implemented"); point 4 (the
+  commit-time warning) stays Proposed until a later change builds it
 - Date: 2026-10-19
 - Decided by: zemdregon for the direction. The question in the
   [enhancement discovery](../research/enhancement-discovery-2026-10-19.md) §9 was "Should the pre-push secret scan block
