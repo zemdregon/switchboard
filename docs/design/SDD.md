@@ -212,8 +212,11 @@ in [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14); auth
 structurally typed port. Differences from the design (retrieval at dispatch rather than inside the admission
 transaction; no hostile-pack behavioural test and no `rag.retrieve` span) are listed in the LLD §14.11 as-built note.
 
-**Not implemented yet on `main`:** `search_project_context` (FR-RAG-06, T12.6), global read and contribute (FR-RAG-09,
-FR-RAG-10, T12.7).
+**Runtime (implemented, T12.6–T12.7, Done on fakes; ROADMAP §6.7).** `search_project_context` (FR-RAG-06, T12.6;
+`src/mcp/search-context.test.ts`) and global build, contribution copy, admission merge, `index rebuild global`,
+`index clear global`, `index status global` and the `doctor` global check (FR-RAG-09, FR-RAG-10, T12.7;
+`src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). Remaining gap: the tool's `global`/`both` scopes still
+answer `GLOBAL_NOT_AVAILABLE` (ROADMAP T12.7).
 
 ### 4.2 COMP-ADP M4 parser implementation evidence (`Partial`)
 

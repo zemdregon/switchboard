@@ -1276,7 +1276,8 @@ config portion of FR-RAG-11 (caps only lowered; background build and `rag_record
 `usage_observation` or capacity); reuses FR-INN-16 redaction and the inner-agent locality classification from T11.3.
 
 - **Tests:** `src/retrieval/http-embedder.test.ts` (scripted loopback HTTP server: locality table, gate refusal before
-  connect, planted canaries never in captured request bodies, transport failure modes); `src/retrieval/embedding.test.ts`
+  connect, planted canaries never in captured request bodies, transport failure modes (failure-table rows and
+delay/timeout cases listed in [the testing section](#3133-testing-affinity-and-retrieval)); `src/retrieval/embedding.test.ts`
   (LLD §14.4 gate table, re-redaction before the backend, import check that no retrieval module imports ledger, usage or
   capacity code).
 - **Modules:** `src/retrieval/embedding.ts`, `http-embedder.ts`, `fake-embedder.ts`; inner transport via
@@ -1337,8 +1338,8 @@ budget](LLD.md#146-selection-and-token-budget), [§14.8 Freshness and fallback](
 
 **Design evidence (on `main`).** Specifies FR-RAG-09 and FR-RAG-10 ([SRS
 §3.15](../requirements/SRS.md#315-retrieval-index-fr-rag), [FRD BR-47](../requirements/FRD.md#3-business-rules), WF-14
-global leg). **Runtime in progress** ([#197](https://github.com/zemdregon/switchboard/pull/197), w61-t127 on sb-worker-a;
-not on `origin/main`).
+global leg). **Runtime (implemented, Done on fakes; ROADMAP T12.7).** Landed after
+[#197](https://github.com/zemdregon/switchboard/pull/197) (w61-t127 on sb-worker-a).
 
 - **Specification.** [LLD §14.9](LLD.md#149-global-index-and-sharing): optional `rag.global.enabled` (default off),
   operator-added `sources` under an allowed root, per-project `contribute_to_global` and `use_global` (each default false);
@@ -1354,11 +1355,13 @@ not on `origin/main`).
 - **Configuration and narrowing (implemented, T12.1).** Global `sources` under an allowed root; per-project sharing flags
   in config; dynamic project definitions cannot set or widen `use_global` or `contribute_to_global` ([§3.13.5](#3135-t121-config-and-store-2026-10-14),
   `src/config/rag.ts`, `src/projects/rules.ts`, `src/mcp/project-tools.test.ts`).
-- **Runtime gaps on `main` (T12.7 implementation).** No global store is built under `<data>/rag/`; `index rebuild global`
-  and `index clear global` are refused (`src/cli/rag-index.ts`); admission searches the project store only ([§3.13.8](#3138-t125-admission-time-context-pack-2026-10-14));
-  T12.6 returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the global store exists (`src/mcp/search-context.ts`,
-  `src/mcp/search-context.test.ts`).
-- **Tests (fake embedder only, no network; land with T12.7 runtime).** Extend [§3.13.3](#3133-testing-affinity-and-retrieval)
+- **Runtime (implemented, Done on fakes; ROADMAP T12.7).** The global store is built under `<data>/rag/` by
+`serve` after the projects (`src/retrieval/global.ts`); `index rebuild global`, `index clear global`,
+`index status global` and the `doctor` global check are honoured (`src/cli/rag-index.ts`,
+`src/cli/rag-index.test.ts`); admission merges global hits with `use_global` (T12.5 as-built note). T12.6 still
+returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the global store is wired into the tool
+(`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`).
+- **Tests (fake embedder only, no network; landed with the T12.7 runtime).** Extend [§3.13.3](#3133-testing-affinity-and-retrieval)
   isolation: two projects with distinct planted markers — B with `use_global: true` sees A's marker in the global index
   only when A has `contribute_to_global: true` and the global store is built; otherwise never; operator `sources` chunks
   appear with a source label. Contribution copy re-applies redaction and exclusions; `untrusted` context content is
@@ -1370,7 +1373,8 @@ not on `origin/main`).
   records counts"), `index status global` ("index status global reports only the global store: off, absent and
   present"), and a `doctor` global subsection when enabled ("covers the global store: absent, present, stale, off and
   missing", asserting the `rag_index_global` check in its present, absent, stale, off and missing states). Tool:
-  `global` and `both` read the built global store when the project has `use_global: true`.
+  `global` and `both` still answer `GLOBAL_NOT_AVAILABLE` (remaining gap, ROADMAP T12.7); reading the built
+global store there is a follow-up.
 
 ### 3.14 Network MCP transport (M13)
 

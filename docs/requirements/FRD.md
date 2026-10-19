@@ -149,7 +149,10 @@ embedding backend port with deterministic fake and `http` backends, locality cla
 `allow_source_content` gates (`src/retrieval/http-embedder.test.ts`, `src/retrieval/embedding.test.ts`; BR-48). With no
 embedding backend configured the retrieval feature is inert and suite behaviour is unchanged (BR-48).
 
-**Planned (T12.6).** `search_project_context` (FR-RAG-06).
+**Runtime (implemented, T12.6, Done on fakes).** `search_project_context` (FR-RAG-06; ROADMAP §6.7):
+read-only, scoped to the client's projects, bounded result count and size (`src/mcp/search-context.test.ts`). `scope:
+"global"` and the global leg of `"both"` still answer `GLOBAL_NOT_AVAILABLE` until the global store is wired into the
+tool (ROADMAP T12.7).
 
 **Design evidence (T12.5; on `main`).** FR-RAG-05, FR-RAG-07 and FR-RAG-08 (WF-14 admission context pack; BR-46) are
 specified on `main` in [LLD §14.11](../design/LLD.md#1411-admission-context-pack-t125), [SDD §4.1
@@ -177,10 +180,12 @@ that only the operator file may set sharing flags (dynamic projects cannot widen
 `src/mcp/project-tools.test.ts`). Component mapping: [SDD §5](../design/SDD.md#5-requirements-to-design-traceability)
 (`FR-RAG-09`, `FR-RAG-10`); [ADR-0031](../adr/0031-retrieval-index.md).
 
-**Runtime (in progress, T12.7; w61-t127 on sb-worker-a, not on `main`).** A separate global SQLite store,
-`index rebuild global`, contribution copy from contributing projects, admission search merge when `use_global` is set,
-and `index clear global` are not on `main` yet (`src/cli/rag-index.ts` refuses global rebuild; the T12.5 admission
-path searches the project store only). Depends on the merged T12.5 admission context pack on `main`.
+**Runtime (implemented, T12.7, Done on fakes; ROADMAP §6.7).** A separate global SQLite store is built by
+`serve` after the projects from operator `sources` and contributing projects (`src/retrieval/global.ts`,
+`src/retrieval/global.test.ts`); admission merges global hits when `use_global` is set
+(`src/retrieval/admission.ts`); `index rebuild global`, `index clear global`, `index status global` and the `doctor`
+`rag_index_global` check are honoured (`src/cli/rag-index.ts`, `src/cli/rag-index.test.ts`). The tool's `global` and
+`both` scopes still answer `GLOBAL_NOT_AVAILABLE` (T12.6, `src/mcp/search-context.ts`).
 
 ## 4. Canonical run state machine
 

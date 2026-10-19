@@ -327,9 +327,11 @@ agent (FR-INN-03, FR-INN-16). All requirements in this group first ship in M12.
 
 #### Implementation evidence (partial M12)
 
-Tasks T12.1–T12.5 on `main` give partial verification of FR-RAG-01–FR-RAG-08. Per-task test lists, module paths and
-known gaps are in [TDD §3.13](../design/TDD.md#313-retrieval-index). FR-RAG-06 and FR-RAG-09 onward have no complete
-runtime on `main` until T12.6–T12.7 and subsequent M12 work land. Business rules for sharing: [FRD
+Tasks T12.1–T12.7 on `main` verify FR-RAG-01–FR-RAG-05 and FR-RAG-07–FR-RAG-12 on fakes (T12.6 tool and T12.7
+global runtime built; the tool's `global`/`both` scopes still answer `GLOBAL_NOT_AVAILABLE`, ROADMAP T12.7). Per-task
+test lists, module paths and known gaps are in [TDD §3.13](../design/TDD.md#313-retrieval-index). FR-RAG-13 is
+T12.9 (Done on fakes); the remaining tool gap is the `global`/`both` scopes
+(`GLOBAL_NOT_AVAILABLE`, ROADMAP T12.7). Business rules for sharing: [FRD
 BR-47](FRD.md#3-business-rules) (open design traceability in [PR #196](https://github.com/zemdregon/switchboard/pull/196)).
 
 **Design evidence (T12.5; on `main`).** FR-RAG-05, FR-RAG-07 and FR-RAG-08 (WF-14 admission context pack; [FRD
@@ -360,10 +362,12 @@ that only the operator file may set sharing flags (dynamic projects cannot widen
 `src/mcp/project-tools.test.ts`). Component mapping: [SDD §5](../design/SDD.md#5-requirements-to-design-traceability)
 (`FR-RAG-09`, `FR-RAG-10`); [ADR-0031](../adr/0031-retrieval-index.md).
 
-**Runtime (in progress, T12.7; w61-t127 on sb-worker-a, not on `main`).** A separate global SQLite store, `index rebuild
-global`, contribution copy from contributing projects, admission search merge when `use_global` is set, and `index clear
-global` are not on `main` yet (`src/cli/rag-index.ts` refuses global rebuild; the T12.5 admission path searches the
-project store only). Depends on the merged T12.5 admission context pack on `main`.
+**Runtime (implemented, T12.7, Done on fakes; ROADMAP §6.7).** A separate global SQLite store is built by
+`serve` after the projects from operator `sources` and contributing projects (`src/retrieval/global.ts`,
+`src/retrieval/global.test.ts`); admission merges global hits when `use_global` is set
+(`src/retrieval/admission.ts`); `index rebuild global`, `index clear global`, `index status global` and the `doctor`
+`rag_index_global` check are honoured (`src/cli/rag-index.ts`, `src/cli/rag-index.test.ts`). The tool's `global` and
+`both` scopes still answer `GLOBAL_NOT_AVAILABLE` (T12.6, `src/mcp/search-context.ts`).
 
 | Task | Requirement | Primary tests | Primary modules |
 | --- | --- | --- | --- |
@@ -373,7 +377,7 @@ project store only). Depends on the merged T12.5 admission context pack on `main
 | T12.3 | FR-RAG-04 | `src/retrieval/http-embedder.test.ts`, `src/retrieval/embedding.test.ts` | `src/retrieval/embedding.ts`, `http-embedder.ts`, `fake-embedder.ts` |
 | T12.4 | FR-RAG-11 (partial), FR-RAG-14 (partial) | `src/cli/rag-index.test.ts`, `src/retrieval/build.test.ts` | `src/cli/rag-index.ts`, `src/retrieval/build.ts`, `src/cli/serve.ts` |
 | T12.5 | FR-RAG-05, FR-RAG-07, FR-RAG-08 | `src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`, `src/retrieval/import-boundary.test.ts` | `src/retrieval/admission.ts` (project store only until T12.7) |
-| T12.7 | FR-RAG-09, FR-RAG-10 | (pending w61-t127) | global store build, contribution copy, admission merge, `index rebuild global` / `index clear global` |
+| T12.7 | FR-RAG-09, FR-RAG-10 | `src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts` (global index and doctor global rows) | global store build, contribution copy, admission merge, `index rebuild global` / `index clear global` |
 
 ### 3.16 PR and merge subscriptions (`FR-SUB`)
 
