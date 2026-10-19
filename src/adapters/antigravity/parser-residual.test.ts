@@ -189,7 +189,7 @@ describe("antigravity parser residuals, second pass (T4.33, synthetic shapes)", 
     });
   });
 
-  it("resume refuses with the Q-86 detail even where compile accepts, or refuses for its own reason", () => {
+  it("resume compiles the bound id after --conversation where compile accepts, else refuses for compile's reason", () => {
     const scope = {
       files: { access: "worktree" },
       shell: { mode: "broad" },
@@ -213,12 +213,9 @@ describe("antigravity parser residuals, second pass (T4.33, synthetic shapes)", 
     const compiled = adapter().compile(req, approved);
     expect(isIneligible(compiled)).toBe(false);
     if (!isIneligible(compiled)) expect(compiled.argv.join(" ")).not.toContain(CID);
-    const refusal = adapter().resumeArgs(binding, req, approved);
-    expect(refusal).toMatchObject({
-      ineligible: true,
-      reason: "CAPABILITY_MISSING",
-      detail: expect.stringContaining("(Q-86)"),
-    });
+    const resumed = adapter().resumeArgs(binding, req, approved);
+    if (isIneligible(resumed) || isIneligible(compiled)) throw new Error("the approved bypass cell must compile");
+    expect(resumed.argv).toEqual([...compiled.argv, "--conversation", CID]);
     const cases: [AntigravityAdapter, CompileRequest, ResolvedProfile][] = [
       [adapter(), { ...req, model: "synthetic-model" }, approved],
       [adapter(), { ...req, workspace: { cwd: "/work/tree", writable: false } }, approved],
@@ -226,7 +223,8 @@ describe("antigravity parser residuals, second pass (T4.33, synthetic shapes)", 
       [new AntigravityAdapter({ pathEnv: "/nonexistent" }), req, approved],
     ];
     for (const [a, r, p] of cases) {
-      expect(isIneligible(a.compile(r, p))).toBe(true);
+      const refusal = a.compile(r, p);
+      expect(isIneligible(refusal)).toBe(true);
       expect(a.resumeArgs(binding, r, p)).toEqual(refusal);
     }
   });
@@ -1329,7 +1327,7 @@ describe("antigravity parser residuals, seventh pass: result-only backing parity
     expect(rClean.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
   });
 
-  it("session id asymmetry: empty conversation_id parses cleanly without binding, but is refused by resumeArgs", () => {
+  it("session id asymmetry: empty conversation_id parses cleanly without binding, but resumeArgs refuses an empty id", () => {
     const r = run([INIT({ conversation_id: "" }), RESULT({ conversation_id: "" })]);
     expect(r.events.filter((e) => e.kind === "session_bound")).toEqual([]);
     expect(r.events.filter((e) => e.kind === "provider_error")).toEqual([]);
@@ -1343,16 +1341,14 @@ describe("antigravity parser residuals, seventh pass: result-only backing parity
       bypassApproved: true,
     };
     const a = adapter();
-    // Empty session id in resumeArgs is refused under Q-86
-    expect(
-      a.resumeArgs({ provider: "antigravity", nativeSessionId: "" }, req, PRIVILEGED_BYPASS_PROFILE),
-    ).toMatchObject({
+    // An empty session id is not one safe token, so resumeArgs refuses it (owner decision 67 compiles only safe ids)
+    expect(a.resumeArgs({ provider: "antigravity", nativeSessionId: "" }, req, PRIVILEGED_BYPASS_PROFILE)).toEqual({
       ineligible: true,
       reason: "CAPABILITY_MISSING",
-      detail: expect.stringContaining("(Q-86)"),
+      detail: "native session id is not a safe single argument",
     });
 
-    // Foreign provider in resumeArgs is refused citing the foreign provider before Q-86
+    // Foreign provider in resumeArgs is refused citing the foreign provider before the id check
     expect(a.resumeArgs({ provider: "grok" as never, nativeSessionId: CID }, req, PRIVILEGED_BYPASS_PROFILE)).toEqual({
       ineligible: true,
       reason: "CAPABILITY_MISSING",
@@ -1619,7 +1615,7 @@ describe("antigravity parser residuals, ninth pass: soft-denial ordering, envelo
   });
 
   it.each([CID, "a".repeat(256), "a".repeat(257), "_leading", "-option", "id with space", ""])(
-    "init and result-only id %j have parser parity and the same Q-86 resume refusal",
+    "init and result-only id %j have parser parity, and resumeArgs compiles exactly the ids the parser binds",
     (id) => {
       const fromInit = run([INIT({ conversation_id: id }), RESULT({ conversation_id: id })]);
       const fromResult = run([RESULT({ conversation_id: id })]);
@@ -1643,15 +1639,18 @@ describe("antigravity parser residuals, ninth pass: soft-denial ordering, envelo
         bypassApproved: true,
       };
       const a = adapter();
-      const refusal = a.resumeArgs({ provider: "antigravity", nativeSessionId: id }, req, PRIVILEGED_BYPASS_PROFILE);
-      expect(refusal).toEqual(
-        a.resumeArgs({ provider: "antigravity", nativeSessionId: CID }, req, PRIVILEGED_BYPASS_PROFILE),
-      );
-      expect(refusal).toMatchObject({
-        ineligible: true,
-        reason: "CAPABILITY_MISSING",
-        detail: expect.stringContaining("(Q-86)"),
-      });
+      const resumed = a.resumeArgs({ provider: "antigravity", nativeSessionId: id }, req, PRIVILEGED_BYPASS_PROFILE);
+      const bound = fromResult.result.nativeSessionId;
+      if (bound !== undefined) {
+        if (isIneligible(resumed)) throw new Error(resumed.detail);
+        expect(resumed.argv.slice(-2)).toEqual(["--conversation", bound]);
+      } else {
+        expect(resumed).toEqual({
+          ineligible: true,
+          reason: "CAPABILITY_MISSING",
+          detail: "native session id is not a safe single argument",
+        });
+      }
     },
   );
 });
@@ -1750,7 +1749,7 @@ describe("antigravity parser residuals, tenth pass: Q-86 numeric edges, denial s
     expect(none.result).toMatchObject({ ok: false, failureCode: "TOOL_FAILURE" });
   });
 
-  it("a flag-shaped objective stays inside the one --prompt= word; no resume flag is compiled and resume stays refused", () => {
+  it("a flag-shaped objective stays inside the one --prompt= word, on a first run and on a resume", () => {
     const req: CompileRequest = {
       runId: "run_01M4WBZSXSCWYKTKJN77A7MFJQ",
       objective: `--conversation ${CID} --continue`,
@@ -1764,15 +1763,11 @@ describe("antigravity parser residuals, tenth pass: Q-86 numeric edges, denial s
     if (isIneligible(compiled)) return;
     expect(compiled.argv.filter((w) => w.startsWith("--prompt"))).toEqual([`--prompt=${req.objective}`]);
     expect(compiled.argv.filter((w) => ["--conversation", "--continue", "-c", CID].includes(w))).toEqual([]);
-    const refusal = a.resumeArgs({ provider: "antigravity", nativeSessionId: CID }, req, PRIVILEGED_BYPASS_PROFILE);
-    expect(refusal).toEqual(
-      a.resumeArgs(
-        { provider: "antigravity", nativeSessionId: CID },
-        { ...req, objective: "plain" },
-        PRIVILEGED_BYPASS_PROFILE,
-      ),
-    );
-    expect(refusal).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
+    const resumed = a.resumeArgs({ provider: "antigravity", nativeSessionId: CID }, req, PRIVILEGED_BYPASS_PROFILE);
+    if (isIneligible(resumed)) throw new Error(resumed.detail);
+    // The objective's flag words stay in the prompt word; the resume adds exactly one `--conversation <id>` pair.
+    expect(resumed.argv).toEqual([...compiled.argv, "--conversation", CID]);
+    expect(resumed.argv.filter((w) => ["--continue", "-c"].includes(w))).toEqual([]);
   });
 
   it("trailing unreadable lines after a good result are counted as unknown and do not flip the verdict", () => {
