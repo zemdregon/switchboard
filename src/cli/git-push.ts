@@ -52,6 +52,7 @@ export async function runGitPush(io: CliIo, argv: readonly string[], id: string)
         db,
         resolveContext: pushContextResolver(config.projects),
         sourceEnv: io.env,
+        secretScanAllow: config.secretScanAllow,
         ids: createIdGenerator(),
         ...(io.now ? { now: io.now } : {}),
       });

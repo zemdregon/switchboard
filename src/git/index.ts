@@ -59,6 +59,7 @@ export {
   isRemoteName,
   MAX_EVENT_COMMITS,
   MAX_PUSH_COMMITS,
+  MAX_SECRET_SCAN_HIT_EVENTS,
   PUSH_CONFIG,
   PUSH_ENV_ALLOWLIST,
   type PushContextConfig,
@@ -110,6 +111,24 @@ export {
   SanitizerError,
   sanitizeMessage,
 } from "./sanitize.js";
+export {
+  compileSecretScanAllow,
+  MAX_SECRET_SCAN_BINARY_PATHS,
+  MAX_SECRET_SCAN_HITS,
+  matchingRuleIds,
+  outgoingDiffArgs,
+  SECRET_SCAN_HIT_EVENT,
+  SECRET_SCAN_RULE_IDS,
+  SECRET_SCAN_RULES,
+  type SecretScanAllow,
+  type SecretScanAllowEntry,
+  SecretScanAllowError,
+  type SecretScanHit,
+  type SecretScanReport,
+  scanDiffText,
+  scanOutgoingDiff,
+  secretScanBlockedFromPushEvents,
+} from "./secret-scan.js";
 export {
   DEFAULT_SIGN_TIMEOUT_MS,
   repoSigningConfigUnsafe,

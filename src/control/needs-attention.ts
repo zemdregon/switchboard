@@ -26,15 +26,24 @@
  * update share one transaction, `src/workspace/native-skills.ts`), in any state, terminal included, until a later
  * removal point verifies the removal. It ranks first: a Switchboard skill file left in a worktree blocks publication
  * (`SKILL_PATH_PRESENT`) and only an operator or a later removal point clears it.
+ *
+ * T9.14 (FR-GIT-11, FR-CTL-03, LLD §20.9, ADR-0061; Delegated, not owner-approved beyond owner decision 77):
+ * `secret_scan_blocked` holds while the meta-session's newest decisive `git_push` event is a `SECRET_SCAN_BLOCKED`
+ * refusal (`src/git/secret-scan.ts`, `secretScanBlockedFromPushEvents`): an accepted push of the ref clears it, a
+ * refusal for another reason leaves it. Like `ci_fix_stuck`, a terminal run shows it only when it is the newest of its
+ * meta-session. It ranks second: publication of the meta-session is refused until the operator allowlists the finding
+ * or pushes by hand.
  */
 
 import type Database from "better-sqlite3";
+import { secretScanBlockedFromPushEvents } from "../git/secret-scan.js";
 import type { Ledger, RunRecord, RunState } from "../ledger/index.js";
 import { isTerminal } from "../lifecycle/index.js";
 
 /** The closed reason list (FR-CTL-03, LLD §3.4.1), highest priority first (LLD §3.4.5, Proposed order). */
 export const NEEDS_ATTENTION_PRIORITY = [
   "skill_cleanup_failed",
+  "secret_scan_blocked",
   "budget_exhausted",
   "parked_loop",
   "ci_fix_stuck",
@@ -74,6 +83,8 @@ export interface NeedsAttentionFacts {
   ciFixStuck: boolean;
   /** T16.6: the run's newest `skill_removed` event reports a failed removal. Absent means false. */
   skillCleanupFailed?: boolean;
+  /** T9.14: the meta-session's newest decisive `git_push` event is a `SECRET_SCAN_BLOCKED` refusal. Absent means false. */
+  secretScanBlocked?: boolean;
 }
 
 export interface NeedsAttentionOptions {
@@ -87,6 +98,7 @@ export function matchingReasons(f: NeedsAttentionFacts, o: NeedsAttentionOptions
   const terminal = isTerminal(f.state);
   const matches: Record<NeedsAttentionReason, boolean> = {
     skill_cleanup_failed: f.skillCleanupFailed === true,
+    secret_scan_blocked: f.secretScanBlocked === true && (!terminal || f.newestInMetaSession),
     budget_exhausted: f.budgetExhausted && !terminal,
     parked_loop: f.metaSessionParked && f.newestInMetaSession,
     ci_fix_stuck: f.ciFixStuck && (!terminal || f.newestInMetaSession),
@@ -147,7 +159,23 @@ export function readNeedsAttentionFacts(
       run.project_id !== null && (control.budgetExhausted(run.project_id) || control.budgetExhausted("*")),
     ciFixStuck: run.project_id !== null && (control.ciFixStuck?.(run.project_id) ?? false),
     skillCleanupFailed: skillCleanupFailed(events),
+    secretScanBlocked: secretScanBlocked(ledger, run.meta_session_id),
   };
+}
+
+/** Most `git_push` events read per derivation; older ones cannot change the answer once one decides (T9.14). */
+const SECRET_SCAN_EVENT_WINDOW = 100;
+
+/** T9.14: read the meta-session's newest `git_push` events and decide with `secretScanBlockedFromPushEvents`. */
+function secretScanBlocked(ledger: Ledger, metaSessionId: string): boolean {
+  const payloads = ledger.listGitPushEventPayloadsForMetaSession(metaSessionId, SECRET_SCAN_EVENT_WINDOW).map((j) => {
+    try {
+      return JSON.parse(j) as unknown;
+    } catch {
+      return undefined;
+    }
+  });
+  return secretScanBlockedFromPushEvents(payloads);
 }
 
 /** T16.6: the newest `skill_removed` event (LLD §19.11) reports an entry not `verified`, or is malformed. */
