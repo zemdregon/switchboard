@@ -12,7 +12,8 @@
  *   authChecks(ctx)          record() the auth-status Assumptions (ctx adds adapter, out)
  *   observeEvent(doc, shapes) note the shape of one native stream document (types only, no content)
  *   streamChecks(ctx)        record() the stream Assumptions after the run (ctx: record, held, ran, succeeded, final,
- *                            shapes, unknownEvents, badJson, toolNames, smokeContent, group)
+ *                            shapes, kinds (normalized kind counts), unknownEvents, badJson, toolNames, smokeContent,
+ *                            group)
  *   gitWriteChecks(ctx)      record() the FR-GIT-01 Assumption this smoke test does not provoke (ctx: record)
  */
 

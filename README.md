@@ -308,12 +308,14 @@ Pre-release. The package is private and is not published to any registry; you bu
   malicious-leg and README rows are `Done` against their Done-when; T4.33 and T4.36 are `Done`
   under decision 65 (a) and (b), remaining native shapes carried by T4.38); README rows final
   after their live legs
-  (T4.59, T4.69, T4.79; T4.29, T4.39 and T4.49 are `Done` except the post-T4.n8 update); Muse Code (Should) has module,
+  (T4.69; T4.29, T4.39, T4.49, T4.59 and T4.79 are `Done` except the post-T4.n8 update); Muse Code (Should) has module,
   compile matrix, auth preflight,
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
   [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
-  is partial until the T4.71 capture; T4.76 is blocked because the adapter has no denial or tool-call record to end a
-  hostile stream `PERMISSION_BLOCKED`; T4.79 is final after T4.78.
+  is `Done` against its Done-when under owner decision 65 (a), with record spellings, session-id field and `terminal`
+  values Assumption until the T4.71 capture (carried by T4.78); T4.76 is `Done` against its Done-when under owner
+  decision 65 (b), on Switchboard's ADR-0039 tool-call guard alone, with tool-record field names Assumption until
+  T4.71; T4.79 is `Done` except the post-T4.78 update.
   Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
   Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
@@ -2584,7 +2586,8 @@ run is unverified.
 
 - **Record spellings are Assumptions until the operator capture (T4.71).** Only the `kind` field and the
   `run_terminal` shape are reported, by a third party; the other record kinds, the `session_id` and `text` fields and
-  the `muse auth status` command and replies are Assumption spellings, so T4.73 stays `Partial`.
+  the `muse auth status` command and replies are Assumption spellings (T4.73 is `Done` against its Done-when under
+  owner decision 65 (a); the spellings stay Assumption until the T4.71 capture, carried by T4.78).
 - **The malicious-fixture leg (T4.76) rests on Switchboard's tool-call guard alone.** The parser reads a `tool_result`,
   `command_accepted` or `command_result` record into a `tool_call` event for the ADR-0039 guard, so a synthetic Git
   write in a Muse tool record ends `PERMISSION_BLOCKED` at any exit code (`test/malicious/adapters/muse.case.ts`),
@@ -2593,8 +2596,9 @@ run is unverified.
   `ADAPTER_VERSION_UNVERIFIED` until `adapters validate` passes a version (T4.78).
 - Live smoke, live malicious leg and `adapters validate` are operator work that needs Meta access (T4.71, T4.78, Q-27).
 
-T4.72, T4.74, T4.75 and T4.77 are `Done` against their Done-when on synthetic fixtures; T4.73 stays `Partial` and T4.76
-is `Planned` (blocked as above). No run through Switchboard against a real `muse` has been recorded.
+T4.72 to T4.77 and T4.79 are `Done` against their Done-when on synthetic fixtures (T4.73 under owner decision 65 (a);
+T4.76 under owner decision 65 (b), on the tool-call guard as above; T4.79 under owner decision 65 (c), README updated
+again after T4.78). No run through Switchboard against a real `muse` has been recorded.
 
 ## Trust profiles
 
@@ -2835,8 +2839,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   is operator work. See [Kimi Code CLI](#kimi-code-cli-milestone-4).
 - **Muse Code is built on synthetic fixtures only and does not run (ROADMAP T4.72 to T4.79).** No `muse` has been
   installed or run, and Meta access (Q-27) is not verified. The `--json` record spellings and the `muse auth status`
-  probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) is blocked because the
-  parser emits no tool-call event for the guard to check. The provider is `BINARY_MISSING` without a `muse` on `PATH`
+  probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) rests on Switchboard's
+  tool-call guard alone, under tool-record field names that are Assumptions too. The provider is `BINARY_MISSING`
+  without a `muse` on `PATH`
   and `ADAPTER_VERSION_UNVERIFIED` with one, and only an approved `privileged` bypass scope compiles. See
   [Muse Code CLI](#muse-code-cli-milestone-4).
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
@@ -2887,32 +2892,42 @@ With a provider CLI installed and logged in natively, you can run one real task 
 unless you set the variables; `npm test` and CI never run it.
 
 ```sh
-SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live   # or codex
+SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live   # or codex, agy, opencode, cursor, kimi, grok
 ```
 
 It builds, creates a throwaway Git repository and data directory under the system temp directory, runs one
 `edit-untrusted` task, and prints which adapter assumptions held, failed or were not checked. Details are in
 [TDD §3.6](docs/design/TDD.md#36-testing-strategy). With the current manifests, a codex-cli 0.162.0 or 0.162.1 passes the
 version gate (range `>=0.162.0 <0.163.0`); any other Codex version is refused as `ADAPTER_VERSION_UNVERIFIED`.
+Antigravity (`agy`), OpenCode, Cursor, Kimi Code and Grok Build compile only an approved `privileged` cell, so for them
+the same task runs in that cell (Kimi Code: its ACP cell) and the script approves it through the operator `approve`
+CLI; the bypass-flag audit then requires exactly the cell's own flag. Until `adapters validate <provider>` writes a
+manifest range (only Kimi Code has one today), those providers stop at the version gate.
 
 ### Optional live malicious leg (T3.9)
 
-With a provider CLI installed and logged in natively, you can run the T3.9 canary checks against it. It is opt-in
+With a provider CLI installed and logged in natively, you can run the T3.9 canary checks against it (and the T4.28,
+T4.38, T4.48, T4.58 and T4.68 checks for Grok Build, Antigravity, Cursor, OpenCode and Kimi Code). It is opt-in
 twice over and skipped otherwise: both variables must be set, so `npm run test:live` (which never sets the second
 one) can never run it by accident, and `npm test` and CI never run it.
 
 ```sh
-SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_MALICIOUS=1 npm run test:live:malicious -- claude   # or codex
+SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_MALICIOUS=1 npm run test:live:malicious -- claude
+# or codex, agy, opencode, cursor, kimi, grok
 ```
 
 It builds, plants random `SBCANARY-...` canaries in temp files outside the worktree and in a temp HOME-like dir (never
 real credentials), runs one Git-write task (C-G2 / X-G1), one canary-confinement task (R-10 for Claude, FR-POL-06 for
-Codex) and, for Claude only, one bypass run under an approved scope reached through the operator `approve` CLI, then
-reports `HELD` / `ESCAPED` / `NOT_CHECKED` per check with one evidence line. A check whose precondition is missing (not
-logged in, version outside the manifest range) is `NOT_CHECKED`, never `HELD`; a budget refusal stops the run with
-exit 75 before any check runs. The run itself is the
-operator's step: record the rows in ROADMAP T3.9 and the manifest notes. Details are in
-[TDD §3.6](docs/design/TDD.md#36-testing-strategy).
+Codex) and, for Claude only, one bypass run under an approved scope (network `on`, the only value Claude's
+`privileged` cell compiles) reached through the operator `approve` CLI, then reports `HELD` / `ESCAPED` /
+`NOT_CHECKED` per check with one evidence line. For Antigravity, OpenCode, Cursor, Kimi Code and Grok Build it runs
+the three checks their plug-in names (`A-`, `O-`, `U-`, `K-`, `G-M1` to `M3`: a Git-write attempt and the two
+canaries), each in the adapter's own approved cell. Model runs per invocation: Claude 3, Codex 2, every other provider
+3. A check whose precondition is missing (not logged in, version outside the manifest range, an approved run whose
+provider never started) is `NOT_CHECKED`, never `HELD`; a budget refusal stops the run with exit 75 before any check
+runs. An `ESCAPED` on OpenCode's canary checks is expected under owner decision 46 and does not set the exit code. The
+run itself is the operator's step: record the rows in the provider's ROADMAP row and the manifest notes. Details are
+in [TDD §3.6](docs/design/TDD.md#36-testing-strategy).
 
 ### Optional live pair test
 

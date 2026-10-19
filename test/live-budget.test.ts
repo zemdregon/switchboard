@@ -334,28 +334,45 @@ describe("live-malicious under the budget file (T8.9)", () => {
     expect(r.stdout).toBe("");
     expect(readJsonl(audit).map((x) => x.event)).toEqual(["start", "denied"]);
   });
+
+  it("each provider asks the guard for exactly its MODEL_RUNS count (at most 3), before dist/ or any CLI", async () => {
+    const { MODEL_RUNS } = await import(pathToFileURL(MALICIOUS).href);
+    for (const [provider, runs] of Object.entries(MODEL_RUNS as Record<string, number>)) {
+      expect(runs, provider).toBeLessThanOrEqual(3);
+      // A cap one below the request refuses it, and the denied record names the requested count.
+      writeBudget({ global_max_runs: 9, providers: { [provider]: { max_runs: runs - 1, model: "m" } } });
+      writeAudit([]);
+      const r = malicious({ SWITCHBOARD_LIVE_PROVIDER: provider });
+      expect(r.status, provider).toBe(EXIT_REFUSED);
+      expect(r.stderr, provider).toContain(
+        `${provider} cap: 0 of ${runs - 1} provider runs used in the window, ${runs} requested`,
+      );
+      expect(readJsonl(audit).at(-1), provider).toMatchObject({ event: "denied", providers: { [provider]: { runs } } });
+      expect(r.stdout, provider).toBe("");
+    }
+  });
 });
 
 describe("unconfigured runs stay as on main (T8.9)", () => {
   it("skip and usage messages are byte-identical to main and do not list the fake plug-in", () => {
     const skipSmoke = runScript(SMOKE, { SWITCHBOARD_LIVE_TESTS: "0" });
     expect(skipSmoke.stdout).toBe(
-      "live-smoke: SKIPPED (opt-in). Set SWITCHBOARD_LIVE_TESTS=1 and SWITCHBOARD_LIVE_PROVIDER=claude|codex to run it.\n",
+      "live-smoke: SKIPPED (opt-in). Set SWITCHBOARD_LIVE_TESTS=1 and SWITCHBOARD_LIVE_PROVIDER=agy|claude|codex|cursor|grok|kimi|opencode to run it.\n",
     );
     const skipPair = runScript(PAIR, { SWITCHBOARD_LIVE_TESTS: "0" });
     expect(skipPair.stdout).toBe(
-      "live-pair: SKIPPED (opt-in). Set SWITCHBOARD_LIVE_TESTS=1 (and optionally SWITCHBOARD_LIVE_PAIR=<first>:<second> from claude|codex) to run it.\n",
+      "live-pair: SKIPPED (opt-in). Set SWITCHBOARD_LIVE_TESTS=1 (and optionally SWITCHBOARD_LIVE_PAIR=<first>:<second> from agy|claude|codex|cursor|grok|kimi|opencode) to run it.\n",
     );
-    const unknown = runScript(SMOKE, { SWITCHBOARD_LIVE_PROVIDER: "grok" });
+    const unknown = runScript(SMOKE, { SWITCHBOARD_LIVE_PROVIDER: "nope" });
     expect([unknown.status, unknown.stdout, unknown.stderr]).toEqual([
       2,
       "",
-      "live-smoke: SWITCHBOARD_LIVE_PROVIDER must be one of claude, codex\n",
+      "live-smoke: SWITCHBOARD_LIVE_PROVIDER must be one of agy, claude, codex, cursor, grok, kimi, opencode\n",
     ]);
     const badPair = runScript(PAIR, { SWITCHBOARD_LIVE_PAIR: "claude:nope" });
     expect([badPair.status, badPair.stderr]).toEqual([
       2,
-      "live-pair: unknown provider plug-in nope; expected one of claude, codex\n",
+      "live-pair: unknown provider plug-in nope; expected one of agy, claude, codex, cursor, grok, kimi, opencode\n",
     ]);
   });
 

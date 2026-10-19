@@ -7,7 +7,8 @@
  *   SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live
  *
  * Skipped (exit 0, nothing run) unless SWITCHBOARD_LIVE_TESTS=1. `npm test` and CI never run it. Optional:
- *   SWITCHBOARD_LIVE_PROVIDER    a provider plug-in id: claude | codex | any other scripts/live/providers/<id>.mjs (required when enabled)
+ *   SWITCHBOARD_LIVE_PROVIDER    a provider plug-in id: agy | claude | codex | cursor | grok | kimi | opencode (any
+ *                                scripts/live/providers/<id>.mjs; required when enabled)
  *   SWITCHBOARD_LIVE_TIMEOUT_MS  how long to wait for the run (default 600000)
  *   SWITCHBOARD_LIVE_KEEP=1      keep the temp directory (ledger, artifacts, serve log) for inspection
  *   SWITCHBOARD_LIVE_MODEL       ask for this model (the budget file's model replaces it when the file is set)
@@ -17,8 +18,13 @@
  * Safety: the script never reads, copies or prints credential files, tokens or keys. It runs the provider's own status
  * command and prints only its exit code, whether the output parsed, and the NAMES of its top-level JSON keys (never
  * values, which may name the account). Provider output is analysed for event types only; no prompt, message or
- * reasoning text is printed. No bypass flag is ever passed (the compiled flags are printed and audited). The task runs
- * under `edit-untrusted` in a fresh repository that contains only a README.
+ * reasoning text is printed. The task runs under `edit-untrusted` in a fresh repository that contains only a README,
+ * and no bypass flag is ever passed (the compiled flags are printed and audited). A plug-in with a `smokeCell`
+ * (`scripts/live/plugin-kit.mjs`: Antigravity, OpenCode, Cursor, Kimi Code, Grok Build, which compile only an approved
+ * `privileged` cell, owner decisions 46, 59 and 60) runs the same task in that cell instead: the delegation carries the
+ * cell's scope, parks in AWAITING_APPROVAL and is approved through the operator `approve` CLI (no MCP tool can
+ * approve, FR-MCP-06); the audit then requires exactly the cell's one bypass-class flag (none for OpenCode and the
+ * Kimi ACP cell), as `adapters validate` does.
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -58,6 +64,12 @@ if (!PROVIDERS.includes(provider)) {
   process.exit(2);
 }
 const plugin = (await import(pathToFileURL(path.join(PLUGIN_DIR, `${provider}.mjs`)).href)).default;
+/** The adapter id behind the plug-in (`agy` -> `antigravity`); routing, the version gate and capabilities use it. */
+const adapterId = plugin.adapterId ?? provider;
+/** Plug-ins whose adapter compiles only an approved `privileged` cell name it here (`scripts/live/plugin-kit.mjs`). */
+const cell = plugin.smokeCell;
+/** Placeholder approval id for the in-script compile below; it names no approval row (nothing is persisted). */
+const SMOKE_APPROVAL_ID = "apv_0000000000000000000000SMKE";
 const timeoutMs = Number(process.env.SWITCHBOARD_LIVE_TIMEOUT_MS ?? 600_000);
 const keep = process.env.SWITCHBOARD_LIVE_KEEP === "1";
 
@@ -89,7 +101,7 @@ if (!existsSync(BIN)) {
 }
 const dist = (p) => import(pathToFileURL(path.join(DIST, p)).href);
 const adapters = await dist("adapters/index.js");
-const { resolveProfile } = await dist("policy/index.js");
+const { privilegedScopeHash, resolveProfile, resolveTrustProfile } = await dist("policy/index.js");
 const { PROBE_ENV_ALLOWLIST } = await dist("cli/io.js");
 const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
@@ -115,7 +127,7 @@ const probe = await adapter.probe(runner);
 const step = (name) => probe.steps.find((s) => s.step === name);
 out(`binary: ${probe.binaryPath}  version: ${probe.binaryVersion ?? "(none)"}`);
 for (const s of probe.steps) out(`  probe ${s.step}: ${s.ok ? "ok" : "FAILED"}${s.detail ? ` (${s.detail})` : ""}`);
-const gate = registry.gate(provider, probe.binaryVersion);
+const gate = registry.gate(adapterId, probe.binaryVersion);
 out(`version gate: ${gate.eligible ? "eligible" : `${gate.code}: ${gate.detail}`}`);
 const binaryOk = step("binary")?.ok === true;
 
@@ -130,14 +142,32 @@ record(
 
 await plugin.authChecks({ record, held, probe, binaryOk, runner, adapter, out, group: GROUP });
 
-// Flags the daemon will pass (from the same compile the daemon runs), audited for bypass flags.
-const compiled = adapter.compile(smokeRequest, resolveProfile("edit-untrusted"));
-if (adapters.isIneligible(compiled)) out(`compile (edit-untrusted): ineligible ${compiled.reason}: ${compiled.detail}`);
+// Flags the daemon will pass (from the same compile the daemon runs), audited for bypass flags. In an approved cell
+// the audit requires exactly the cell's one bypass-class flag (none when it declares none), as `adapters validate`.
+const smokeProfile = cell
+  ? resolveTrustProfile("privileged", {
+      privileged: {
+        scope: cell.scope,
+        scopeHash: privilegedScopeHash({ clientId: "live-smoke", metaSessionId: "live-smoke", scope: cell.scope }),
+        approvalId: SMOKE_APPROVAL_ID,
+      },
+    })
+  : resolveProfile("edit-untrusted");
+const profileLabel = cell ? "approved privileged cell" : "edit-untrusted";
+const compiled = adapter.compile(
+  { ...smokeRequest, ...(cell?.scope.bypass ? { bypassApproved: true } : {}) },
+  smokeProfile,
+);
+if (adapters.isIneligible(compiled))
+  out(`compile (${profileLabel}): ineligible ${compiled.reason}: ${compiled.detail}`);
 else {
-  out(`compile (edit-untrusted) policy flags: ${compiled.policyFlags.join(" ")}`);
-  const bypass = adapters.auditInvocation(compiled);
-  out(`bypass-flag audit: ${bypass.length === 0 ? "none" : `FOUND ${bypass.join(", ")}`}`);
-  if (bypass.length > 0) process.exit(1);
+  out(`compile (${profileLabel}) policy flags: ${compiled.policyFlags.join(" ")}`);
+  const bypass = cell ? adapters.findBypassFlags(compiled, adapterId) : adapters.auditInvocation(compiled);
+  const expected = cell?.bypassFlag ? [cell.bypassFlag] : [];
+  out(
+    `bypass-flag audit: ${bypass.length === 0 ? "none" : `FOUND ${bypass.join(", ")}`}${cell ? ` (cell declares ${expected.join(", ") || "none"})` : ""}`,
+  );
+  if (bypass.length !== expected.length || bypass.some((f, i) => f !== expected[i])) process.exit(1);
 }
 // FR-GIT-01 declaration (also reported by list_capabilities).
 out(
@@ -174,8 +204,11 @@ writeFileSync(
       schema_version: 1,
       data_dir: dataDir,
       allowed_roots: [tmp],
-      mcp_clients: [{ id: "live-smoke", max_trust_profile: "edit-untrusted" }],
-      ...(handoff.provider ? { providers: { [provider]: handoff.provider } } : {}),
+      mcp_clients: [{ id: "live-smoke", max_trust_profile: cell ? "privileged" : "edit-untrusted" }],
+      // `providers.<id>` takes the config id (`claude-code`, `grok-build`, ...), not the plug-in id.
+      ...(handoff.provider
+        ? { providers: { [adapters.configIdForAdapterId(adapterId) ?? adapterId]: handoff.provider } }
+        : {}),
     },
     null,
     2,
@@ -204,7 +237,7 @@ const call = async (name, args = {}) => {
 };
 
 const caps = await call("list_capabilities");
-const cap = caps.body.providers?.find((p) => p.provider === provider);
+const cap = caps.body.providers?.find((p) => p.provider === adapterId);
 out(
   `list_capabilities: ${cap ? `${cap.adapter_status}, auth ${cap.auth_state}, profiles [${cap.supported_profiles.join(", ")}]` : JSON.stringify(caps.body).slice(0, 300)}`,
 );
@@ -215,8 +248,9 @@ const objective =
 const delegated = await call("delegate_task", {
   objective,
   workspace_path: repo,
-  trust_profile: "edit-untrusted",
-  routing: { provider_preference: provider, require_provider: true, ...handoff.routing },
+  trust_profile: cell ? "privileged" : "edit-untrusted",
+  ...(cell ? { privileged_scope: cell.scope } : {}),
+  routing: { provider_preference: adapterId, require_provider: true, ...handoff.routing },
   idempotency_key: `live-smoke-${Date.now()}`,
 });
 let final = delegated.body;
@@ -225,6 +259,20 @@ if (delegated.isError) {
 } else {
   const runId = final.run_id;
   out(`delegate_task: run ${runId} ${final.status}`);
+  if (cell && final.status === "AWAITING_APPROVAL") {
+    // Switchboard's own approval path: the operator CLI decides, no MCP tool can approve (FR-MCP-06).
+    try {
+      execFileSync(process.execPath, [BIN, "approve", runId, "--config", configPath], {
+        env: childEnv,
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      out("approve: approved through the operator CLI");
+    } catch (err) {
+      out(`approve: refused: ${String(err).slice(0, 160)}`);
+    }
+    final = (await call("get_run", { run_id: runId })).body;
+  }
   const end = Date.now() + timeoutMs;
   while (!["SUCCEEDED", "FAILED", "CANCELLED"].includes(final.status) && Date.now() < end) {
     await new Promise((r) => setTimeout(r, 2000));
@@ -285,7 +333,7 @@ if (runId && existsSync(path.join(dataDir, "ledger.sqlite"))) {
       const t = `${doc?.type ?? "(no type)"}${typeof doc?.subtype === "string" ? `/${doc.subtype}` : ""}`;
       types.set(t, (types.get(t) ?? 0) + 1);
       plugin.observeEvent(doc, shapes);
-      for (const ev of adapter.parseEvent(line, state)) {
+      for (const ev of plugin.parseLine ? plugin.parseLine(adapter, line, state) : adapter.parseEvent(line, state)) {
         kinds.set(ev.kind, (kinds.get(ev.kind) ?? 0) + 1);
         if (ev.kind === "unknown") unknownEvents += 1;
         if (ev.kind === "tool_call") toolNames.add(ev.name);
@@ -346,6 +394,7 @@ plugin.streamChecks({
   succeeded,
   final,
   shapes,
+  kinds,
   unknownEvents,
   badJson,
   toolNames,
