@@ -973,8 +973,9 @@ the cell refuses a read-only workspace; Delegated, not blocking), and it opens n
 new (Q-30 stays open, R-65 unchanged); decision 62 has none new (it answers Q-46 and Q-55); decision 63 has none
 new (CF-5, CF-6 and CF-8 restate the existing same-account and T9.5 limits); decision 65's is that native shapes for
 Grok Build, Antigravity, Cursor, OpenCode and Kimi Code remain synthetic until their T4.n8 runs, and it opens no new
-question; decision 66 has none new (Q-26 unchanged); decision 70's is that three candidate locations stay `NOT_CHECKED`,
-so their cells stay `prompt_prefix` (it opens no new question); decision 71's is that Codex's Linux sandbox did not start in the
+question; decision 66 has none new (Q-26 unchanged); decision 70's is that three candidate locations stay
+`NOT_CHECKED`, so their cells stay `prompt_prefix` (it opens no new question); decision 71's is that Codex's Linux
+sandbox did not start in the
 container (no sandboxed write succeeded, so T5.12 cells 3 and 4 and the pair's P-7 failed; §6.9.2 item 1), and it opens
 no new question (all Delegated, not blocking).
 
@@ -1520,7 +1521,9 @@ from `get_run` in `src/mcp/envelope.ts`. Decision 34, [ADR-0027](adr/0027-ref-sn
 **Not covered:** Claude Code and Codex runs (no live provider; their compiled deny rules are unchanged and the guard runs
 for every worktree run whatever the adapter, so C-G2 and X-G1 in the live smoke test remain to be run by the operator),
 per-worktree refs (`refs/worktree/`, `refs/bisect/`) and objects written without a ref (FR-GIT-03 is about refs), a
-push that updates no local ref, and adversarial escape scenarios (T3.8b, out of scope). False positives from operator
+push that updates no local ref (T3.8b CF-8, Done 2026-10-18 under owner decision 63, records this class as
+NOT DETECTED), and adversarial escape scenarios beyond T3.8b's fake-provider checks (live leg T3.9). False positives
+from operator
 activity are accepted (R-47); push after a violation is Q-44.
 
 **T9.6 status (2026-10-13; Delegated): Done for `host` runs on fakes (Git 2.43.0, local bare remotes); not run against
@@ -1655,7 +1658,8 @@ refused, stores no malformed id and pollutes no prototype; config keys in `src/c
 **Covered by design (2026-10-18, owner decision 62; Q-46 answered):** pushing from an approved dynamic project
 is refused at push time (`CONTEXT_UNKNOWN`), pinned by `src/git/push-dynamic-refused.test.ts` (MCP `push` tool path
 and `switchboard git push`; nothing reaches the remote). **Not covered:** `container` environments
-(M10), and adversarial escape scenarios beyond these validation cases (T3.8b). Nothing ran against a live provider.
+(M10), and adversarial escape scenarios beyond these validation cases (T3.8b, Done 2026-10-18 under owner
+decision 63). Nothing ran against a live provider.
 
 **T9.10 status (2026-10-13; Delegated, [ADR-0034](adr/0034-controller-side-commit-signing.md)): Done for `host` runs
 on fakes, verified only with GnuPG and a throwaway unprotected key (Git 2.43.0, GnuPG 2.4.4); not run against a live
