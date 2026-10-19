@@ -968,7 +968,7 @@ What `src/environment/` does against each bullet:
   `projects validate` runs the same checks for each `container` project (T10.3, `checkContainerEnvironment` in
   `src/cli/projects.ts`).
 - *Mounts*: exactly the worktree (rw) and the declared read-only contexts (ro), each at its own host path, so `cwd`
-  and argument paths stay valid; nothing else. No login volume yet (its mount point per provider waits for the
+  and argument paths stay valid; nothing else. No login volume yet (its mount point per provider waited for the
   operator's T10.0 result; *update 2026-10-18:* that result is in the
   [spike §6](../research/container-runtime-spike-2026-10-16.md#6-operator-in-volume-login-and-prompt-results-2026-10-18)).
 - *Provider logins*: not exercised by the backend (no login volume). *Update 2026-10-18:* the in-volume login mechanism
