@@ -160,6 +160,7 @@ export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts:
   if (inv.transport === "acp-stdio") return startAcpRun(adapter, inv, opts, bypassPermitted(ctx));
 
   const state = createParseState();
+  if (inv.resumeNativeSessionId !== undefined) state.resumeNativeSessionId = inv.resumeNativeSessionId;
   const events: NormalizedEvent[] = [];
   const guardCtx = toolGuardContext(inv.cwd, opts, bypassPermitted(ctx));
   const run = supervise({

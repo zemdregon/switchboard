@@ -454,6 +454,7 @@ export interface Invocation {
   policyFlags: string[];                // every security-relevant flag, for the bypass-flag audit
   expectedExitCodes: number[];
   maxLineBytes: number;
+  resumeNativeSessionId?: string;       // T4.35: the id a subprocess resume asked for; seeded into ParseState
 }
 export interface Ineligible {
   ineligible: true;
@@ -705,7 +706,13 @@ line records no second `usage` row, [#227](https://github.com/zemdregon/switchbo
 step never binds the session. Invalid model and failed login map to `MODEL_UNAVAILABLE` and `AUTH_REQUIRED`; malformed
 and unknown lines become `unknown` events. `extractResult` precedence: cancel and timeout over a denial, denial over
 envelope error and non-zero exit, ADR-0039 guard over all ([#227](https://github.com/zemdregon/switchboard/pull/227)).
-Resume is not compiled: `resumeArgs` is always `Ineligible` and `--conversation` never appears in argv (Q-86).
+Resume (T4.35, owner decision 67, Delegated): `resumeArgs` compiles only where `compile` does (the approved bypass
+cell) and appends `--conversation <id>` for a safe-token id; every other cell returns `compile`'s `Ineligible`. It sets
+`Invocation.resumeNativeSessionId`, which `startAdapterRun` copies to `ParseState.resumeNativeSessionId`; a resumed
+run whose first `conversation_id` differs from the requested one (live check C9 run 5: an unknown id starts a new
+conversation) or whose `result` arrives with no id ends `OUTPUT_PROTOCOL_ERROR` (`protocol: resumed conversation id
+differs from the requested one`, `protocol: resume returned no conversation id`), and the new id is never bound. No
+`RESUME_MISMATCH` code exists in §4, so none is added. *Was (Q-86, 2026-10-14):* `resumeArgs` always `Ineligible`.
 The stderr-only `AGY_ERROR` line has since been captured for real (seven quota stops at exit 3, T6.11
 [limit captures](../research/limit-captures-2026-10-17.md)) and mapped in `classifyFailure` from the stderr tail
 (T6.15, [ROADMAP T6.15](../ROADMAP.md#611-m6-capacity-and-resilience-tasks)): the `extractResult` path still ends
@@ -5905,6 +5912,20 @@ so no reset key is declared (Q-100). Every other captured limit was free text. A
 a capture shows a structured used or remaining fraction or reset time. The adapter contract gives `extractResult` no
 stderr (§2), so the mapping is reached only by a caller that passes the tail `startAdapterRun` captures; the lifecycle
 does not yet (pinned in `src/adapters/antigravity/limit-signals.test.ts`).
+
+*Update 2026-10-18 (owner decision 64, [ADR-0058](../adr/0058-captured-limit-signatures.md), ROADMAP T6.15):*
+two newer captures map here too without declaring a key: Cursor's
+out-of-usage stderr line (`ActionRequiredError` plus `out of usage` on one tail line at exit 1) and Kimi Code's 5-hour
+usage-limit stderr line (`403` plus `usage limit` on one tail line at exit 1, checked before the auth mapping because
+the CLI labels the stop `provider.auth_error`), both to `QUOTA_EXHAUSTED` in `classifyFailure`
+(`cursorQuotaClassification` in `src/adapters/cursor/adapter.ts`, `kimiQuotaClassification` in
+`src/adapters/kimi/adapter.ts`). Neither sources a reset and neither adds a `USAGE_KEYS` entry, so the keys stay empty
+and frozen. Both signals are free text under T6.11's classification (no structured field); they map as
+structured-enough captured distinctive signatures under owner decision 64
+([ADR-0058](../adr/0058-captured-limit-signatures.md), which supersedes ADR-0055 item 11 in part and answers Q-100;
+history in `docs/_doc-alignment-notes.md` §24). As with Antigravity, the mapping is reached only through
+`FailureEvidence.stderrTail`, which `extractResult` cannot supply (pinned in `src/adapters/cursor/limit-signals.test.ts`
+and `src/adapters/kimi/limit-signals.test.ts`).
 
 **Per window, at time `now`** (pure function, injected clock):
 
