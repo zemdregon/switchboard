@@ -904,3 +904,19 @@ as history.
   was ("except the off-by-default loopback-only T8.15 receiver"), since this PR otherwise makes it read
   as global. The SRS NFR-PRIV-01 requirement text itself is unchanged and still holds (loopback traffic
   stays on the host; the receiver only runs when the operator explicitly configures it).
+
+## 52. T8.15 follow-up scoping in LLD; BRD "no network listener" and T8.1 history left as-is (PR #769, fixed/not blocking)
+
+- Fixed in this doc-align pass (docs only): LLD §7 `telemetry.otlp_endpoint` row said "opens no telemetry
+  listener", which this PR made read as global now that the T8.15 per-run provider-OTLP receiver exists; it now
+  says "no trace-export listener" and points at the `telemetry.provider_otlp` row (same scoping this PR already
+  applied to HLD TB-6 and the SDD NFR-PRIV-01 row). LLD §6 (compliance manifest) now documents the optional
+  `otlp_metrics` declaration the code schema added (`src/adapters/manifest/schema.ts`), including that no
+  shipped manifest declares it yet.
+- Left unchanged, deliberately: BRD §8 ("no network listener", from owner decision 2026-10-12) and the SRS
+  FR-TEL-06 requirement text. The T8.15 receiver binds `127.0.0.1` with an ephemeral port only, so all traffic
+  stays on the host and the SRS NFR-PRIV-01 posture still holds; same precedent as the M13 network transport,
+  which BRD already coexists with. Changing BRD's owner-decision wording is the SRS/BRD owners' call.
+- Historical rows not rewritten: T8.1's "no listener and no export when unset" describes the exporter scope
+  that was true when T8.1 was Done (2026-10-16); the T8.15 row carries the new behaviour. `node
+  scripts/check-docs.mjs` passes.
