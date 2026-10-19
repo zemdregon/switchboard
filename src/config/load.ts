@@ -9,6 +9,7 @@ import { compileSecretScanAllow, type SecretScanAllowEntry, SecretScanAllowError
 import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
+import { BriefError, briefBlockTokens, readBriefFile } from "../projects/brief.js";
 import {
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_MAX_NAMES,
@@ -548,6 +549,32 @@ export function loadConfig(
     throw new ConfigError(`Invalid config:\n${projectErrors.map((l) => `  ${l}`).join("\n")}`);
   }
 
+  // T5.14 (FR-SES-07, LLD §20.13): each brief file is read once here; any problem aborts startup (fail closed).
+  const briefFiles = new Map<string, string>();
+  const briefErrors: string[] = [];
+  const maxContextTokens = resolveRag(cfg.rag).retrieval.maxContextTokens;
+  for (const [i, p] of (cfg.projects ?? []).entries()) {
+    if (p.brief_file === undefined) continue;
+    const at = `$.projects[${i}].brief_file`;
+    const file = path.resolve(baseDir, p.brief_file);
+    try {
+      const brief = readBriefFile(file, [...allowedRoots, ...p.contexts.map((c) => path.resolve(baseDir, c.path))]);
+      const tokens = briefBlockTokens(p.id, brief);
+      if (tokens > maxContextTokens) {
+        briefErrors.push(
+          `${at}: its block needs about ${tokens} tokens; rag.retrieval.max_context_tokens is ${maxContextTokens}`,
+        );
+      }
+      briefFiles.set(p.id, realpathSync(file));
+    } catch (err) {
+      if (!(err instanceof BriefError)) throw err;
+      briefErrors.push(`${at}: ${err.message}`);
+    }
+  }
+  if (briefErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${briefErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
+
   const innerErrors = checkInnerAgent(cfg.inner_agent, configProviderIds());
   if (innerErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${innerErrors.map((l) => `  ${l}`).join("\n")}`);
@@ -635,7 +662,7 @@ export function loadConfig(
     configPath,
     dataDir,
     ...(httpTransport !== undefined ? { httpTransport } : {}),
-    projects: resolveProjects(cfg),
+    projects: resolveProjects(cfg, briefFiles),
     sanitizePatterns: [...(cfg.git?.sanitize_patterns ?? [])],
     secretScanAllow,
     ...(cfg.inner_agent !== undefined ? { innerAgent: resolveInnerAgent(cfg.inner_agent) } : {}),

@@ -79,6 +79,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `control_plane.digest_schedule` | Push a metadata-only digest to the sinks on a UTC cron schedule (`{ cron }`, five fields, §18.5 syntax); absent means off ([LLD §20.5](LLD.md#205-scheduled-digest-and-progress-stall-fr-ctl-14-t1416), T14.16, Delegated, not owner-approved) | FR-CTL-14 |
 | `projects[].queue` | `{ low_water }` (integer ≥ 1, T15.4, FR-QUE-04) and `{ stall_hours }` (integer 1 to 720, T14.16, FR-CTL-14, [LLD §20.5](LLD.md#205-scheduled-digest-and-progress-stall-fr-ctl-14-t1416)); each off when absent | FR-QUE-04, FR-CTL-14 |
 | `projects[].critic` | `{ enabled }` (default `false`) and `{ min_diff_lines }` (integer 1 to 1 000 000, default 400, Assumption); config-file key only, not a dynamic project definition ([LLD §20.13](LLD.md#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417), T14.17, Delegated, not owner-approved) | FR-CTL-15, FR-CTL-06 |
+| `projects[].brief_file` | Operator-maintained brief text file (goal, definition of done, known failures): a path outside every allowed root and context, at most 4 KiB of UTF-8; config-file key only, not a dynamic project definition; read at config load and again at admission (an unreadable brief refuses the run, fail closed), delivered as a labelled block before the retrieval pack inside `rag.retrieval.max_context_tokens`; the handoff bundle lists its SHA-256 ([LLD §20.13](LLD.md#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417), T5.14, Delegated, not owner-approved) | FR-SES-07 |
 | `notification_sinks[]` | Off when absent. Each sink: `id`, `kind` (`webhook` or `ntfy`), `url` or `ntfy` object, `authorization` (webhook only, FR-CTL-12), `events[]`, `max_per_minute` ([LLD §3.4.9](LLD.md#349-notification-sinks-fr-ctl-10-adr-0048), T14.9, T14.14; the `digest` event kind, T14.16) | FR-CTL-10, FR-CTL-12, FR-CTL-14, ADR-0048 |
 | `git.sanitize_patterns[]` | Operator additions to the built-in attribution patterns ([LLD §12.4](LLD.md#124-message-sanitisation)). *Note (2026-10-13, Delegated, T9.3, [ADR-0025](../adr/0025-git-commit-provenance-and-sanitiser.md)):* implemented as `git.sanitize_patterns` in the schema, at most 16 strings of at most 200 characters, each validated at load against a restricted regular-expression subset (`src/git/safe-pattern.ts`); an invalid pattern aborts startup naming its index. No RE2 dependency | FR-GIT-04 |
 | `limits.global_concurrency`, `limits.per_provider_concurrency` | Defaults 4 and 1 (proposed target) | NFR-PERF-03 |
@@ -527,17 +528,24 @@ Every enforced row held on 2026-10-18 (no `ESCAPED` row). Line numbers are as of
 Scope: the checks are about the controller only; whether a real provider CLI's own sandbox stops a credential read,
 network use or a push is the live leg (T3.9, T4.n8).
 
-#### 3.6.3 Property-based tests and coverage (NFR-MAINT-06, Proposed 2026-10-19)
+#### 3.6.3 Property-based tests and coverage (NFR-MAINT-06, T8.11)
 
-*Proposed (Delegated, 2026-10-19; ROADMAP T8.11 for owner decision 77's discovery rows).* The parsers that carry the "no
-Git write, no bypass flag, no secret out" guarantees get generated-input tests beside their example tests: the
-Git-write detector, the argv audit ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md),
-[ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md)), the commit sanitiser, the secret redactor, the
-untrusted-block renderers and the pre-push scanner of FR-GIT-11. The library is `fast-check`, pinned as a dev
-dependency when T8.11 adds it; properties run in the normal `npm test` with a fixed seed recorded on failure, so a CI
-failure reproduces locally. Coverage comes from the vitest coverage provider and is reported in CI without a threshold
-at first. Generators produce spelling variants (quoting, environment prefixes, `-`/`--` and `_`/`-` forms, path
-prefixes, Unicode look-alikes) rather than random bytes, because the past gaps were spelling gaps (ADR-0037, ADR-0045).
+*Built (Delegated, 2026-10-19; ROADMAP T8.11 for owner decision 77's discovery rows).* The parsers that carry the "no
+Git write, no bypass flag, no secret out" guarantees have generated-input tests beside their example tests:
+`src/adapters/bypass-audit.property.test.ts` (every declared bypass flag, short spelling and flag value refused in
+every generated spelling, [ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md),
+[ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md)), `src/adapters/git-write-detector.property.test.ts`
+(every generated Git write through quoting, environment prefixes, path variants, launchers and compound lines
+refused), `src/git/sanitize.property.test.ts` and `src/artifacts/redact.property.test.ts` (a generated canary never
+survives), `src/continuity/render.property.test.ts` and `src/ci/untrusted-block.property.test.ts` (generated input
+never opens, closes or escapes the untrusted block), and `src/git/secret-scan.property.test.ts` (every generated
+canary shape found in added lines, never in context lines). The library is `fast-check`, pinned as an exact dev
+dependency (`fast-check 4.10.2`, publisher `ndubien`); properties run in the normal `npm test` with a fixed seed and
+`numRuns: 100` recorded in each file, so a CI failure reproduces locally. Coverage comes from `@vitest/coverage-v8`
+`5.0.4` (matching `vitest 5.0.4`) and is reported in CI without a threshold: the Linux job runs the suite a second
+time with `--coverage` and uploads `coverage/` through the SHA-pinned `actions/upload-artifact`. Generators produce
+spelling variants (quoting, environment prefixes, `-`/`--` and `_`/`-` forms, path prefixes, hostile block markers)
+rather than random bytes, because the past gaps were spelling gaps (ADR-0037, ADR-0045).
 
 ### 3.7 Packaging and release
 

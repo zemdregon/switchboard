@@ -12,6 +12,7 @@
  * - a build failure is `TOOL_FAILURE` / `HANDOFF_BUNDLE_UNAVAILABLE` and writes nothing;
  * - T16.10: `skills` lists the previous run's pinned skills (name, version, hash; never text), and the schema change
  *   follows ADR-0038's versioning (version 2; a version 1 view still regenerates byte for byte).
+ * - T5.14: version 3 adds `brief`, the previous run's frozen project-brief SHA-256 (never the text).
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -37,6 +38,7 @@ import {
   BUILDER_VERSION,
   BUNDLE_FIELDS,
   BUNDLE_FIELDS_V1,
+  BUNDLE_FIELDS_V2,
   BUNDLE_VERSION,
   type BundleBounds,
   DEFAULT_BUNDLE_BOUNDS,
@@ -144,6 +146,8 @@ interface RunSpec {
   changed?: { status: string; path: string }[];
   verification?: { argv: string[]; outcome: string; exit: number; stdout: string; stderr: string }[];
   mode?: "new" | "resume" | "handoff";
+  /** T5.14: the run's frozen project snapshot (default: none). */
+  project?: Record<string, unknown>;
 }
 
 /** A terminal run with the records the lifecycle would leave (events, artifacts, decisions, binding). */
@@ -153,7 +157,7 @@ async function addRun(sessionId: string, spec: RunSpec): Promise<RunRow> {
     metaSessionId: sessionId,
     state: "QUEUED",
     trustProfile: "edit-untrusted",
-    policySnapshot: {},
+    policySnapshot: spec.project !== undefined ? { project: spec.project } : {},
     request: {
       objective: spec.objective ?? "Build the feature",
       ...(spec.verification ? { verification_commands: spec.verification.map((v) => v.argv) } : {}),
@@ -381,13 +385,14 @@ describe("bundle regeneration (FR-SES-05)", () => {
 });
 
 describe("bundle content (FR-SES-04, BR-8)", () => {
-  it("every field of version 2 is present; FR-SES-04 fields are filled", async () => {
+  it("every field of version 3 is present; FR-SES-04 fields are filled", async () => {
     const { s, head, ok, bad } = await richSession();
     const built = await buildHandoffBundle(deps, takeAsOf(ledger, s.id), DEFAULT_BUNDLE_BOUNDS);
     const b = parse(built.bytes);
     expect(Object.keys(b).sort()).toEqual([...BUNDLE_FIELDS].sort());
-    expect(b).toMatchObject({ schema: "switchboard.handoff_bundle", version: 2, builder_version: 2 });
+    expect(b).toMatchObject({ schema: "switchboard.handoff_bundle", version: 3, builder_version: 3 });
     expect(b.skills).toEqual([]); // T16.10: present and empty for a previous run without skills
+    expect(b.brief).toBeNull(); // T5.14: present and null for a previous run without a brief
     expect(b.goal).toBe("Build the feature");
     expect(b.constraints).toEqual(["keep the tests green", `never print ${REDACTION_MARKER}`]);
     expect(b.instructions).toEqual([{ run_id: bad.id, text: "Now add the second part" }]);
@@ -788,11 +793,11 @@ describe("skills as controller facts and the version rule (T16.10; ADR-0056 item
   it("the schema change bumps version and builder_version to 2; a version 1 view stays buildable, byte for byte", async () => {
     const { s } = await skilledSession();
     const asOf = takeAsOf(ledger, s.id);
-    const v2 = await buildHandoffBundle(deps, asOf, DEFAULT_BUNDLE_BOUNDS);
+    const v2 = await buildHandoffBundle(deps, asOf, DEFAULT_BUNDLE_BOUNDS, 2);
     const v1 = await buildHandoffBundle(deps, asOf, DEFAULT_BUNDLE_BOUNDS, 1);
-    expect(v2.bundle).toMatchObject({ version: BUNDLE_VERSION, builder_version: BUILDER_VERSION });
-    expect([BUNDLE_VERSION, BUILDER_VERSION]).toEqual([2, 2]);
-    expect(Object.keys(parse(v2.bytes)).sort()).toEqual([...BUNDLE_FIELDS].sort());
+    expect(v2.bundle).toMatchObject({ version: 2, builder_version: 2 });
+    expect([BUNDLE_VERSION, BUILDER_VERSION]).toEqual([3, 3]); // T5.14 moved both to 3
+    expect(Object.keys(parse(v2.bytes)).sort()).toEqual([...BUNDLE_FIELDS_V2].sort());
     const one = parse(v1.bytes);
     expect(one).toMatchObject({ version: 1, builder_version: 1 });
     expect(Object.keys(one).sort()).toEqual([...BUNDLE_FIELDS_V1].sort());
@@ -810,15 +815,59 @@ describe("skills as controller facts and the version rule (T16.10; ADR-0056 item
     expect(RENDERER_VERSION).toBe(1);
     // An unknown or mixed version is refused.
     for (const bad of [
-      { ...one, version: 3, builder_version: 3 },
+      { ...one, version: 4, builder_version: 4 },
       { ...one, version: 1, builder_version: 2 },
     ]) {
       await expect(regenerateHandoffBundle(deps, Buffer.from(JSON.stringify(bad)))).rejects.toBeInstanceOf(
         HandoffBundleError,
       );
     }
-    expect(() => assembleHandoffBundle({} as never, DEFAULT_BUNDLE_BOUNDS, (b) => b, 3 as never)).toThrow(
+    expect(() => assembleHandoffBundle({} as never, DEFAULT_BUNDLE_BOUNDS, (b) => b, 4 as never)).toThrow(
       HandoffBundleError,
     );
+  }, 30_000);
+});
+
+describe("project brief as a hash (T5.14; FR-SES-07, FR-SES-04, LLD §20.13)", () => {
+  const BRIEF_CANARY = "CANARY-T514-brief-text-7c1f";
+  const briefSha = "b".repeat(64);
+
+  it("lists the previous run's frozen brief SHA-256 and never its text; version 2 regenerates byte for byte", async () => {
+    const s = session();
+    // An older run with another brief version: only the run a continuation follows is listed.
+    await addRun(s.id, { state: "SUCCEEDED", project: { id: "web", brief_sha256: "a".repeat(64) } });
+    const previous = await addRun(s.id, {
+      state: "FAILED",
+      failureCode: "TEST_FAILURE",
+      objective: "Second part",
+      project: { id: "web", brief_sha256: briefSha, brief_text_never_here: BRIEF_CANARY },
+    });
+    const asOf = takeAsOf(ledger, s.id);
+    const built = await buildHandoffBundle(deps, asOf, DEFAULT_BUNDLE_BOUNDS);
+    expect(built.bundle).toMatchObject({ version: 3, builder_version: 3 });
+    expect(built.bundle.brief).toEqual({ run_id: previous.id, sha256: briefSha });
+    const text = built.bytes.toString("utf8");
+    expect(text).toContain(briefSha);
+    expect(text).not.toContain(BRIEF_CANARY);
+    expect(text).not.toContain("a".repeat(64));
+    // FR-SES-05: the stored view regenerates byte-identically; a version 2 view is still built without `brief`.
+    expect((await regenerateHandoffBundle(deps, built.bytes)).bytes.equals(built.bytes)).toBe(true);
+    const v2 = await buildHandoffBundle(deps, asOf, DEFAULT_BUNDLE_BOUNDS, 2);
+    expect("brief" in parse(v2.bytes)).toBe(false);
+    expect((await regenerateHandoffBundle(deps, v2.bytes)).bytes.equals(v2.bytes)).toBe(true);
+    // The hash is not rendered: the handoff prompt is the same for versions 2 and 3.
+    const render = (b: Buffer) => renderHandoffPrompt({ bundle: parseHandoffBundle(b), instruction: "go on" }).prompt;
+    expect(render(built.bytes)).toBe(render(v2.bytes));
+  }, 30_000);
+
+  it("a malformed brief_sha256 in the snapshot fails the build closed", async () => {
+    const s = session();
+    await addRun(s.id, { state: "SUCCEEDED", project: { id: "web", brief_sha256: "not-a-hash" } });
+    const err = await buildHandoffBundle(deps, takeAsOf(ledger, s.id), DEFAULT_BUNDLE_BOUNDS).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(HandoffBundleError);
+    expect((err as HandoffBundleError).details.reason).toBe(HANDOFF_BUNDLE_UNAVAILABLE);
   }, 30_000);
 });
