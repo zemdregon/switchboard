@@ -105,7 +105,7 @@ beforeAll(async () => {
       const p = req.url ?? "/";
       hits.push(`${host} ${p}`);
       const route = routes.get(p);
-      if (route) return route(req, res);
+      if (typeof route === "function") return route(req, res);
       const body = JSON.stringify(document(`https://${host}${p}`));
       res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(body) });
       res.end(body);

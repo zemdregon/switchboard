@@ -33,7 +33,7 @@
  * so tokens, meta-session bindings and the `transport.http.clients` mapping keep the identifier form every table
  * checks; the URL itself is kept beside it (`oauth_cimd_client`, migration 0026) and shown to the operator.
  */
-import { createHash } from "node:crypto";
+import { hash } from "node:crypto";
 import type { LookupAddress, LookupOptions } from "node:dns";
 import dns from "node:dns";
 import https from "node:https";
@@ -72,9 +72,13 @@ export function checkCimdClientId(clientId: string): URL | undefined {
   return url;
 }
 
-/** The internal `sbc_` identifier of a CIMD client: 128 bits of the URL's SHA-256, base64url (22 characters). */
+/**
+ * The internal `sbc_` identifier of a CIMD client: 128 bits of the URL's SHA-256, base64url (22 characters). The input
+ * is a public HTTPS URL, not a secret, so a fast digest is the right tool; a password hash would only slow the lookup.
+ */
 export function cimdInternalClientId(clientId: string): string {
-  return `sbc_${createHash("sha256").update(clientId, "utf8").digest().subarray(0, 16).toString("base64url")}`;
+  const digest = Buffer.from(hash("sha256", clientId, "hex"), "hex");
+  return `sbc_${digest.subarray(0, 16).toString("base64url")}`;
 }
 
 /** Decides whether a resolved address may be connected to. */
