@@ -1777,8 +1777,8 @@ risks R-73, R-75) and the malicious leg observes the file-access escape (A-M2 ES
 A live resume run, captured rate-limit and sandbox categories, and the T4.31 C8 deny-rule variant stay
 unrun (T4.38 operator remainder). (T4.33 and T4.36 are Done against their
 Done-when under owner decision 65, and T4.35 is Done on synthetic fixtures including resume per owner decision 67;
-their remaining native shapes are carried by the T4.38 remainder); the `adapters validate` leg passed live on 2026-10-18, CLI
-1.4.2.
+their remaining native shapes are carried by the T4.38 remainder);
+the `adapters validate` leg passed live on 2026-10-18, CLI 1.4.2.
 
 Residual parser pins ([#344](https://github.com/zemdregon/switchboard/pull/344), "antigravity parser residual pins
 (T4.33, synthetic shapes)") record a second guard gap: tool parameters on a step whose `step_type` is not exactly
