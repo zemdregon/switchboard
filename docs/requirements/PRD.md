@@ -87,14 +87,15 @@ admission context pack in [LLD §14.11](../design/LLD.md#1411-admission-context-
 notes in [SDD §4.1 (T12.5)](../design/SDD.md#t125--admission-context-pack-design-intent) and [SDD
 §5](../design/SDD.md#5-requirements-to-design-traceability); test plan in [TDD
 §3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14). Global-index merge at admission is
-deferred to T12.7 (same TDD section).
+built by T12.7 (Partial; same TDD section).
 
 **Runtime (implemented, T12.4–T12.5).** Built on fakes ([ROADMAP §6.7](../ROADMAP.md#67-m12-retrieval-index-tasks)):
 incremental background index build, operator `index` commands and `doctor` retrieval reporting (T12.4); delegated runs
 with retrieval on receive an untrusted context pack at dispatch (T12.5;
 `src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`, `src/retrieval/import-boundary.test.ts`);
-differences from the design are listed at the end of LLD §14.11. The admission path searches the project store only
-until T12.7.
+differences from the design are listed at the end of LLD §14.11. The admission path merges global hits for
+`use_global` projects since T12.7 (Partial); the tool's `global`/`both` scopes still answer
+`GLOBAL_NOT_AVAILABLE` (ROADMAP T12.7).
 
 **Design (T12.7; FR-RAG-09, FR-RAG-10).** On `origin/main`: deployment-wide index and opt-in sharing in [LLD
 §14.9](../design/LLD.md#149-global-index-and-sharing) (`rag.global`, operator-added `sources`, `contribute_to_global`

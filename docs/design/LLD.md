@@ -4992,36 +4992,27 @@ enabled and gated, COMP-RAG scores the global store like the project store and m
 step 3 before selection and packing ([§14.11](#1411-admission-context-pack-t125)); the same §14.4 locality gates, run
 profile and FR-RAG-07 authority boundary apply. `search_project_context` scopes `global` and `both` only when the project
 sets `use_global` ([§14.7](#147-tool-contract-search_project_context)). Operator commands: `index rebuild global`,
-`index clear global`, and a `doctor` global subsection when `rag.global.enabled` (today refused or omitted on `main`,
+`index clear global`, and a `doctor` global subsection when `rag.global.enabled` (honoured on `main` since T12.7,
 [§14.5](#145-incremental-build)).
 
-**As built on `main` (configuration and store layout only, T12.1).** The `rag.global` block, per-project sharing flags,
-and `PERMISSION_BLOCKED` when a dynamic project definition sets or widens sharing are implemented
-(`src/config/rag.ts`, `src/projects/rules.ts`; tests `src/config/rag.test.ts`, `src/mcp/project-tools.test.ts`). The
-global file path and `rag_meta` / `rag_file.origin_project` columns exist in the store schema
-(`src/retrieval/store.ts`; tests `src/retrieval/store.test.ts`). No global store is built or read yet; contribution copy,
-global incremental build, admission merge and global CLI targets are **not** on `origin/main`.
+**As built on `main` (T12.7, Partial since 2026-10-19, owner ruling; ROADMAP T12.7).** The `rag.global` block,
+per-project sharing flags, and `PERMISSION_BLOCKED` when a dynamic project definition sets or widens sharing are
+implemented (`src/config/rag.ts`, `src/projects/rules.ts`; tests `src/config/rag.test.ts`,
+`src/mcp/project-tools.test.ts`). The global file path and `rag_meta` / `rag_file.origin_project` columns exist in
+the store schema (`src/retrieval/store.ts`; tests `src/retrieval/store.test.ts`). The global build and contribution
+copy (`src/retrieval/global.ts`), the admission merge for `use_global` projects (`src/retrieval/admission.ts`), the
+`serve` build wiring and `index rebuild global`, `index clear global`, `index status global` and the `doctor` global
+check (`src/cli/rag-index.ts`) are on `main`, pinned by `src/retrieval/global.test.ts` and `src/cli/rag-index.test.ts`
+("global index (T12.7)"). **Remaining gap:** `search_project_context` scopes `global` / `both` still answer
+`GLOBAL_NOT_AVAILABLE` (`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`); reading the built global
+store there is a follow-up (fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f)).
 
-**Intended runtime (T12.7 implementation; in progress, not on `main`).** Tracked in
-[#197](https://github.com/zemdregon/switchboard/pull/197) (w61-t127 on sb-worker-a). When merged:
+**Runtime gaps on `origin/main` (evidence paths, no unmerged behaviour).** Only the tool gap above: admission merges
+the global store for `use_global` projects ([§14.8](#148-freshness-and-fallback) as-built) and the global CLI targets
+are honoured ([§14.5](#145-incremental-build)); T12.6 returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the
+built global store is wired into the tool (`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`).
 
-1. **Build.** Background job for `<data>/rag/global/index.db`: ingest operator `sources` (label from config,
-   `origin_project` null) and copy chunks from each project index whose `contribute_to_global` is true, re-applying
-   redaction and exclusions; exclude `untrusted` contexts unless explicitly allowed; remove a project's contributions
-   when the flag is cleared or `index clear` runs for that project, on the next global build.
-2. **Admission and tool.** With `use_global: true`, merge global hits into admission ([§14.6](#146-selection-and-token-budget)
-   step 3) and into `search_project_context` for `scope: "global"` or `"both"` ([§14.7](#147-tool-contract-search_project_context));
-   each hit carries `origin_project` or the source label; freshness, token budget, ledger shape and import boundary
-   match T12.5 ([§14.8](#148-freshness-and-fallback), [§14.11](#1411-admission-context-pack-t125)).
-3. **CLI.** Honour `index rebuild global` and `index clear global`; extend `index status` and `doctor` for the global
-   store when enabled.
-
-**Runtime gaps on `origin/main` (evidence paths, no unmerged behaviour).** `index rebuild global` and `index clear global`
-are refused (`src/cli/rag-index.ts`; `src/cli/rag-index.test.ts`). Admission searches the project store only
-([§14.8](#148-freshness-and-fallback) as-built). T12.6 returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until a
-global store exists (`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`).
-
-**Tests (fake embedder only, no network; land with T12.7 runtime).** As in [TDD §3.13.9](TDD.md#3139-t127-global-index-and-sharing-2026-10-14):
+**Tests (fake embedder only, no network; landed with the T12.7 runtime).** As in [TDD §3.13.9](TDD.md#3139-t127-global-index-and-sharing-2026-10-14):
 two-project isolation with planted markers; operator `sources` labelled; contribution copy respects redaction,
 exclusions and `untrusted` default; admission merge and tool `global`/`both` when `use_global` is true; CLI global
 rebuild, clear and `doctor`. Primary modules when done: global build and contribution copy under `src/retrieval/`,
@@ -5167,7 +5158,8 @@ transaction, and the lifecycle reaches it only through a structurally typed port
 `unavailable` / `TIMEOUT`, and a pack that freshness or the budget empties is `empty` (`NO_HITS`, `NOTHING_SELECTED`)
 rather than `skipped` / `empty_after_freshness`; the import-boundary test also forbids lifecycle dispatch and adapter
 `compile` modules; the hostile-pack behavioural test and the `rag.retrieve` span are not built. Global-index merge at
-admission and `search_project_context` `global` / `both` against a built store are deferred to T12.7
+admission is built by T12.7 (Partial; ROADMAP T12.7); `search_project_context` `global` / `both` against the built
+store still answers `GLOBAL_NOT_AVAILABLE` (remaining gap, ROADMAP T12.7)
 ([§14.9.1](#1491-design-status-and-evidence-t127-2026-10-14), [TDD §3.13.9](TDD.md#3139-t127-global-index-and-sharing-2026-10-14)).
 
 ## 15. Continuity and the handoff bundle (M5)

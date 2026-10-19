@@ -163,7 +163,7 @@ specified on `main` in [LLD §14.11](../design/LLD.md#1411-admission-context-pac
 **Runtime (implemented, T12.5).** T12.4 and T12.5 are built on fakes (ROADMAP §6.7): delegated runs of a project with
 retrieval on receive an untrusted context pack at dispatch (`src/retrieval/admission.test.ts`,
 `src/lifecycle/context-pack.test.ts`, `src/retrieval/import-boundary.test.ts`); differences from the design are listed
-at the end of LLD §14.11. Global-index merge at admission is deferred to T12.7 ([TDD
+at the end of LLD §14.11. Global-index merge at admission is built by T12.7 (Partial; ROADMAP §6.7) ([TDD
 §3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14)).
 
 **Design evidence (T12.7; on `main`).** FR-RAG-09 and FR-RAG-10 (WF-14 global index leg; BR-47) are specified on

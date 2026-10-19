@@ -1408,7 +1408,8 @@ budget](LLD.md#146-selection-and-token-budget), [§14.8 Freshness and fallback](
   row; pack labelling and token budget (de-overlap and cap); ledger and event payloads contain ids and hashes only
   (recursive scan for planted canary strings); admission integration on the fake lifecycle path with retrieval on versus
   off and versus hostile snippets. Global-index merge at admission is specified in [§3.13.9](#3139-t127-global-index-and-sharing-2026-10-14)
-  and lands with the T12.7 runtime; T12.5 on `main` stubs `use_global: false` only.
+  and landed with the T12.7 runtime (Partial; the tool's `global`/`both` scopes still answer `GLOBAL_NOT_AVAILABLE`,
+  ROADMAP T12.7); T12.5 alone stubbed `use_global: false`.
 
 #### 3.13.9 T12.7 global index and sharing (2026-10-14)
 
