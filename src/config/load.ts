@@ -5,6 +5,7 @@ import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv } from "ajv";
 import { configProviderIds } from "../adapters/providers.js";
 import { validateOperatorPatterns } from "../git/safe-pattern.js";
+import { compileSecretScanAllow, type SecretScanAllowEntry, SecretScanAllowError } from "../git/secret-scan.js";
 import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
 import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
@@ -157,6 +158,8 @@ export interface ResolvedConfig {
   projects: ResolvedProject[];
   /** Validated `git.sanitize_patterns` (FR-GIT-04; T9.3): sources in the safe subset, in configuration order. */
   sanitizePatterns: string[];
+  /** Validated `git.secret_scan.allow` (FR-GIT-11; T9.14): every rule id known, every glob non-empty; empty by default. */
+  secretScanAllow: SecretScanAllowEntry[];
   /**
    * Validated `inner_agent` (T11.1; FR-INN-01, LLD §13.1), defaulted. Present only when the config has the section; absent
    * means no inner agent and every behaviour is as before.
@@ -531,6 +534,15 @@ export function loadConfig(
     );
   }
 
+  const secretScanAllow = (cfg.git?.secret_scan?.allow ?? []).map((e) => ({ rule_id: e.rule_id, path: e.path }));
+  try {
+    compileSecretScanAllow(secretScanAllow);
+  } catch (err) {
+    if (err instanceof SecretScanAllowError)
+      throw new ConfigError(`Invalid config:\n  $.git.secret_scan.allow${err.message}`);
+    throw err;
+  }
+
   const projectErrors = checkProjects(cfg);
   if (projectErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${projectErrors.map((l) => `  ${l}`).join("\n")}`);
@@ -625,6 +637,7 @@ export function loadConfig(
     ...(httpTransport !== undefined ? { httpTransport } : {}),
     projects: resolveProjects(cfg),
     sanitizePatterns: [...(cfg.git?.sanitize_patterns ?? [])],
+    secretScanAllow,
     ...(cfg.inner_agent !== undefined ? { innerAgent: resolveInnerAgent(cfg.inner_agent) } : {}),
     allowedRoots,
     mcpClients: new Map(
