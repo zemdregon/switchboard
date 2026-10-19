@@ -6738,11 +6738,13 @@ from a read-only `git config --get remote.<name>.url`, github.com only), `untrus
 Delegated deviations from the Proposed design above, each to avoid a migration while T15.2 owns the next number:
 
 1. **No `project_ci_trigger` table.** The per-project trigger is operator configuration, `ci_trigger.projects[]`
-   (`project`, `client`, `enabled`, `max_consecutive_fixes`, `template` with `objective`, `trust_profile` other than
+   (`project`, `client`, `enabled`, `max_consecutive_fixes`, `rerun_failed`, `cancel_stale_queued`,
+   `template` with `objective`, `trust_profile` other than
    `privileged`, `constraints`; `src/config/ci-trigger.ts`); `load.ts` refuses an unknown client, an unknown project
    or a client that does not list the project. The `client` is the `creator_client_id`. A chat client cannot enable
    a trigger in v1. T15.5 adds an optional top-level and per-project `max_consecutive_fixes` (Assumption default 2;
-   `DEFAULT_MAX_CONSECUTIVE_FIXES`).
+   `DEFAULT_MAX_CONSECUTIVE_FIXES`). T15.6 adds the per-project `rerun_failed` and `cancel_stale_queued` switches
+   (FR-QUE-06; both default `false`; §20.1).
 2. **No `ci_trigger_event` table (T15.3 as-built; superseded by T15.5 below).** At T15.3, dedup was the work item
    itself: `source_kind = 'ci_trigger'`, `source_id = ci:<external_id>`, idempotency key
    `ci_trigger:<project_id>:<external_id>`, checked per `(project_id, source_id)` and written in the one enqueue
