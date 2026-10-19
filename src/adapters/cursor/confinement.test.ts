@@ -14,6 +14,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -412,5 +413,81 @@ describe.runIf(hostBwrapWorks)("cursor bypass cell inside this host's bwrap (ADR
     expect(existsSync(path.join(l.root, "outside-write.txt"))).toBe(false);
     expect(existsSync(path.join(l.root, "fakehome", "planted"))).toBe(false);
     expect(readFileSync(l.files.login, "utf8")).toBe(JSON.stringify({ synthetic_login: l.tokens.login }));
+  });
+
+  /**
+   * w1701 diagnosis (owner ruling 2026-10-19 08:12 CDT): Cursor's install layout and Switchboard's worktree layout as
+   * they are on the host. `~/.local/bin/cursor-agent` is a symlink to a versioned bash launcher that finds its sibling
+   * runtime through `realpath "$0"`; the fake runtime runs each tool call the way Cursor's shell tool does
+   * (`${SHELL:-/bin/sh} -c <command>`; SHELL is not in the allowlist) and reports its exit code. The worktree is a real
+   * `git worktree add` whose gitdir lives in the main repository beside it, so inside the wrapper Git finds no
+   * repository: a commit is attempted and fails, and the host refs stay unchanged.
+   */
+  it("tool runtime: a symlinked Cursor-shaped launcher starts; ls and cat work; Git and the canaries fail closed", () => {
+    const l = leg();
+    const gitEnv = { PATH: process.env.PATH ?? "", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+    const g = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        "git",
+        ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args],
+        {
+          cwd,
+          env: gitEnv,
+          encoding: "utf8",
+        },
+      ).trim();
+    g(l.repo, "init", "-q", "-b", "main");
+    writeFileSync(path.join(l.repo, "README.md"), "# synthetic\n");
+    g(l.repo, "add", "README.md");
+    g(l.repo, "commit", "-q", "-m", "init");
+    const wt = path.join(l.root, "data", "worktrees", "sess", "run");
+    mkdirSync(path.dirname(wt), { recursive: true });
+    g(l.repo, "worktree", "add", "-q", "-b", "switchboard/run", wt);
+    const refs = () => g(l.repo, "for-each-ref", "--format=%(refname) %(objectname)");
+    const refsBefore = refs();
+
+    const version = path.join(l.home, ".local", "share", "cursor-agent", "versions", "9.9.9-synthetic");
+    const shim = path.join(l.home, ".local", "bin", "cursor-agent");
+    mkdirSync(version, { recursive: true });
+    mkdirSync(path.dirname(shim), { recursive: true });
+    const launcher = ["#!/usr/bin/env bash", "set -euo pipefail", 'SCRIPT_DIR="$(dirname "$(realpath "$0")")"'];
+    writeFileSync(path.join(version, "cursor-agent"), [...launcher, 'exec "$SCRIPT_DIR/node" "$@"', ""].join("\n"));
+    const tool = (label: string, cmd: string) =>
+      `out=$("\${SHELL:-/bin/sh}" -c ${JSON.stringify(cmd)} 2>&1); echo "TOOL ${label} rc=$? $out"`;
+    writeFileSync(
+      path.join(version, "node"),
+      [
+        "#!/bin/sh",
+        'echo "RUNTIME started"',
+        tool("ls", "ls"),
+        tool("cat", "cat README.md"),
+        tool("status", "git status --short"),
+        tool("commit", "git -c user.name=x -c user.email=x@example.invalid commit --allow-empty -m probe"),
+        tool("outside", `cat ${l.files.outside}`),
+        tool("cred", `cat ${l.files.cred}`),
+        "",
+      ].join("\n"),
+    );
+    chmodSync(path.join(version, "cursor-agent"), 0o755);
+    chmodSync(path.join(version, "node"), 0o755);
+    symlinkSync(path.join(version, "cursor-agent"), shim);
+
+    const a = new CursorAdapter({ executable: shim, bwrap, home: l.home, tmpDir: TMP });
+    const inv = compileOk(a, wt);
+    // The resolved launcher is argv[0] inside: the `~/.local/bin` symlink sits under the hidden HOME.
+    expect(inv.argv).toContain(path.join(version, "cursor-agent"));
+    const r = spawnInv(inv, l.home);
+    expect(r.status, r.stderr).toBe(0);
+    const out = r.stdout;
+    expect(out, out).toContain("RUNTIME started");
+    expect(out, out).toMatch(/TOOL ls rc=0 README\.md/);
+    expect(out, out).toMatch(/TOOL cat rc=0 # synthetic/);
+    // The worktree's gitdir (`<repo>/.git/worktrees/run`) is outside the worktree and stays hidden: no bind widens it.
+    expect(out, out).toMatch(/TOOL status rc=128 fatal: not a git repository/);
+    expect(out, out).toMatch(/TOOL commit rc=128 fatal: not a git repository/);
+    expect(out, out).toMatch(/TOOL outside rc=1 .*No such file or directory/);
+    expect(out, out).toMatch(/TOOL cred rc=1 .*No such file or directory/);
+    for (const t of [l.tokens.outside, l.tokens.cred]) expect(out).not.toContain(t);
+    expect(refs()).toBe(refsBefore);
   });
 });
