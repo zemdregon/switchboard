@@ -170,9 +170,9 @@ specified in [LLD §14.11](LLD.md#1411-admission-context-pack-t125),
 [SDD §4.1 (T12.5)](SDD.md#41-comp-rag-implementation-evidence-m12-t121t123), and built by T12.5 on fakes (differences
 from the design are listed at the end of LLD §14.11). The sequence is in [§6.6](#66-retrieval-for-a-run-wf-14-m12-proposed).
 Operator `index` commands and `doctor` retrieval reporting are built by T12.4; MCP `search_project_context`
-is built by T12.6 (Done on fakes) and the deployment-wide index is built by T12.7 (Partial since 2026-10-19,
-owner ruling: the tool's `global`/`both` scopes still answer `GLOBAL_NOT_AVAILABLE`; ROADMAP §6.7); their contracts
-are cited from LLD §14 where applicable.
+is built by T12.6 (Done on fakes) and the deployment-wide index is built by T12.7 (Done on 2026-10-19,
+Delegated agent work, not owner-approved; the tool's `global`/`both` scopes read the global store; ROADMAP §6.7); their
+contracts are cited from LLD §14 where applicable.
 
 #### T12.1 — configuration and per-project store
 
@@ -438,7 +438,8 @@ modules from nowhere outside `src/inner/`, and not imported by the `inner test` 
   `ARGV_AUDIT` spawns nothing; an eligible gate spawns only the TDD §4.6 tool-free argv with the deny-all environment
   and an empty argv audit; a tool call in the stream is refused), `src/inner/cli-doctor-surfaces.test.ts` and
   `src/cli/inner.test.ts` (the shipped surfaces stay `no_backend`/`Ineligible` with no process). Modules:
-  `src/inner/cli-backend.ts` (`CLI_TOOL_FREE_VERIFICATION` null; the shipped manifest range `<0.0.0`, so a configured
+  `src/inner/cli-backend.ts` (`CLI_TOOL_FREE_VERIFICATION` null; the shipped manifest range `>=2.0.23 <2.1.0`
+  since the T4.58 live pass (the null verification alone keeps the gate closed), so a configured
   `cli` kind stays `no_backend`). Done 2026-10-18 on the gate (owner decision 66); no OpenCode release through v2.0.32
   offers a tool-free control ([TDD §4.6.7](TDD.md#467-t110-live-result-2026-10-17)).
 

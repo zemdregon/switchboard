@@ -517,3 +517,33 @@ as history.
 - Left unchanged: re-wording another lane's waiting list would endorse
   its Done claims (cf. items 8, 24 and 29 above). It does not block
   PR #713.
+
+## 33. `opencode.json` notes and `adapter.ts` header still read "admits no version" (PR #726, out of scope)
+
+- Renumbered from 26 when PR #713 merged `main`: both branches added an
+  item 26; PR #713 items 26 to 32 kept their numbers.
+- PR #726 updates `src/adapters/manifests/opencode.json` to
+  `validated_cli_version` `2.0.23`, range `>=2.0.23 <2.1.0`, with a dated
+  `Evidence (adapters validate, 2026-10-18)` line appended to `notes`.
+- The same `notes` string still opens with the T4.52 sentence "The range admits
+  no version (ADR-0009, ROADMAP 6.8 conventions): the adapter fails the version
+  gate with ADAPTER_VERSION_UNVERIFIED until `switchboard adapters validate
+  opencode` passes a version, so nothing here is a claim that any OpenCode
+  version is validated." That condition is now satisfied, so the sentence is
+  stale against the range in the same file. The `src/adapters/opencode/adapter.ts`
+  and `src/adapters/opencode/protocol.ts` header comments (each saying the
+  manifest range admits no version, so none of this runs before `adapters
+  validate` passes a version) are stale the same way.
+- Left unchanged: the manifest and the adapter are `src/**`, and this gate
+  edits documentation only (`*.md`, `docs/**`). Refreshing those sentences
+  needs a one-line `src/**` edit by the PR author (or a code-touching
+  follow-up), not an owner decision. It does not block PR #726 (the range
+  fields and the evidence line, which are what the gate and the version check
+  read, are correct).
+- Same shape, same scope: `src/inner/cli-backend.ts` ("`src/adapters/
+  manifests/opencode.json` admits no version (`<0.0.0`)") and
+  `src/inner/index.ts` ("The shipped OpenCode manifest admits no version")
+  still describe the pre-T4.58 range; both are `src/**`, so they are listed
+  here rather than fixed. The owner document for that range is the manifest
+  itself (range fields correct); the docs (`HLD.md` CLI-backend gate line,
+  ROADMAP T4.52 with an "at the time" qualifier) now state the current range.
