@@ -6711,7 +6711,8 @@ sets `GH_TOKEN` or `GITHUB_TOKEN` for these calls ([ADR-0050](../adr/0050-ci-sta
    the tip commit on that ref.
 2. When the latest relevant check or run has conclusion `failure`, and no `ci_trigger_event`
    row exists for `(project_id, external_id)`, insert the event row and enqueue one work item from `template_json` with
-   `source_kind = 'ci_trigger'`. *Amended by T15.6 (FR-QUE-06; before it this step also enqueued for `cancelled` and `timed_out`):* `cancelled` and `timed_out` are `CI_INFRA` and
+   `source_kind = 'ci_trigger'`. *Amended by T15.6 (FR-QUE-06; before it this step also enqueued for
+   `cancelled` and `timed_out`):* `cancelled` and `timed_out` are `CI_INFRA` and
    enqueue nothing ([§20.1](#201-ci-transient-handling-fr-que-06-t156)).
 3. Optional `untrusted_summary` (from an operator-forwarded notification) is stored length-capped; it is **not**
    passed to `delegate_task` objective unless the operator template explicitly references a controller substitution token
@@ -7215,7 +7216,8 @@ provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and par
 
 - **Classification.** Each conclusion the CI trigger reads (§18.6) maps to one class: `success`; `failure`; or
   `CI_INFRA` for `cancelled` and `timed_out` (settled in T15.6 against `gh` 2.102.0: no allowlisted field
-  reliably marks a runner fault inside a `failure`, so those stay code failures; see the as-built note below). `CI_INFRA` never increments `ci_trigger_ref_state.consecutive_fixes`.
+  reliably marks a runner fault inside a `failure`, so those stay code failures; see the as-built note below).
+  `CI_INFRA` never increments `ci_trigger_ref_state.consecutive_fixes`.
 - **Rerun once.** With `ci_trigger.projects[].rerun_failed: true` (default `false`), a `failure` or `CI_INFRA` run on
   a published ref's current head gets one `gh run rerun <run-id> --failed`. A new ledger table (migration 0024)
   keyed by `(project_id, publish_ref, head_sha, job_name)` makes the rerun happen at most once per key. The fix-up item
