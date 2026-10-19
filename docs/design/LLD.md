@@ -996,7 +996,9 @@ schema and fails on any unbounded node, so a new tool or field cannot silently r
       "artifacts": { "type": "object", "additionalProperties": { "type": "string" } },   // kind -> art_ id
       "approval": { "type": "object", "required": ["status","requested_at"], "properties": {   // privileged only (M3, §3.1)
           "status": { "enum": ["PENDING","APPROVED","DENIED"] }, "requested_at": { "type": "string" } } },
-      "usage": { "type": "object", "properties": { "reported": {}, "estimated": {}, "capacity_confidence": { "type": ["number","null"] } } } } } } }
+      "usage": { "type": "object", "properties": { "reported": {}, "estimated": {}, "capacity_confidence": { "type": ["number","null"] } } },
+      "verification": { "type": "object", "properties": { "verified_at_sha": {}, "tree_sha": {}, "stale": {} } },  // T8.10 (FR-EXE-10): newest verification pin; `stale` computed on read, see §20.6
+      } } } }
 ```
 
 The envelope never contains raw transcripts or credential material (FR-MCP-04); `provider_stdout`/`provider_stderr`
@@ -1070,7 +1072,7 @@ meta-session (collected by retention GC, [§5](#5-workspace-and-lease-algorithm)
 (type and bounded payload; no raw output).
 **`cancel_run`** `{ run_id, reason? }` returns the envelope; cancellation is asynchronous (WF-4) and the status may
 still be non-terminal. Cancelling a terminal run is a no-op returning its envelope.
-**`get_artifacts`** `{ run_id, kinds?: ["diff"|"test_report"|"changed_files"|"log_summary"|"handoff_view"|"pr_draft"|"handoff_condense"],
+**`get_artifacts`** `{ run_id, kinds?: ["diff"|"test_report"|"changed_files"|"log_summary"|"handoff_view"|"pr_draft"|"handoff_condense"|"docs_alignment"],
 max_inline_bytes?: int }` returns `[{artifact_id, kind, sha256, size_bytes, inline_text?}]`; inline only when under
 `max_inline_bytes` (default 65536, proposed target). `pr_draft` exists only when the PR-draft task produced an accepted
 draft (M11, [§13.6](#136-task-contracts)); Switchboard never opens a pull request with it (FR-INN-11). `handoff_condense`
