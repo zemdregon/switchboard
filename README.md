@@ -2889,7 +2889,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   own `__proto__` key) is still not seen by the guard. FR-POL-04 cannot hold in the only
   compiled scope because repository configuration is `enabled` and `opencode.json` and `AGENTS.md` load with no approval
   (live check rows 10a, 10c; owner decision 26). Closing the remaining gap needs operator capture of native refusal
-  fields (T4.58) or an owner decision on classifying `status` `error`. See ROADMAP T4.56 for the full gap list.
+  fields (a T4.51 extension) or an owner decision on classifying `status` `error`. See ROADMAP T4.56 for the full gap list.
 - **Kimi Code was validated on synthetic fixtures only (ROADMAP T4.62 to T4.67) until `adapters validate kimi`
   passed live on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68: manifest, probe, auth `OK`, static conformance and one
   structured-output smoke call). Under owner decision 65, T4.63, T4.64 and T4.66 are Done against their Done-when
