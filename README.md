@@ -1382,8 +1382,8 @@ output in `src/inner/cli-doctor-surfaces.test.ts`; the `no_backend` state is rea
 through the `cli` kind, because the config refuses `enabled: true` without a backend. No hosted or live backend has
 been exercised: every test uses a scripted fake or a local fake server. The per-task test and module
 evidence behind these statements, and the list of what is not built, is in
-[HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes),
-[SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) and the
+[HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes),
+[SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) and the
 [TDD §3.12](docs/design/TDD.md#312-inner-agent) as-built note
 ([PR #353](https://github.com/zemdregon/switchboard/pull/353)).
 
@@ -2869,8 +2869,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   [LLD §13.8](docs/design/LLD.md#138-telemetry-and-events) is not emitted (no span exporter exists); the pipeline
   writes a body-free `inner.call` log line instead. What the suite proves per task, and what is not built, is recorded
   in the [TDD §3.12](docs/design/TDD.md#312-inner-agent) as-built note,
-  [HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) and
-  [SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) (merged as
+  [HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) and
+  [SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) (merged as
   [PR #353](https://github.com/zemdregon/switchboard/pull/353)). See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 
