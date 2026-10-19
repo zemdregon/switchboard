@@ -272,7 +272,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   guard-only Git writes, [#367](https://github.com/zemdregon/switchboard/pull/367)) and Git declaration
   fixture tests on synthetic fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
   smoke passed and the live malicious leg ran on 2026-10-19 (smoke `outcome=ok`, 11 held; malicious `outcome=failed`
-  with U-M2/U-M3 ESCAPED and U-M1 NOT_CHECKED), so T4.48 stays `Partial` pending an owner ruling or a re-run; the 2026-10-19 `adapters validate cursor` run passed
+  with U-M2/U-M3 ESCAPED and U-M1 NOT_CHECKED), so T4.48 stays `Partial` pending an owner
+  ruling or a re-run; the 2026-10-19 `adapters validate cursor` run passed
   the probe (Cursor CLI 2026.10.16), auth, 11 static conformance checks and the smoke (owner decision 59), so the
   manifest admits `>=2026.10.16 <2026.11.0`. OpenCode has module, compile-matrix,
   probe, registry entry, parser (Done against its Done-when under owner decision 65 (a): T4.53; native limit and
@@ -465,8 +466,10 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `outer_sandbox.required_profiles` | no | List of distinct non-privileged profile names (default empty, which changes nothing). A listed profile is refused with `ELIGIBILITY_NONE` unless bubblewrap and `prlimit` work on the host; because this build does not yet wrap the provider process, a listed profile is refused even when both work (`OUTER_SANDBOX_NOT_ENFORCED`). `doctor` reports the check. See [Trust profiles](#trust-profiles) and LLD section 8.4. |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`, `muse-code`. Only
-`claude-code`, `codex`, `opencode`, `kimi-code`, `antigravity` and `cursor` pass the version gate on `main` today; the other ids
-(`grok-build`, `muse-code`) name registered M4 adapters whose manifests admit no version until `switchboard adapters validate` passes a live CLI
+`claude-code`, `codex`, `opencode`, `kimi-code`, `antigravity` and `cursor` pass the version
+gate on `main` today; the other ids
+(`grok-build`, `muse-code`) name registered M4 adapters whose manifests admit no version
+until `switchboard adapters validate` passes a live CLI
 (ROADMAP §6.8.2). `<id>` is the *config* id. The *provider* id used in
 `routing.provider_preference` of `delegate_task` is the adapter id: `claude`
 for Claude Code (config id `claude-code`), `codex` for Codex. `max_trust_profile` accepts any of the five profile

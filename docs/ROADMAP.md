@@ -3192,7 +3192,9 @@ fake agent, FR-ADP-05, FR-ADP-10, FR-ADP-11 on fixtures, NFR-PORT-02 on the macO
 (2026-10-17, Delegated, not owner-approved):* M4 is `Partial`, and the M4 row in §6 names the same open items as this
 list. `Done` also needs:
 
-1. **The operator, live legs:** T4.28 (Grok Build), T4.38 (Antigravity, Done 2026-10-19), T4.48 (Cursor; `adapters validate` passed and both legs ran on 2026-10-19, row stays `Partial`, Done blocked pending an owner ruling or a re-run — see T4.48) and T4.68
+1. **The operator, live legs:** T4.28 (Grok Build), T4.38 (Antigravity, Done 2026-10-19),
+   T4.48 (Cursor; `adapters validate` passed and both legs ran on 2026-10-19, row stays
+   `Partial`, Done blocked pending an owner ruling or a re-run — see T4.48) and T4.68
    (Kimi Code): live smoke, live malicious leg and `adapters validate` (T4.58 Done 2026-10-19: OpenCode's
    `adapters validate` cell passed live on 2026-10-18 under owner decisions 60 and 68, CLI 2.0.23, range
    `>=2.0.23 <2.1.0`, and its live smoke and live malicious leg ran on 2026-10-19 with no check ESCAPED;
@@ -3229,7 +3231,8 @@ list. `Done` also needs:
    conversation-id check; the live resume run did not happen in T4.38 (no resume check ran) and stays in the
    T4.38 operator remainder, item 1).
    Residual risk: native shapes for Grok Build, OpenCode and Kimi Code remain synthetic until their T4.n8
-   runs; Cursor's remain synthetic after its T4.n8 run (T4.48 ran 2026-10-19 without recording new native-shape captures — see
+   runs; Cursor's remain synthetic after its T4.n8 run (T4.48 ran 2026-10-19 without
+   recording new native-shape captures — see
    T4.48); Antigravity's remain synthetic after its T4.n8 run (T4.38 ran 2026-10-19 without capturing them — see
    T4.38).
 3. **README rows, final after their T4.n8:** T4.29, T4.39, T4.49, T4.69 and T4.79 are `Done except the
