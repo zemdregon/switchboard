@@ -988,7 +988,8 @@ with a section 4.2 decision and section 8 row."
     *Delegated reading, not zemdregon's words.* T4.12 (live smoke and live malicious leg for Claude Code and Codex on
     macOS) is optional for M4 criterion 2 ("the test suite passes on macOS", already covered by the T4.10 CI leg). No
     Mac is available on the operator host, and live provider runs never run in CI (the macOS job ran the suite only;
-    removed 2026-10-19), so the row is Deferred until a Mac with native Claude Code and Codex logins is available. Reopen trigger:
+    removed 2026-10-19), so the row is Deferred until a Mac with native Claude Code and Codex logins is available.
+    Reopen trigger:
     such a Mac exists; the row then returns to Planned with its operator-only note. This decision flips no other row
     and changes what no bypass run may do.
 
