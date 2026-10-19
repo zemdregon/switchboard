@@ -26,6 +26,7 @@ const EXPECTED_TABLES = [
   "decision",
   "dependency_seed",
   "dependency_seed_use",
+  "eval_result",
   "gc_orphan",
   "git_commit",
   "git_push",
@@ -595,6 +596,30 @@ describe("ledger migrations", () => {
         )
         .run(),
     ).toThrow(/UNIQUE/u);
+  });
+
+  it("0024 adds eval_result on a version 23 database; pass needs exit code 0 (T8.14, FR-OPS-06, LLD §20.13)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const d = db;
+    const upTo23 = MIGRATIONS.filter((m) => m.version <= 23);
+    expect(migrate(d, undefined, upTo23)).toEqual(upTo23.map((m) => m.version));
+    expect(
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 24),
+      ),
+    ).toEqual([24]);
+    const insert = d.prepare(
+      `INSERT INTO eval_result (id, suite, task_id, provider, run_id, run_state, pass, test_exit_code, grade_error,
+         wall_clock_ms, created_at) VALUES (?, 's', 't', 'fake', NULL, NULL, ?, ?, NULL, 5, '2026-10-19T00:00:00Z')`,
+    );
+    insert.run("evl_1", 1, 0);
+    insert.run("evl_2", 0, 1);
+    expect(() => insert.run("evl_3", 1, 1)).toThrow(/CHECK/u);
+    expect(() => insert.run("evl_4", 2, 0)).toThrow(/CHECK/u);
+    expect(d.prepare("SELECT usage_json FROM eval_result WHERE id = 'evl_1'").get()).toEqual({ usage_json: "[]" });
   });
 
   it("git_commit and git_push are append-only and enforce their foreign keys and checks (LLD §1)", () => {

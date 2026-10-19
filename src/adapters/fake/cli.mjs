@@ -42,7 +42,8 @@
 // `edit_files` (T9.7, FR-GIT-09) plays an agent WITHOUT a tool channel: the objective on stdin is a JSON plan
 // `{"files": {"<rel path>": "<content>" | null}, "summary": "<text>" | null, "ok": true}`; it writes (or, for null,
 // deletes) the files in its working directory and ends with a `result` event carrying the summary (none when null).
-// `ok: false` ends as a task failure (exit 1). No Git command is run.
+// `ok: false` ends as a task failure (exit 1). No Git command is run. An optional `"usage": {...}` object of numbers is
+// reported as one `usage` event before the result (T8.14).
 //
 // Handoff prompts (T5.5, LLD §15.5; additive): a plan scenario reads its JSON plan from the text after the first line
 // that is exactly `[instruction from the orchestrator]`, when there is one (the rendered bundle comes before it); a
@@ -228,6 +229,11 @@ async function editFilesScenario() {
   }
   const ok = plan.ok !== false;
   const summary = typeof plan.summary === "string" ? plan.summary : undefined;
+  // T8.14 (additive): `"usage": {"input_tokens": n, ...}` reports provider usage, for the evaluation's usage column.
+  if (typeof plan.usage === "object" && plan.usage !== null) {
+    const metrics = Object.fromEntries(Object.entries(plan.usage).filter(([, v]) => typeof v === "number"));
+    emit({ type: "usage", ...metrics });
+  }
   if (!ok) emit({ type: "error", category: "tool", message: "task failed" });
   emit({ type: "result", ok, ...(summary !== undefined ? { summary } : {}) });
   if (!ok) process.exitCode = 1;

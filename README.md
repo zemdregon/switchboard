@@ -666,6 +666,11 @@ digest that already ends in `0`.
 schedule `switchboard adapters version-canary` (cron, systemd timer or equivalent); CI uses injected versions only.
 Details: [docs/operations/version-canary.md](docs/operations/version-canary.md).
 
+**Own-repository evaluation (T8.14).** `switchboard eval run <suite> --provider <id>` replays a suite of your own past
+tasks from `<data_dir>/eval/<suite>.json` as normal runs, grades each in a network-off container with hidden tests the
+agent never sees and records pass, wall-clock time and usage in `eval_result`. It is opt-in, skipped in CI, and a real
+provider needs `--live-budget <file>`. Details: [docs/operations/evaluation.md](docs/operations/evaluation.md).
+
 **CI version-bump test (T8.6).** `src/adapters/version-bump-preflight.test.ts` (suite
 `version bump through preflight cache invalidation (T8.6)`) simulates a binary identity change, invalidates the
 preflight cache, and asserts routing excludes the provider until validation records the new version. No provider CLI is
@@ -1176,6 +1181,7 @@ subsections below give the full behaviour; `switchboard --help` prints the same 
 | `capacity [--provider <id>]` | Per-provider capacity projection: the same data as the `get_capacity` MCP tool (read-only) | `--provider`, `--json` | [Capacity, retries and failover](#capacity-retries-and-failover) |
 | `affinity list`, `affinity reset <project_key>` | Show each project's provider affinity; make the next routing step choose afresh | `--json` | [Routing and affinity](#routing-and-affinity) |
 | `index status`, `index rebuild`, `index clear` | Retrieval index state per store; request a rebuild; delete a store's vectors | project/global argument, `--json` | [Retrieval index](#retrieval-index-milestone-12) |
+| `eval run <suite> --provider <id> [--live-budget <file>]`, `eval results <suite>` | Own-repository evaluation: replay a suite as runs, grade network-off with hidden tests, record `eval_result` (skipped in CI; real providers need a live budget) | `--provider`, `--live-budget`, `--json` | [docs/operations/evaluation.md](docs/operations/evaluation.md) |
 | `gc [--apply] [--dry-run]` | Retention clean-up: dry run by default; `--apply` collects (refused while `serve` runs or without `retention.days`) | `--apply`, `--dry-run`, `--json` | [Operator commands](#operator-commands) |
 | `projects list`, `projects show <id>`, `projects validate [<id>]`, `projects approve <id>` | List and inspect configured and dynamic projects, check them, approve or reject a pending dynamic revision | `--revision`, `--reject`, `--json` | [Dynamic projects](#dynamic-projects) |
 | `git push <id>` | Push a meta-session's published commits to the context's configured remote branch (never forced; refused while `serve` runs) | `--json` | [How commits reach Git](#how-commits-reach-git) |
