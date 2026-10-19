@@ -2025,7 +2025,7 @@ supervisor replay of `idless_guard.jsonl` (id-less Git write under `success` at 
 `main` ([#360](https://github.com/zemdregon/switchboard/pull/360); ROADMAP T4.43, [TDD §4.5.5](docs/design/TDD.md#455-cursor-parser-implementation-evidence-m4-t443)).
 A quota-stopped run has since been captured as stderr tails (T6.11 limit captures `cursor-*.txt`, newest
 2026-10-18T16:23Z: empty stdout, exit 1, `ActionRequiredError` with `out of usage`) and maps to `QUOTA_EXHAUSTED`
-in `classifyFailure` from the stderr tail (open PR #700, T6.15, ADR-0058); the `stream-json` shape of a quota stop
+in `classifyFailure` from the stderr tail (PR #700, T6.15, ADR-0058); the `stream-json` shape of a quota stop
 is still unrecorded, so the stream-parser path still ends `TOOL_FAILURE`. T4.43 is Done against its Done-when under
 owner decision 65 (a); T4.45 to T4.47 are `Done` against their Done-when on synthetic fixtures. Still open, carried
 by T4.48: a recorded `stream-json` quota-stop shape and any native backing-vendor field.
@@ -2412,7 +2412,11 @@ The `stream-json` parser (T4.63, [#436](https://github.com/zemdregon/switchboard
 one scrubbed 2.1.1 capture (`src/adapters/kimi/fixtures/captured_success.jsonl`, from the T4.61 validation run): `meta`
 `system.version` is ignored, `assistant` text is a message, `tool` output is never an event, and `meta`
 `session.resume_hint` binds `session_id` and ends the turn. Success also needs exit 0, so exit 0 without the hint ends
-`OUTPUT_PROTOCOL_ERROR` and a non-zero exit `TOOL_FAILURE`. A second hint, a changed or unsafe session id, an
+`OUTPUT_PROTOCOL_ERROR` and a non-zero exit `TOOL_FAILURE`. A 5-hour usage-limit stop has since been captured
+as a stderr tail (T6.11 limit captures `kimi-20261015T103850Z.txt`: exit 1, `provider.auth_error: 403 … 5-hour usage
+limit`) and maps to `QUOTA_EXHAUSTED` in `classifyFailure` from the stderr tail (PR #700, T6.15, ADR-0058); the
+`stream-json` shape of a usage-limit stop is still unrecorded, so the stream-parser path still ends `TOOL_FAILURE`.
+A second hint, a changed or unsafe session id, an
 `assistant` or `tool` record after the hint, and a tool call whose name or arguments cannot be read all end
 `OUTPUT_PROTOCOL_ERROR`. ACP messages use the shared mapping, with `-32000` as `AUTH_REQUIRED`. The `tool_calls`
 item and `tool` record fields are **Observed** since the T4.68 follow-up-2 `live-run.sh` capture (CLI 2.1.1;

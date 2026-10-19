@@ -12,7 +12,8 @@
   25](../ROADMAP.md#42-owner-decisions)) for everything else: the configuration shape, the request fields, the pacing
   arithmetic, the gate, the source labels and the defaults. Not owner-approved beyond the direction. Nothing here changes
   what a bypass run may do: groups and pacing only choose or delay among candidates that already passed the hard filter,
-  and affinity still never moves a `privileged` meta-session to another provider.
+  and affinity still never moves a `privileged` meta-session to another provider. Item 11 is superseded in part by
+  [ADR-0058](0058-captured-limit-signatures.md) for captured distinctive signatures (owner decision 64, 2026-10-18).
 - Extends: [ADR-0007](0007-capacity-as-confidence-estimate.md) (tier-aware capacity as an estimate),
   [ADR-0008](0008-two-stage-routing.md) (two-stage routing), [ADR-0032](0032-provider-model-affinity.md) (affinity) and
   [ADR-0044](0044-deterministic-route-scoring-and-replayable-decisions.md) (score and decision record), without editing
@@ -134,13 +135,8 @@ All Proposed and Delegated except the direction itself; every number is an Assum
     replay as before. `explain_route` lists the group, the chosen member and the pacing factors. `get_capacity`,
     `switchboard capacity` and `doctor` gain a per-subscription `pacing` block from the one projection (ADR-0043 item 6),
     computed on read like the estimate. No table and no migration are needed; `pacing_hold` is a bounded run event type.
-11. **Limit capture covers every provider** (FR-CAP-11, T6.11). The operator captures what each CLI (Claude Code, Codex,
-    Cursor, Grok Build, Antigravity, OpenCode, Kimi Code, and Muse Code once it has a login) prints on a rate limit,
-    overload, quota stop or usage report. The captures come only from the budgeted live-run channel and from the
-    operator logs that already exist, never from generated load, and record key names, event types, exit codes and reset
-    fields, never account identifiers or transcript content. An adapter maps a signal to a taxonomy code only from
-    structured output (FR-ADP-04). A signal that a CLI gives only as free text stays unclassified until a decision says
-    otherwise (Q-100). A sourced usage or reset key enters `USAGE_KEYS` only through its own task (T6.15).
+11. **Limit capture covers every provider** (FR-CAP-11, T6.11). Superseded by ADR-0058 for captured distinctive
+    signatures.
 
 ## Alternatives considered
 
