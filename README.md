@@ -27,8 +27,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ROADMAP §6.2](docs/ROADMAP.md#62-m2-claude-code-adapter-and-mcp-slice-tasks).
 - **Milestone 3 (isolation) is `Partial`.** Trust profiles and overrides, approvals (`approve`, `deny`), privileged
   runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
-  implemented and tested on fakes. Not done: the operator's live malicious-fixture leg (T3.9) and the adversarial
-  fake-provider scenarios awaiting zemdregon's review (T3.8b). See
+  implemented and tested on fakes, as are the controller confinement checks of T3.8b (owner decision 63; credential
+  reads, network egress and a push to an explicit URL are not enforced on the fake by design). Not done: the
+  operator's live malicious-fixture leg (T3.9). See
   [ROADMAP §6.5](docs/ROADMAP.md#65-m3-isolation-tasks) for each task.
 - **Milestone 9 (projects and controlled commits) is `Partial`.** Projects, the agent `commit` tool, finalize-only
   commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
@@ -133,7 +134,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   run) and [#407](https://github.com/zemdregon/switchboard/pull/407) (`get_run` byte-identical over Streamable HTTP
   and from a second session; a `shares_subscription_with` value that is no provider config id refused at `doctor`
   and `inner test`). See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
-- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes: the spike, `rag`
+- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.6 are done on fakes and T12.7 is `Partial`
+  (2026-10-19, owner ruling: global/both scope returns GLOBAL_NOT_AVAILABLE on main; fix in #728 /
+  sb/2026-10-18-fix-t127-search-global (f8c3fc5f)): the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
   behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
   and a `doctor` section, an untrusted context pack at admission that never changes the stored request or the
@@ -185,9 +188,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   prevention, the adapter declarations, the MCP tools, continuity across handoff and resume and the malicious-fixture
   leg are built (T16.1 to T16.7, T16.9 to T16.11). The M16 acceptance file (`src/mcp/m16-acceptance.test.ts`, T16.12)
   runs one test per clause of the milestone's acceptance column through a scripted MCP client on the fake adapter.
-  Not run: the operator live checks that would let a real provider's native skill location be used (T16.8,
-  operator-only, not required for `Done`), so every real provider delivers skills as a prompt prefix, and no skill
-  has been delivered to a live provider through Switchboard yet.
+  Not required for `Done`: the operator live checks are Done for the four T16.8 candidates (2026-10-19, decision 70:
+  Claude Code `NOT_LOADED`, Grok Build, Cursor and Muse Code `NOT_CHECKED`, operator-only), so every real provider
+  delivers skills as a prompt prefix, and no skill has been delivered to a live provider through Switchboard yet.
   See [Switchboard-controlled skills (milestone 16)](#switchboard-controlled-skills-milestone-16),
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
@@ -820,7 +823,8 @@ Not enforced:
   copy its text into another file, which then reaches a commit. Path exclusion catches the recorded path, not the
   copy. Native delivery is off for every real provider until T16.8 verifies a cell, and `add` refuses secret-shaped
   text, so a copy exposes operator instructions, not credentials.
-- No real provider's native skill location is verified (T16.8 is operator-only). Prompt-prefix delivery has not been
+- No real provider's native skill location is verified (T16.8 Done 2026-10-19, decision 70: Claude Code `NOT_LOADED`;
+  Grok Build, Cursor and Muse Code `NOT_CHECKED`). Prompt-prefix delivery has not been
   observed on a live provider through Switchboard either; the acceptance tests run on fakes.
 
 ### Status and tests
@@ -2087,7 +2091,8 @@ Config id `opencode`; routing and `list_capabilities` id `opencode`. Switchboard
 2026-10-14 in [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md),
 `opencode v2.0.23`). The prompt is one argv word after `--`, not stdin (an Assumption in the adapter). Every compiled
 invocation sets `OPENCODE_DISABLE_AUTOUPDATE=1` with an environment allowlist of `PATH` and `HOME` only. Switchboard never
-sets `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` (ignored on that version in the live check).
+sets `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` (env/inline config ignored on that version in the live
+checks, reconfirmed 2026-10-18).
 
 The compliance manifest range admits no version until an operator runs `switchboard adapters validate opencode` and
 commits the manifest diff (ROADMAP T4.58). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for OpenCode. The
@@ -2105,7 +2110,8 @@ runs `opencode auth list --format json --standalone` during preflight.
 
 The adapter compiles only what [TDD §4.6.1](docs/design/TDD.md#461-opencode-native-controls-per-profile-and-platform-t450)
 records for the 2026-10-14 live check (Q-64, Q-83): every profile other than an approved `privileged` bypass scope is
-refused (`PROFILE_UNSUPPORTED`), because no per-run deny took effect, the default runs shell commands including Git
+refused (`PROFILE_UNSUPPORTED`), because no env/inline per-run deny took effect (a project-config deny takes effect but
+matches lexically only: row 7 ESCAPED on 2026-10-18), the default runs shell commands including Git
 writes, no sandbox is documented and a repository's `opencode.json` and `AGENTS.md` load.
 
 | Profile | Available now | Effect in this version |
@@ -2155,8 +2161,9 @@ they stay unset ([#290](https://github.com/zemdregon/switchboard/pull/290)). The
 live check (`error.status`, `error.response`, `timestamp`, `messageID`, `step_start.snapshot`) never widen the usage
 record or reach an event; HTTP 429 `status` on an unmapped error type is never `RATE_LIMIT_TRANSIENT`; session ID
 aliases (`sessionId`, `session_id`) never bind a session; model aliases (`model_id`, `modelId`) never set model;
-and input aliases (`cmd`, `CommandLine`, `file_path`, `AbsolutePath`) never populate command or target (Assumption
-gap: input keys unrecorded). `ParseState` instances isolate `seenParts` WeakMap state across separate runs. Clean
+and input aliases (`cmd`, `CommandLine`, `file_path`, `AbsolutePath`) never populate command or target (input key
+names recorded 2026-10-18: `command` was the only key on every shell `tool_use`; values never captured, so other
+spellings stay Assumptions). `ParseState` instances isolate `seenParts` WeakMap state across separate runs. Clean
 turns without text leave summary undefined; long text is clipped to 2,000 characters; and bounds clipping limits tool
 name to 64 chars and target to 512 chars ([#311](https://github.com/zemdregon/switchboard/pull/311)). The
 `classifyFailure` precedence chain is pinned on synthetic fixtures: supervisor exit outcomes (`protocol_error`,
@@ -2172,9 +2179,12 @@ clean run without summary, an error with structured `type` and no string message
 none or non-string, root session ID wins over part on the same line, empty id is absent, `backing_provider`/`model`
 fall back to part while a non-string root value shadows the part (dropped, never merged), and `step_finish` without a
 part id is counted every time while one with no readable counters emits no usage but still the result.
-Rate-limit and permission-denial stream shapes and the keys of `tool_use.part.state.input` are still unrecorded (no real
+Rate-limit and sandbox stream shapes are still unrecorded (no real
 OpenCode limit capture exists yet; a limitation carried by ROADMAP T4.58 under owner decision 65 (a), with T4.53 Done
-against its Done-when on synthetic fixtures). Supervisor-replayed JSONL fixtures pin today's gaps without inventing
+against its Done-when on synthetic fixtures). A project-config denial shape was recorded on 2026-10-18 (plain
+`git commit`/`git push` denied as a shell `error` with refusal text; spelling variants escaped), and shell
+`tool_use` input key names are recorded (`command` the only key; values never captured). Supervisor-replayed JSONL
+fixtures pin today's gaps without inventing
 native fields
 ([#274](https://github.com/zemdregon/switchboard/pull/274),
 [#290](https://github.com/zemdregon/switchboard/pull/290),
@@ -2202,14 +2212,17 @@ replays a non-string `part.type` followed by `stop` to `OUTPUT_PROTOCOL_ERROR`
 no message at exit 1 to `AUTH_REQUIRED` ([#357](https://github.com/zemdregon/switchboard/pull/357)); and
 `part_session_empty_text` replays a part-only `sessionID`, empty text and an id-less `stop` at exit 0 to success with
 the id bound and no summary ([#357](https://github.com/zemdregon/switchboard/pull/357)). Closing the remaining gaps
-needs operator captures of native refusal fields and of `tool_use` input keys (ROADMAP T4.58). T4.53 is `Done` against
+needs operator captures of native refusal field values and of `tool_use` input values (key names recorded
+2026-10-18; ROADMAP T4.58). T4.53 is `Done` against
 its Done-when on synthetic fixtures (owner decision 65 (a)) with those native shapes carried by T4.58; T4.52, T4.54,
 T4.55 and T4.57 are `Done` against their Done-when on synthetic fixtures.
 
 ### Git and commits
 
 `list_capabilities` reports `gitWriteControl` **`none-documented`**: OpenCode documents `bash` deny patterns in
-configuration, but on opencode v2.0.23 no per-run deny took effect in the live check, so Switchboard does not emit a
+configuration, but on opencode v2.0.23 a project-config deny holds only for lexical matches (row 7 ESCAPED on
+2026-10-18: plain `git commit`/`git push` denied, `git -C . commit`, `env git commit` and `sh -c 'git commit'`
+committed), so Switchboard does not emit a
 deny rule. Shell allowlist entries that could write Git make the run `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01),
 including on an approved bypass scope.
 
@@ -2789,8 +2802,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   of those keys stays invisible to the guard; a hostile call without a Git write still ends `ok` in bypass runs
   (pinned). Live blocked outcomes need T4.38. See ROADMAP T4.36 for the full gap list.
 - **OpenCode malicious-fixture leg is Done against its Done-when on fixtures only (ROADMAP T4.56, owner decision 65 (b));
-  the OpenCode parser likewise (ROADMAP T4.53, owner decision 65 (a)): no native rate-limit, denial or sandbox shape
-  exists (no real OpenCode limit capture has been made), the `tool_use` input keys are unrecorded, and a native vendor
+  the OpenCode parser likewise (ROADMAP T4.53, owner decision 65 (a)): no native rate-limit or sandbox shape
+  exists (no real OpenCode limit capture has been made); a project-config denial shape and shell `tool_use` input
+  key names were recorded on 2026-10-18 (`command` the only key; values never captured), and a native vendor
   or model in the stream was observed absent on 2026-10-17, all carried by T4.58.** CI runs
   `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/opencode.case.ts` on synthetic `--format json` streams (no `opencode` installed; no
