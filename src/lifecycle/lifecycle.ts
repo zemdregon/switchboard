@@ -105,6 +105,15 @@ import {
   CLOSED_BREAKER,
 } from "../capacity/breaker.js";
 import {
+  DEFAULT_LOAD_RECHECK_MS,
+  type HostLoadGate,
+  LIGHT_RUN_EVENT,
+  LOAD_HOLD_EVENT,
+  LOAD_RELEASE_EVENT,
+  nextLoadHeld,
+  readLoad1,
+} from "../capacity/host-load.js";
+import {
   PACING_HOLD_EVENT,
   type PacingDeferral,
   type PacingGateSettings,
@@ -398,6 +407,11 @@ export interface SubmitRequest {
    * The request fields, when given, are stored in `request_json` and so are part of the default `request_hash`.
    */
   readonly skills?: SkillAdmissionPort;
+  /**
+   * T3.24 (FR-CAP-12, LLD §20.2): the run is exempt from a host load hold. The caller sets it only for a client
+   * configured `allow_light: true`; the admission transaction records a `light_run` event, read at dispatch.
+   */
+  readonly light?: boolean;
 }
 
 /**
@@ -727,6 +741,15 @@ export interface RunLifecycleOptions {
    */
   readonly diskFloor?: DiskFloorGate;
   /**
+   * T3.24 (FR-CAP-12, LLD §20.2): the host load hold (`host.max_load1`, `host.resume_load1`). Unset (the default): the
+   * load average is never read and dispatch is unchanged. Set: `pump()` reads it once per dispatch pass while runs are
+   * queued; above the maximum a hold episode starts and lasts until the load is below the resume value. During it every
+   * queued run not admitted `light` stays `QUEUED` with one `load_hold` event per episode, and gets one `load_release`
+   * when the episode ends; the wake timer re-reads every `recheckMs`. Running runs are never signalled, and admission
+   * (`submit`) is unaffected. An unreadable load never holds.
+   */
+  readonly hostLoad?: HostLoadGate;
+  /**
    * T6.8 (FR-CAP-10, BR-51, LLD §16.9): `capacity.subscriptions` and `capacity.pacing`, passed only when the file sets
    * them. Unset: no pacing figure is read and admission and dispatch are unchanged. Set with mode `gate`: eligibility
    * answers carry each candidate's deferral (`PACING_DEFERRED` at selection), and `pump()` holds a queued run whose
@@ -918,6 +941,12 @@ export class RunLifecycle {
   /** T3.23: the early sweep in flight, and when the last one started (at most one per `recheckMs`). */
   private diskSweep: Promise<void> | undefined;
   private diskSweepAt: number | undefined;
+  /** T3.24: a host load hold episode is in progress; the runs that carry its `load_hold` event; light-run lookups. */
+  private loadHeld = false;
+  private readonly loadHeldRuns = new Set<string>();
+  private readonly lightRuns = new Map<string, boolean>();
+  /** T3.24: open `load_hold` events from before this process started have been adopted (once, on the first read). */
+  private loadAdopted = false;
   /** T6.8: the gate-open time each held run's latest `pacing_hold` event names (the ledger is read on first sight). */
   private readonly pacingHeld = new Map<string, string>();
   /** T8.2: wrapper-boundary span tracker; inert when no telemetry sink is configured. */
@@ -1175,6 +1204,8 @@ export class RunLifecycle {
           payload: { approval_id: privileged.approvalId, status: "APPROVED", reason: "client_policy" },
         });
       }
+      // T3.24 (FR-CAP-12): the honoured `light` flag, read by the host load hold at dispatch.
+      if (req.light === true) this.ledger.appendRunEvent({ runId: run.id, type: LIGHT_RUN_EVENT, payload: {} });
       // T16.4 (LLD §19.5 step 6, §19.11): the pinned set and its event, in this transaction. Nothing for an empty set.
       if (pinnedSkills?.event !== undefined) {
         pinnedSkills.write(run.id);
@@ -1606,6 +1637,7 @@ export class RunLifecycle {
     this.releaseDueWaiting();
     for (;;) {
       let held: DiskFloorStatus | undefined;
+      let loadHold = false;
       const picked = this.ledger.immediate((): RunRecord | undefined => {
         if (this.ledger.countRunsInStates(SLOT_STATES) >= this.opts.globalConcurrency) return undefined;
         const now = this.now();
@@ -1622,6 +1654,10 @@ export class RunLifecycle {
           }
           this.diskHeld.clear();
         }
+        // T3.24 (FR-CAP-12): above `host.max_load1` queued runs that are not `light` stay here until the load is below
+        // `host.resume_load1`. No gate configured: no read, same path as before.
+        loadHold =
+          queued.length > 0 && this.opts.hostLoad !== undefined && this.assessHostLoad(this.opts.hostLoad, queued);
         // T6.8 (LLD §16.9): read once per pass, only when pacing is configured and a run is queued.
         const deferrals =
           queued.length > 0 && this.opts.pacing !== undefined
@@ -1639,6 +1675,7 @@ export class RunLifecycle {
           if (limit !== undefined && run.provider !== null) {
             if (this.ledger.countRunsInStates(SLOT_STATES, run.provider) >= limit) continue;
           }
+          if (loadHold && !this.isLightRun(run.id)) continue;
           if (run.provider !== null && !this.pacingLetsThrough(run, deferrals)) continue;
           if (run.provider !== null && !this.breakerLetsThrough(run, now)) continue;
           return this.move(run, "PREFLIGHT", {}, { slot: "reserved" });
@@ -1648,6 +1685,9 @@ export class RunLifecycle {
       if (held !== undefined) {
         this.onDiskHold(held);
         return;
+      }
+      if (loadHold && this.opts.hostLoad !== undefined) {
+        this.scheduleWake(this.now().getTime() + (this.opts.hostLoad.recheckMs ?? DEFAULT_LOAD_RECHECK_MS));
       }
       if (!picked) return;
       this.launch(picked.id);
@@ -1680,6 +1720,59 @@ export class RunLifecycle {
     this.pacingHeld.set(run.id, d.until);
     this.scheduleWake(Date.parse(d.until));
     return false;
+  }
+
+  /**
+   * T3.24: one load read per dispatch pass, inside the dispatch transaction. Returns whether the pass holds. Every
+   * queued non-light run gets one `load_hold` event per episode; when the episode ends each held run still queued gets
+   * a `load_release`. On the first read after start, open holds left by an earlier process are adopted into the
+   * episode, so hysteresis and the one-event rule survive a restart.
+   */
+  private assessHostLoad(gate: HostLoadGate, queued: readonly RunRecord[]): boolean {
+    if (!this.loadAdopted) {
+      this.loadAdopted = true;
+      for (const run of queued) {
+        const last = this.ledger
+          .listRunEvents(run.id)
+          .filter((e) => e.type === LOAD_HOLD_EVENT || e.type === LOAD_RELEASE_EVENT)
+          .at(-1);
+        if (last?.type === LOAD_HOLD_EVENT) this.loadHeldRuns.add(run.id);
+      }
+      if (this.loadHeldRuns.size > 0) this.loadHeld = true;
+    }
+    const load1 = readLoad1(gate.reader);
+    const held = nextLoadHeld(this.loadHeld, load1, gate);
+    const ids = new Set(queued.map((r) => r.id));
+    for (const id of this.lightRuns.keys()) if (!ids.has(id)) this.lightRuns.delete(id);
+    if (!held) {
+      for (const id of this.loadHeldRuns) {
+        if (ids.has(id)) this.ledger.appendRunEvent({ runId: id, type: LOAD_RELEASE_EVENT, payload: { load1 } });
+      }
+      this.loadHeldRuns.clear();
+      this.loadHeld = false;
+      return false;
+    }
+    this.loadHeld = true;
+    for (const run of queued) {
+      if (this.loadHeldRuns.has(run.id) || this.isLightRun(run.id)) continue;
+      this.loadHeldRuns.add(run.id);
+      this.ledger.appendRunEvent({
+        runId: run.id,
+        type: LOAD_HOLD_EVENT,
+        payload: { reason: "LOAD_ABOVE_MAX", load1, max: gate.maxLoad1, resume: gate.resumeLoad1 },
+      });
+    }
+    return true;
+  }
+
+  /** T3.24: the run was admitted `light` (its `light_run` event); read from the ledger once per queued run. */
+  private isLightRun(runId: string): boolean {
+    let light = this.lightRuns.get(runId);
+    if (light === undefined) {
+      light = this.ledger.listRunEvents(runId).some((e) => e.type === LIGHT_RUN_EVENT);
+      this.lightRuns.set(runId, light);
+    }
+    return light;
   }
 
   /** T3.23: one `disk_hold` event per run per hold episode, inside the dispatch transaction. */

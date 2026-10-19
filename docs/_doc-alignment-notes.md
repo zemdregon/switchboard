@@ -732,3 +732,20 @@ as history.
   as-built-vs-review-label precedent). It does not block PR #762 (the live
   transport facts are stated in the M13 row, LLD §3.3 and LLD §20.8, which
   this PR updates where it touches them).
+
+## 42. SRS FR-CAP-12 "light admitted" vs the `allow_light` gate (pre-existing, not from PR #760)
+
+- [SRS FR-CAP-12](requirements/SRS.md) says "A request or work item marked
+  `light` is admitted while held", unconditionally.
+- The code honours `light` only for a client whose configuration sets
+  `mcp_clients[].allow_light: true` (default `false`); from any other
+  client the flag is ignored, not refused (`src/mcp/server.ts`,
+  `src/queue/admission.ts`, `src/lifecycle/lifecycle.ts`). [LLD
+  §20.2](design/LLD.md#202-host-load-hold-fr-cap-12-t324) (text predating
+  PR #760), the README config table and TDD §3.1 all document the gate as
+  Delegated least privilege.
+- PR #760 neither introduces nor worsens this: the SRS sentence and the
+  LLD gate text were both already on `main` before the branch; the PR
+  only adds the as-built note and marks T3.24 Done. Left unchanged:
+  narrowing the SRS guarantee to "from an allowed client" is the SRS
+  owner's call. It does not block PR #760.
