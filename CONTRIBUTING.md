@@ -45,6 +45,23 @@ that `npm pack` produces an installable tarball.
    The same checks run in the `docs-lint` workflow on every pull request.
 5. Open a pull request. Fill in the PR template.
 
+## Releasing
+
+The project is pre-1.0 and nothing has been published to a package registry yet.
+To cut a release:
+
+1. Bump `version` in `package.json` and move the `CHANGELOG.md`
+   `[Unreleased]` section into a new `## [X.Y.Z]` section.
+2. Push a tag named `vX.Y.Z` (it must equal `v` plus the `package.json`
+   version; the workflow fails otherwise).
+3. The `release` workflow (`.github/workflows/release.yml`) re-runs typecheck,
+   lint, tests, the build and the pack smoke test, then drafts a GitHub release
+   carrying the `npm pack` tarball and the matching CHANGELOG section as its
+   notes. A maintainer reviews and publishes the draft by hand.
+
+Publishing to npm is not set up: there is no `npm publish` step and no
+`NPM_TOKEN` secret. Publishing the package is an owner decision for later.
+
 ## Scope notes
 
 - Markdown lint is blocking for every Markdown file, including `docs/`. A lint
