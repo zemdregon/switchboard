@@ -7,6 +7,9 @@ documentation lives here instead of inside the files (any comment key would stop
 Conventions: every path is under `/home/you/...`; replace that prefix with your own directories first. Domains are
 `*.example.test` placeholders. There are no secrets, tokens or provider bypass flags anywhere in these files.
 
+MCP client snippets live in [`mcp-clients/`](mcp-clients/README.md): one stdio snippet per client (Claude app,
+Grok bot, OpenClaw), parse-checked by `src/config/examples.test.ts`.
+
 | File | What it shows | Change first |
 | --- | --- | --- |
 | `minimal.json` | Smallest working config: one MCP client, everything else default (a provider not listed stays enabled, `src/routing/collect.ts`). | `allowed_roots` (must exist). |

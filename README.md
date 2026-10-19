@@ -7,6 +7,49 @@ Switchboard is a headless controller that lets one orchestrating agent delegate 
 documented automation surfaces, behind a single MCP tool surface. It runs on your own machine and reuses the logins
 you already made with those CLIs. Switchboard itself never handles provider credentials.
 
+## Quickstart
+
+Build from a clone (Switchboard is not published to npm and has no releases):
+
+```sh
+git clone https://github.com/zemdregon/switchboard.git switchboard
+cd switchboard
+npm ci && npm run build
+```
+
+Copy [`examples/minimal.json`](examples/minimal.json) to a config file and point `allowed_roots` at a directory
+that exists (that file is the whole config: `schema_version`, `allowed_roots` and one `mcp_clients` entry):
+
+```sh
+cp examples/minimal.json ~/.config/switchboard/config.json
+# edit allowed_roots to list a directory that exists, e.g. /home/you/projects
+node dist/cli/bin.js doctor --config ~/.config/switchboard/config.json
+```
+
+Below, `switchboard` means `node /path/to/switchboard/dist/cli/bin.js` (see
+[Install from source](#install-from-source)). `doctor` exits 0 when the environment and config are sound; provider
+lines read `[warn]` until a provider CLI is installed and logged in natively (see
+[Log in to the providers (natively)](#log-in-to-the-providers-natively)).
+
+Start the server for the `orchestrator` client and send it one task on the test-only fake adapter (no provider CLI
+is called; the fake registers only while `SWITCHBOARD_TEST_FAKE_ADAPTER` carries its exact sentinel, documented in
+[TDD §3.6](docs/design/TDD.md#36-testing-strategy)):
+
+```sh
+export SWITCHBOARD_TEST_FAKE_ADAPTER=enable-test-only-fake-adapter
+node dist/cli/bin.js serve --client orchestrator --config ~/.config/switchboard/config.json
+```
+
+Then, from an MCP client (see [Run as an MCP server](#run-as-an-mcp-server)), call `delegate_task` with, for
+example:
+
+```json
+{"objective": "add a hello-world script", "workspace_path": "/home/you/projects/demo", "trust_profile": "edit-untrusted"}
+```
+
+(`workspace_path` must sit under an `allowed_roots` entry and be a Git checkout.) The call returns a `run_id` at
+once; poll `get_run` for its outcome.
+
 ## Status
 
 Pre-release. The package is private and is not published to any registry; you build it from source.
@@ -370,6 +413,9 @@ projects, twenty with skills enabled, twenty-three with `manage_projects`, plus 
 profile names exist; which of them a provider can run is listed in [Trust profiles](#trust-profiles) and by
 `list_capabilities`. Read
 [Known limitations](#known-limitations) before relying on it.
+
+The milestone status log (per-milestone progress with dated evidence) lives in
+[ROADMAP §11](docs/ROADMAP.md#11-milestone-status-log-moved-from-the-readme-t812).
 
 ## Single operator, your own accounts
 

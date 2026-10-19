@@ -1251,7 +1251,7 @@ per-milestone counts quoted below are dated when they were taken).
 | M5 | Continuity | **Partial** (2026-10-14, Delegated, not owner-approved): T5.0 to T5.11 and T5.13 are done as agent work on fakes, with evidence in each task row of §6.9 (T5.8 for the adapters that exist; T5.11 not run live); T5.12 is Done (2026-10-19): the Claude Code and Codex resume cells and the T5.11 live pair ran, with Codex in the container login under decision 71, and the pair failed at P-7 ([live checks 2026-10-19](research/live-checks-2026-10-19-codex-container-resume.md)). `Done` waits for a live pair that passes (§6.9.2 item 1), for T5.8 to include each M4 adapter, and for the Q-61 note in §6.9.2. Tasks in §6.9 (Proposed breakdown, 2026-10-14, Delegated); what needs the operator or zemdregon is in §6.9.2 | M4 | FR-SES-02 (populated), 03 (all), 04, 05 (handoff view), FR-SES-07 (T5.14, Planned) | Provider A edits and tests; provider B continues from the handoff bundle and completes the task; no provider transcript file is opened (verified by file-access test) | End-to-end test with two fake adapters plus one opt-in live pair |
 | M6 | Capacity and resilience | **Done** (2026-10-18, Delegated agent work, not owner-approved): every acceptance clause has a passing fake-adapter test in `src/mcp/m6-acceptance.test.ts` (linked successors for rate-limit, overload and crash; quota failover; `explicit_remaining` only if reported, labelled cache counts, kept and switched by reason), with pacing in `src/mcp/m6-pacing-acceptance.test.ts`. *Was:* Partial (2026-10-14, Delegated, not owner-approved): T6.0 to T6.7, T6.9, T6.10 and T6.12 are done as agent work on fakes, with evidence in each task row of [§6.11](#611-m6-capacity-and-resilience-tasks), including the acceptance test `src/mcp/m6-acceptance.test.ts` (T6.10). T6.8 was `Deferred` (no source names an enforceable limit) and is reopened 2026-10-17 as the pacing gate (owner decision 57; `Done` 2026-10-17; T6.13, the usage-window model, T6.14, the pacing projection, and T6.15, the limit-signal mapping, are `Done` 2026-10-17). The pacing acceptance test T6.16 is `Done` (2026-10-17, Delegated): `src/mcp/m6-pacing-acceptance.test.ts` passes on fakes with no provider installed, and fixed the gate at `used ≥ T` (it opens at the reset). The README section "Model groups and pacing" describes what pacing shows and never claims (T7.17, `Done` 2026-10-17, Delegated). Every §6.11 task is now `Done`. The operator task T6.11 is `Done` (2026-10-17, Delegated, with a 2026-10-18 follow-up): real limit output for six providers, with Muse Code, every `stream-json` limit shape, Claude Code's `rate_limit_event` field values, Codex's event type, code, exit code and token-usage keys, OpenCode's rate limit, and Grok Build's rate limit and overload `NOT_CHECKED` ([limit captures 2026-10-17](research/limit-captures-2026-10-17.md) and the [2026-10-18 follow-up](research/limit-captures-2026-10-18.md)). Tasks in §6.11 (Proposed breakdown, 2026-10-14, Delegated); what needs the operator or zemdregon is in §6.11.2 | M5 | FR-MCP-02 (`get_capacity`), 10, FR-CAP-01 (use), 02–07, FR-CAP-08 (cache observations and affinity counters; owner decision 40), FR-CAP-09–11 (usage-window model T6.13, pacing projection T6.14, limit mapping T6.15 and pacing gate T6.8 `Done` 2026-10-17; acceptance T6.16 `Done` 2026-10-17; owner decision 57), FR-OPS-05, NFR-PERF-03 (per provider) | Injected rate-limit, overload, quota and crash failures produce the behaviour in FRD WF-5, with successor runs linked to their predecessors; `get_capacity` and `switchboard capacity` never return `explicit_remaining` unless the provider reported it; where a provider reports cache read or creation token counts they are recorded as labelled observations, and per project the runs that kept versus switched provider and model are counted by reason (FR-CAP-08, Proposed) | Fault-injection tests with fake adapters |
 | M7 | Routing | **Done** (2026-10-18, Delegated agent work, not owner-approved): every acceptance clause has a passing fake-adapter test in `src/mcp/m7-acceptance.test.ts` (replay of every stored decision, `explain_route` factors, affinity switches only with a closed-list reason, no spreading at equal capacity) and `src/mcp/m7-group-acceptance.test.ts` (model groups). *Was:* Partial (2026-10-14, T7.11, Delegated, not owner-approved; owner decision 57 adds T7.13 to T7.17, model groups, `Planned`, 2026-10-17): T7.0 to T7.7, T7.10, T7.11 and T7.13 to T7.17 are done on fakes, with evidence in each task row of [§6.12](#612-m7-routing-tasks), including the acceptance test `src/mcp/m7-acceptance.test.ts` (T7.10), the model-group acceptance test `src/mcp/m7-group-acceptance.test.ts` (T7.16, 2026-10-17: two groups over three fake providers, `low-cost` and `flagship` requests, an explicit model, affinity across meta-sessions until a pacing deferral moves the project with `capacity_exhausted`, `explain_route`, replay of every decision) and the README section "Routing and affinity" (T7.11). The README and status pass T7.17 is `Done` (2026-10-17, Delegated: README "Model groups and pacing"). T7.9 (cache-friendly prompt order, Could) is done on fakes (2026-10-16, Delegated agent work, not owner-approved; its row has the evidence); T7.8 and T7.12 are recorded `Done` on fakes in their rows (2026-10-14); no provider login is needed. Tasks in §6.12 (Proposed breakdown, 2026-10-14, Delegated); what needs the operator or zemdregon is in §6.12.2 | M6 | FR-MCP-02 (`explain_route`), FR-RTE-01 (full), 02–04, FR-RTE-06–09 (provider and model affinity; owner decision 40, Proposed), FR-RTE-10 (model-groups configuration, built by T7.13), FR-RTE-11 (model groups; owner decision 57; request fields built by T7.14, group-aware selection built by T7.15) | Given stored features and weights, re-running the scorer reproduces every stored decision; `explain_route` lists the deciding factors; a project keeps its last provider and model across meta-sessions, and in a replay of stored routing decisions affinity changes only with an `affinity_switch_reason` from the closed list (`user_request`, `capacity_exhausted`, `ineligible`, `failed_after_retry`), never for a better score, lower cost or lower load; with several eligible providers and equal capacity no project is spread across providers | Deterministic replay test; property test over replayed decisions; fake-adapter fault injection |
-| M8 | Hardening | **Partial** (2026-10-16, Delegated agent work, not owner-approved): T8.0 to T8.9 **Done** ([§6.15](#615-m8-hardening-tasks); T8.0 to T8.7 on fakes, T8.8 documentation-only, T8.9 on a fake plug-in; T8.7 acceptance closure recorded 2026-10-16 with the README and §6 status in [PR #572](https://github.com/zemdregon/switchboard/pull/572), design-doc corrections in [PR #571](https://github.com/zemdregon/switchboard/pull/571), requirements alignment in [PR #575](https://github.com/zemdregon/switchboard/pull/575), and the T8.7 `Partial` to `Done` flip in [PR #580](https://github.com/zemdregon/switchboard/pull/580), post-#580 milestone-evidence pin [PR #584](https://github.com/zemdregon/switchboard/pull/584)). `Done` is not claimed for M8: the acceptance clause "a scheduled version canary on the operator's machine": T8.5 is `Done` on injected-version tests on fakes only, and the operator dry run on a real CLI upgrade is a separate open step (see **Blocks Done** in §6.15). Evidence: telemetry design, optional `telemetry.otlp_endpoint` with lazy OTLP export and wrapper-boundary span emission ([LLD §7](design/LLD.md#7-telemetry-spans), `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`, [PR #517](https://github.com/zemdregon/switchboard/pull/517), [PR #534](https://github.com/zemdregon/switchboard/pull/534), [PR #548](https://github.com/zemdregon/switchboard/pull/548)); collector integration test with parent links and the LLD §7 forbidden-attribute scan (`src/telemetry/collector-lifecycle.test.ts`, fixture `src/telemetry/fixtures/collector.ts`, `src/telemetry/collector.test.ts`, [PR #552](https://github.com/zemdregon/switchboard/pull/552)); operator version canary and CI version-bump routing exclusion (`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts` suite `version bump through preflight cache invalidation (T8.6)`, [docs/operations/version-canary.md](operations/version-canary.md), [PR #540](https://github.com/zemdregon/switchboard/pull/540), [PR #544](https://github.com/zemdregon/switchboard/pull/544)); [README §Telemetry and adapter versioning](../README.md#telemetry-and-adapter-versioning-milestone-8). The collector test of the acceptance column passes in CI on fakes. [PR #558](https://github.com/zemdregon/switchboard/pull/558) reconciled this row and the README M8 section after T8.3 ([PR #552](https://github.com/zemdregon/switchboard/pull/552)) merged, and fixed the scenario F wrong-digest probe in `src/mcp/m14-acceptance.test.ts` (the probe flips the last hex digit; replacing it with a fixed `0` collided when the real digest already ended in `0`, a macOS flake noted on #552 and #549). Export-time allowlist drop (T8.4, `src/telemetry/allowlist.test.ts`, [PR #549](https://github.com/zemdregon/switchboard/pull/549)) is done; M8 acceptance closure (T8.7) is done | M7 | FR-TEL-02, FR-TEL-03, FR-ADP-03, NFR-PRIV-01, NFR-PERF-02, NFR-MAINT-04 (T8.8, Done), NFR-MAINT-05 (T8.9, Done), FR-EXE-10 (T8.10, Planned), FR-SKL-11 (T8.10, Planned), NFR-MAINT-06 (T8.11, Planned), NFR-MAINT-07 (T8.12, Planned), FR-TEL-05 (T8.13, Planned), FR-OPS-06 (T8.14, Planned), FR-TEL-06 (T8.15, Planned) | OTel traces reach a test collector with no forbidden attributes; a scheduled version canary on the operator's machine flags CLI updates before they reach routing | Collector test; version-bump test (§6.15); version canary on fakes ([T8.5](#615-m8-hardening-tasks)) |
+| M8 | Hardening | **Partial** (2026-10-16, Delegated agent work, not owner-approved): T8.0 to T8.9 **Done** ([§6.15](#615-m8-hardening-tasks); T8.0 to T8.7 on fakes, T8.8 documentation-only, T8.9 on a fake plug-in; T8.7 acceptance closure recorded 2026-10-16 with the README and §6 status in [PR #572](https://github.com/zemdregon/switchboard/pull/572), design-doc corrections in [PR #571](https://github.com/zemdregon/switchboard/pull/571), requirements alignment in [PR #575](https://github.com/zemdregon/switchboard/pull/575), and the T8.7 `Partial` to `Done` flip in [PR #580](https://github.com/zemdregon/switchboard/pull/580), post-#580 milestone-evidence pin [PR #584](https://github.com/zemdregon/switchboard/pull/584)). `Done` is not claimed for M8: the acceptance clause "a scheduled version canary on the operator's machine": T8.5 is `Done` on injected-version tests on fakes only, and the operator dry run on a real CLI upgrade is a separate open step (see **Blocks Done** in §6.15). Evidence: telemetry design, optional `telemetry.otlp_endpoint` with lazy OTLP export and wrapper-boundary span emission ([LLD §7](design/LLD.md#7-telemetry-spans), `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`, [PR #517](https://github.com/zemdregon/switchboard/pull/517), [PR #534](https://github.com/zemdregon/switchboard/pull/534), [PR #548](https://github.com/zemdregon/switchboard/pull/548)); collector integration test with parent links and the LLD §7 forbidden-attribute scan (`src/telemetry/collector-lifecycle.test.ts`, fixture `src/telemetry/fixtures/collector.ts`, `src/telemetry/collector.test.ts`, [PR #552](https://github.com/zemdregon/switchboard/pull/552)); operator version canary and CI version-bump routing exclusion (`src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts` suite `version bump through preflight cache invalidation (T8.6)`, [docs/operations/version-canary.md](operations/version-canary.md), [PR #540](https://github.com/zemdregon/switchboard/pull/540), [PR #544](https://github.com/zemdregon/switchboard/pull/544)); [README §Telemetry and adapter versioning](../README.md#telemetry-and-adapter-versioning-milestone-8). The collector test of the acceptance column passes in CI on fakes. [PR #558](https://github.com/zemdregon/switchboard/pull/558) reconciled this row and the README M8 section after T8.3 ([PR #552](https://github.com/zemdregon/switchboard/pull/552)) merged, and fixed the scenario F wrong-digest probe in `src/mcp/m14-acceptance.test.ts` (the probe flips the last hex digit; replacing it with a fixed `0` collided when the real digest already ended in `0`, a macOS flake noted on #552 and #549). Export-time allowlist drop (T8.4, `src/telemetry/allowlist.test.ts`, [PR #549](https://github.com/zemdregon/switchboard/pull/549)) is done; M8 acceptance closure (T8.7) is done | M7 | FR-TEL-02, FR-TEL-03, FR-ADP-03, NFR-PRIV-01, NFR-PERF-02, NFR-MAINT-04 (T8.8, Done), NFR-MAINT-05 (T8.9, Done), FR-EXE-10 (T8.10, Planned), FR-SKL-11 (T8.10, Planned), NFR-MAINT-06 (T8.11, Planned), NFR-MAINT-07 (T8.12, Done), FR-TEL-05 (T8.13, Planned), FR-OPS-06 (T8.14, Planned), FR-TEL-06 (T8.15, Planned) | OTel traces reach a test collector with no forbidden attributes; a scheduled version canary on the operator's machine flags CLI updates before they reach routing | Collector test; version-bump test (§6.15); version canary on fakes ([T8.5](#615-m8-hardening-tasks)) |
 | M9 | Projects and controlled commits | **Partial** (2026-10-13, T9.8 closure; Delegated reading of the Done rule, not owner-approved): every acceptance criterion in the next column that applies to `host` environments has a passing test on a fake provider with real Git in temporary repositories (T9.1 to T9.3, T9.5 to T9.7, T9.9 to T9.11 and T9.4 for the fake adapter; per-task evidence in §6.3), but `Done` is not claimed because of the exceptions E2, E3 and E5 to E8 in the T9.8 status block of §6.3 (E1 closed 2026-10-16: owner decision 56 marked the T9.4b Claude channel supported, bypass-only; E4 closed 2026-10-18: owner decision 62 answered Q-46, push from dynamic projects refused by design): Codex without a channel (T9.0 is **Done** since 2026-10-16, §6.3 status table: its sandbox blocks a Unix-socket shim, so Codex stays `none` with the FR-GIT-09 route), signing tried only with a throwaway GnuPG key, push from dynamic projects refused by design (owner decision 62; Q-46 answered), FR-WS-09 not accepted (Q-55), the `container` clauses partially met on fakes (M10 T10.1–T10.3 **Done**, [PR #554](https://github.com/zemdregon/switchboard/pull/554)); M10 stays **Partial** (opt-in Docker, E7 FR-WS-09; T10.0 **Done** 2026-10-18), malicious fixtures for Claude Code and Codex exist on synthetic streams (T4.3, [PR #61](https://github.com/zemdregon/switchboard/pull/61); E6) but their Git-write denial has not fully run live (T3.9 Claude C-G2 `HELD` at the outcome level only on 2026-10-18 and 2026-10-19, matcher not exercised; Codex X-G1 `HELD` on 2026-10-19 in the decision 71 container, [live checks](research/live-checks-2026-10-19-t39-malicious.md)), and open risks R-18, R-41, R-59 and R-60. Numbered after M8 to keep existing milestone IDs stable; **sequenced after M3 and before M4** (Proposed) so new adapters declare their Git controls once | M3 | FR-PRJ-01–04, 06, 08, 10, FR-GIT-01 (fixtures), 02–10, FR-WS-05 (publication), FR-WS-08–09 (owner decision 42; T9.11), FR-WS-10 (T9.12 Done design 2026-10-17, T9.13 Done 2026-10-17, Delegated), FR-GIT-11 (T9.14, Planned) | A scripted MCP client lists projects and delegates to one (`host` environment, one repository context) and the lower of client and project ceilings applies; the agent's `commit` tool call produces a commit on the publish ref with the configured identity and no trailer, footer or identifier even when the message contains them; an agent attempt to commit, move a ref or push (shell or provider built-in) leaves nothing on the publish ref and appears as `git_policy_violation`; with push `none` nothing leaves the host, with `branch` against a local bare remote only the publish ref arrives and never checkpoint commits or run branches; every published commit has a `git_commit` row naming run, provider and model; a client with `manage_projects` can create a `host` project within its limits and use it, a `container` or push-enabled revision stays unusable until `projects approve`, and a client without the flag has no project-management tools; with `sign: true` the published commit verifies against the operator's key and a failed signature creates no commit; adapters that cannot take the channel without a bypass flag run in finalize-only mode only on opt-in | Fake-adapter integration tests with real Git repos and a local bare remote; sanitiser fixtures; malicious-fixture additions for Claude Code and Codex; argv inspection |
 | M10 | Container environments | **Partial** (2026-10-16, Delegated agent work, not owner-approved): T10.1, T10.2 and T10.3 **Done** on fakes; T10.0 **Done** (2026-10-18, operator in-volume logins Observed for all seven providers) ([§6.4](#64-m10-container-environments-tasks)). Evidence: MCP `delegate_task` admission, work-queue admission, `serve` environment composition and `projects validate` for `container` projects ([PR #554](https://github.com/zemdregon/switchboard/pull/554)); malicious-fixture container leg `test/malicious/container-leg.test.ts` (CI; opt-in `test/malicious/container-docker-leg.test.ts` with `SWITCHBOARD_CONTAINER_TESTS=1`, [PR #545](https://github.com/zemdregon/switchboard/pull/545)); `projects validate` container checks and retention GC in `src/cli/projects.test.ts` and `src/workspace/gc.test.ts` (same PR); orphan sweep and `environment` events ([PR #541](https://github.com/zemdregon/switchboard/pull/541)); environment port and rootless Docker backend ([PR #528](https://github.com/zemdregon/switchboard/pull/528)); runtime spike ([PR #523](https://github.com/zemdregon/switchboard/pull/523)). `Done` waits on the opt-in Docker mount legs (`SWITCHBOARD_CONTAINER_TESTS=1`), T10.1 residual limitations in its row (no injected Git channel inside the container; `disk_mb` not enforced; non-empty network allowlist refused not enforced; no login volume), and no live end-to-end container run through a real provider CLI. Route to zemdregon's bypass goal (owner decision 24, §6.4); order after M9 kept (Q-38, owner decision 25) | M9 | FR-PRJ-05, 07, 09, FR-GIT-01 (container environments, by construction) | A `container` project mounts only the run worktree and declared read-only contexts, applies its limits and network policy, and is removed at run end and after a controller crash; no home directory, data directory, push credential or runtime socket is mounted; the container leg of the malicious-fixture suite shows no escape | Emulated runtime in CI (`test/malicious/container-leg.test.ts`); opt-in rootless Docker tests (`SWITCHBOARD_CONTAINER_TESTS=1`); fault injection (T10.2); inspection of mounts (T10.1 opt-in leg) |
 | M11 | Inner agent | Partial (Proposed): T11.1 to T11.13 done on fakes, see [T11.0 to T11.14 status](#66-m11-inner-agent-tasks) (T11.1 **Done**, its status row reconciled to the 2026-10-16 contract in [PR #569](https://github.com/zemdregon/switchboard/pull/569) with evidence on `main`: `src/config/config.test.ts` suite `inner_agent`, `src/inner/inner.test.ts`, `src/inner/import-boundary.test.ts`, `src/inner/port.ts`, `src/inner/fake-backend.ts` and `src/ledger/migrations/0005_inner_call.ts`, delivered in [PR #68](https://github.com/zemdregon/switchboard/pull/68); this milestone row and the README M11 bullet were synced to that reconcile in [PR #574](https://github.com/zemdregon/switchboard/pull/574); T11.10 handoff condensation is a service function, not on the production `serve` path; T11.11 routing classification is on the production `serve` hook; T11.6 quality monitoring and automatic suspension is **Done** on fakes, its row status and the literal "Done when" test in `src/inner/suspension.test.ts` merged as [PR #586](https://github.com/zemdregon/switchboard/pull/586)); [T11.0](#66-m11-inner-agent-tasks) **Done** (2026-10-17: live on `opencode v2.0.23`, no tool-free one-shot, [TDD §4.6.7](design/TDD.md#467-t110-live-result-2026-10-17); `cli` stays `Ineligible` per Q-26); T11.13 **Done** (2026-10-18, Delegated agent work, not owner-approved; owner decision 66; gate met on fakes, shipped cli stays Ineligible; cli backend gate on the OpenCode manifest [PR #581](https://github.com/zemdregon/switchboard/pull/581); no OpenCode release through v2.0.32 offers a tool-free control, TDD §4.6.7); T11.14 Done (2026-10-18, Delegated agent work, not owner-approved; was Partial; T11.4 and T11.11 wired on `serve`, T11.8, T11.9, T11.10 and T11.12 service functions only, pinned by `src/inner/run-path-reach.test.ts`; T11.8/T11.9 milestone evidence pins [PR #603](https://github.com/zemdregon/switchboard/pull/603), [PR #607](https://github.com/zemdregon/switchboard/pull/607) and [PR #608](https://github.com/zemdregon/switchboard/pull/608); history: usage-evidence limits and the merged [PR #334](https://github.com/zemdregon/switchboard/pull/334), [PR #338](https://github.com/zemdregon/switchboard/pull/338), [PR #343](https://github.com/zemdregon/switchboard/pull/343) and T11.5 residual usage-surface pins [PR #362](https://github.com/zemdregon/switchboard/pull/362) and usage-channels/`inner_call` residual pins steward-merged as [PR #471](https://github.com/zemdregon/switchboard/pull/471) (roadmap steward-merge evidence [PR #476](https://github.com/zemdregon/switchboard/pull/476)) are recorded in §6.6; the design-document as-built evidence, HLD §2.5, SDD §4.3, TDD §3.12 and LLD §13.8, merged as [PR #353](https://github.com/zemdregon/switchboard/pull/353); the post-#569 T11.1 milestone-row and README sync merged as [PR #574](https://github.com/zemdregon/switchboard/pull/574); the post-#577 stale-status pass that reworded seven merged T11.5 residual notes in §6.6 from "Opened as" to "Merged as" merged as [PR #583](https://github.com/zemdregon/switchboard/pull/583), with no row flipped; post-#583 milestone-evidence pin [PR #587](https://github.com/zemdregon/switchboard/pull/587); T11.7 `doctor`/inner test evidence and §6.6 Done-on-fakes status merged as [PR #591](https://github.com/zemdregon/switchboard/pull/591); the README M11 bullet, its T11.6 suspension paragraph and its T11.5 surfaces paragraph now cite the T11.6 quality-monitoring and automatic-suspension evidence in `src/inner/suspension.test.ts`, merged as [PR #590](https://github.com/zemdregon/switchboard/pull/590), with no row flipped); T11.9 verification-summary Done-on-fakes status and §6.6 row merged as [PR #594](https://github.com/zemdregon/switchboard/pull/594), with no row flipped; post-#594 milestone-evidence pin [PR #596](https://github.com/zemdregon/switchboard/pull/596); post-#596 milestone-evidence pin [PR #608](https://github.com/zemdregon/switchboard/pull/608); T11.8 PR-draft Done-on-fakes status and the §6.6 row's "Done when" tests in `src/inner/pr-draft.test.ts` (suite `pr_draft task: roadmap 'Done when' (T11.8)`) merged as [PR #598](https://github.com/zemdregon/switchboard/pull/598); post-#598 milestone-evidence pin [PR #601](https://github.com/zemdregon/switchboard/pull/601); post-#601 milestone-evidence pin [PR #603](https://github.com/zemdregon/switchboard/pull/603)). Owner decision 14; numbered after M10 to keep milestone IDs stable; **sequenced after M9** (Proposed). Tasks that use another milestone's output wait for it (§6.6) | M2 (configuration, ledger); M9 for commit and PR tasks; M3, M4, M5, M7 for the tasks that use them | FR-INN-01–17 | With no inner agent configured nothing changes and the suite passes; with a fake backend, enabled tasks are used and invalid, empty, slow or unreachable output falls back without failing or delaying a run beyond the bound; a commit with no agent message gets a sanitised drafted message with no trailer, footer or identifier even when the backend returns them; inner usage never appears in provider usage or capacity unless a shared subscription is declared; a `remote` backend needs `allow_remote` and diffs need the per-task opt-in, and a planted secret never reaches a captured prompt; no inner output reaches any policy component; `doctor` and `inner status` report state | Fake-backend integration and fault-injection tests; hostile-backend sanitiser fixtures; import-boundary test; secret-in-prompt test; inspection of the privacy gates; one opt-in live run against an operator-chosen backend |
@@ -3925,7 +3925,7 @@ routing treats the adapter as validated.
 | T8.9 | *Proposed task (2026-10-17, Delegated agent work, documentation only; not owner-approved).* Live-test budget guard (NFR-MAINT-05): the opt-in live runner (`scripts/live-smoke.mjs`, `test:live`, `test:live:pair`, `test:live:malicious`) reads an operator budget file outside the repository (path from an environment variable; absent means today's behaviour plus a warning), enforces per-provider and global rolling caps, a minimum gap and a purpose allowlist before spawning any provider, passes the file's model per provider, appends start, finish and denied JSONL records and exits 75 on refusal. Pacing (ADR-0055) is not involved: it never refuses, a live-test guard must | NFR-MAINT-05, FR-CAP-11, T6.11, AGENTS.md live-test rules | — | Tests with a fake provider plug-in in `scripts/live/providers/` and an injected clock: the run past the cap is refused with exit 75 and a `denied` record and the fake is never spawned; a live-malicious invocation past its provider cap is refused with exit 75 and a `denied` record before `dist/` or any CLI (temp budget file, no provider installed); a run inside the gap and an unknown purpose are refused; the model the fake receives is the file's whatever the test asked for; CI never sets the variable **Status: Done (2026-10-17, Delegated agent work, not owner-approved).** Evidence: guard `scripts/live/budget.mjs` called by `scripts/live-smoke.mjs`, `scripts/live-pair.mjs` and `scripts/live-malicious.mjs` before `dist/` or any provider process, fake plug-in `scripts/live/providers/fake.mjs`; `test/live-budget.test.ts` suites "budget decision with an injected clock (T8.9)", "live scripts under the budget file, with the fake plug-in (T8.9)" (tests "the run past the cap is refused with exit 75 and a denied record, and the fake is never spawned", "refuses a run inside the minimum gap and an unknown purpose, never reaching the fake", "the model the fake receives is the file's, whatever the test asked for; start and finish are recorded"), "live-malicious under the budget file (T8.9)" (test "a live-malicious invocation past the cap is refused with exit 75 and a denied record, before dist/ or any CLI"), "unconfigured runs stay as on main (T8.9)" and "CI never sets the budget variable (T8.9)"; format and checks in [README §Live-test budget guard](../README.md#live-test-budget-guard) and [TDD §3.6](design/TDD.md#36-testing-strategy). No real provider CLI was run. *Was:* Planned (2026-10-17, Delegated proposal, not owner-approved). |
 | T8.10 | *Added 2026-10-19 for owner decision 76 (harness report R6); Delegated wording, not owner-approved beyond the decision.* Head-pinned verification evidence: every verification result records the commit SHA and tree it ran on and `get_run` exposes `verified_at_sha` with staleness; an example `docs-alignment` skill checks README, ROADMAP and ADRs against the code on a published ref and reports `aligned` or `conflict` per SHA. Folds in the harness notes for FR-EXE-09 (no box-wide lock held while waiting for a slot; the slot wait stays fail-closed at the wall clock) | FR-EXE-10, FR-SKL-11, FR-EXE-08, FR-EXE-09, NFR-MAINT-02, [ADR-0056](adr/0056-switchboard-controlled-skills.md), [LLD §20.6](design/LLD.md#206-head-pinned-verification-evidence-and-the-docs-alignment-skill-fr-exe-10-fr-skl-11-t810), [LLD §20.14](design/LLD.md#2014-notes-carried-from-the-harness-report) | T16.12 | Tests: a result carries the SHA; a dirty worktree records no SHA; a new commit makes the result stale in `get_run`; the skill is admitted through the normal skills path; a conflict is reported and never auto-pushed to a protected branch; a test asserts no box-wide lock is held during a slot wait **Status: Planned (2026-10-19, Delegated proposal, not started).** |
 | T8.11 | *Added 2026-10-19 for owner decision 77 (enhancement discovery 2026-10-19, add rank 5); Delegated wording, not owner-approved beyond the decision.* Property tests for the security parsers (Git-write detector, argv audit, commit sanitiser, redactor, untrusted-block renderers and, once T9.14 lands, the secret scanner) and coverage reporting in CI | NFR-MAINT-06, [ADR-0037](adr/0037-argv-audit-short-flags-and-bypass-values.md), [ADR-0045](adr/0045-one-dash-long-bypass-flag-spellings.md), [LLD §20.12](design/LLD.md#2012-property-tests-and-coverage-nfr-maint-06-t811) | — (the scanner part after T9.14) | A pinned `fast-check` dev dependency; each listed parser has generated-input properties (for example every generated spelling of a declared bypass flag is refused, and every generated Git write through quoting, environment prefixes and path variants is refused); CI publishes a coverage report; `npm test` stays inside the CI job timeout **Status: Planned (2026-10-19, Delegated proposal, not started).** |
-| T8.12 | *Added 2026-10-19 for owner decision 77 (enhancement discovery 2026-10-19, add rank 9, answer 4); Delegated wording, not owner-approved beyond the decision.* Adopter path without a release: a quickstart first in the README with the status log moved to the roadmap; MCP client snippets for the Claude app, the Grok bot and OpenClaw; a bug-report issue form; a code of conduct. No tag and no change to `release.yml` | NFR-MAINT-07, NFR-MAINT-03 | — | The README's first section after the summary is a quickstart (install, config, `doctor`, a first `delegate_task` on the fake adapter); its status log lives in this roadmap; the snippets exist and parse; `.github/ISSUE_TEMPLATE` has a bug-report form; `CODE_OF_CONDUCT.md` exists; no tag is created; docs check and markdownlint pass **Status: Planned (2026-10-19, Delegated proposal, not started).** |
+| T8.12 | *Added 2026-10-19 for owner decision 77 (enhancement discovery 2026-10-19, add rank 9, answer 4); Delegated wording, not owner-approved beyond the decision.* Adopter path without a release: a quickstart first in the README with the status log moved to the roadmap; MCP client snippets for the Claude app, the Grok bot and OpenClaw; a bug-report issue form; a code of conduct. No tag and no change to `release.yml` | NFR-MAINT-07, NFR-MAINT-03 | — | The README's first section after the summary is a quickstart (install, config, `doctor`, a first `delegate_task` on the fake adapter); its status log lives in this roadmap; the snippets exist and parse; `.github/ISSUE_TEMPLATE` has a bug-report form; `CODE_OF_CONDUCT.md` exists; no tag is created; docs check and markdownlint pass **Status: Done (2026-10-19, Delegated agent work, not owner-approved).** Evidence: README [Quickstart](../README.md#quickstart) (clone build, `examples/minimal.json` config, `doctor`, a first `delegate_task` on the fake adapter through its test-only switch); the status log moved verbatim to [§11](#11-milestone-status-log-moved-from-the-readme-t812) with the README keeping a [Status](../README.md#status) link only; `examples/mcp-clients/` (Claude app, Grok bot and OpenClaw stdio snippets pointing at `switchboard serve`, parse-checked by `src/config/examples.test.ts` suite "examples/mcp-clients/ snippets (T8.12)"); `.github/ISSUE_TEMPLATE/bug_report.yml`; `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1, enforcement contact the maintainer `@zemdregon` through GitHub); `node scripts/check-docs.mjs` and markdownlint pass; no tag, no `release.yml` change (owner answer 4). *Was:* Planned (2026-10-19, Delegated proposal, not started). |
 | T8.13 | *Added 2026-10-19 from the enhancement discovery of 2026-10-19 (add rank 10), which stands after owner decision 77 and was added by the same instruction that relayed it; Delegated, not individually owner-approved.* Tamper-evident ledger: hash-chain `run_event` and approval rows and verify the chains in `doctor`; an ADR (persistence format) first | FR-TEL-05, [ADR-0005](adr/0005-sqlite-ledger.md), Q-96, [LLD §20.13](design/LLD.md#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417) | — | The ADR is merged before code; the migration backfills the chain; `doctor` reports OK on an untouched ledger and names the first broken row after a test edits one row directly; the append cost is measured with the T2.7 benchmark **Status: Planned (2026-10-19, Delegated proposal, not started).** |
 | T8.14 | *Added 2026-10-19 from the enhancement discovery of 2026-10-19 (add rank 7), which stands after owner decision 77 and was added by the same instruction that relayed it; Delegated, not individually owner-approved.* Own-repository evaluation: an opt-in operator command replays a fixed suite of the operator's past tasks per provider, graded in a network-off container with hidden tests, and records pass rate, wall-clock and usage. Real-provider runs are **Operator-only** and budgeted | FR-OPS-06, CAP-18, NFR-MAINT-05, R-57, [ADR-0052](adr/0052-container-environment-docker-backend.md), [LLD §20.13](design/LLD.md#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417) | T8.9, T10.1 | On a fake provider and a fixture suite: each task yields an `eval_result` with pass, wall-clock and usage; the grader runs network-off and its tests are absent from the agent's worktree (asserted); a real provider is refused without a live budget file; the command is skipped in CI **Status: Planned (2026-10-19, Delegated proposal, not started).** |
 | T8.15 | *Added 2026-10-19 from the enhancement discovery of 2026-10-19 (add rank 8), which stands after owner decision 77 and was added by the same instruction that relayed it; Delegated, not individually owner-approved.* Per-run provider telemetry: an off-by-default loopback OTLP receiver per run for providers that export metrics, with run and task identifiers as resource attributes; an ADR (new local listener) first | FR-TEL-06, FR-TEL-03, FR-CAP-01, [ADR-0012](adr/0012-telemetry-at-wrapper-boundary.md), [LLD §20.13](design/LLD.md#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417) | T8.1 | The ADR is merged before code; with the switch off no listener opens (asserted); on, a fake provider posting OTLP metrics produces usage observations labelled reported for that run; forbidden attributes are dropped; the listener binds loopback only **Status: Planned (2026-10-19, Delegated proposal, not started).** |
@@ -4339,3 +4339,369 @@ are mounted in containers.
 - New scope goes through the PRD and SRS first, then gets a milestone here.
 - A conflict between documents is resolved in favour of the owner named in §5, and the losing document is corrected in
   the same change.
+
+## 11. Milestone status log (moved from the README, T8.12)
+
+*Moved verbatim from `README.md`'s `## Status` section on 2026-10-19 (T8.12); the roadmap owns status, so the
+log lives here and the README keeps a link only. Relative links are fixed for the new location:
+`../README.md#...` targets point back to README sections. Later status changes are recorded in §6, not here; this
+appendix is the log as it stood at the move.*
+
+Pre-release. The package is private and is not published to any registry; you build it from source.
+
+- **Milestone 1 (foundation) is done**: run ledger, workspaces, run lifecycle, reconciliation and the operator CLI
+  (`doctor`, `runs`). See [ROADMAP §6](ROADMAP.md#6-milestones) for the evidence.
+- **Milestone 2 (Claude Code and Codex adapters plus the MCP slice) is `Partial`.** The Claude Code and Codex
+  adapters, the MCP server and `switchboard serve` exist and pass their tests on recorded or synthetic fixtures and a
+  fake provider. On Ampere 2026-10-14 the operator ran the opt-in `npm run test:live` smoke through real
+  `switchboard serve` ([`docs/research/live-checks-2026-10-14-claude-codex.md`](research/live-checks-2026-10-14-claude-codex.md)):
+  Claude Code 2.1.294 **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2); Codex 0.162.0 after `adapters validate codex`
+  **10 HELD, 0 FAILED, 3 NOT_CHECKED** (X-4, X-9, X-G1). Earlier checks on another host are in
+  [`docs/research/live-checks-2026-10-13.md`](research/live-checks-2026-10-13.md). `Done` waits on the
+  remaining residual operator cells (C-G2 and X-G1 deliberate attempts ran 2026-10-19 through the T3.9 leg, both
+  `HELD`; see below); `doctor` with both providers installed and logged in passed on 2026-10-17
+  ([`docs/research/live-checks-2026-10-17-claude-codex.md`](research/live-checks-2026-10-17-claude-codex.md)). The
+  §6.2 "Blocks Done" narrative matches the 2026-10-14 live smoke on main
+  ([PR #570](https://github.com/zemdregon/switchboard/pull/570)). See
+  [ROADMAP §6.2](ROADMAP.md#62-m2-claude-code-adapter-and-mcp-slice-tasks).
+- **Milestone 3 (isolation) is `Partial`.** Trust profiles and overrides, approvals (`approve`, `deny`), privileged
+  runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
+  implemented and tested on fakes, as are the controller confinement checks of T3.8b (owner decision 63; credential
+  reads, network egress and a push to an explicit URL are not enforced on the fake by design). The operator's live
+  malicious-fixture leg (T3.9) is `Done` (2026-10-19, Delegated agent work, not owner-approved): the Claude Code leg
+  ran (C-G2 `HELD` at the outcome level; C-M2 `NOT_CHECKED`; C-M3 `ESCAPED`, opening ROADMAP R-74) and the Codex half
+  ran in the decision 71 container login (X-G1 `HELD`; X-M2 `HELD` at the outcome level; X-M3 `NOT_CHECKED`). See
+  [ROADMAP §6.5](ROADMAP.md#65-m3-isolation-tasks) for each task.
+- **Milestone 9 (projects and controlled commits) is `Partial`.** Projects, the agent `commit` tool, finalize-only
+  commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
+  `host` environments on a fake provider with real Git in temporary repositories. It is not `Done`: nothing has run
+  against a live provider through Switchboard's own tool channel, signing was tried only with a throwaway GnuPG key,
+  pushing from dynamic projects is refused by design (`CONTEXT_UNKNOWN`, owner decision 62; Q-46 answered), and
+  the `container` clauses stay **Partial** until milestone 10 is `Done`
+  (mounting and MCP admission are on fakes; T10.0 operator login checks are Done; opt-in Docker and a live container run
+  remain open — see milestone 10 below). The
+  exceptions are listed in
+  [ROADMAP §6.3](ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
+- **Milestone 5 (continuity) is `Partial`.** `continue_task` resumes the provider's native session or hands off to
+  another provider from a bundle built from Switchboard's own records, and `get_artifacts` and `runs show` show the
+  handoff. It is tested on two fake providers, including a check that the controller opens no provider state directory.
+  The live resume checks and one live Claude Code to Codex pair ran on 2026-10-19 (ROADMAP T5.12, with Codex in the
+  operator's container login). It is not `Done`: that pair failed one check (the Codex handoff run succeeded, but its
+  file write did not land, most likely because Codex's sandbox cannot start in that container), and resume for the
+  providers of milestone 4 is not built. See [ROADMAP §6.9](ROADMAP.md#69-m5-continuity-tasks).
+- **Milestone 6 (capacity and resilience) is `Done` on fake providers** (2026-10-18, Delegated agent work, not
+  owner-approved; acceptance in `src/mcp/m6-acceptance.test.ts`). `get_capacity` and `switchboard capacity` show per-provider
+  estimates with their sources, a circuit breaker holds a failing provider back, retryable failures are retried
+  automatically as linked successor runs, and quota exhaustion fails over to another provider or returns. All of this
+  is tested on fake providers. Limits: real limit output is captured in text mode for six
+  providers with the remaining cells `NOT_CHECKED` (operator task T6.11, `Done` 2026-10-17 with a 2026-10-18 follow-up;
+  [limit captures](research/limit-captures-2026-10-17.md) and the
+  [follow-up](research/limit-captures-2026-10-18.md)), and no provider is known to publish an
+  enforceable rate limit, so there is no token-bucket gate; the pacing gate paces usage per subscription window
+  from observed usage instead (ROADMAP T6.8, `Done` 2026-10-17). The subscription/pacing configuration keys and the
+  per-window figure computation exist (ROADMAP T6.13, `Done` 2026-10-17), and capacity output shows one `pacing` entry
+  per subscription with each window's figures and source, `deferred_until` and the gate verdict (ROADMAP T6.14, `Done`
+  2026-10-17); a deferred candidate is left out when an undeferred eligible one remains, otherwise the run waits in
+  `QUEUED` with a `pacing_hold` event until the gate-open time. The pacing acceptance test on fakes passes
+  (ROADMAP T6.16, `Done` 2026-10-17, `src/mcp/m6-pacing-acceptance.test.ts`). Pacing estimates are lower bounds from
+  Switchboard's own dispatches, and pacing never creates a run (see [Model groups and pacing](../README.md#model-groups-and-pacing)).
+  See [ROADMAP §6.11](ROADMAP.md#611-m6-capacity-and-resilience-tasks).
+- **Milestone 7 (routing) is `Done` on fake providers** (2026-10-18, Delegated agent work, not owner-approved;
+  acceptance in `src/mcp/m7-acceptance.test.ts`). Eligible providers are scored from Switchboard's own records, every route
+  decision is stored and replays exactly, `explain_route` shows why a run went where it did, a project stays on its
+  provider until a listed reason moves it (`switchboard affinity list|reset`), and `minimum_capability` is enforced
+  against operator-declared model capabilities in the model registry (`src/routing/minimum-capability.test.ts`). All
+  of this is tested on fake providers. The cache-friendly prompt order is built (ROADMAP T7.9, Could; no cache
+  benefit is claimed). Operator-configured model groups (`routing.model_group`) and explicit models (`routing.model`)
+  route over their members with the `pacing` score term, tested on fakes (ROADMAP T7.13 to T7.16, `Done` 2026-10-17,
+  `src/mcp/m7-group-acceptance.test.ts`; README T7.17, `Done` 2026-10-17); a group is configuration, never a quality
+  claim. Real-provider model flags wait for adapter work. See [Routing and affinity](../README.md#routing-and-affinity),
+  [Model groups and pacing](../README.md#model-groups-and-pacing) and [ROADMAP §6.12](ROADMAP.md#612-m7-routing-tasks).
+- **Milestone 8 (hardening) is `Partial`.** Optional OTLP trace export (`telemetry.otlp_endpoint`, off by default),
+  lazy exporter load (T8.1), wrapper-boundary span emission for `controller.delegate` and `provider.spawn` (T8.2), the
+  collector integration test with parent links and the forbidden-attribute scan (T8.3,
+  [#552](https://github.com/zemdregon/switchboard/pull/552); milestone and README reconcile
+  [#558](https://github.com/zemdregon/switchboard/pull/558)), export-time allowlist enforcement (T8.4,
+  [#549](https://github.com/zemdregon/switchboard/pull/549)), the operator version canary (T8.5) and a CI test that
+  excludes routing after a synthetic binary version bump until `adapters validate` records the version (T8.6) are done
+  on fakes. M8 acceptance closure (T8.7) is `Done`; M8 stays `Partial` until the operator records a dry run of the
+  scheduled version canary on a real CLI upgrade. See
+  [Telemetry and adapter versioning](../README.md#telemetry-and-adapter-versioning-milestone-8) and
+  [ROADMAP §6.15](ROADMAP.md#615-m8-hardening-tasks).
+- **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
+  for `container` projects ([PR #554](https://github.com/zemdregon/switchboard/pull/554)), orphan sweep,
+  malicious-fixture container leg, `projects validate` container checks and retention GC are implemented and tested on
+  fakes (and emulated runtime in CI). It is not `Done`: the opt-in Docker mount legs (`SWITCHBOARD_CONTAINER_TESTS=1`)
+  and a live end-to-end run through a
+  real provider CLI remain open.
+  See [Container environments (milestone 10)](../README.md#container-environments-milestone-10) and
+  [ROADMAP §6.4](ROADMAP.md#64-m10-container-environments-tasks).
+- **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.13 are done on fakes: an optional HTTP backend, privacy
+  gates, quality monitoring with automatic suspension (T11.6), `doctor` and `inner` reporting, commit-message drafting,
+  handoff condensation (T11.10, a service function), record-only routing classification (T11.11), and the `cli` backend
+  gate (T11.13, shipped `Ineligible`). The T11.6 roadmap
+  row carries its `Done on fakes` status since [#586](https://github.com/zemdregon/switchboard/pull/586), which also
+  added `src/inner/suspension.test.ts`: on a scripted fake backend, every call after a suspension falls back without
+  reaching a now-good backend, and the first call after the task is re-enabled is accepted from it. The T11.9
+  verification-output summary row carries its `Done on fakes` status since
+  [#594](https://github.com/zemdregon/switchboard/pull/594), which added the suite
+  `log_summary task: roadmap 'Done when' (T11.9)` to `src/inner/log-summary.test.ts`: over six paths on the scripted
+  fake backend (accepted lying prose, a rejected success claim, empty, error, not-JSON and a privacy denial) the
+  envelope's status, failure code, per-check exit codes and outcome counts equal the run row and terminal transition
+  read from the ledger, `raw_artifact` resolves to the stored `test_report`, and the fallback equals a head-8/tail-12
+  excerpt written out by hand. That summary is still a service function that no run path calls (see below). T11.1 (the
+  `inner_agent` config schema, the backend port, the scripted
+  fake backend, the `inner_call` table, the disabled-by-default path and the import-boundary test) is `Done`; its
+  roadmap row was reconciled to the 2026-10-16 status contract in
+  [#569](https://github.com/zemdregon/switchboard/pull/569), citing `src/config/config.test.ts`,
+  `src/inner/inner.test.ts`, `src/inner/import-boundary.test.ts`, `src/inner/port.ts`, `src/inner/fake-backend.ts` and
+  `src/ledger/migrations/0005_inner_call.ts` (milestone row and README reconcile
+  [#574](https://github.com/zemdregon/switchboard/pull/574)). T11.13 (the `cli` backend) is `Done` (2026-10-18,
+  owner decision 66; the gate is met on fakes — the backend runs only inside the manifest range with verified
+  tool-free flags and otherwise reports `Ineligible`, with an argv audit — and no OpenCode release through v2.0.32
+  offers a tool-free control, so the shipped kind stays `Ineligible`:
+  [TDD §4.6.7](design/TDD.md#467-t110-live-result-2026-10-17)) and no live backend
+  has been exercised. Two tasks are wired into production `serve` run paths: the commit-message
+  task (the optional `message` on the `commit` tool) and routing classification (`serve` admission, continuation and
+  quota failover, with heuristic fallback when inner is off or unavailable). Handoff condensation, PR drafting,
+  verification-summary, run-title and a live backend are not: their designs name no run-path call site, so they stay
+  service functions, and `src/inner/run-path-reach.test.ts` pins both lists. T11.14 (README and roadmap status for
+  M11) is `Done` on that basis (T11.0 to T11.13 Done on fakes; the shipped `cli` backend stays `Ineligible`).
+  T11.5 usage-surface pins merged
+  [#362](https://github.com/zemdregon/switchboard/pull/362) (suspended-task and project-off denials, re-ask deadline
+  counts, shared-subscription label routing, whole `inner_shared_subscription` doctor checks, `enabled: false` with the
+  flag set, capacity collector `source` exclusion), [#396](https://github.com/zemdregon/switchboard/pull/396)
+  (usage accounting at the quota-failover routing call site, the one `serve`-path classification recorded under a
+  run) and [#407](https://github.com/zemdregon/switchboard/pull/407) (`get_run` byte-identical over Streamable HTTP
+  and from a second session; a `shares_subscription_with` value that is no provider config id refused at `doctor`
+  and `inner test`). See [ROADMAP §6.6](ROADMAP.md#66-m11-inner-agent-tasks).
+- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes (T12.7 is `Done`
+  on 2026-10-19 as Delegated agent work, not owner-approved; it was `Partial` the same day after an owner ruling that
+  `global` and `both` scope answered only `GLOBAL_NOT_AVAILABLE`): the spike, `rag`
+  configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
+  behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
+  and a `doctor` section, an untrusted context pack at admission that never changes the stored request or the
+  run's outcome, the read-only MCP tool `search_project_context`, and optional global sharing (`rag.global`,
+  `contribute_to_global`, `use_global`, all off by default). Agent-callable search (T12.9) and an opt-in live
+  embedding backend are not `Done`. See [Retrieval index](../README.md#retrieval-index-milestone-12),
+  [ROADMAP §6.7](ROADMAP.md#67-m12-retrieval-index-tasks) and the merged requirements and design evidence in
+  [SRS §3.15](requirements/SRS.md#implementation-evidence-partial-m12),
+  [PRD CAP-13](requirements/PRD.md#implementation-evidence-partial-m12--cap-13),
+  [HLD §2.1](design/HLD.md#21-comp-rag-implementation-evidence-m12-t121t123),
+  [LLD §14](design/LLD.md#14-retrieval-index) and [TDD §3.13](design/TDD.md#313-retrieval-index).
+- **Milestone 13 (network MCP transport) is `Partial`** (reopened 2026-10-19 for owner decision 77: T13.10
+  and T13.11 are Planned; the M13 scope below stays Done). `serve` can expose the MCP tools over Streamable HTTP with OAuth
+  2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
+  approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
+  front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed
+  under [HLD TB-12](design/HLD.md#3-trust-boundaries). See
+  [ROADMAP §6.10](ROADMAP.md#610-m13-network-mcp-transport-tasks).
+- **Milestone 14 (control plane) is `Partial`.** T14.0–T14.11 are implemented on fakes, including pause
+  ([#539](https://github.com/zemdregon/switchboard/pull/539)); digest, `list_runs`, `get_run`, budgets, the loop
+  breaker, `steer_run`, pause/resume, the approval proxy and notification sinks are covered by unit and
+  malicious-fixture tests. The M14 acceptance file (`src/mcp/m14-acceptance.test.ts`) runs scenarios A to G, including
+  D (pause holds admission while running work finishes,
+  [#559](https://github.com/zemdregon/switchboard/pull/559)). ADR-0047 and ADR-0048 remain Proposed. See
+  [Control plane (milestone 14)](../README.md#control-plane-milestone-14) and
+  [ROADMAP §6.13](ROADMAP.md#613-m14-control-plane-tasks).
+- **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
+  decisions 76 and 77: T15.6 to T15.9 are Planned; the M15 scope below stays Done on fakes (2026-10-18, Delegated
+  agent work,
+  not owner-approved; the `serve` low-water wiring below is a separate open fix)). The durable per-project work queue
+  (T15.1, [#527](https://github.com/zemdregon/switchboard/pull/527)) and the CI-failure trigger (T15.3,
+  [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
+  (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
+  branches the project pushed, treats the CI text as untrusted and enqueues a work item under the trigger's client
+  ceiling. Switchboard reads no GitHub token. Consecutive fix-up items per published ref are capped (T15.5:
+  `ci_trigger.max_consecutive_fixes`, Assumption default 2): further failures are recorded without a work item and the
+  project is flagged needs-attention (`ci_fix_stuck`) until CI passes or the operator resets the counter.
+  A project may set a queue low-water mark (T15.4: `projects.<id>.queue.low_water`, off by default): when the
+  admissible count (`READY` items, or `PENDING` items whose dependencies can still be met) drops below the mark, one
+  `queue_low` sink event fires, re-armed only when the count rises back to the mark. The detector is covered on fakes
+  (unit tests in `src/queue/low-water.test.ts`; end to end through the sink dispatcher with a capturing sink in
+  `src/mcp/work-queue.test.ts`); `serve` attaches one tracker per daemon process on the real ledger and the
+  sink dispatcher when notification sinks exist, seeding the armed state from the level at startup (`src/cli/serve.ts`;
+  end-to-end serve test `src/cli/serve-queue-low-water.test.ts`, [PR #678](https://github.com/zemdregon/switchboard/pull/678)).
+  Not built: the MCP server attaches no tracker, so only a `serve` run emits `queue_low` in production.
+  Schedules (T15.2, [#561](https://github.com/zemdregon/switchboard/pull/561))
+  are done on fakes: off by default, UTC cron, fired by `serve` before the CI poll, and listed or disabled with
+  `switchboard schedule`. See
+  [ROADMAP §6.14](ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks).
+- **Milestone 16 (Switchboard-controlled skills) is `Done` on fakes** (Delegated agent work, not owner-approved). The
+  skill store, configuration, operator CLI, admission, prompt-prefix delivery, the native-delivery framework with leak
+  prevention, the adapter declarations, the MCP tools, continuity across handoff and resume and the malicious-fixture
+  leg are built (T16.1 to T16.7, T16.9 to T16.11). The M16 acceptance file (`src/mcp/m16-acceptance.test.ts`, T16.12)
+  runs one test per clause of the milestone's acceptance column through a scripted MCP client on the fake adapter.
+  Not required for `Done`: the operator live checks are Done for the four T16.8 candidates (2026-10-19, decision 70:
+  Claude Code `NOT_LOADED`, Grok Build, Cursor and Muse Code `NOT_CHECKED`, operator-only), so every real provider
+  delivers skills as a prompt prefix, and no skill has been delivered to a live provider through Switchboard yet.
+  See [Switchboard-controlled skills (milestone 16)](../README.md#switchboard-controlled-skills-milestone-16),
+  [ADR-0056](adr/0056-switchboard-controlled-skills.md) and
+  [ROADMAP §6.16](ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
+- **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
+  client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
+  and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (T4.23, `Done` against its
+  Done-when on synthetic fixtures under owner decision 65; every Done-when case has a supervisor-replayed JSONL fixture
+  on `main` ([#260](https://github.com/zemdregon/switchboard/pull/260)); native shapes are T4.28's work),
+  auth-preflight, conformance suite (T4.25), malicious-fixture leg (T4.26, `Done` against its Done-when on fixtures
+  under owner decision 65; synthetic command fields, readable native login and repository configuration gaps stay;
+  [#291](https://github.com/zemdregon/switchboard/pull/291),
+  [#302](https://github.com/zemdregon/switchboard/pull/302),
+  [#308](https://github.com/zemdregon/switchboard/pull/308),
+  [#326](https://github.com/zemdregon/switchboard/pull/326),
+  [#345](https://github.com/zemdregon/switchboard/pull/345),
+  [#351](https://github.com/zemdregon/switchboard/pull/351),
+  [#358](https://github.com/zemdregon/switchboard/pull/358),
+  [#378](https://github.com/zemdregon/switchboard/pull/378),
+  [#393](https://github.com/zemdregon/switchboard/pull/393),
+  [#422](https://github.com/zemdregon/switchboard/pull/422),
+  [#449](https://github.com/zemdregon/switchboard/pull/449)) and Git declaration fixture tests on
+  synthetic fixtures (README [Grok Build CLI](../README.md#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live
+  smoke, live
+  malicious leg and `adapters validate` remain operator work (T4.28: the 2026-10-18 `adapters validate grok` run
+  passed probe, auth and conformance but stopped at the smoke step on a provider usage limit, so the manifest range
+  still admits no version).
+  [#302](https://github.com/zemdregon/switchboard/pull/302) through
+  [#449](https://github.com/zemdregon/switchboard/pull/449) extend synthetic malicious replay and compile pins only (including
+  completing both cut-line positions across categories and exits, parser fall-through paths at exit `2` and `137`,
+  trailing `tool_call_update` after `end`, JSON-encoding variants, and replays of the T4.23 second to sixth parser
+  residual passes); #449 also pinned a guard gap (a Git write past the 512-character target clip of a target-only shell
+  call was not seen), since closed in the parser (2026-10-15, synthetic only). Parser residual pins
+  ([#342](https://github.com/zemdregon/switchboard/pull/342),
+  [#354](https://github.com/zemdregon/switchboard/pull/354),
+  [#372](https://github.com/zemdregon/switchboard/pull/372)) leave the parser unchanged; none of them validate the
+  live CLI or close T4.23's or T4.26's gaps. Antigravity has a
+  parser (Done against its Done-when under owner decision 65 (a): T4.33; unrecorded-shape, fallback and own-property
+  hardening pins plus structured
+  `backing_provider`/`model` on `session_bound`, all synthetic,
+  [#272](https://github.com/zemdregon/switchboard/pull/272),
+  [#276](https://github.com/zemdregon/switchboard/pull/276),
+  [#297](https://github.com/zemdregon/switchboard/pull/297)),
+  a conformance suite (T4.35, `Done` on synthetic fixtures: native resume `--conversation <id>` fails closed when the
+  returned `conversation_id` differs or is missing, owner decision 67; replay dialect edge cases
+  [#281](https://github.com/zemdregon/switchboard/pull/281) and Go `flag`-boundary walking
+  [#292](https://github.com/zemdregon/switchboard/pull/292)), a malicious-fixture leg (Done against its Done-when
+  under owner decision 65 (b): synthetic refusal,
+  guard-blocked and trailing-tool fail-closed replay streams, hostile repository entries and FR-POL-04, T4.36;
+  [#257](https://github.com/zemdregon/switchboard/pull/257),
+  [#262](https://github.com/zemdregon/switchboard/pull/262),
+  [#280](https://github.com/zemdregon/switchboard/pull/280))
+  and a Git declaration on synthetic fixtures (README [Antigravity CLI](../README.md#antigravity-cli-milestone-4),
+  ROADMAP T4.32 to
+  T4.37); [#295](https://github.com/zemdregon/switchboard/pull/295) through
+  [#373](https://github.com/zemdregon/switchboard/pull/373) extend synthetic parser, conformance and malicious replay
+  only and do not validate the live CLI; the T4.38 live `adapters validate` pass followed on 2026-10-18 (CLI 1.4.2,
+  manifest range `>=1.4.2 <1.5.0`).
+  The live smoke and the live malicious leg for Antigravity ran on 2026-10-19 (ROADMAP T4.38 Done;
+  [`docs/research/live-checks-2026-10-19-antigravity.md`](research/live-checks-2026-10-19-antigravity.md)):
+  smoke 9 HELD, 2 ESCAPED (A-7, A-8; risks R-73, R-75), 1 NOT_CHECKED; malicious 1 HELD (A-M3),
+  1 ESCAPED (A-M2; risk R-72), 1 NOT_CHECKED (A-M1). Cursor has
+  module, compile-matrix, parser (Done against its Done-when under owner decision 65 (a): T4.43;
+  supervisor-replayed JSONL fixtures,
+  [#283](https://github.com/zemdregon/switchboard/pull/283),
+  [#287](https://github.com/zemdregon/switchboard/pull/287),
+  [#299](https://github.com/zemdregon/switchboard/pull/299),
+  [#324](https://github.com/zemdregon/switchboard/pull/324), residual ordering and resume/compile-parity pins
+  [#333](https://github.com/zemdregon/switchboard/pull/333), resume-id matrix and `denied_after_result.jsonl`
+  [#341](https://github.com/zemdregon/switchboard/pull/341), parser residual branches
+  [#348](https://github.com/zemdregon/switchboard/pull/348) and `idless_guard.jsonl`
+  [#360](https://github.com/zemdregon/switchboard/pull/360)), auth-preflight, a conformance suite on synthetic
+  fixtures (T4.45; replay dialect hardening, 59 compile/env refusal checks, and fixtures including
+  `denied_after_write`, `permission_denied_perm`, `resume_unknown_id`, `unknown_event`, `unsafe_id_after_bound` and
+  `git_write_guard_args`,
+  [#309](https://github.com/zemdregon/switchboard/pull/309),
+  [#315](https://github.com/zemdregon/switchboard/pull/315)), malicious-fixture leg (T4.46; category/exit matrix and
+  12 partial streams, [#316](https://github.com/zemdregon/switchboard/pull/316); residual cells at exits 2 and 137 and
+  guard-only Git writes, [#367](https://github.com/zemdregon/switchboard/pull/367)) and Git declaration
+  fixture tests on synthetic fixtures (README [Cursor CLI](../README.md#cursor-cli-milestone-4), ROADMAP T4.42 to
+  T4.47); live
+  smoke passed and the live malicious leg ran on 2026-10-19 (smoke `outcome=ok`, 11 held; malicious `outcome=failed`
+  with U-M2/U-M3 ESCAPED and U-M1 NOT_CHECKED on the pre-wrapper run), so T4.48 stays `Partial` pending the steward's
+  live rerun after merge; the escape fix ([ADR-0059](adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md), owner ruling
+2026-10-19 06:41 CDT) has landed on this branch, hermetically tested; the first live rerun inside the wrapper (w1700)
+  ended with all three cells `NOT_CHECKED` (`FAILED TOOL_FAILURE` before any tool call — a harness fault in the
+  operator channel's model pin, not a wrapper or model outcome). Under the owner ruling of 2026-10-19 08:12 CDT a check
+  is `HELD` only when the stream's tool calls show every asked action attempted, and U-M2/U-M3 join U-M1 as `mustRun`;
+the 2026-10-19 `adapters validate cursor` run passed
+  the probe (Cursor CLI 2026.10.16), auth, 11 static conformance checks and the smoke (owner decision 59), so the
+  manifest admits `>=2026.10.16 <2026.11.0`. OpenCode has module, compile-matrix,
+  probe, registry entry, parser (Done against its Done-when under owner decision 65 (a): T4.53; native limit and
+  tool-input shapes still open after T4.58 (ran 2026-10-19 without capturing them; see T4.56);
+  supervisor-replayed JSONL fixtures,
+  [#274](https://github.com/zemdregon/switchboard/pull/274),
+  [#290](https://github.com/zemdregon/switchboard/pull/290),
+  [#311](https://github.com/zemdregon/switchboard/pull/311),
+  [#321](https://github.com/zemdregon/switchboard/pull/321), terminal reason and late error handling
+  [#328](https://github.com/zemdregon/switchboard/pull/328), malformed step-start fail-closed, scope compile parity and
+  arrival-order independence
+  [#339](https://github.com/zemdregon/switchboard/pull/339), parser residual branches on synthetic lines
+  [#357](https://github.com/zemdregon/switchboard/pull/357)),
+  auth-preflight, conformance suite on synthetic fixtures (T4.55), malicious-fixture leg (Done against its Done-when
+  under owner decision 65 (b): synthetic refusal shapes, guard-blocked, trailing-tool, unreadable-event, exit 2/137,
+  JSON-encoding, and path-upgrade fail-closed replay streams in a widened hostile matrix and FR-POL-04, T4.56;
+  [#245](https://github.com/zemdregon/switchboard/pull/245),
+  [#284](https://github.com/zemdregon/switchboard/pull/284),
+  [#298](https://github.com/zemdregon/switchboard/pull/298),
+  [#312](https://github.com/zemdregon/switchboard/pull/312),
+  [#323](https://github.com/zemdregon/switchboard/pull/323),
+  [#355](https://github.com/zemdregon/switchboard/pull/355),
+  [#369](https://github.com/zemdregon/switchboard/pull/369)) and Git declaration fixture tests on synthetic
+  fixtures (README [OpenCode CLI](../README.md#opencode-cli-milestone-4), ROADMAP T4.52 to T4.57); live smoke and the live
+  malicious leg ran on 2026-10-19 (T4.58 Done): the 2026-10-18 `adapters validate opencode` run passed the probe
+  (`opencode v2.0.23`), auth, 11 static conformance checks and the smoke (owner decisions 60 and 68; one model call),
+  so the manifest admits `>=2.0.23 <2.1.0`, and the 2026-10-19 smoke
+  (11 HELD, O-G1 NOT_CHECKED, edit through recognised calls) and
+  malicious leg (O-M1/O-M2/O-M3 HELD, no check ESCAPED) are recorded in
+  [`docs/research/live-checks-2026-10-19-opencode.md`](research/live-checks-2026-10-19-opencode.md).
+  T4.52, T4.54, T4.55 and T4.57 are Done against their
+  Done-when on synthetic fixtures; T4.53 and T4.56 are Done against their Done-when under owner decision 65 (a) and (b),
+  with their native-shape gaps still open after T4.58 (see those rows). Kimi Code has module, compile matrix, probe and
+  registry entry
+  ([#429](https://github.com/zemdregon/switchboard/pull/429)), parser and resume (T4.63, three scrubbed captures
+  plus synthetic fixtures, [#436](https://github.com/zemdregon/switchboard/pull/436)), auth preflight (T4.64,
+  [#444](https://github.com/zemdregon/switchboard/pull/444)), a conformance suite (T4.65,
+  [#455](https://github.com/zemdregon/switchboard/pull/455)), a malicious-fixture leg (T4.66,
+  [#459](https://github.com/zemdregon/switchboard/pull/459)) and a Git declaration (T4.67,
+  [#464](https://github.com/zemdregon/switchboard/pull/464)); T4.63, T4.64 and T4.66 are Done against their Done-when
+  under owner decision 65 (a), (d) and (b), and T4.65 and T4.67 are Done against their Done-when (2026-10-15),
+  on synthetic fixtures except the T4.64 probe's two live `validate` runs (auth `OK`) and the
+  T4.68 live `adapters validate` pass on 2026-10-18 (CLI 2.1.1, manifest range `>=2.1.1 <2.2.0`) (README
+  [Kimi Code CLI](../README.md#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke and the live malicious leg
+  ran on 2026-10-19 (w1408; post-#748 w1601 rerun) and the row closed Partial-by-ruling with permission gating
+  Deferred (T4.68). The Grok Build and Muse Code manifests still admit
+  no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex, OpenCode,
+  Kimi Code, Antigravity and Cursor already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
+  Delegated). Open items, by blocker: operator live legs (T4.28; T4.38 Done 2026-10-19; T4.48 legs ran 2026-10-19
+  but the row stays `Partial` pending an owner ruling or a re-run; T4.68 legs ran 2026-10-19, row closed
+  Partial-by-ruling, gating Deferred; T4.12 is Deferred
+  under decision 69 — it needed a Mac and was optional for criterion 2; the
+  2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
+  and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
+  Antigravity reach the smoke step in the adapter's only compiled cell instead (T4.4));
+   rows waiting on uncaptured live shapes
+  (T4.35, T4.51, T4.53, T4.56; owner decision 65 sets when parser, CI
+  malicious-leg and README rows are `Done` against their Done-when; T4.33 and T4.36 are `Done`
+  under decision 65 (a) and (b), remaining native shapes carried by the T4.38 operator remainder); README rows final
+  after their live legs
+  (T4.29, T4.39, T4.49, T4.69 and T4.79 are `Done` except the post-T4.n8 update; T4.59 is `Done`);
+  Muse Code (Should) has module, compile matrix, auth preflight,
+  conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
+  [Muse Code CLI](../README.md#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access
+  (Q-27); T4.73
+  is `Done` against its Done-when under owner decision 65 (a), with record spellings, session-id field and `terminal`
+  values Assumption until the T4.71 capture (carried by T4.78); T4.76 is `Done` against its Done-when under owner
+  decision 65 (b), on Switchboard's ADR-0039 tool-call guard alone, with tool-record field names Assumption until
+  T4.71; T4.79 is `Done` except the post-T4.78 update.
+  Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
+  Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
+  [ROADMAP §6.8](ROADMAP.md#68-m4-adapter-expansion-tasks).
+
+What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`, `affinity list|reset`,
+`index status|rebuild|clear`, `projects list|show|validate|approve`, `git push`, `inner status|test|resume`,
+`skills list|show|add|approve|revoke|retire|unretire|diff`, and
+`serve` exposing seventeen MCP tools over stdio (eighteen when retrieval is on for at least one of the client's
+projects, twenty with skills enabled, twenty-three with `manage_projects`, plus two approval-proxy tools for an
+`approval_proxy` client; a `console` client sees only the console set). The five trust
+profile names exist; which of them a provider can run is listed in [Trust profiles](../README.md#trust-profiles) and by
+`list_capabilities`. Read
+[Known limitations](../README.md#known-limitations) before relying on it.
