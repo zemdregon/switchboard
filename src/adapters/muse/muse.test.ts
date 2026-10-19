@@ -34,10 +34,12 @@ import { tryLoadManifest } from "../manifest/index.js";
 import { adapterIdForConfigId, configIdForAdapterId, providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner } from "../run.js";
+import { guardEvent } from "../tool-guard.js";
 import type {
   CompileRequest,
   ExitInfo,
   Invocation,
+  NormalizedEvent,
   ParseState,
   ProbeOutput,
   ProbeRunner,
@@ -63,6 +65,7 @@ import {
   PRIVILEGED_BYPASS_PROFILE,
   RESUMED_SESSION_ID,
   readFixture,
+  replayAdapter,
   SYNTHETIC_EXEC_HELP_STDOUT,
   SYNTHETIC_VERSION_STDOUT,
   TASK_FAILURE_DETAIL,
@@ -76,7 +79,14 @@ import {
   MUSE_LOGIN_COMMAND,
   NO_AUTO_UPDATE_ENV,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
+  RECORD,
   SESSION_ID_FLAG,
+  TOOL_COMMAND_FIELDS,
+  TOOL_ID_FIELDS,
+  TOOL_INPUT_FIELDS,
+  TOOL_NAME_FIELDS,
+  TOOL_PATH_FIELDS,
+  TOOL_RECORDS,
 } from "./protocol.js";
 
 const FAKE_MUSE = fileURLToPath(new URL("./fixtures/fake-muse.mjs", import.meta.url));
@@ -918,6 +928,201 @@ describe("muse parser and result (T4.73; SYNTHETIC fixtures in reported or Assum
       JSON.stringify({ kind: "run_terminal", terminal: "completed", text: RESUMED_SESSION_ID, reason: null }),
     ]);
     expect(state.nativeSessionId).toBeUndefined();
+  });
+});
+
+describe("muse tool records and the ADR-0039 guard (T4.76; Assumption field spellings, Unverified: T4.71, no muse was run)", () => {
+  const exited = (exitCode: number): ExitInfo => ({
+    outcome: "exited",
+    exitCode,
+    signal: null,
+    expectedExitCodes: [0],
+  });
+  const parse = (lines: readonly string[]) => {
+    const a = adapter();
+    const state: ParseState = { lines: 0, unknownEvents: 0 };
+    return { a, state, events: lines.flatMap((l) => a.parseEvent(l, state)) };
+  };
+  /** The run's events as `startAdapterRun` stores them: through the guard as an approved bypass run sees it. */
+  const guarded = (lines: readonly string[], bypass = true) => {
+    const { a, state, events } = parse(lines);
+    return { a, state, events: events.map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/x", bypass })) };
+  };
+  const STARTED = JSON.stringify({ kind: "run_started", session_id: DEFAULT_SESSION_ID });
+  const DONE = JSON.stringify({ kind: "run_terminal", terminal: "completed", text: "done", reason: null });
+  const record = (kind: string, fields: Record<string, unknown>) => JSON.stringify({ kind, ...fields });
+  const GIT = "git commit -am synthetic";
+
+  it("fixture git_write_guard: a command record with a Git write under a completed terminal at exit 0 ends PERMISSION_BLOCKED", () => {
+    const { exitCode, lines } = readFixture("git_write_guard");
+    expect(exitCode).toBe(0);
+    const { a, state, events } = guarded(lines);
+    expect(events.map((e) => e.kind)).toEqual(["session_bound", "tool_call", "message", "result"]);
+    expect(events[1]).toEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "shell",
+      violation: { kind: "git_write", reason: expect.stringContaining("commit") },
+    });
+    expect(JSON.stringify(events)).not.toContain(GIT); // the transient command is dropped by the guard
+    expect(state.unknownEvents).toBe(0);
+    expect(a.extractResult(events, exited(0))).toEqual({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: expect.stringMatching(/^git write attempted: /),
+      nativeSessionId: DEFAULT_SESSION_ID,
+      summary: "Committed.",
+      unknownEventCount: 0,
+    });
+  });
+
+  it("positive control: the same fixture without the guard verdict would end ok, so the guard is the control", () => {
+    const { a, events } = parse(readFixture("git_write_guard").lines);
+    expect(events.find((e) => e.kind === "tool_call")).toMatchObject({ tool: "shell", command: GIT });
+    expect(a.extractResult(events, exited(0))).toMatchObject({ ok: true });
+  });
+
+  it("fixture git_write_guard replayed through the supervisor and the guard ends PERMISSION_BLOCKED (never success)", async () => {
+    const report = await runConformanceCase({
+      kind: "task_failure",
+      adapter: replayAdapter("git_write_guard"),
+      request: { ...request({ bypassApproved: true }), workspace: { cwd: makeDir(), writable: true } },
+      profile: PRIVILEGED_BYPASS_PROFILE,
+      expect: { ok: false, failureCode: "PERMISSION_BLOCKED", nativeSessionId: DEFAULT_SESSION_ID },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.ok).toBe(true);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", summary: "Committed." });
+  });
+
+  it.each(TOOL_RECORDS.map((kind) => [kind]))("the shell-command form is read from a %s record", (kind) => {
+    const { a, events } = guarded([STARTED, record(kind, { tool: "shell", input: { command: GIT } }), DONE]);
+    expect(events.map((e) => e.kind)).toEqual(["session_bound", "tool_call", "result"]);
+    expect(a.extractResult(events, exited(0))).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(a.extractResult(events, exited(1))).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+  });
+
+  it("the sourced tool record kinds are exactly tool_result, command_accepted and command_result", () => {
+    expect([...TOOL_RECORDS].sort()).toEqual([RECORD.commandAccepted, RECORD.commandResult, RECORD.toolResult].sort());
+  });
+
+  it.each([
+    ...TOOL_INPUT_FIELDS.flatMap((field) =>
+      TOOL_COMMAND_FIELDS.map((key) => [`${field}.${key} object`, { [field]: { [key]: GIT } }] as const),
+    ),
+    ...TOOL_INPUT_FIELDS.map(
+      (field) => [`${field} as a JSON string`, { [field]: JSON.stringify({ command: GIT }) }] as const,
+    ),
+    ...TOOL_COMMAND_FIELDS.map((key) => [`top-level ${key}`, { [key]: GIT }] as const),
+    ["a non-shell tool name beside the command", { tool: "ReadFile", input: { command: GIT } }],
+    ["a path beside the command", { input: { path: "README.md", command: GIT } }],
+    ["a parameters object beside a top-level command", { input: { verbose: true }, command: GIT }],
+    ["a non-JSON string input beside a top-level command", { input: "not json", command: GIT }],
+  ] as const)("a command line is read from %s and guarded as a shell call", (_label, fields) => {
+    const { events } = parse([record("tool_result", fields)]);
+    expect(events).toEqual([{ kind: "tool_call", tool: "shell", name: expect.any(String), command: GIT }]);
+    expect(guardEvent(events[0] as NormalizedEvent, { cwd: "/work/tree", bypass: true })).toMatchObject({
+      violation: { kind: "git_write" },
+    });
+  });
+
+  it("a path-only record is a read, or an edit when the tool name says so; a name-only record is other; nothing readable is dropped", () => {
+    const long = "p".repeat(600);
+    expect(parse([record("tool_result", { tool: "read_file", input: { path: "src/a.ts" } })]).events).toEqual([
+      { kind: "tool_call", tool: "read", name: "read_file", target: "src/a.ts" },
+    ]);
+    for (const key of TOOL_PATH_FIELDS) {
+      expect(parse([record("tool_result", { name: "WriteFile", [key]: long })]).events, key).toEqual([
+        { kind: "tool_call", tool: "edit", name: "WriteFile", target: `${"p".repeat(512)}…` },
+      ]);
+    }
+    for (const key of TOOL_NAME_FIELDS) {
+      expect(parse([record("command_result", { [key]: "x".repeat(100) })]).events, key).toEqual([
+        { kind: "tool_call", tool: "other", name: `${"x".repeat(64)}…` },
+      ]);
+    }
+    // Nothing readable: dropped, as T4.73 decided (the success_edit fixture's `tool_result` and `command_accepted`).
+    for (const fields of [{}, { ok: true }, { tool: "", command: "", path: "" }, { input: {} }, { input: 7 }]) {
+      const { state, events } = parse([record("tool_result", fields), record("command_accepted", fields)]);
+      expect(events, JSON.stringify(fields)).toEqual([]);
+      expect(state.unknownEvents).toBe(0);
+    }
+  });
+
+  it("a call id reports each command line once: a repeat is dropped, a swapped or late command is reported, no id never dedups", () => {
+    for (const key of TOOL_ID_FIELDS) {
+      const { events } = parse([
+        record("command_accepted", { [key]: "c1", tool: "shell", input: { command: "echo safe" } }),
+        record("command_result", { [key]: "c1", tool: "shell", input: { command: "echo safe" }, exit_code: 0 }),
+        record("tool_result", { [key]: "c1", tool: "shell" }), // no parameter: nothing new
+        record("command_result", { [key]: "c1", tool: "shell", input: { command: GIT } }), // swapped: reported
+        record("tool_result", { [key]: "c1", tool: "shell", input: { command: "echo safe" } }), // seen before
+      ]);
+      expect(
+        events.map((e) => (e.kind === "tool_call" ? e.command : e.kind)),
+        key,
+      ).toEqual(["echo safe", GIT]);
+    }
+    const late = parse([
+      record("command_accepted", { id: "c2", tool: "shell" }),
+      record("command_result", { id: "c2", command: GIT }),
+    ]);
+    expect(late.events.map((e) => (e.kind === "tool_call" ? (e.command ?? e.tool) : e.kind))).toEqual(["other", GIT]);
+    const noId = parse([record("tool_result", { command: GIT }), record("tool_result", { command: GIT })]);
+    expect(noId.events).toHaveLength(2);
+    // Ids are per run: a new parse state starts afresh.
+    expect(parse([record("tool_result", { id: "c1", command: GIT })]).events).toHaveLength(1);
+  });
+
+  it("the guard verdict wins at every exit code, after a failed terminal, after the terminal record and with a changed session id", () => {
+    const hostile = record("command_accepted", { tool: "shell", input: { command: GIT } });
+    const FAILED = JSON.stringify({ kind: "run_terminal", terminal: "failed", text: "", reason: "synthetic" });
+    const OTHER = JSON.stringify({ kind: "run_started", session_id: RESUMED_SESSION_ID });
+    for (const lines of [
+      [STARTED, hostile, DONE],
+      [STARTED, hostile, FAILED],
+      [STARTED, DONE, hostile],
+      [STARTED, hostile, OTHER, DONE],
+      [hostile],
+    ]) {
+      const { a, events } = guarded(lines);
+      for (const exitCode of [0, 1, 2, 137]) {
+        expect(a.extractResult(events, exited(exitCode)), `${lines.join(" ")} exit ${exitCode}`).toMatchObject({
+          ok: false,
+          failureCode: "PERMISSION_BLOCKED",
+        });
+      }
+    }
+  });
+
+  it("in an approved bypass run a hostile command with no Git write is not blocked (owner decision 25); outside bypass the provider-state check applies", () => {
+    const lines = [
+      STARTED,
+      record("tool_result", { tool: "shell", input: { command: "cat /home/x/.codex/auth.json" } }),
+      DONE,
+    ];
+    const bypass = guarded(lines, true);
+    expect(bypass.a.extractResult(bypass.events, exited(0))).toMatchObject({ ok: true });
+    const plain = guarded(lines, false);
+    expect(plain.a.extractResult(plain.events, exited(0))).toMatchObject({
+      ok: false,
+      failureCode: "SANDBOX_VIOLATION",
+    });
+  });
+
+  it("an unsourced tool_call kind stays unknown: counted, no result, and a Git write in it is not a tool call (fail closed, never success at exit 0)", () => {
+    const { a, state, events } = guarded([record("tool_call", { tool: "shell", input: { command: GIT } })]);
+    expect(events).toEqual([{ kind: "unknown", rawType: "tool_call" }]);
+    expect(state.unknownEvents).toBe(1);
+    expect(a.extractResult(events, exited(0))).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("the success_edit fixture still parses the same: its field-less tool and command records are dropped", () => {
+    const { lines } = readFixture("success_edit");
+    expect(lines.filter((l) => TOOL_RECORDS.some((k) => l.includes(`"kind":"${k}"`)))).toHaveLength(2);
+    const { state, events } = guarded(lines);
+    expect(events.map((e) => e.kind)).toEqual(["session_bound", "message", "message", "result"]);
+    expect(state.unknownEvents).toBe(0);
   });
 });
 

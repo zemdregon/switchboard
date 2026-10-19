@@ -86,6 +86,27 @@ export const RECORD = {
 export const TERMINAL_COMPLETED = "completed";
 
 /**
+ * Tool records (T4.76). The [SDK] names a `ToolResult` payload and a `CommandAccepted`/`CommandResult` pair ("command
+ * intake") and none of their fields; no tool-call payload is named, so these records are the only sourced place a tool
+ * call can be read from. **Assumption: T4.71** (Delegated, fail closed): a record of one of these kinds
+ * ({@link TOOL_RECORDS}) may carry the tool's name ({@link TOOL_NAME_FIELDS}), its parameters as an object or a JSON
+ * string ({@link TOOL_INPUT_FIELDS}) or at the top level, a shell tool's command line ({@link TOOL_COMMAND_FIELDS}),
+ * a file tool's path ({@link TOOL_PATH_FIELDS}) and a call id ({@link TOOL_ID_FIELDS}). Every readable one becomes a
+ * `tool_call` event for the ADR-0039 guard; a record with none of these fields carries nothing Switchboard records and
+ * stays dropped (T4.73). Should T4.71 show that `command_accepted` echoes the prompt rather than a shell command, the
+ * capture narrows this list: until then a prompt that parses as a Git write ends the run `PERMISSION_BLOCKED` (a
+ * refusal, never an escape). Any other kind, `tool_call` included, stays `unknown`: counted and never success.
+ */
+export const TOOL_RECORDS: readonly string[] = [RECORD.toolResult, RECORD.commandAccepted, RECORD.commandResult];
+export const TOOL_NAME_FIELDS: readonly string[] = ["tool", "name", "tool_name"];
+export const TOOL_INPUT_FIELDS: readonly string[] = ["input", "args", "arguments", "parameters"];
+export const TOOL_COMMAND_FIELDS: readonly string[] = ["command", "cmd"];
+export const TOOL_PATH_FIELDS: readonly string[] = ["path", "file_path"];
+export const TOOL_ID_FIELDS: readonly string[] = ["id", "call_id", "tool_call_id"];
+/** A path-only call whose tool name matches is an `edit`; any other path-only call is a `read` (Assumption: T4.71). */
+export const EDIT_TOOL_NAME_RE = /write|edit|patch|create|delete|remove|apply/i;
+
+/**
  * **Assumption** field names, `Unverified: T4.71` (TDD §4.8 "Resume": how the controller learns the session id is not
  * sourced): `run_started.session_id` carries the session's uuid (the name follows `MUSE_SESSION_ID`, which Muse passes
  * to stdio MCP servers [M-ext]); `run_output_delta.text` carries assistant text.

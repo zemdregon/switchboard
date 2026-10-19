@@ -561,7 +561,7 @@ as history.
   block PR #741 (the range fields and evidence lines the gate reads are
   correct).
 
-## 27. `claude.json` notes keep the pre-validation range prose (pre-existing, not from PR #729)
+## 34. `claude.json` notes keep the pre-validation range prose (pre-existing, not from PR #729)
 
 - `src/adapters/manifests/claude.json` carries `validated_version_range`
   `>=2.1.294 <2.2.0` (rewritten by the T4.11 operator run on 2026-10-14, with
