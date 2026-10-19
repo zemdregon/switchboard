@@ -339,3 +339,32 @@ as history.
   dated snapshot, and rewriting it would falsify the record; the live
   status lives in the T3.8 row and the M3 row, which agree. It does not
   block PR #719.
+
+## 24. T6.15 free-text quota mappings vs FR-ADP-04, ADR-0055 item 11 and Q-100 (from PR #700, RESOLVED)
+
+- PR #700 (`sb/2026-10-18-fix-t615-cursor-kimi-limit-signals`) maps two stderr
+  signals to `QUOTA_EXHAUSTED` in `classifyFailure` by phrase matching on one
+  stderr-tail line: Cursor's out-of-usage line (`ActionRequiredError` plus `out
+  of usage`, `cursorQuotaClassification` in `src/adapters/cursor/adapter.ts`)
+  and Kimi Code's 5-hour usage-limit line (`403` plus `usage limit`,
+  `kimiQuotaClassification` in `src/adapters/kimi/adapter.ts`, checked before
+  the auth mapping because the CLI labels the stop `provider.auth_error`).
+- T6.11's own evidence (ROADMAP T6.15's sibling row) classifies both signals as
+  free text with no structured field — Cursor "no (class name only)", Kimi
+  "kind and status are inside free text" ([limit captures
+  2026-10-17](research/limit-captures-2026-10-17.md)) — and names only
+  Antigravity's `AGY_ERROR.status`/`error_code` as the T6.15 candidates.
+- That collided with three standing rules: [SRS
+  FR-ADP-04](requirements/SRS.md) (Must: no inferring status by
+  pattern-matching free text), [ADR-0055](adr/0055-model-groups-and-usage-pacing.md)
+  item 11 (accepted: mapping only from structured output; a free-text-only
+  signal stays unclassified until a decision says otherwise, Q-100), and the
+  Q-100 delegated default itself (fail closed: only structured signals mapped),
+  plus T6.15's own Done-when ("a free-text-only signal stays unmapped") and its
+  2026-10-17 evidence ("Free-text-only signals stay unmapped (Claude Code,
+  Codex, Cursor CLI, Kimi Code)"). The PR cited only Delegated authority.
+- **Resolved 2026-10-18 by owner decision 64** (ROADMAP §4.2 entry 64): the two stderr signatures count as
+  structured-enough captured distinctive signatures ([ADR-0058](adr/0058-captured-limit-signatures.md), which
+  supersedes ADR-0055 item 11 in part), with the [FR-ADP-04](requirements/SRS.md) and
+  [FR-CAP-11](requirements/SRS.md) one-exception amendments and the Q-100 answer. SDD FR-CAP-11 and LLD §16.9 now
+  point at ADR-0058 instead of here; this note stands as the resolved history. PR #700 is unblocked on this item.
