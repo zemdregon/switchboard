@@ -2884,7 +2884,8 @@ the Git declaration are T4.73, T4.75 to T4.77 (fail-closed placeholders until th
 *As built (T4.73, 2026-10-16; Delegated agent work, not owner-approved; fixtures only, no `muse` was run).* The parser
 reads one `--json` record per line by its `kind`: `run_started` binds the session id from a structured `session_id`
 field (**Assumption**; only a uuid binds), `run_output_delta` `text` becomes assistant messages, `run_terminal` is the
-result, and the other [SDK] kinds are dropped; spellings other than `run_terminal` ([Orca]) are the snake_case of the
+result, and the other [SDK] kinds are dropped (tool records readable under T4.76 excepted; see the T4.76 paragraph
+below); spellings other than `run_terminal` ([Orca]) are the snake_case of the
 [SDK] names, an **Assumption** until T4.71. Success needs `terminal: "completed"` and an expected exit, so exit `0` with
 any other terminal value ends `FAILED`; an unknown kind is counted and never makes a result; a record after the first
 `run_terminal`, a changed or non-uuid session id is `OUTPUT_PROTOCOL_ERROR`; failures without a sourced native shape

@@ -2542,8 +2542,10 @@ The `--json` parser (T4.73, `parseEvent` and `extractResult` in `src/adapters/mu
 line, keyed on a string `kind`:
 
 - `run_started` binds the session id from its `session_id` field, which must be a uuid; `run_output_delta` `text`
-  becomes assistant text, joined as the summary; `task_lifecycle`, `command_accepted`, `command_result`,
-  `model_configured`, `tool_result` and `turn_input_user` are dropped.
+  becomes assistant text, joined as the summary; `task_lifecycle`, `model_configured` and `turn_input_user` are
+  dropped. A `tool_result`, `command_accepted` or `command_result` record that carries a tool name, a command line or
+  a path becomes a `tool_call` event for the ADR-0039 guard (T4.76; field spellings an Assumption until T4.71); a tool
+  record with no readable field is dropped.
 - **Success only for `terminal: "completed"`.** A run succeeds only with a `run_terminal` record whose `terminal` is
   `completed`, at an expected exit code (`0`), with no provider error. Exit code 0 alone never succeeds, and exit 0
   with any other `terminal` value ends `FAILED`.
