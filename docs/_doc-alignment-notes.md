@@ -321,3 +321,14 @@ as history.
   edit by the PR author (or a code-touching follow-up), not an owner decision.
   It does not block PR #703 (the range fields and the evidence line, which are
   what the gate and the version check read, are correct).
+- Same staleness, same scope: the header comments in
+  `src/adapters/antigravity/adapter.ts` ("The manifest range admits no
+  version, so none of this runs before `adapters validate` passes a version")
+  and `src/adapters/antigravity/protocol.ts` ("The manifest range admits no
+  version, so none of this runs until `adapters validate` passes a version")
+  were true under the old `<0.0.0` range and are overtaken by the new
+  `>=1.4.2 <1.5.0` range the same way. They need a code-touching follow-up,
+  not an owner decision, and do not block PR #703. (Kimi has the identical
+  shape since PR #694: `kimi.json` admits `>=2.1.1 <2.2.0` while
+  `src/adapters/kimi/adapter.ts` and `src/adapters/kimi/protocol.ts` still
+  say the range admits no version; see item 15.)
