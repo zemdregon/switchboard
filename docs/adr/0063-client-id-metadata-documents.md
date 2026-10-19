@@ -78,7 +78,8 @@ must not follow redirects when fetching it; the server should display the URL's 
   operator would not want contacted; the fetch reveals only that Switchboard asked for a metadata document.
 - A host that is *meant* to be private (a development client on loopback) cannot be a CIMD client: the draft's
   development-only loopback exception is not implemented (fail closed). Such a client registers through DCR instead.
-- Two migrations numbered 0025 cannot coexist; the next additive migration takes 0026.
+- The table is migration 0026 because `0025_eval_result` (T8.14) reached `main` first; the next additive migration
+  takes 0027.
 
 ## Alternatives considered
 

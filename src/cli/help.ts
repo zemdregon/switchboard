@@ -28,7 +28,9 @@ const OPT_CONFIG =
 const OPT_PROJECT = "  --project <id>      schedule list only: show only this project's schedules";
 const OPT_STATE = "  --state <STATE>     runs list only: filter by run state";
 const OPT_LIMIT = "  --limit <n>         runs list only: show at most n runs";
-const OPT_PROVIDER = "  --provider <id>     capacity only: one provider's capacity";
+const OPT_PROVIDER = "  --provider <id>     capacity: one provider's capacity; eval run: the provider to evaluate";
+const OPT_LIVE_BUDGET =
+  "  --live-budget <file> eval run only: live budget file, required for any provider but the test fake";
 const OPT_DRY_RUN =
   "  --dry-run           gc only: list what collection would remove, without collecting (the default)";
 const OPT_HELP = "  -h, --help          Show this help";
@@ -284,6 +286,21 @@ export const COMMAND_HELP: readonly CommandHelpEntry[] = [
     example: "switchboard schedule list",
   },
   {
+    name: "eval",
+    global: [
+      "  eval run <suite> --provider <id> [--live-budget <file>]",
+      "                      Replay <data_dir>/eval/<suite>.json as runs, grade each in a network-off container with",
+      "                      hidden tests and record eval_result rows; skipped in CI; real providers need a live budget",
+      "  eval results <suite> Recorded eval_result rows of a suite (read-only)",
+    ],
+    usage: ["switchboard eval run <suite> --provider <id> [--live-budget <file>]", "switchboard eval results <suite>"],
+    summary:
+      "Own-repository evaluation (opt-in, operator only): replay a suite of past tasks per provider, grade them " +
+      "with hidden tests in a network-off container and record pass, wall-clock and usage.",
+    options: [OPT_PROVIDER, OPT_LIVE_BUDGET, OPT_JSON, OPT_CONFIG],
+    example: "switchboard eval run my-suite --provider fake",
+  },
+  {
     name: "skills",
     global: [
       "  skills list [--all] Skill names with newest version, state, origin, size and hash prefix; --all adds retired names",
@@ -359,6 +376,7 @@ const GLOBAL_OPTIONS: readonly string[] = [
   OPT_STATE,
   OPT_LIMIT,
   OPT_PROVIDER,
+  OPT_LIVE_BUDGET,
   OPT_DRY_RUN,
   OPT_HELP,
 ];

@@ -536,8 +536,8 @@ flowchart LR
     P2 --> W2[(worktree B)]
 ```
 
-Data directory layout. *Implemented (2026-10-13) for the ledger, artifacts and worktrees (paths below), and
-(2026-10-17, T16.1) for the skill content store; the config
+Data directory layout. *Implemented (2026-10-13) for the ledger, artifacts and worktrees (paths below),
+(2026-10-17, T16.1) for the skill content store and (2026-10-19, T8.14) for the evaluation suites; the config
 format is decided in [TDD §3.1](TDD.md#31-configuration) and [LLD §11.1](LLD.md#111-configuration-shape):*
 
 | Path (proposed) | Contents |
@@ -545,6 +545,7 @@ format is decided in [TDD §3.1](TDD.md#31-configuration) and [LLD §11.1](LLD.m
 | `<data>/ledger.sqlite` (+ WAL files) | SQLite ledger ([ADR-0005](../adr/0005-sqlite-ledger.md)); `LEDGER_FILE_NAME` in `src/ledger/db.ts` |
 | `<data>/artifacts/ab/cd/<sha256>` (first two byte pairs of the hash, per [LLD §1](LLD.md#1-data-model)) | Content-addressed diffs, stdout events, stderr, verification output. *Hardening (2026-10-16, [#616](https://github.com/zemdregon/switchboard/pull/616); Delegated, not owner-approved):* `ArtifactStore` in `src/artifacts/index.ts` creates and `chmod`s the root and each shard directory `0700` level by level, so a restrictive process umask (`0177`) cannot leave a non-traversable `0600` directory that makes the next `put` fail `EACCES`; files stay `0600` (test "succeeds and creates traversable directories under a hostile umask" in `src/artifacts/artifacts.test.ts`) |
 | `<data>/skills/<sha256>.md` (M16, T16.1) | Content-addressed skill versions: the canonical front matter plus body, written once through a temporary file, `fsync` and rename; file `0600`, directory `0700` (`src/skills/store.ts`, migration `0021`) |
+| `<data>/eval/<suite>.json`, `<data>/eval/bundles/` and `<data>/eval/grading/` (M8, T8.14) | Operator-written evaluation suites, hidden-test bundles and per-run grader staging (removed after each task). Suite names match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; bundles stay inside `<data>/eval/` and never enter the agent's worktree; the grader image is pinned by digest and grading is network-off ([LLD §20.13](LLD.md#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417), [evaluation guide](../operations/evaluation.md)) |
 | `<data>/worktrees/<meta_session_id>/<run_id>/` | Controller-created Git worktrees (could alternatively live beside the source repo; open question) |
 | `<data>/runs/<run_id>/tools.sock` | Per-run socket for the injected tools (directory `0700`, socket `0600`); removed when the provider process exits, or by the start-up sweep after a crash. When this path would exceed 100 bytes, a private `sb-git-XXXXXX` directory under `$XDG_RUNTIME_DIR` or the OS temporary directory holds it instead ([ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md), T9.4) |
 | `<config>/` | Operator configuration: allowed roots, projects (environment, contexts, push policy, commit identity, sanitiser patterns), MCP client entries with maximum profiles and project lists, tier priors, routing weights, retention, compliance manifests |
