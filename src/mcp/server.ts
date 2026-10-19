@@ -1002,6 +1002,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       priority: a.priority,
       ...(scope?.ok ? { privileged_scope: scope.scope } : {}),
       ...skillFields, // T16.4: part of request_hash (FR-MCP-08)
+      ...(a.light === true ? { light: true } : {}), // T3.24: absent unless given, so other hashes are unchanged
     };
     const hash = requestHash(canonical);
     const key = a.idempotency_key as string | undefined;
@@ -1102,6 +1103,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(key !== undefined ? { idempotencyKey: key } : {}),
       ...(verification.length > 0 ? { verificationCommands: verification } : {}),
       ...(skills !== undefined ? { skills } : {}),
+      // T3.24 (FR-CAP-12, LLD §20.2): `light` is honoured only for a client configured `allow_light: true`.
+      ...(a.light === true && client.allowLight === true ? { light: true } : {}),
       ...(scope?.ok
         ? {
             privileged: {

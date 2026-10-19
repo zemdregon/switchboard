@@ -33,6 +33,9 @@
  * `queue.stall_hours` window has passed with `READY` work items and no item reaching `DONE` carries
  * `project_needs_attention: { active: true, reason: "stalled_progress" }` (`../control/progress-stall.ts`). The key is
  * omitted otherwise, so a digest without a configured window is unchanged. It carries no run: the flag is the project's.
+ * - `held` (T3.24, FR-CAP-12, LLD §20.2) lists the listed runs the host load hold keeps in `QUEUED` (reason
+ *   `held_load`, the envelope's `hold`). It is present only when non-empty, so a controller without the hold returns
+ *   exactly the digest it did before.
  */
 
 import { createHash } from "node:crypto";
@@ -79,6 +82,8 @@ export interface DigestProject {
   needs_attention: { run_id: string; reason: NeedsAttentionReason; envelope: Envelope }[];
   finished: Envelope[];
   failed: Envelope[];
+  /** T3.24: present only when a listed run is held by the host load hold. */
+  held?: { run_id: string; reason: "held_load"; envelope: Envelope }[];
   pending_approvals: ApprovalProxyItem[];
   untrusted_summaries: { run_id: string; field: "result.summary"; content: UntrustedText }[];
 }
@@ -210,6 +215,9 @@ function assembleProjects(
     const { envelope, summary } = digestEnvelope(buildEnvelope(ledger, run, scrub, attention));
     const flagged = envelope.needs_attention?.active === true ? envelope.needs_attention.reason : undefined;
     if (flagged !== undefined) project.needs_attention.push({ run_id: run.id, reason: flagged, envelope });
+    if (envelope.hold !== undefined) {
+      project.held = [...(project.held ?? []), { run_id: run.id, reason: envelope.hold.reason, envelope }];
+    }
     const section = run.state === "SUCCEEDED" ? project.finished : run.state === "FAILED" ? project.failed : undefined;
     const ended = section !== undefined && sections.terminal(run) && section.length < sections.terminalMax;
     if (ended) section.push(envelope);
