@@ -518,6 +518,18 @@ Every enforced row held on 2026-10-18 (no `ESCAPED` row). Line numbers are as of
 Scope: the checks are about the controller only; whether a real provider CLI's own sandbox stops a credential read,
 network use or a push is the live leg (T3.9, T4.n8).
 
+#### 3.6.3 Property-based tests and coverage (NFR-MAINT-06, Proposed 2026-10-19)
+
+*Proposed (Delegated, 2026-10-19; ROADMAP T8.11 for owner decision 77's discovery rows).* The parsers that carry the "no
+Git write, no bypass flag, no secret out" guarantees get generated-input tests beside their example tests: the
+Git-write detector, the argv audit ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md),
+[ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md)), the commit sanitiser, the secret redactor, the
+untrusted-block renderers and the pre-push scanner of FR-GIT-11. The library is `fast-check`, pinned as a dev
+dependency when T8.11 adds it; properties run in the normal `npm test` with a fixed seed recorded on failure, so a CI
+failure reproduces locally. Coverage comes from the vitest coverage provider and is reported in CI without a threshold
+at first. Generators produce spelling variants (quoting, environment prefixes, `-`/`--` and `_`/`-` forms, path
+prefixes, Unicode look-alikes) rather than random bytes, because the past gaps were spelling gaps (ADR-0037, ADR-0045).
+
 ### 3.7 Packaging and release
 
 - **Distribution (Proposed).** An npm package exposing a `switchboard` bin with subcommands `serve`, `doctor`, `runs

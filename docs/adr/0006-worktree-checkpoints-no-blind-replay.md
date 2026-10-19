@@ -1,6 +1,9 @@
 # ADR-0006: Worktree per write-capable run; checkpoints; no blind replay
 
-- Status: Accepted. The clause "The controller never pushes to remotes" is superseded by [ADR-0014](0014-tool-only-commits-and-publication.md).
+- Status: Accepted. The clause "The controller never pushes to remotes" is superseded by
+  [ADR-0014](0014-tool-only-commits-and-publication.md). The automatic-merge deferral and the clause "Integration of
+  result branches is the orchestrator's or operator's step" are superseded in part by
+  [ADR-0060](0060-opt-in-head-pinned-merge-policy.md) for projects that turn the merge policy on (2026-10-19).
 - Date: 2026-10-12
 - Decided by: Delegated (agent, 2026-10-12)
 - Related: FR-WS-01–07, FR-CAP-05, FR-EXE-06
