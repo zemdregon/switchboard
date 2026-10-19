@@ -113,8 +113,8 @@ export const SEARCH_TOOL_NAMES = ["search_project_context"] as const;
 export type SearchToolName = (typeof SEARCH_TOOL_NAMES)[number];
 
 /**
- * T15.1 (FR-QUE-01, LLD §18.4): the project work queue. Listed right after `TOOL_NAMES` on a stdio session; not offered
- * over the network transport (see `./server.ts`).
+ * T15.1 (FR-QUE-01, LLD §18.4): the project work queue. Listed right after `TOOL_NAMES` on a stdio session; since
+ * T15.9 (FR-QUE-08, LLD §20.8) also on the network transport, but only for an `orchestrator` client (see `./server.ts`).
  */
 export const WORK_QUEUE_TOOL_NAMES = ["enqueue_work", "list_work", "cancel_work"] as const;
 export type WorkQueueToolName = (typeof WORK_QUEUE_TOOL_NAMES)[number];
@@ -509,6 +509,13 @@ const DIGEST = {
         properties: {
           project_id: { type: "string" },
           paused: { type: "boolean" },
+          // T14.16 (FR-CTL-14, LLD §20.5): present only while the project's progress is stalled.
+          project_needs_attention: {
+            type: "object",
+            additionalProperties: false,
+            required: ["active", "reason"],
+            properties: { active: { const: true }, reason: { const: "stalled_progress" } },
+          },
           budget: {
             type: "object",
             additionalProperties: false,

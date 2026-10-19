@@ -186,7 +186,8 @@ describe("closed payload (ADR-0048 item 3)", () => {
 
   it("builds a closed five-field payload for every sink_event_kind", () => {
     const runless = new Set(["budget_exhausted", "project_paused", "queue_low"]);
-    for (const kind of SINK_EVENT_KINDS) {
+    // T14.16: `digest` adds the integer-only `counts` object (ADR-0048 item 3 as amended; `digest-push.test.ts`).
+    for (const kind of SINK_EVENT_KINDS.filter((k) => k !== "digest")) {
       const reason = SINK_REASON_CODES[kind][0] as string;
       const runId = runless.has(kind) ? null : RUN_ID;
       const p = buildNotificationPayload(

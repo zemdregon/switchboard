@@ -110,6 +110,11 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   summaries rather than the traceability owner (the SDD covers every one of these IDs, and
   `node scripts/check-docs.mjs` passes). It does not block PR #641.
 
+  **Update 2026-10-19 (doc-align gate for PR #759, T14.16):** this PR widens the same gap by one ID. Its SDD row
+  maps FR-CTL-14 to COMP-OPS, COMP-RTE and COMP-LED while the HLD rows still cite COMP-MCP `FR-CTL-01..11` and
+  COMP-RTE `FR-QUE-01..02`. Left unchanged for the same reason: re-attribution is the HLD owner's call, the SDD
+  covers FR-CTL-14, and `node scripts/check-docs.mjs` passes. It does not block PR #759.
+
 ## 10. M7 wave-B planning notes vs Done rows (pre-existing, not from PR #645)
 
 - The §6.12 sequencing notes still say "T7.8 is blocked on T7.12 (its row)", that T7.9 and T7.12 "wait for
@@ -676,7 +681,21 @@ as history.
   substance of each ruling is recorded where it is cited, and
   `node scripts/check-docs.mjs` does not validate the §4.2 numbering).
 
-## 40. T4.48 closure (PR #757): accepted-ADR body and historical range parentheticals left unchanged
+## 40. FR-ADP-09 enable-condition vs Kimi adapter staying disabled (pre-existing, not from PR #755)
+
+- [SRS FR-ADP-09](requirements/SRS.md) says the Kimi adapter "shall be enabled once that contract is pinned".
+  The contract is pinned since 2026-10-18 (`adapters validate kimi` passed on CLI 2.1.1, manifest range
+  `>=2.1.1 <2.2.0`), conformance is Done (T4.65), yet the adapter stays disabled: T4.68 closed Partial-by-ruling
+  (owner ruling 05:22 CDT, then the 08:45 CDT bypass-only ruling implemented by PR #755), with permission gating
+  Deferred to ROADMAP §8.
+- [HLD §2](design/HLD.md) ("Disabled until the CLI contract is pinned (FR-ADP-09)") reads as if pinning alone
+  enables; it predates the validate pass and neither it nor FR-ADP-09 records the ruling that keeps the adapter
+  disabled past pinning.
+- Left unchanged: reconciling "enabled once pinned" with "disabled by ruling" (amend FR-ADP-09, or record the
+  ruling as the superseding condition) is the SRS/HLD owners' call, and it predates PR #755, which changes no
+  enablement. It does not block PR #755.
+
+## 41. T4.48 closure (PR #757): accepted-ADR body and historical range parentheticals left unchanged
 
 - ADR-0059's Consequences still say "the live malicious leg (U-M1 to U-M3)
   must be rerun by the steward after merge; T4.48 stays Partial until every
@@ -699,7 +718,22 @@ as history.
   range is stated in the T4.48 row, TDD §4.5.6, the README Cursor section
   and the manifest itself. It does not block PR #757.
 
-## 41. TDD §3.8 cites a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, recorded not resolved)
+## 41. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
+
+- [HLD §1.2](design/HLD.md#12-explicit-exclusions) still excludes "No network
+  listener: MCP is stdio only; HTTP/SSE is deferred", while the M13 network
+  transport (Streamable HTTP with OAuth 2.1, ADR-0041 Accepted 2026-10-14,
+  T13.1 to T13.9 Done) is built and this PR extends it to the work-queue
+  tools (T15.9). Likewise the [FRD actor table](requirements/FRD.md) still
+  gives the Orchestrator upstream agent "MCP over stdio (COMP-MCP)".
+- PR #762 neither introduces nor worsens either: both were already overtaken
+  by M13 before this branch. Left unchanged: restating the transport
+  exclusion is the HLD/FRD owners' call (cf. item 13 for the same
+  as-built-vs-review-label precedent). It does not block PR #762 (the live
+  transport facts are stated in the M13 row, LLD §3.3 and LLD §20.8, which
+  this PR updates where it touches them).
+
+## 42. TDD §3.8 cites a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, recorded not resolved)
 
 - PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
   owner's macOS merge waiver" / "under the owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux

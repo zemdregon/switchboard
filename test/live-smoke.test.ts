@@ -88,13 +88,20 @@ describe("live smoke provider plug-ins (T4.3)", () => {
       agy: { transport: "subprocess-jsonl", flags: ["--dangerously-skip-permissions"] },
       cursor: { transport: "subprocess-jsonl", flags: ["--force"] },
       grok: { transport: "subprocess-jsonl", flags: ["--always-approve"] },
-      kimi: { transport: "acp-stdio", flags: [] },
+      // T4.68 bypass-only gate (ruling 2026-10-19 08:45 CDT): the plug-in's ACP smoke cell no longer compiles.
+      kimi: { transport: "Ineligible", flags: [] },
       opencode: { transport: "subprocess-jsonl", flags: [] },
     };
     for (const [id, w] of Object.entries(want)) {
       const plugin = (await import(pathToFileURL(path.join(dir, `${id}.mjs`)).href)).default;
       const { result, bypassFlags } = compileCell(plugin.adapterId ?? id, plugin.smokeCell.scope);
-      expect("reason" in result ? `${result.reason}: ${result.detail}` : result.transport, id).toBe(w.transport);
+      if (w.transport === "Ineligible") {
+        expect("reason" in result ? `${result.reason}: ${result.detail}` : result.transport, id).toMatch(
+          /^PROFILE_UNSUPPORTED: mode approval: Kimi has no permission requests/,
+        );
+      } else {
+        expect("reason" in result ? `${result.reason}: ${result.detail}` : result.transport, id).toBe(w.transport);
+      }
       expect(bypassFlags, id).toEqual(w.flags);
       expect(plugin.smokeCell.bypassFlag ?? null, id).toBe(w.flags[0] ?? null);
     }

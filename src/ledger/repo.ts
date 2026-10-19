@@ -8,7 +8,9 @@ import { createScheduleLedgerSlice, type ScheduleLedgerSlice } from "./schedule.
 import {
   createWorkQueueLedgerSlice,
   type EnqueueWorkItemInput,
+  type ProgressStallFacts,
   type WorkItemRow,
+  type WorkItemState,
   type WorkListFilter,
 } from "./work-queue.js";
 
@@ -1007,6 +1009,9 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   // ---- T15.4 additions (queue low-water event, FR-QUE-04, LLD §18.8) -----------------------------------------
   countAdmissibleWorkItems(projectId: string): number;
   setQueueChangeListener(listener?: (projectId: string) => void): void;
+  // ---- T14.16 additions (digest push and progress stall, FR-CTL-14, LLD §20.5) -------------------------------
+  readProgressStallFacts(projectId: string): ProgressStallFacts;
+  countWorkItemsByState(): Partial<Record<WorkItemState, number>>;
 }
 
 export {
@@ -1026,7 +1031,14 @@ export type {
   ScheduleListFilter,
   ScheduleRow,
 } from "./schedule.js";
-export type { EnqueueWorkItemInput, WorkItemRow, WorkItemState, WorkListFilter } from "./work-queue.js";
+export type {
+  EnqueueWorkItemInput,
+  ProgressStallFacts,
+  WorkItemRow,
+  WorkItemState,
+  WorkListFilter,
+} from "./work-queue.js";
+export { WORK_ITEM_STATES } from "./work-queue.js";
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
   const ids = deps.ids ?? defaultIds;

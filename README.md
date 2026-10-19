@@ -167,11 +167,14 @@ Pre-release. The package is private and is not published to any registry; you bu
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
-  decisions 76 and 77: T15.6 to T15.9 are Planned; the M15 scope below stays Done on fakes (2026-10-18, Delegated
+  decisions 76 and 77: T15.6 to T15.8 are Planned and T15.9 is Done; the M15 scope below stays Done on fakes
+  (2026-10-18, Delegated
   agent work,
   not owner-approved; the `serve` low-water wiring below is a separate open fix)). The durable per-project work queue
   (T15.1, [#527](https://github.com/zemdregon/switchboard/pull/527)) and the CI-failure trigger (T15.3,
-  [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
+  [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The queue tools (`enqueue_work`,
+  `list_work`, `cancel_work`) are offered over stdio and, since T15.9, over the network transport to `orchestrator`
+  clients under the same per-client ceiling and project list (a `console` client sees none). The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
   branches the project pushed, treats the CI text as untrusted and enqueues a work item under the trigger's client
   ceiling. Switchboard reads no GitHub token. Consecutive fix-up items per published ref are capped (T15.5:
@@ -354,8 +357,9 @@ the 2026-10-19 `adapters validate cursor` run passed
   values Assumption until the T4.71 capture (carried by T4.78); T4.76 is `Done` against its Done-when under owner
   decision 65 (b), on Switchboard's ADR-0039 tool-call guard alone, with tool-record field names Assumption until
   T4.71; T4.79 is `Done` except the post-T4.78 update.
-  Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
-  Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
+  Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, including a
+  Kimi Code `privileged` scope without `bypass`, which is `Ineligible: PROFILE_UNSUPPORTED` ("Kimi has no permission
+  requests") since the owner-level ruling relayed 2026-10-19 08:45 CDT (ROADMAP T4.68; ADR-0049 item 3). See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`, `affinity list|reset`,
@@ -720,7 +724,12 @@ Control-plane knobs live in `config.json` (no duplicate schema here):
 - `mcp_clients[]`: per client, `tool_profile` (`orchestrator` default or `console`), `approval_proxy` and
   `approval_proxy_targets` for the proxy client (ADR-0047).
 - `control_plane.budgets` and `control_plane.loop_breaker` (T14.4–T14.5).
-- `notification_sinks[]`: webhook and ntfy kinds, filters and rate limits, plus an optional webhook `authorization`
+- `control_plane.digest_schedule` (T14.16, FR-CTL-14): `{ cron }` in the UTC cron syntax; pushes a metadata-only
+  digest to the sinks on schedule; absent means off.
+- `projects[].queue.stall_hours` (T14.16, FR-CTL-14): integer 1 to 720 hours; a project with `READY` items and no
+  item reaching `DONE` in the window is flagged `stalled_progress` on `get_digest`; absent means off.
+- `notification_sinks[]`: webhook and ntfy kinds, filters (including the `digest` kind, T14.16) and rate
+  limits, plus an optional webhook `authorization`
   value sent as the `Authorization` header (FR-CTL-12, T14.14, ADR-0048); off by default.
 
 See [TDD §3.1](docs/design/TDD.md#31-configuration) and [LLD §3.4](docs/design/LLD.md#34-control-plane-m14-proposed-t140).
@@ -762,6 +771,9 @@ Fixtures only; no live provider CLI:
   (served-resource link).
 - Webhook authorization (T14.14, FR-CTL-12): `src/config/notification-sinks.test.ts`, `src/cli/cli.test.ts` (doctor
   `set`/`unset` suite); header-delivery and canary scans in `src/control/sinks.test.ts`.
+- Scheduled digest push and progress stall (T14.16, FR-CTL-14): `src/control/digest-push.test.ts` (metadata-only
+  digest on schedule, stall derivation, project-level flag on `get_digest`) and
+  `src/config/digest-stall-config.test.ts` (off by default, resolution, refusal of bad cron and stall values).
 - Digest and envelopes: `src/mcp/digest.test.ts`, `src/mcp/list-runs.test.ts`, `src/mcp/needs-attention.test.ts`.
 
 ### Known limitations
@@ -917,9 +929,9 @@ Only one `serve` can hold a data directory at a time.
 | `resume_project` | control | Lift a pause this client set on one of its projects. | Always; `console` sees it |
 | `steer_run` | control | Append a note to a run; on a fake adapter it continues the same native session. | Always; `console` sees it |
 | `list_projects` | project | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. | Always (orchestrator only) |
-| `enqueue_work` | queue | Queue a `delegate_task` request on one project this client may use; the controller admits it later under the creating client's ceiling. | stdio only (not on the network transport) |
-| `list_work` | queue | Work items this client queued, highest priority first, then oldest, with optional project and state filters. | stdio only (not on the network transport) |
-| `cancel_work` | queue | Cancel a `PENDING` or `READY` item this client queued; an admitted item stops with `cancel_run` on its run. | stdio only (not on the network transport) |
+| `enqueue_work` | queue | Queue a `delegate_task` request on one project this client may use; the controller admits it later under the creating client's ceiling. | Orchestrator profile only (stdio and network transport); `console` sees none |
+| `list_work` | queue | Work items this client queued, highest priority first, then oldest, with optional project and state filters. | Orchestrator profile only (stdio and network transport); `console` sees none |
+| `cancel_work` | queue | Cancel a `PENDING` or `READY` item this client queued; an admitted item stops with `cancel_run` on its run. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `search_project_context` | retrieval | Read-only semantic search over a project's indexed contexts. See [Retrieval index](#retrieval-index-milestone-12). | Only when retrieval is on for at least one of the client's projects |
 | `list_skills` | skills | Operator-approved skill names this client may inject, with the newest usable version's metadata (no bodies). | Only when `skills.enabled` |
 | `get_skill` | skills | The text of one visible skill version. | Only when `skills.enabled` |
@@ -2425,21 +2437,26 @@ and set the manifest range to `>=2.0.23 <2.1.0`.
 
 ## Kimi Code CLI (milestone 4)
 
-Config id `kimi-code`; routing and `list_capabilities` id `kimi`. Switchboard runs the **`kimi`** binary on one of two
-native surfaces, one process per run ([ADR-0049](docs/adr/0049-kimi-code-transport-and-bypass-class.md),
+Config id `kimi-code`; routing and `list_capabilities` id `kimi`. Switchboard runs the **`kimi`** binary one
+process per run ([ADR-0049](docs/adr/0049-kimi-code-transport-and-bypass-class.md),
 [TDD §4.7](docs/design/TDD.md#47-kimi-code-m4-blocked-by-b-1); flags observed on Kimi Code CLI 2.1.1 in
 [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), which made no model
-call):
+call). Since the owner-level ruling relayed 2026-10-19 08:45 CDT ("T4.68 KIMI BYPASS-ONLY", ROADMAP T4.68), Kimi Code
+is bypass-only: only the approved bypass cell below compiles, and any other mode is `Ineligible:
+PROFILE_UNSUPPORTED` with a detail starting `mode approval: Kimi has no permission requests` (`kimiBypassOnlyGate` in
+`src/adapters/kimi/adapter.ts`, tested by `src/adapters/kimi/bypass-only-gate.test.ts`), because Kimi Code 2.1.1
+raises no ACP `session/request_permission` in `default` mode (ADR-0049 item 3):
 
 - an approved `privileged` scope that sets `bypass` runs `kimi --prompt=<prompt> --output-format stream-json`
   (subprocess JSONL). `kimi -p`/`--prompt` never asks before a tool call, so it is bypass-class and nothing is added to
   restrict that run;
-- a `privileged` scope without `bypass` runs `kimi acp` (ACP over stdio through the shared ACP client,
-  [ADR-0036](docs/adr/0036-per-run-acp-stdio-client.md)): the prompt travels in the ACP plan, `session/new` carries an empty
-  `mcpServers`, the session mode is `plan` for read-only files and stays `default` otherwise, and the controller answers
-  every `session/request_permission`. The plan sets `requirePermissionRequest`
-  ([LLD §2](docs/design/LLD.md#2-adapter-contract)): a `tool_call` or `tool_call_update` reported as run without a
-  permission request naming it ends the run `PERMISSION_BLOCKED` (fail closed, T4.68; an approved bypass run is exempt).
+- a `privileged` scope without `bypass` no longer compiles: the ACP surface (`kimi acp` over stdio through the shared
+  ACP client, [ADR-0036](docs/adr/0036-per-run-acp-stdio-client.md), mode `plan` for read-only files and `default`
+  otherwise with the controller answering every `session/request_permission` and the plan's `requirePermissionRequest`
+  check ending unasked tool calls `PERMISSION_BLOCKED`, [LLD §2](docs/design/LLD.md#2-adapter-contract)) is kept in code
+  for the Deferred [ROADMAP §8](docs/ROADMAP.md#8-deferred-and-excluded-work) row "Kimi ACP permission gating
+  (ADR-0049 item 3)", but the gate refuses it before any invocation is built, so no run reaches it. The auth
+  preflight below still probes over `kimi acp` (no model call, no run compiled).
 
 The bypass prompt and a requested model are one argv word each (`--prompt=<prompt>`, `--model=<alias>`), so a leading
 `-` is never read as a flag; the prompt is visible in the process list. That the CLI accepts the `=` form held
@@ -2482,7 +2499,7 @@ the `privileged` cells below (Delegated, fail closed; T4.62).
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | yes, two cells | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). Both cells need network `on` and repository configuration `enabled` (owner decision 26, Q-37); anything narrower is `CAPABILITY_MISSING`. **With `bypass`:** only worktree file access with shell `broad` compiles, as `kimi [--model=<alias>] --prompt=<prompt> --output-format stream-json` with nothing added; read-only files or a narrower shell are `CAPABILITY_MISSING` because Never Ask cannot be narrowed. **Without `bypass`:** `kimi acp`, mode `plan` for read-only files and `default` for worktree files, with the shell scope held by the controller's permission answers, and a tool call reported as run without a permission request naming it ending `PERMISSION_BLOCKED` (`requirePermissionRequest` in the ACP plan, fail closed; an approved bypass run is exempt) (observed 2026-10-19: default mode raises none — see ROADMAP T4.68; per ADR-0049 item 3 this cell becomes `Ineligible` and Kimi Code privileged-bypass-only, but the compile-time marking is not yet in code, so the cell still compiles and fails closed at runtime; the gating change is the Deferred [ROADMAP §8](docs/ROADMAP.md#8-deferred-and-excluded-work) row). A bypass approval on any other profile, or a `bypass` scope without an approval, is `PROFILE_UNSUPPORTED`. |
+| `privileged` | yes, one cell (bypass-only since the 2026-10-19 08:45 CDT ruling) | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). The bypass cell needs network `on` and repository configuration `enabled` (owner decision 26, Q-37); anything narrower is `CAPABILITY_MISSING`. **With `bypass`:** only worktree file access with shell `broad` compiles, as `kimi [--model=<alias>] --prompt=<prompt> --output-format stream-json` with nothing added; read-only files or a narrower shell are `CAPABILITY_MISSING` because Never Ask cannot be narrowed. **Without `bypass`:** `Ineligible: PROFILE_UNSUPPORTED`, detail starting `mode approval: Kimi has no permission requests` — Kimi Code 2.1.1 raises no ACP `session/request_permission` in `default` mode (observed 2026-10-19, post-#748 rerun — see ROADMAP T4.68), so per ADR-0049 item 3 the restricted ACP cell no longer compiles; the ACP compile and the `requirePermissionRequest` runtime check stay in code for the Deferred [ROADMAP §8](docs/ROADMAP.md#8-deferred-and-excluded-work) row "Kimi ACP permission gating (ADR-0049 item 3)" but no run reaches them (test: `src/adapters/kimi/bypass-only-gate.test.ts`). A bypass approval on any other profile, or a `bypass` scope without an approval, is `PROFILE_UNSUPPORTED`. |
 
 **Bypass-class flags (ADR-0049).** The registry entry (`src/adapters/providers.ts`) declares `--auto` and `--plan`
 (with the shared `--yolo`) and the short `-y` as bypass flags, and the ACP modes `auto` and `yolo` (as a mode id or the
@@ -2494,7 +2511,8 @@ bypass cell only in Kimi argv (argv of an adapter id the table does not know is 
 fail closed), so Claude Code's `-p` and Antigravity's `--prompt` stay accepted in their own runs.
 
 Resume (FR-SES-03) runs the stored native id through the same matrix, with the same refusals: `--session <id>` after
-the bypass cell's flags (nothing else added), or ACP `session/resume` for a restricted run. A binding of another
+the bypass cell's flags (nothing else added); a restricted resume is refused by the bypass-only gate like a first run
+(no ACP `session/resume` compiles while permission gating is Deferred). A binding of another
 provider, or an id that is not one safe argument (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`), is refused. Whether the
 resumed run keeps its model, and resume from another directory, are unverified (were `Unverified: T4.68`; the carrier
 row closed Partial-by-ruling 2026-10-19 without recording them — see ROADMAP T4.68; `resumeCwd` is still
@@ -2532,7 +2550,7 @@ The conformance suite (T4.65, [#455](https://github.com/zemdregon/switchboard/pu
 (`kimiConformanceCases` in `cases.ts`) through the replay dialect `src/adapters/fixtures/replay-dialects/kimi.mjs`,
 which accepts only the approved bypass argv and exits 64 for any other word, a bypass-class or never-emitted flag, or
 `KIMI_CODE_HOME` in the environment. Only the bypass cell is a conformance case; the `kimi acp` permission round trip
-is T4.68.
+was carried by T4.68 (observed: 2.1.1 raises none in `default` mode; permission gating Deferred — see ROADMAP T4.68).
 
 ### Git and commits
 
@@ -2987,8 +3005,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   CLI 2.1.1 exits at stdin end-of-file before the `session/new` reply, and the fixed probe (stdin held open until both
   replies arrive) printed `[ok] auth: OK` twice on 2026-10-18 (ROADMAP T4.64, owner decision 65 (d); scrubbed ACP
   replies were carried by T4.68, which closed without recording them). Since `default` mode does not ask, the
-  restricted ACP cell becomes `Ineligible` per ADR-0049 item 3 (the compile-time marking is not yet in code — the cell
-  still compiles and fails closed at runtime; the gating change is Deferred — see ROADMAP T4.68). The
+  restricted ACP cell is `Ineligible` per ADR-0049 item 3 since the owner-level ruling relayed 2026-10-19 08:45 CDT
+  (the bypass-only gate, `kimiBypassOnlyGate` in `src/adapters/kimi/adapter.ts`, refuses it at compile time; the ACP
+  compile and runtime check stay in code for the Deferred gating row — see ROADMAP T4.68). The
   malicious-fixture leg (T4.66) replays the approved bypass cell only: a credential read, outside write or network call
   without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg ran on 2026-10-19
   (`K-M1` NOT_CHECKED, `K-M2`/`K-M3` HELD — see ROADMAP T4.68). See [Kimi Code CLI](#kimi-code-cli-milestone-4).
@@ -3059,10 +3078,11 @@ It builds, creates a throwaway Git repository and data directory under the syste
 [TDD §3.6](docs/design/TDD.md#36-testing-strategy). With the current manifests, a codex-cli 0.162.0 or 0.162.1 passes the
 version gate (range `>=0.162.0 <0.163.0`); any other Codex version is refused as `ADAPTER_VERSION_UNVERIFIED`.
 Antigravity (`agy`), OpenCode, Cursor, Kimi Code and Grok Build compile only an approved `privileged` cell, so for them
-the same task runs in that cell (Kimi Code: its ACP cell) and the script approves it through the operator `approve`
-CLI; the bypass-flag audit then requires exactly the cell's own flag. Until `adapters validate <provider>` writes a
-manifest range (Kimi Code and OpenCode have one today: `>=2.1.1 <2.2.0` and `>=2.0.23 <2.1.0`), a provider without one
-stops at the version gate.
+the same task runs in that cell (Kimi Code: its ACP cell, `Ineligible` since the owner-level ruling relayed 2026-10-19
+08:45 CDT — the plug-in must move it to the bypass cell; see ROADMAP T4.68) and the script approves it through the
+operator `approve` CLI; the bypass-flag audit then requires exactly the cell's own flag. Until
+`adapters validate <provider>` writes a manifest range (Kimi Code and OpenCode have one today: `>=2.1.1 <2.2.0` and
+`>=2.0.23 <2.1.0`), a provider without one stops at the version gate.
 
 ### Optional live malicious leg (T3.9)
 

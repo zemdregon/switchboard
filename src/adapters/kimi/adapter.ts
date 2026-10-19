@@ -20,9 +20,10 @@
  * - `privileged` without `bypass`: ACP, only with network `on` and repository configuration `enabled` (neither can be
  *   narrowed per run); files `read-only` compile mode `plan`, `worktree` the default mode; the shell scope is enforced
  *   by the controller's permission answers. The plan sets `requirePermissionRequest`: a tool call reported as run
- *   without a permission request naming it ends the run `PERMISSION_BLOCKED` (fail closed, T4.68). If T4.68 shows
- *   `default` mode does not ask, this cell becomes `Ineligible` and Kimi Code is privileged-bypass only (ADR-0049
- *   item 3).
+ *   without a permission request naming it ends the run `PERMISSION_BLOCKED` (fail closed, T4.68). T4.68 showed
+ *   `default` mode does not ask, so this cell is now `Ineligible` and Kimi Code is privileged-bypass only
+ *   ({@link kimiBypassOnlyGate}, owner ruling 2026-10-19 08:45 CDT; ADR-0049 item 3). The ACP compile is kept for the
+ *   Deferred row "Kimi ACP permission gating" and is reached by no run.
  * Parser, result, failure classification and resume (T4.63, synthetic fixtures plus the one [CAP] capture): the
  * `stream-json` parser reads the recorded `meta`/`assistant` records and the documented tool records (field names an
  * Assumption), binds the session id from the resume hint and ends the turn there; ACP messages use the shared mapping
@@ -221,6 +222,36 @@ export const KIMI_BYPASS_OUTSIDE_PRIVILEGED =
 export const KIMI_BYPASS_NOT_APPROVED =
   "privileged scope sets bypass but the run's bypassApproved is false: --prompt (Never Ask) is compiled only for an " +
   "approved bypass run (FR-POL-03, ADR-0017, ADR-0049)";
+
+/**
+ * T4.68 bypass-only gate (owner-level ruling relayed 2026-10-19 08:45 CDT, "T4.68 KIMI BYPASS-ONLY"; Delegated
+ * reading, not owner-approved): the permission mode of a Kimi Code run. `bypass` is the approved `privileged` scope
+ * that sets `bypass` (the `--prompt` cell, Never Ask); `approval` is a `privileged` scope without `bypass`, whose
+ * permission asks the controller would answer (the ACP cell); `interactive` is a run whose asks would go to a person
+ * (no Switchboard surface compiles it for Kimi Code; named so the gate refuses it by name).
+ */
+export type KimiPermissionMode = "bypass" | "approval" | "interactive";
+
+/**
+ * Ineligible detail for every Kimi Code run mode other than `bypass` (T4.68 ruling 2026-10-19 08:45 CDT). Kimi Code
+ * 2.1.1 raises no ACP `session/request_permission` in `default` mode (post-#748 rerun: `K-P1` FAILED with tool calls
+ * observed and zero requests), so a run that relies on permission answers would run its tool calls unasked.
+ */
+export const KIMI_NO_PERMISSION_REQUESTS =
+  "Kimi has no permission requests: Kimi Code 2.1.1 raises no ACP session/request_permission in default mode " +
+  "(T4.68, post-#748 rerun), so only an approved privileged bypass run is compiled; interactive and approval modes " +
+  "are refused (owner ruling 2026-10-19 08:45 CDT; ADR-0049 item 3, Deferred)";
+
+/**
+ * Pure, fail closed: `undefined` for `bypass`, else the refusal. Any other value, including a missing or unknown mode,
+ * is refused. {@link KimiAdapter} applies it in the compile matrix before any invocation is built, so a refused run
+ * never spawns `kimi`.
+ */
+export function kimiBypassOnlyGate(mode: unknown): Ineligible | undefined {
+  if (mode === "bypass") return undefined;
+  const label = typeof mode === "string" && mode !== "" ? mode : "missing";
+  return ineligible("PROFILE_UNSUPPORTED", `mode ${label}: ${KIMI_NO_PERMISSION_REQUESTS}`);
+}
 
 export interface KimiAdapterOptions {
   /** Absolute path of the kimi binary. Defaults to the first executable `kimi` on PATH, resolved once. */
@@ -451,6 +482,8 @@ export class KimiAdapter implements ProviderAdapter {
    * 2. any profile other than `privileged`: PROFILE_UNSUPPORTED ({@link NON_PRIVILEGED_UNSUPPORTED_DETAIL});
    * 3. `privileged` without a scope binding: PROFILE_UNSUPPORTED; `bypass: true` without an approval: PROFILE_UNSUPPORTED
    *    (FR-POL-03);
+   * 3a. the bypass-only gate ({@link kimiBypassOnlyGate}): a scope without `bypass` (approval mode) is
+   *    PROFILE_UNSUPPORTED, "Kimi has no permission requests" (T4.68 ruling 2026-10-19 08:45 CDT);
    * 4. network other than `on`: CAPABILITY_MISSING (no network control on either surface);
    * 5. repository_config other than `enabled`: CAPABILITY_MISSING (no per-run flag disables project configuration and
    *    the CLI has no per-item approval; owner decision 26, Q-37, allows `enabled`);
@@ -476,6 +509,8 @@ export class KimiAdapter implements ProviderAdapter {
       return ineligible("PROFILE_UNSUPPORTED", "privileged without an approved scope binding (LLD §3.1)");
     }
     if (scope.bypass && !approved) return ineligible("PROFILE_UNSUPPORTED", KIMI_BYPASS_NOT_APPROVED);
+    const refused = kimiBypassOnlyGate(scope.bypass === true ? "bypass" : "approval");
+    if (refused !== undefined) return refused;
     if (scope.network.mode !== "on") {
       return ineligible(
         "CAPABILITY_MISSING",
