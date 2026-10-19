@@ -979,6 +979,18 @@ nothing is renumbered.
     pin. The host-login limit marker does not apply to these runs; a limit hit inside the container is still captured
     (`limit-capture.sh`) and marked (`live-limit-until`). First use: T5.12 ([live checks 2026-10-19](research/live-checks-2026-10-19-codex-container-resume.md)).
 
+<!-- markdownlint-disable-next-line MD029 -->
+73\. The Cursor live checks pin `cursor_model=auto` (2026-10-19). **Relayed by the orchestrator (Linus,
+owner-delegated standing authority), not owner-approved.** The relayed direction (recorded in
+`~/operator-runs/live-models.conf`, dated 2026-10-19, w1259): `live-models.conf` may pin `cursor_model=auto` for
+the T4.48 live checks, because the previously pinned `composer-2.5` is out of usage since 2026-10-16 (limit
+captures `cursor-*.txt`, newest 2026-10-18T16:23Z). Numbers 67 to 69 and 72 are not on `main`; the gaps are left
+on purpose and nothing is renumbered.
+    *Delegated reading, not zemdregon's words.* The pin changes only which model the smoke and malicious legs
+    request; the runs stay inside the approved `privileged` bypass scope of owner decision 46 (worktree files,
+    shell `broad`, network `on`, repository configuration `enabled`) and the decision-59 fallback cell, so no
+    control changes and no new model is named in adapter source or in this document.
+
 Decisions 10 to 13, 17, 19, 21 and 22 each choose the less restrictive of the options put to zemdregon (decision 18 is
 the principle behind the 2026-10-13 ones); decisions 20 and 23 keep the stricter behaviour already implemented. Their
 residual risks are recorded for zemdregon as R-23 to R-26, R-34, R-38 and R-39 in §7.1 (not blocking); decision 24's as
@@ -1009,7 +1021,8 @@ synthetic-only resume evidence is the T4.35 limit); decision 70's is that three 
 `NOT_CHECKED`, so their cells stay `prompt_prefix` (it opens no new question); decision 71's is that Codex's Linux
 sandbox did not start in the
 container (no sandboxed write succeeded, so T5.12 cells 3 and 4 and the pair's P-7 failed; §6.9.2 item 1), and it opens
-no new question (all Delegated, not blocking).
+no new question (all Delegated, not blocking). Decision 73's residual is none new (the `auto` pin stays
+inside the decision-59 approved bypass cell; R-41 unchanged), and it opens no new question.
 container (no sandboxed write succeeded, so T5.12 cells 3 and 4 and the pair's P-7 failed; §6.9.2 item 1), and it opens
 no new question (all Delegated, not blocking).
 

@@ -316,7 +316,8 @@ operator's `live-run-ext.sh` meters):
 Every run of the first four providers is an approved bypass run, because that is their only kind of cell. OpenCode's
 `O-M2` and `O-M3` are expected to escape (FR-POL-04/06 under owner decision 46): the report marks them, and they open a
 risk but do not set the exit code. Until `adapters validate <id>` writes a manifest range, every check stops at the
-version gate as `NOT_CHECKED`; only Kimi Code's manifest admits a version today. The live runs are the operator rows
+version gate as `NOT_CHECKED`; only the Kimi Code and Cursor manifests admit a version today. The live runs
+are the operator rows
 T4.28, T4.38, T4.48, T4.58 and T4.68. Tests are hermetic: `test/live-smoke.test.ts` and `test/live-malicious.test.ts`
 compile every cell in the real adapter class with a fake executable path (`test/live-cells.ts`) and check the run caps,
 check ids and verdict helpers. `test/live-budget.test.ts` checks that each provider asks the guard for exactly its
@@ -2410,7 +2411,8 @@ summary and T4.41 re-reads them against `agent --help` of the installed version.
 [§4.5.3](#453-t441-operator-checklist) results are in
 [live-checks-2026-10-14-cursor.md](../research/live-checks-2026-10-14-cursor.md) (CLI `2026.10.12-d47ca18`). Credential
 grep: no token, key or account identifier in captures (note §Side effects). Remaining operator work:
-[T4.48](../ROADMAP.md#68-m4-adapter-expansion-tasks) live smoke, live malicious leg and `adapters validate`. Checklist
+[T4.48](../ROADMAP.md#68-m4-adapter-expansion-tasks) live smoke and live malicious leg (`adapters validate` passed
+2026-10-19, [§4.5.6](#456-t448-live-validation-2026-10-19)). Checklist
 items **not run** by
 operator rule: `--force`/`-f`/`-pf`, `--approve-mcps` (rows 7c, 12b, 15). **Blocked on host:** `--sandbox enabled`
 confinement probes (row 9; AppArmor user namespaces). Still **Unverified:** backing vendor field, `.cursor/sandbox.json`
@@ -2541,6 +2543,19 @@ and classified `QUOTA_EXHAUSTED` by the mapping owned by PR #700, T6.15 / ADR-00
 ends `TOOL_FAILURE`) and a recorded sandbox event shape (`--sandbox enabled` fails to start on this host, live check
 row 9, and no compiled cell emits it); any native backing-vendor field (live check row 102 observes none; TDD §4.5
 forbids inferring one, so the structured `backing_provider` support and the T4.6 fixture meet the Done-when).
+
+#### 4.5.6 T4.48 live validation (2026-10-19)
+
+*Operator validate pass (Delegated write-up, not owner-approved; log
+`20261019-043618-ext-validate-cursor-w1259-m4-t448-cursor-auto-live-legs-opencode.log` in
+`~/operator-runs/live-logs/`).* `switchboard adapters validate cursor` passed on Cursor CLI `2026.10.16-e3cb207`:
+probe steps binary, version, command, output_format and flags ok, auth OK, 11 static conformance checks ok and one
+structured-output smoke call ok, all in the approved privileged bypass cell (owner decision 59;
+`inspect-untrusted` is Ineligible by design). The manifest now admits `>=2026.10.16 <2026.11.0`
+(`validated_cli_version 2026.10.16`, `validated_on 2026-10-19`; the same-minor-series range follows the Q-12
+convention, an Assumption, not a provider statement). Model pin for the live legs: `cursor_model=auto`
+([ROADMAP §4.2 decision 73](../ROADMAP.md#42-owner-decisions)). The live smoke and live malicious legs and their
+verdicts are recorded here when the operator runs them.
 
 ### 4.6 OpenCode (M4)
 
