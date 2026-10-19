@@ -1599,7 +1599,8 @@ signing), R-60.
 
 **T9.11 status (2026-10-13; Delegated, owner decision 42): Done for `host` environments (FR-WS-08); FR-WS-09 abandon
 removal pinned by tests 2026-10-18 (Proposed, not accepted; Q-55 answered 2026-10-18 by owner decision 62: no merge
-detection, abandon-only removal; the FR-WS-09 amendment follow-up amends and accepts it; merge removal not started).** Finding: the existing model already met FR-WS-08. Worktrees and
+detection, abandon-only removal; the FR-WS-09 amendment follow-up amends and accepts it; merge removal not started).**
+Finding: the existing model already met FR-WS-08. Worktrees and
 controller branches are keyed by meta-session and run, the write lease is one column pair on the `meta_session` row,
 and a meta-session has at most one non-terminal run (FR-SES-06), so concurrent runs of one project are always in
 different meta-sessions with their own worktree, branch and lease; nothing serialises or shares them by project or
@@ -1648,7 +1649,8 @@ than the global limit"): under CPU load both failed in 3 of 3 processes of 15 re
 repository one at a time (T9.11)" (`src/workspace/workspace.test.ts`; a `git` shim records overlapping adds
 deterministically), which fails without the fix. **Not covered:** two controllers with different data directories on
 one repository (outside the one-`serve`-per-data-directory model); Claude Code and
-Codex end to end (no live run); FR-WS-09 merge removal and its queued amendment follow-up (abandon removal pinned by tests 2026-10-18; Q-55 answered 2026-10-18); retention
+Codex end to end (no live run); FR-WS-09 merge removal and its queued amendment follow-up (abandon removal pinned by
+tests 2026-10-18; Q-55 answered 2026-10-18); retention
 GC (`git worktree prune`/`remove`) and the push path
 (`git worktree list`) also enumerate worktrees and are not in the creation queue (no failure observed; not tested).
 
