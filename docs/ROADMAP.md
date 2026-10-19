@@ -2506,7 +2506,8 @@ clears the basis columns, an unreadable state falls back, and re-enable is a ser
 the backend is the scripted in-process fake or a fake HTTP server bound to 127.0.0.1.** "Done when", clause by clause
 (all in `src/cli/inner.test.ts` unless noted): *plain-text and `--json` output*: `doctor` (an `inner_agent` section with
 its own `checks`), `inner status`, `inner test <task>` and `inner resume <task>` each have both forms
-(`src/cli/inner.ts`, wired in `src/cli/main.ts` and `src/cli/doctor.ts`; the three commands are in `HELP` in `src/cli/help.ts`). *`inner test`
+(`src/cli/inner.ts`, wired in `src/cli/main.ts` and `src/cli/doctor.ts`;
+the three commands are in `HELP` in `src/cli/help.ts`). *`inner test`
 sends no repository data, asserted on the captured prompt*: for every task the fake backend's captured request has
 `user` and `system` equal to the built-in fixture (`src/inner/fixture.ts`) and contains none of the temporary
 repository, data directory, config path, working directory, home directory or a planted environment value; the output
