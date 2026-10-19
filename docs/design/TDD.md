@@ -460,6 +460,37 @@ each other, not with the tables; n = 30, 5 warm-up, p50 / p95 ms):
 The first run after start-up, and the first after a TTL expiry or binary change, still pay the full probe cost. The
 benchmark uses the fake adapter only; a real provider CLI's probe cost is unmeasured (Unverified).
 
+#### 3.6.2 T3.8b confinement checks (owner decision 63)
+
+*Delegated reading of [owner decision 63](../ROADMAP.md#42-owner-decisions) (2026-10-18), not owner-approved beyond
+the five classes.* T3.8b is a fixed set of named checks on controller boundaries that already exist, next to the T3.8
+controller leg (`test/malicious/controller.test.ts`). Each enforced check drives the existing fake-provider scenarios
+(`env_report`, `git_attempts` with its `tool_commit` step, `success`; `src/adapters/fake/cli.mjs`) through the real
+lifecycle, tool channel, ledger, artifact store and MCP server with a small JSON plan, and has a positive control (the
+allowed variant of the same call succeeds, or the allowlisted name appears) in the describe "T3.8b positive controls:
+each check fails when the boundary lets the call through" of `test/malicious/confinement.test.ts`. The checks use one
+synthetic environment name, `SBCANARY_T38B`, and one file, `canary.txt`, in the test's temporary directory (byte-identical
+after every test); no new fake behaviour, no payload and no real credential location. The `tool_calls` scenario only
+reports tool events and runs nothing (ADR-0039), so the commit-tool checks use `git_attempts` `tool_commit`, which calls
+the real `commit` tool through the shim. A class the controller cannot enforce on the fake provider is recorded below as
+not enforced, with its citation, instead of a test.
+
+| ID | Class | Controller boundary | Expected outcome | Test |
+| --- | --- | --- | --- | --- |
+| CF-1 | path traversal | `commit` tool path argument (`../`, `sub/../../`, absolute) | refused `PATH_OUTSIDE_WORKTREE`, a `git_tool_denied` event each, no commit, publish ref unset | existing `src/git/channel.test.ts:388-392`, `src/lifecycle/git-channel.test.ts:256-286`; new "CF-1 path traversal: ..." (fake `git_attempts` `tool_commit`) |
+| CF-2 | path traversal | artifact id (`ArtifactStore.get`) and MCP `get_artifacts` `run_id` | a non-hash or `../` artifact id is refused `INVALID_HASH` (`assertHash`, `src/artifacts/index.ts:45`); a `run_id` that does not match `^run_[0-9A-HJKMNP-TV-Z]{26}$` (`src/mcp/schemas.ts:297`) is refused `INVALID_REQUEST` | existing `src/artifacts/artifacts.test.ts:112-128`; new "CF-2 path traversal: ..." (MCP level, in-memory transport) |
+| CF-3 | symlink | `commit` tool path through a worktree symlink to outside | refused `PATH_OUTSIDE_WORKTREE` (path reason `symlink_in_path`; the event carries the code and `refused_paths: 1`) | existing `src/git/commit.test.ts:502`, `:824` (the reason) and the symlink cases in `test/malicious/controller.test.ts` (diffs, artifacts, GC, workspace roots); new "CF-3 symlink: ..." (fake `git_attempts` `tool_commit`, link placed by the harness) |
+| CF-4 | environment read | provider child environment | `SBCANARY_T38B` set in the controller environment is absent from the child (FR-EXE-07 allowlist); `PATH` is present | new "CF-4 environment read: ..." (fake `env_report`, names only) |
+| CF-5 | credential file read | fake process file access | `NOT ENFORCED (by design: TDD §3.4 same-account limitation; outer sandbox ADR-0051, T3.1/T3.11 opt-in)` | none (documented: [§3.4](#34-security-engineering) "Same-account limitation", [ADR-0051](../adr/0051-outer-sandbox-detection-and-fail-closed-requirement.md)) |
+| CF-6 | network egress | fake process network | `NOT ENFORCED (by design: TDD §3.4; ADR-0051)` | none (documented: [§3.4](#34-security-engineering) outer-sandbox limits, [ADR-0051](../adr/0051-outer-sandbox-detection-and-fail-closed-requirement.md)) |
+| CF-7 | Git push from inside | plain `git push` to the configured local bare remote | detected by the ref guard (`refs/remotes/origin/<branch>` `created`, action `report`), publish ref unchanged ([ADR-0027](../adr/0027-ref-snapshots-and-violation-handling.md)); the push itself reaches the remote (BR-27, detection only) | existing `src/lifecycle/ref-guard.test.ts:321`; new "CF-7 Git push from inside: ..." (fake `git_attempts` `push`) |
+| CF-8 | Git push from inside | push to an explicit path or URL not configured as a remote | `NOT DETECTED (known limitation, TDD T9.5 note)` | none (documented: [§3.10](#310-git-commits-attribution-and-publication) *T9.5 build notes*, "a push to an explicit path or URL leaves no local ref and is not") |
+| CF-9 | tool-channel token | a forged token-shaped token, and another run's token | `TOKEN_INVALID` and a `git_tool_denied` event, no commit, token not in the run's events | existing `src/git/channel.test.ts:285`; new "CF-9 tool-channel token: ..." (fake `git_attempts` `tool_commit`, token swapped in the ShimSpec) |
+
+Every enforced row held on 2026-10-18 (no `ESCAPED` row). Line numbers are as of the change that added this table.
+Scope: the checks are about the controller only; whether a real provider CLI's own sandbox stops a credential read,
+network use or a push is the live leg (T3.9, T4.n8).
+
 ### 3.7 Packaging and release
 
 - **Distribution (Proposed).** An npm package exposing a `switchboard` bin with subcommands `serve`, `doctor`, `runs
@@ -804,8 +835,9 @@ the table above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.5](LLD.
   `src/git/ref-guard.test.ts` covers the cap (3000 and 6000 refs; tail digest), other runs' controller moves,
   idempotence, `check_failed`, `snapshot_missing`, a privileged bypass run, and the ref list hidden from `get_run`.
   `src/reconcile/reconcile.test.ts` SIGKILLs a controller child between LEASED and FINALIZING and shows reconciliation
-  using the stored snapshot. No test escapes the worktree, reads credentials or uses the network (adversarial cases are
-  T3.8b).
+  using the stored snapshot. No test escapes the worktree (CF-1 to CF-3 hold on the fake provider, T3.8b, TDD §3.6.2);
+  reads of credentials and network use are not enforced on the fake by design (CF-5, CF-6) and stay with the live leg
+  (T3.9).
 - **Still open.** The same attempts through Claude Code and Codex (live checks C-G2 and X-G1), per-worktree refs, Git
   versions other than 2.43.0, and whether a push should be refused after a violation (Q-44).
 
