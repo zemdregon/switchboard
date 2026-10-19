@@ -93,9 +93,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   real provider CLI remain open.
   See [Container environments (milestone 10)](#container-environments-milestone-10) and
   [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
-- **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
+- **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.13 are done on fakes: an optional HTTP backend, privacy
   gates, quality monitoring with automatic suspension (T11.6), `doctor` and `inner` reporting, commit-message drafting,
-  handoff condensation (T11.10, a service function) and record-only routing classification (T11.11). The T11.6 roadmap
+  handoff condensation (T11.10, a service function), record-only routing classification (T11.11), and the `cli` backend
+  gate (T11.13, shipped `Ineligible`). The T11.6 roadmap
   row carries its `Done on fakes` status since [#586](https://github.com/zemdregon/switchboard/pull/586), which also
   added `src/inner/suspension.test.ts`: on a scripted fake backend, every call after a suspension falls back without
   reaching a now-good backend, and the first call after the task is re-enabled is accepted from it. The T11.9
@@ -112,15 +113,18 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#569](https://github.com/zemdregon/switchboard/pull/569), citing `src/config/config.test.ts`,
   `src/inner/inner.test.ts`, `src/inner/import-boundary.test.ts`, `src/inner/port.ts`, `src/inner/fake-backend.ts` and
   `src/ledger/migrations/0005_inner_call.ts` (milestone row and README reconcile
-  [#574](https://github.com/zemdregon/switchboard/pull/574)). T11.13 (the `cli` backend) is `Partial` (fakes only; the
-  installed `opencode v2.0.23` offers no tool-free one-shot, so the kind stays `Ineligible`:
+  [#574](https://github.com/zemdregon/switchboard/pull/574)). T11.13 (the `cli` backend) is `Done` (2026-10-18,
+  owner decision 66; the gate is met on fakes — the backend runs only inside the manifest range with verified
+  tool-free flags and otherwise reports `Ineligible`, with an argv audit — and no OpenCode release through v2.0.32
+  offers a tool-free control, so the shipped kind stays `Ineligible`:
   [TDD §4.6.7](docs/design/TDD.md#467-t110-live-result-2026-10-17)) and no live backend
   has been exercised. Two tasks are wired into production `serve` run paths: the commit-message
   task (the optional `message` on the `commit` tool) and routing classification (`serve` admission, continuation and
   quota failover, with heuristic fallback when inner is off or unavailable). Handoff condensation, PR drafting,
   verification-summary, run-title and a live backend are not: their designs name no run-path call site, so they stay
   service functions, and `src/inner/run-path-reach.test.ts` pins both lists. T11.14 (README and roadmap status for
-  M11) is `Done` on that basis, with T11.13 still `Partial`. T11.5 usage-surface pins merged
+  M11) is `Done` on that basis (T11.0 to T11.13 Done on fakes; the shipped `cli` backend stays `Ineligible`).
+  T11.5 usage-surface pins merged
   [#362](https://github.com/zemdregon/switchboard/pull/362) (suspended-task and project-off denials, re-ask deadline
   counts, shared-subscription label routing, whole `inner_shared_subscription` doctor checks, `enabled: false` with the
   flag set, capacity collector `source` exclusion), [#396](https://github.com/zemdregon/switchboard/pull/396)
@@ -1381,8 +1385,8 @@ output in `src/inner/cli-doctor-surfaces.test.ts`; the `no_backend` state is rea
 through the `cli` kind, because the config refuses `enabled: true` without a backend. No hosted or live backend has
 been exercised: every test uses a scripted fake or a local fake server. The per-task test and module
 evidence behind these statements, and the list of what is not built, is in
-[HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes),
-[SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) and the
+[HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes),
+[SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) and the
 [TDD §3.12](docs/design/TDD.md#312-inner-agent) as-built note
 ([PR #353](https://github.com/zemdregon/switchboard/pull/353)).
 
@@ -2871,8 +2875,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   [LLD §13.8](docs/design/LLD.md#138-telemetry-and-events) is not emitted (no span exporter exists); the pipeline
   writes a body-free `inner.call` log line instead. What the suite proves per task, and what is not built, is recorded
   in the [TDD §3.12](docs/design/TDD.md#312-inner-agent) as-built note,
-  [HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) and
-  [SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) (merged as
+  [HLD §2.5](docs/design/HLD.md#25-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) and
+  [SDD §4.3](docs/design/SDD.md#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) (merged as
   [PR #353](https://github.com/zemdregon/switchboard/pull/353)). See
   [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
 
