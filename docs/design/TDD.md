@@ -559,7 +559,9 @@ Proposed jobs on every pull request, all runnable with no provider installed: (1
 check`; (3) `tsc --noEmit`; (4) Vitest unit + integration + fake-provider + fault-injection; (5) `node
 scripts/check-docs.mjs`; (6) secret-pattern scan over test outputs; (7) `npm audit` as informational (Assumption).
 Jobs (1) to (5) ran on a macOS runner (T4.10, NFR-PORT-02) as a separate job `Typecheck, lint, test, docs check
-(macOS)` until 2026-10-19, when it was removed from `.github/workflows/ci.yml` (Delegated, Linus ruling; the leg was dropped from gating per [ADR-0060](../adr/0060-opt-in-head-pinned-merge-policy.md), so the merge gate is the Linux job); the tests it skipped are listed in [ROADMAP
+(macOS)` until 2026-10-19, when it was removed from `.github/workflows/ci.yml` (Delegated, Linus ruling; the leg was
+dropped from gating per [ADR-0060](../adr/0060-opt-in-head-pinned-merge-policy.md), so the merge gate is the Linux job);
+the tests it skipped are listed in [ROADMAP
 T4.10](../ROADMAP.md#68-m4-adapter-expansion-tasks). The fault-injection job needs process-kill privileges only, no
 root. A scheduled job for version canaries is M8 ([ADR-0009](../adr/0009-version-gated-adapters.md)); it needs
 installed provider CLIs and logins and therefore cannot run on hosted runners without operator-managed credentials,
