@@ -94,7 +94,7 @@ import type {
   ProbeRunner,
   ResolvedProfile,
 } from "../types.js";
-import { OPENCODE_ENV_ALLOWLIST, OpenCodeAdapter } from "./adapter.js";
+import { OPENCODE_ENV_ALLOWLIST, OpenCodeAdapter, TEXT_ONLY_RESULT_SUMMARY } from "./adapter.js";
 import {
   BYPASS_SCOPE,
   DEFAULT_SESSION_ID,
@@ -161,6 +161,8 @@ const ERROR = (type: string, id: string | undefined = SID) => ({
   ...sid(id),
   error: { type, message: "synthetic" },
 });
+/** The `result` a text-only reply emits before any tool event or `step_finish` (owner decision 68). */
+const TEXT_ONLY = { kind: "result", ok: true, summary: TEXT_ONLY_RESULT_SUMMARY } as const;
 const guarded = (lines: object[]) => parse(lines).events.map((e) => guardEvent(e, { cwd: "/work/tree", bypass: true }));
 
 describe("opencode parser residuals: stream order (T4.53, synthetic lines; parser unchanged)", () => {
@@ -235,7 +237,9 @@ describe("opencode parser residuals: stream order (T4.53, synthetic lines; parse
       "session_bound",
       "provider_error",
       "message",
+      "result",
       "message",
+      "result",
       "provider_error",
       "usage",
       "result",
@@ -385,11 +389,17 @@ describe("opencode stream-order residuals, second pass (T4.53, synthetic lines; 
     });
   });
 
-  it("an unreadable line with no stop keeps the classifier's detail; a stop that follows switches to the count", () => {
+  it("an unreadable line with no result keeps the classifier's detail; a stop or text-only result switches to the count", () => {
     const unreadable = { type: "synthetic_future", sessionID: SID };
-    const noStop = adapter().extractResult(parse([unreadable, TEXT("ok")]).events, EXIT_OK);
-    expect(noStop).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
-    expect(noStop.failureDetail).not.toBe("1 unreadable event(s) in the stream");
+    const noResult = adapter().extractResult(parse([unreadable, START()]).events, EXIT_OK);
+    expect(noResult).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+    expect(noResult.failureDetail).not.toBe("1 unreadable event(s) in the stream");
+    // Owner decision 68: the text emits a text-only result, so the unreadable line is what fails the run.
+    expect(adapter().extractResult(parse([unreadable, TEXT("ok")]).events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "1 unreadable event(s) in the stream",
+    });
     expect(adapter().extractResult(parse([unreadable, unreadable, FINISH("stop")]).events, EXIT_OK)).toMatchObject({
       failureDetail: "2 unreadable event(s) in the stream",
       unknownEventCount: 2,
@@ -1390,14 +1400,13 @@ describe("opencode parser residuals, sixth pass: fallback tools, input shapes, t
     const { events: hiddenEvents } = parseRaw([
       `{"type":"step_finish","part":{"type":"step-finish","reason":"stop"},"sessionID":"${SID}","type":"text","part":{"type":"text","text":"hidden stop"}}`,
     ]);
+    // The line is a text line, so under owner decision 68 it is a text-only reply: no stop is forged or hidden.
     expect(hiddenEvents).toEqual([
       { kind: "session_bound", nativeSessionId: SID },
       { kind: "message", role: "assistant", text: "hidden stop" },
+      TEXT_ONLY,
     ]);
-    expect(adapter().extractResult(hiddenEvents, EXIT_OK)).toMatchObject({
-      ok: false,
-      failureCode: "OUTPUT_PROTOCOL_ERROR",
-    });
+    expect(adapter().extractResult(hiddenEvents, EXIT_OK)).toMatchObject({ ok: true, summary: "hidden stop" });
 
     // Leading text overridden by trailing step_finish stop:
     const { events: realEvents } = parseRaw([
@@ -2174,6 +2183,7 @@ describe("opencode parser residuals, ninth pass: untyped binding, pre-seeded sta
       expect(a.parseEvent(line(TEXT("x", id)), seeded), id).toEqual([
         { kind: "provider_error", category: "protocol", message },
         { kind: "message", role: "assistant", text: "x" },
+        TEXT_ONLY,
       ]);
       expect(seeded.nativeSessionId, id).toBe(SID);
     }
@@ -2846,18 +2856,23 @@ describe("opencode parser residuals, eleventh pass: unreadable finish reasons, n
         },
       },
     ]);
-    expect(events.some((e) => e.kind === "provider_error" || e.kind === "result")).toBe(false);
+    // Its part.error is never read. The only provider_error is the owner-decision-68 protocol error: a step that ends
+    // other than `stop` right after a text-only reply cancels it.
+    expect(events.filter((e) => e.kind === "provider_error")).toEqual([
+      { kind: "provider_error", category: "protocol", message: "step finished without stop" },
+    ]);
+    expect(events.filter((e) => e.kind === "result")).toEqual([TEXT_ONLY]);
     expect(usage(events)).toEqual([{ kind: "usage", source: "provider_reported", metrics: { input: 4 } }]);
     const base = { ok: false, nativeSessionId: SID, unknownEventCount: 0, summary: "halted" };
     expect(adapter().extractResult(events, EXIT_OK)).toEqual({
       ...base,
       failureCode: "OUTPUT_PROTOCOL_ERROR",
-      failureDetail: "no result event",
+      failureDetail: "protocol: step finished without stop",
     });
     expect(adapter().extractResult(events, EXIT_1)).toEqual({
       ...base,
-      failureCode: "TOOL_FAILURE",
-      failureDetail: "exit code 1",
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: step finished without stop",
     });
   });
 
@@ -2987,6 +3002,7 @@ describe("opencode parser residuals, twelfth pass: unchecked part types, token c
     expect(events).toEqual([
       { kind: "session_bound", nativeSessionId: SID },
       { kind: "message", role: "assistant", text: "thinking" },
+      TEXT_ONLY,
       { kind: "tool_call", tool: "read", name: "read", target: "a.ts" },
       { kind: "usage", source: "provider_reported", metrics: { input: 2 } },
       { kind: "result", ok: true },
@@ -3298,5 +3314,75 @@ describe("opencode parser residuals, thirteenth pass: tool-name case, non-object
       unknownEventCount: 0,
       summary: "SYNTHETIC: done",
     });
+  });
+});
+
+describe("opencode text-only success without step_finish (owner decision 68, Q-85 narrowed; synthetic lines)", () => {
+  const EXIT_NONZERO = { ...EXIT_OK, exitCode: 2, expectedExitCodes: [0] };
+
+  it("text only at exit 0 with no step_finish is a success (2026-10-17 shape: a single text line)", () => {
+    expect(adapter().extractResult(parse([TEXT("ok", SID)]).events, EXIT_OK)).toEqual({
+      ok: true,
+      unknownEventCount: 0,
+      nativeSessionId: SID,
+      summary: "ok",
+    });
+  });
+
+  it("step_start then text at exit 0 with no step_finish is a success (2026-10-14 row 4a shape)", () => {
+    expect(adapter().extractResult(parse([START(SID), TEXT("ok")]).events, EXIT_OK)).toMatchObject({
+      ok: true,
+      summary: "ok",
+    });
+  });
+
+  it("text and a tool_use without step_finish fails closed (the stop requirement is kept)", () => {
+    for (const tool of [TOOL("read", { filePath: "a.txt" }, SID), TOOL("shell", { command: "ls" }, SID)]) {
+      expect(adapter().extractResult(parse([TEXT("ok", SID), tool]).events, EXIT_OK)).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+      });
+      expect(adapter().extractResult(parse([tool, TEXT("ok", SID)]).events, EXIT_OK)).toMatchObject({ ok: false });
+    }
+    const unreadableTool = { type: "tool_use", sessionID: SID, part: { state: {} } };
+    expect(adapter().extractResult(parse([TEXT("ok", SID), unreadableTool]).events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+    });
+  });
+
+  it("text and an error without step_finish is a failure", () => {
+    const r = adapter().extractResult(parse([TEXT("ok", SID), ERROR("provider.quota")]).events, EXIT_OK);
+    expect(r).toMatchObject({ ok: false });
+    expect(r.failureCode).not.toBe(undefined);
+  });
+
+  it("text and an unknown event without step_finish is never a success", () => {
+    const future = { type: "synthetic_future", sessionID: SID };
+    expect(adapter().extractResult(parse([TEXT("ok", SID), future]).events, EXIT_OK)).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      unknownEventCount: 1,
+    });
+    const unreadableText = { type: "text", sessionID: SID, part: { type: "text" } };
+    expect(adapter().extractResult(parse([TEXT("ok", SID), unreadableText]).events, EXIT_OK)).toMatchObject({
+      ok: false,
+    });
+  });
+
+  it("text only with a non-zero exit is a failure", () => {
+    expect(adapter().extractResult(parse([TEXT("ok", SID)]).events, EXIT_1)).toMatchObject({ ok: false });
+    expect(adapter().extractResult(parse([TEXT("ok", SID)]).events, EXIT_NONZERO)).toMatchObject({ ok: false });
+  });
+
+  it("no text (empty text or step_start only) without step_finish is not a success", () => {
+    expect(adapter().extractResult(parse([START(SID)]).events, EXIT_OK)).toMatchObject({ ok: false });
+    expect(adapter().extractResult(parse([START(SID), TEXT("")]).events, EXIT_OK)).toMatchObject({ ok: false });
+    expect(adapter().extractResult(parse([]).events, EXIT_OK)).toMatchObject({ ok: false });
+  });
+
+  it("a non-stop step_finish ending the stream after a tool call still fails closed", () => {
+    const lines = [TEXT("ok", SID), TOOL("read", { filePath: "a.txt" }), FINISH("tool-calls")];
+    expect(adapter().extractResult(parse(lines).events, EXIT_OK)).toMatchObject({ ok: false });
   });
 });

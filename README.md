@@ -28,8 +28,9 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 3 (isolation) is `Partial`.** Trust profiles and overrides, approvals (`approve`, `deny`), privileged
   runs, verification commands (optionally confined in bubblewrap), outer-sandbox detection and retention (`gc`) are
   implemented and tested on fakes, as are the controller confinement checks of T3.8b (owner decision 63; credential
-  reads, network egress and a push to an explicit URL are not enforced on the fake by design). Not done: the
-  operator's live malicious-fixture leg (T3.9). See
+  reads, network egress and a push to an explicit URL are not enforced on the fake by design). The operator's live
+  malicious-fixture leg (T3.9) is `Partial`: the Claude Code leg ran on 2026-10-18 (C-G2 `HELD` at the outcome level;
+  C-M2 and C-M3 `NOT_CHECKED`; the Codex half waits for the 2026-10-22 quota reset). See
   [ROADMAP §6.5](docs/ROADMAP.md#65-m3-isolation-tasks) for each task.
 - **Milestone 9 (projects and controlled commits) is `Partial`.** Projects, the agent `commit` tool, finalize-only
   commits, ref snapshots, push, dynamic projects, signing and concurrent-run worktrees are implemented and tested for
@@ -134,9 +135,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   run) and [#407](https://github.com/zemdregon/switchboard/pull/407) (`get_run` byte-identical over Streamable HTTP
   and from a second session; a `shares_subscription_with` value that is no provider config id refused at `doctor`
   and `inner test`). See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
-- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.6 are done on fakes and T12.7 is `Partial`
-  (2026-10-19, owner ruling: global/both scope returns GLOBAL_NOT_AVAILABLE on main; fix in #728 /
-  sb/2026-10-18-fix-t127-search-global (f8c3fc5f)): the spike, `rag`
+- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes (T12.7 is `Done`
+  on 2026-10-19 as Delegated agent work, not owner-approved; it was `Partial` the same day after an owner ruling that
+  `global` and `both` scope answered only `GLOBAL_NOT_AVAILABLE`): the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
   behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
   and a `doctor` section, an untrusted context pack at admission that never changes the stored request or the
@@ -286,23 +287,24 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#323](https://github.com/zemdregon/switchboard/pull/323),
   [#355](https://github.com/zemdregon/switchboard/pull/355),
   [#369](https://github.com/zemdregon/switchboard/pull/369)) and Git declaration fixture tests on synthetic
-  fixtures (README [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to T4.57); live smoke, live malicious leg
-  and `adapters validate` remain operator work (T4.58): the 2026-10-18 `adapters validate opencode` run passed the probe
-  (`opencode v2.0.23`), auth and 11 static conformance checks and stopped at the smoke with `OUTPUT_PROTOCOL_ERROR (no
-  result event)`, so the manifest still admits no version. T4.52, T4.54, T4.55 and T4.57 are Done against their
+  fixtures (README [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to T4.57); live smoke and the live
+  malicious leg remain operator work (T4.58): the 2026-10-18 `adapters validate opencode` run passed the probe
+  (`opencode v2.0.23`), auth, 11 static conformance checks and the smoke (owner decisions 60 and 68; one model call),
+  so the manifest admits `>=2.0.23 <2.1.0`. T4.52, T4.54, T4.55 and T4.57 are Done against their
   Done-when on synthetic fixtures; T4.53 and T4.56 are Done against their Done-when under owner decision 65 (a) and (b),
   with their native-shape gaps carried by T4.58. Kimi Code has module, compile matrix, probe and registry entry
-  ([#429](https://github.com/zemdregon/switchboard/pull/429)), parser and resume (partial: T4.63, one scrubbed capture
-  plus synthetic fixtures, [#436](https://github.com/zemdregon/switchboard/pull/436)), auth preflight (partial: T4.64,
+  ([#429](https://github.com/zemdregon/switchboard/pull/429)), parser and resume (T4.63, three scrubbed captures
+  plus synthetic fixtures, [#436](https://github.com/zemdregon/switchboard/pull/436)), auth preflight (T4.64,
   [#444](https://github.com/zemdregon/switchboard/pull/444)), a conformance suite (T4.65,
-  [#455](https://github.com/zemdregon/switchboard/pull/455)), a malicious-fixture leg (partial: T4.66,
+  [#455](https://github.com/zemdregon/switchboard/pull/455)), a malicious-fixture leg (T4.66,
   [#459](https://github.com/zemdregon/switchboard/pull/459)) and a Git declaration (T4.67,
-  [#464](https://github.com/zemdregon/switchboard/pull/464)), all on synthetic fixtures except the T4.64 probe's
-  2026-10-18 live final-verify (auth `OK`; still `Partial` pending a scrubbed capture, ROADMAP T4.64) and the
+  [#464](https://github.com/zemdregon/switchboard/pull/464)); T4.63, T4.64 and T4.66 are Done against their Done-when
+  under owner decision 65 (a), (d) and (b), and T4.65 and T4.67 are Done against their Done-when (2026-10-15),
+  on synthetic fixtures except the T4.64 probe's two live `validate` runs (auth `OK`) and the
   T4.68 live `adapters validate` pass on 2026-10-18 (CLI 2.1.1, manifest range `>=2.1.1 <2.2.0`) (README
   [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke and the live malicious leg
-  remain operator work (T4.68). The Grok Build, Cursor, OpenCode and Muse Code manifests still admit
-  no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex,
+  remain operator work (T4.68). The Grok Build, Cursor and Muse Code manifests still admit
+  no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex, OpenCode,
   Kimi Code and Antigravity already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
   Delegated). Open items, by blocker: operator live legs (T4.28, T4.38, T4.48, T4.58, T4.68; T4.12 is Deferred
   under decision 69 — it needed a Mac and was optional for criterion 2; the
@@ -310,13 +312,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
   Antigravity reach the smoke step in the adapter's only compiled cell instead (T4.4));
    rows waiting on uncaptured live shapes
-  (T4.35, T4.63, T4.64, T4.66; owner decision 65 sets when parser, CI
-  malicious-leg and README rows are `Done` against their Done-when; T4.33, T4.36, T4.53 and T4.56 are `Done`
-  under decision 65 (a) and (b), remaining native shapes carried by T4.38 and T4.58; T4.51 is `Done` with live
-  evidence); README rows final
+  (T4.35, T4.51, T4.53, T4.56; owner decision 65 sets when parser, CI
+  malicious-leg and README rows are `Done` against their Done-when; T4.33 and T4.36 are `Done`
+  under decision 65 (a) and (b), remaining native shapes carried by T4.38); README rows final
   after their live legs
-  (T4.69; T4.29, T4.39, T4.49, T4.59 and T4.79 are `Done` except the post-T4.n8 update); Muse Code (Should) has module,
-  compile matrix, auth preflight,
+  (T4.29, T4.39, T4.49, T4.59, T4.69 and T4.79 are `Done` except the post-T4.n8 update);
+  Muse Code (Should) has module, compile matrix, auth preflight,
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
   [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
   is `Done` against its Done-when under owner decision 65 (a), with record spellings, session-id field and `terminal`
@@ -355,8 +356,8 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
 - For real work, at least one provider CLI installed and logged in natively: Claude Code, Codex, Grok Build,
-  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex, Kimi Code and Antigravity admit a
-  version today; the other manifests admit no version until `switchboard adapters validate` passes a live CLI (see
+  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex, OpenCode, Kimi Code and Antigravity
+  admit a version today; the other manifests admit no version until `switchboard adapters validate` passes a live CLI (see
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks)). `doctor` does not require any particular one.
 
 ## Install from source
@@ -389,7 +390,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | Antigravity | Launch **`agy`** without arguments (the adapter returns `AUTH_REQUIRED` naming `agy`; the CLI's stderr also says to launch without arguments to sign in) | Auth preflight runs `agy models` and keys on exit code and stderr (`<slug>\t<name>` lines at exit 0 vs `Error: Please sign in` at exit 1 on the 2026-10-14 live check, `agy` 1.3.4; [`docs/research/live-checks-2026-10-14-antigravity.md`](docs/research/live-checks-2026-10-14-antigravity.md)); check Google's Antigravity documentation for the login step |
 | Cursor CLI | `cursor-agent login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `cursor-agent status --format json` and keys on `isAuthenticated` (exit 0 both logged in and logged out on the 2026-10-14 live check; [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)); check Cursor's documentation for the login step |
 | OpenCode | `opencode auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `opencode auth list --format json --standalone` and treats any non-environment connection type as logged in (exit 0 in every state on the 2026-10-14 live check, `opencode v2.0.23`; [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md)); check OpenCode's documentation for the login step |
-| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe ran live once through Switchboard on 2026-10-18 (final-verify `validate kimi` on the fixed probe: `[ok] auth: OK`, ROADMAP T4.64), and `adapters validate kimi` has since passed live on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68); the remaining live cells are still T4.68; check Moonshot's Kimi Code documentation for the login step |
+| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe ran live twice through Switchboard on 2026-10-18 (final-verify `validate kimi` on the fixed probe and the `adapters validate kimi` pass, both `[ok] auth: OK`, ROADMAP T4.64 and T4.68); the remaining live cells are still T4.68; check Moonshot's Kimi Code documentation for the login step |
 
 Do not copy credential files between machines or users. Do not put API keys or tokens in the Switchboard config; it has
 no place for them and rejects unknown keys.
@@ -447,8 +448,8 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `outer_sandbox.required_profiles` | no | List of distinct non-privileged profile names (default empty, which changes nothing). A listed profile is refused with `ELIGIBILITY_NONE` unless bubblewrap and `prlimit` work on the host; because this build does not yet wrap the provider process, a listed profile is refused even when both work (`OUTER_SANDBOX_NOT_ENFORCED`). `doctor` reports the check. See [Trust profiles](#trust-profiles) and LLD section 8.4. |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`, `muse-code`. Only
-`claude-code`, `codex`, `kimi-code` and `antigravity` pass the version gate on `main` today; the other ids name
-registered M4 adapters whose manifests admit no version until `switchboard adapters validate` passes a live CLI
+`claude-code`, `codex`, `opencode`, `kimi-code` and `antigravity` pass the version gate on `main` today; the other ids
+name registered M4 adapters whose manifests admit no version until `switchboard adapters validate` passes a live CLI
 (ROADMAP §6.8.2). `<id>` is the *config* id. The *provider* id used in
 `routing.provider_preference` of `delegate_task` is the adapter id: `claude`
 for Claude Code (config id `claude-code`), `codex` for Codex. `max_trust_profile` accepts any of the five profile
@@ -565,9 +566,11 @@ is applied immediately under the data-directory lock; `rebuild` is queued for th
 The MCP tool `search_project_context` exists only when an embedding backend is configured **and** the client may use at
 least one project with retrieval on. It is read-only, scoped to that client's projects, and bounds result count and
 size. `scope: "project"` searches the project's index; `global` and `both` need `use_global` on the project, but
-`global` and the global half of `both` still return `unavailable` with `GLOBAL_NOT_AVAILABLE` until a follow-up wires
-the global store into the tool (admission and the global build already use it). Treat every returned `text` field as
-untrusted reference data, not instructions.
+`global` reads only the global index and `both` merges project and global hits by score under one limit. A global hit
+is served only while its origin still contributes (a project never gets its own contribution back) and carries
+`origin_project` or `source`. When the global index is unavailable, `global` returns `unavailable` with
+`GLOBAL_NOT_AVAILABLE` and `both` keeps the project results with the global failure code as the reason. Treat every
+returned `text` field as untrusted reference data, not instructions.
 
 The same search is also an agent tool inside a run (ROADMAP T12.9) **only under the bypass-only Claude Code channel
 opt-in** `providers.claude-code.git_channel`: in an approved `privileged` bypass run whose project has retrieval on, the
@@ -2107,10 +2110,11 @@ invocation sets `OPENCODE_DISABLE_AUTOUPDATE=1` with an environment allowlist of
 sets `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` (env/inline config ignored on that version in the live
 checks, reconfirmed 2026-10-18).
 
-The compliance manifest range admits no version until an operator runs `switchboard adapters validate opencode` and
-commits the manifest diff (ROADMAP T4.58). Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for OpenCode. The
-2026-10-18 operator run (owner decision 60) passed the probe (`opencode v2.0.23`), auth (`OK`) and 11 static conformance
-checks and stopped at the smoke with `OUTPUT_PROTOCOL_ERROR (no result event)`, so nothing was written; T11.0's
+The compliance manifest range (`src/adapters/manifests/opencode.json`) admits `>=2.0.23 <2.1.0` since
+`switchboard adapters validate opencode` passed on CLI v2.0.23 on 2026-10-18 (ROADMAP T4.58, owner decisions 60 and
+68; [`docs/research/live-checks-2026-10-18-opencode.md`](docs/research/live-checks-2026-10-18-opencode.md)). Other
+versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`. The live smoke and the live malicious leg of T4.58
+remain operator-only. T11.0's
 2026-10-17 run found no tool-free control on that version
 ([TDD §4.6.7](docs/design/TDD.md#467-t110-live-result-2026-10-17)).
 
@@ -2145,9 +2149,11 @@ are refused with reasons, and resume preserves the request's working directory a
 ([#290](https://github.com/zemdregon/switchboard/pull/290)). A `sessionID` that resume could not pass as one safe
 argument (matching `^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`, refusing leading dashes or flag syntax) is never bound
 (`OUTPUT_PROTOCOL_ERROR`; [#245](https://github.com/zemdregon/switchboard/pull/245)). Only an exact string `"stop"`
-reason on `step_finish` emits a result (case, whitespace, alternate reasons or non-string values never emit a result
+reason on `step_finish`, or a non-empty `text` before any tool event or `step_finish` (owner decision 68), emits a
+result (on `step_finish`, case, whitespace, alternate reasons or non-string values never emit a result
 and fail closed as `OUTPUT_PROTOCOL_ERROR`; Q-85, [#328](https://github.com/zemdregon/switchboard/pull/328)). A
-`tool_use` line after the final `step_finish` `stop` is not a success (fail closed; a guard-flagged trailing call keeps
+`tool_use` line after the final result — a `step_finish` `stop`, or a text-only reply under owner decision 68 —
+is not a success (fail closed; a guard-flagged trailing call keeps
 `PERMISSION_BLOCKED` per ADR-0039). A trailing `tool_use` the parser cannot read still ends `OUTPUT_PROTOCOL_ERROR`
 instead of success. `tool_use` keys that name `Object.prototype` members map to `other` (own-key lookup;
 [#245](https://github.com/zemdregon/switchboard/pull/245)); since
@@ -2156,7 +2162,7 @@ prototype-named or `__proto__`-smuggled values fail closed as `unknown`. A malfo
 or a non-string `part.type` such as null, boolean, number, array or object) fails closed as `unknown`, ending
 `OUTPUT_PROTOCOL_ERROR`, while an omitted `part.type` remains accepted
 ([#339](https://github.com/zemdregon/switchboard/pull/339)). An unknown or unreadable event anywhere in the stream —
-before or after the final `stop` — is never a success: exit 0 ends `OUTPUT_PROTOCOL_ERROR`, exit 1 stays `TOOL_FAILURE`,
+before or after the final result — is never a success: exit 0 ends `OUTPUT_PROTOCOL_ERROR`, exit 1 stays `TOOL_FAILURE`,
 and a later `stop` does not wash an earlier unreadable line
 ([#284](https://github.com/zemdregon/switchboard/pull/284)). Opaque unknown envelopes (even carrying spoofed session ID,
 model, vendor, tokens or status) before or after clean `stop` cannot bind a session or smuggle status, usage, model or
@@ -2209,7 +2215,8 @@ native fields
 at exit 0 with `state.status` `error` and is not detected as a denial (gap pinned); `rate_limit` (row 14c, never
 reached) is an empty stream at exit 1 → `TOOL_FAILURE`; `rate_limit_error` is an unmapped error type at exit 0 →
 `TOOL_FAILURE`; `unknown_events` ends `OUTPUT_PROTOCOL_ERROR` with every unreadable line counted;
-`no_stop` (row 4a, Q-85) and `trailing_tool` (Q-85) end `OUTPUT_PROTOCOL_ERROR`; `session_changed` ends
+`no_stop` (row 4a) is a success under owner decision 68 (Q-85 narrowed: text only, no tool, error, `step_finish` or
+unknown event) and `trailing_tool` (Q-85) ends `OUTPUT_PROTOCOL_ERROR`; `session_changed` ends
 `OUTPUT_PROTOCOL_ERROR` with the first session id still bound; `git_write_guard` (ADR-0039) replays a guard-flagged
 Git write under a `stop` finish at exit 0 to `PERMISSION_BLOCKED`; `unsafe_session_id` replays an unsafe session id to
 `OUTPUT_PROTOCOL_ERROR` without binding; `sandbox_violation` replays unrecorded sandbox error text at exit 0 to a
@@ -2339,8 +2346,10 @@ guard-blocked, trailing-tool and unreadable-event streams [#245](https://github.
 upgrades and exit 2/137 variations [#369](https://github.com/zemdregon/switchboard/pull/369)). T4.52, T4.54, T4.55 and
 T4.57 are `Done` against their Done-when on synthetic fixtures; T4.53 and T4.56 are `Done` against their Done-when
 under owner decision 65 (a) and (b), with native limit, refusal and tool-input shapes carried by T4.58 (see those rows).
-No successful end-to-end run through Switchboard against a logged-in `opencode` has been recorded yet: the 2026-10-18
-`adapters validate opencode` smoke reached the model call and ended `OUTPUT_PROTOCOL_ERROR (no result event)` (T4.58).
+No successful end-to-end routed run through Switchboard against a logged-in `opencode` has been recorded yet:
+the live smoke and the live malicious leg remain operator work (T4.58). The 2026-10-18
+`adapters validate opencode` pass (CLI 2.0.23, owner decisions 60 and 68) ran one model call through the smoke
+and set the manifest range to `>=2.0.23 <2.1.0`.
 
 ## Kimi Code CLI (milestone 4)
 
@@ -2403,9 +2412,10 @@ the `privileged` cells below (Delegated, fail closed; T4.62).
 (with the shared `--yolo`) and the short `-y` as bypass flags, and the ACP modes `auto` and `yolo` (as a mode id or the
 `mode` config option) as bypass modes, so the argv and ACP plan audits refuse them outside an approved bypass run. The
 adapter never emits them even inside one, and never emits `--continue`, `--agent`, `--agent-file`, `--skills-dir` or
-`--add-dir`. `-p`/`--prompt` are not declared to the shared argv audit, because Claude Code's `-p` and Antigravity's
-`--prompt` are ordinary flags in their runs; the Kimi compile gate alone keeps `--prompt` to the approved bypass cell
-(open question Q-95, ROADMAP T4.62).
+`--add-dir`. `-p`/`--prompt` are declared as provider-scoped bypass flags (`providerScopedBypassFlags` in
+`src/adapters/providers.ts`, ADR-0049 item 1, Q-95, ROADMAP T4.62): the argv audit refuses them outside the approved
+bypass cell only in Kimi argv (argv of an adapter id the table does not know is checked against every scoped list,
+fail closed), so Claude Code's `-p` and Antigravity's `--prompt` stay accepted in their own runs.
 
 Resume (FR-SES-03) runs the stored native id through the same matrix, with the same refusals: `--session <id>` after
 the bypass cell's flags (nothing else added), or ACP `session/resume` for a restricted run. A binding of another
@@ -2416,7 +2426,7 @@ resumed run keeps its model, and resume from another directory, are `Unverified:
 ### Parser evidence and gaps
 
 The `stream-json` parser (T4.63, [#436](https://github.com/zemdregon/switchboard/pull/436)) reads the records of the
-one scrubbed 2.1.1 capture (`src/adapters/kimi/fixtures/captured_success.jsonl`, from the T4.61 validation run): `meta`
+scrubbed 2.1.1 success capture (`src/adapters/kimi/fixtures/captured_success.jsonl`, from the T4.61 validation run): `meta`
 `system.version` is ignored, `assistant` text is a message, `tool` output is never an event, and `meta`
 `session.resume_hint` binds `session_id` and ends the turn. Success also needs exit 0, so exit 0 without the hint ends
 `OUTPUT_PROTOCOL_ERROR` and a non-zero exit `TOOL_FAILURE`. A 5-hour usage-limit stop has since been captured
@@ -2430,7 +2440,8 @@ item and `tool` record fields are **Observed** since the T4.68 follow-up-2 `live
 `src/adapters/kimi/fixtures/captured_tool_call.jsonl` and `captured_tool_error.jsonl`, replayed by
 `src/adapters/kimi/live-capture.test.ts`); the error record and its `Authentication required` text in `-p`, the exit
 codes and the usage and
-model fields stay **Assumptions** until the operator capture (T4.68), so T4.63 stays `Partial`; no model is recorded
+model fields stay **Assumptions** carried by T4.68 (owner decision 65 (a); T4.63 is `Done` against its Done-when);
+no model is recorded
 from a Kimi run (`reportedModelFlag` `not_accepted`). Tests: `src/adapters/kimi/parser-residual.test.ts` and the
 "kimi compile matrix (T4.62)", "kimi probe", "kimi registry entry and manifest gate (T4.62)" and "kimi auth preflight
 (T4.64, ...)" suites in `src/adapters/kimi/kimi.test.ts` ([#429](https://github.com/zemdregon/switchboard/pull/429),
@@ -2465,10 +2476,13 @@ streams end `OUTPUT_PROTOCOL_ERROR`. Because `kimi --prompt` never asks and prin
 outside write or network call **without** a Git write ends `ok` at exit 0 by design (owner decision 25: in a bypass run
 the guard enforces Git writes only), pinned as `kimiUnguardedStreams`. The live malicious leg is operator work (T4.68).
 
-T4.65 and T4.67 are `Done` against their Done-when on synthetic fixtures; T4.62 to T4.64 and T4.66 stay `Partial`.
-One live smoke call through Switchboard against a logged-in `kimi` has been recorded (`adapters validate kimi`
-passed on CLI 2.1.1 on 2026-10-18, T4.68); the full live smoke, the live malicious leg and the other operator cells
-are still open.
+T4.62 is `Done` (2026-10-16); T4.63, T4.64 and T4.66 are `Done` against their Done-when (owner decision 65 (a),
+(d) and (b); synthetic fixtures plus scrubbed captures, with two live validate auth `OK` runs on CLI 2.1.1); T4.65
+and T4.67 are `Done` against their Done-when (2026-10-15); T4.69 is `Done except
+the post-T4.68 update` (owner decision 65 (c)). The validate cell is closed: `switchboard adapters validate kimi`
+passed on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68: manifest, probe, auth `OK`, static conformance and one
+structured-output smoke call). The full live smoke, the live malicious leg and the other operator cells remain open
+under T4.68.
 
 ## Muse Code CLI (milestone 4)
 
@@ -2690,8 +2704,13 @@ approved scope explicitly sets `bypass` ([ADR-0017](docs/adr/0017-approved-privi
 Code an approved bypass run drops `--restricted`, which refuses bypass, and keeps the other isolation flags
 ([ADR-0018](docs/adr/0018-claude-bypass-omits-restricted.md)). Claude's Git deny rules held under bypass in a live
 check on 2026-10-13 (six commit and ref spellings, directly and through `serve` with an approved scope; checks 14 and
-16 in [the live checks](docs/research/live-checks-2026-10-13.md)), but the operator's malicious-fixture leg (T3.9) has
-not run, so this rests on one check of one version (ROADMAP R-38). That gap concerns agents running on your host.
+16 in [the live checks](docs/research/live-checks-2026-10-13.md)), and the T3.9 Claude leg on 2026-10-18 held C-G2
+at the outcome level only (an `edit-untrusted` commit task left `main` and the refs unchanged, but no `Bash` was in
+`--tools`, so the deny-rule matcher itself was not exercised; C-M3 `NOT_CHECKED`, the approved bypass run ending
+`FAILED` before Claude Code started — see
+[the live checks](docs/research/live-checks-2026-10-18-claude-malicious.md) and ROADMAP T3.9), so the
+deny-rules-under-bypass claim still rests on the 2026-10-13 checks of one version (ROADMAP R-38). That gap concerns
+agents running on your host.
 Container environments (milestone 10, **`Partial` on `main`**) are meant to close it: their image has no Git client,
 they mount neither the repository's Git directory nor any credentials, and Switchboard makes commits and pushes on the
 host through its own tools (ROADMAP owner decision 24). The malicious-fixture container leg and validate/GC checks are
@@ -2750,7 +2769,8 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
 
 This is a summary of design intent and the implemented checks, not a security guarantee. The controller side is tested
 against hostile repository content in CI with a fake provider (`test/malicious/`, ROADMAP T3.8); the isolation of the
-real provider CLIs has not yet been tested against malicious repositories by the operator's live leg (ROADMAP T3.9).
+real provider CLIs is partly covered by the operator's live leg (ROADMAP T3.9, `Partial`: Claude C-G2 `HELD`
+2026-10-18, the bypass and Codex checks still `NOT_CHECKED`).
 Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Known limitations
@@ -2860,17 +2880,17 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   fields (T4.58) or an owner decision on classifying `status` `error`. See ROADMAP T4.56 for the full gap list.
 - **Kimi Code was validated on synthetic fixtures only (ROADMAP T4.62 to T4.67) until `adapters validate kimi`
   passed live on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68: manifest, probe, auth `OK`, static conformance and one
-  structured-output smoke call). The parser still rests on one scrubbed
-  `stream-json` capture of a successful run plus synthetic lines; tool-call and error record fields, exit codes, the
-  `--prompt=` one-word form and the `kimi acp` permission round trip in `default` mode
-  are Assumptions until the operator capture (T4.68). The auth probe's stdin timing is no longer an Assumption: the
-  2026-10-17 live `validate kimi` run showed CLI 2.1.1 exits at stdin end-of-file before the `session/new` reply, and
-  the fixed probe (stdin held open until both replies arrive) printed `[ok] auth: OK` on the 2026-10-18 final-verify
-  (ROADMAP T4.64); T4.64 stays `Partial` until a scrubbed capture of the replies replaces the synthetic lines (ROADMAP
-  §6.8.2 item 2). If `default` mode does not ask, the restricted ACP cell becomes
-  `Ineligible`. The malicious-fixture leg (T4.66) replays the approved bypass cell only: a credential read, outside
-  write or network call without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg
-  is operator work. See [Kimi Code CLI](#kimi-code-cli-milestone-4).
+  structured-output smoke call). Under owner decision 65, T4.63, T4.64 and T4.66 are Done against their Done-when
+  (synthetic fixtures plus three scrubbed captures, owner decision 65 (a), (b), (d); two live `validate` runs observing
+  auth `OK` on CLI 2.1.1; T4.69 Done except the post-T4.68 update, decision 65 (c)). Error record fields, exit codes,
+  the `--prompt=` one-word form and the `kimi acp` permission round trip in `default` mode are Assumptions carried by
+  T4.68. The auth probe's stdin timing is no longer an Assumption: the 2026-10-17 live `validate kimi` run showed
+  CLI 2.1.1 exits at stdin end-of-file before the `session/new` reply, and the fixed probe (stdin held open until both
+  replies arrive) printed `[ok] auth: OK` twice on 2026-10-18 (ROADMAP T4.64, owner decision 65 (d); scrubbed ACP
+  replies carried by T4.68). If `default` mode does not ask, the restricted ACP cell becomes `Ineligible`. The
+  malicious-fixture leg (T4.66) replays the approved bypass cell only: a credential read, outside write or network call
+  without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg is operator work
+  (T4.68). See [Kimi Code CLI](#kimi-code-cli-milestone-4).
 - **Muse Code is built on synthetic fixtures only and does not run (ROADMAP T4.72 to T4.79).** No `muse` has been
   installed or run, and Meta access (Q-27) is not verified. The `--json` record spellings and the `muse auth status`
   probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) is blocked because the
@@ -2879,16 +2899,17 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   [Muse Code CLI](#muse-code-cli-milestone-4).
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
-  Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may
-  differ. See `docs/research/live-checks-2026-10-13.md`.
+  live-smoke Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI
+  version may differ. See `docs/research/live-checks-2026-10-13.md`. (The T3.9 malicious leg held its C-G2 at the
+  outcome level on 2026-10-18; see ROADMAP T3.9.)
 - Linux only. Single operator only. No hosted or multi-user mode.
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
-- `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex, Kimi Code
-  and Antigravity manifests admit a version on `main` today. Grok Build, Cursor, OpenCode and the other M4
-  adapters still need operator captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58,
-  T4.68 and §6.8.2).
+- `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex, OpenCode, Kimi
+  Code and Antigravity manifests admit a version on `main` today (OpenCode `>=2.0.23 <2.1.0` since the T4.58 live pass
+  on 2026-10-18, owner decisions 60 and 68). Grok Build, Cursor and the other M4 adapters still need operator captures
+  before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.68 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
   fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the
@@ -2903,8 +2924,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   rate gate: no provider publishes an enforceable limit for the logins used, so the pacing gate
   paces usage per subscription window from observed usage instead (ROADMAP T6.8, `Done` 2026-10-17).
 - Retrieval is tested with a deterministic in-process fake embedder and scripted HTTP fixtures; no live embedding model
-  runs in CI. `search_project_context` with `scope: "global"` or `"both"` does not read the global store yet (admission
-  merge with `use_global` does).
+  runs in CI. `search_project_context` with `scope: "global"` reads the global store and `"both"` merges project and
+  global hits (each needs `use_global`; `GLOBAL_NOT_AVAILABLE` only when the global index is unavailable), as does the
+  admission merge with `use_global`.
 - The inner agent (milestone 11) is tested on a scripted in-process fake backend and a loopback fake HTTP server only.
   No live inner backend has been exercised, and `npm run test:live` has no inner-agent leg. The `cli` backend kind is
   reported `Ineligible` by `doctor` and never started (`src/cli/inner.test.ts`; ROADMAP T11.0, T11.13). T11.0 ran the
@@ -2936,7 +2958,8 @@ version gate (range `>=0.162.0 <0.163.0`); any other Codex version is refused as
 Antigravity (`agy`), OpenCode, Cursor, Kimi Code and Grok Build compile only an approved `privileged` cell, so for them
 the same task runs in that cell (Kimi Code: its ACP cell) and the script approves it through the operator `approve`
 CLI; the bypass-flag audit then requires exactly the cell's own flag. Until `adapters validate <provider>` writes a
-manifest range (only Kimi Code has one today), those providers stop at the version gate.
+manifest range (Kimi Code and OpenCode have one today: `>=2.1.1 <2.2.0` and `>=2.0.23 <2.1.0`), a provider without one
+stops at the version gate.
 
 ### Optional live malicious leg (T3.9)
 

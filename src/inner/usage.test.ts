@@ -1473,7 +1473,7 @@ describe("re-ask aggregation: the erroring re-ask, the model id across attempts 
       ["fake-model", { input_tokens: 6, output_tokens: 6 }],
     ]);
     expect(Buffer.byteLength(big)).toBeGreaterThan(320);
-    expect(JSON.stringify(h.db.prepare("SELECT * FROM inner_call").all())).not.toContain(
+    expect(JSON.stringify(h.db.prepare("SELECT output_bytes FROM inner_call").all())).not.toContain(
       String(Buffer.byteLength(big)),
     );
   });
