@@ -7189,3 +7189,192 @@ failed; with no ledger every configured name is reported `unknown`.
 
 No event, span, log line, artifact or sink payload contains a skill body or description. Spans gain
 `switchboard.skills.count` and `switchboard.skills.hashes` (12-hex prefixes). The ADR-0048 payload is unchanged.
+
+## 20. Harness and discovery capabilities (Proposed, 2026-10-19)
+
+*Proposed design notes (2026-10-19, Delegated agent work, documentation only; not owner-approved beyond owner decisions
+76 and 77 in [ROADMAP §4.2](../ROADMAP.md#42-owner-decisions)).* The sources are the operator's harness comparison
+(recommendations R1 to R7, kept on the operator host) and the
+[enhancement discovery of 2026-10-19](../research/enhancement-discovery-2026-10-19.md) as answered in its §8. Each
+subsection is the starting contract for one roadmap task; the task refines it before code and records what it built.
+Configuration keys, names and defaults here are **Proposed**, and every default number is an **Assumption**, not a
+provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and parking applies to work items (§18.2).
+
+### 20.1 CI transient handling (FR-QUE-06, T15.6)
+
+- **Classification.** Each conclusion the CI trigger reads (§18.6) maps to one class: `success`; `failure`; or
+  `CI_INFRA` for `cancelled`, `timed_out`, and a `failure` whose jobs show a runner or infrastructure fault in the
+  allowlisted `gh` JSON (the exact field test is settled in T15.6 against the installed `gh`; until then only
+  `cancelled` and `timed_out` are `CI_INFRA`). `CI_INFRA` never increments `ci_trigger_ref_state.consecutive_fixes`.
+- **Rerun once.** With `ci_trigger.projects[].rerun_failed: true` (default `false`), a `failure` or `CI_INFRA` run on
+  a published ref's current head gets one `gh run rerun <run-id> --failed`. A new ledger table (next free migration)
+  keyed by `(project_id, publish_ref, head_sha, job_name)` makes the rerun happen at most once per key. The fix-up item
+  of FR-QUE-03 is enqueued only when the rerun concludes `failure`; a second red on the same key is never rerun again.
+- **Stale cancel.** With `ci_trigger.cancel_stale_queued: true` (default `false`), the poller lists runs on each
+  published ref, re-reads each candidate's `status` and `headSha` immediately before acting, and runs
+  `gh run cancel <run-id>` only for `status: queued` whose `headSha` is not the ref's current tip. An `in_progress` run
+  is never cancelled; the small race between the re-read and the cancel is an accepted residual risk (Assumption).
+- **Allowlist.** [ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md) amendment 1 adds exactly these two write
+  verbs, each behind its own project switch; every other `gh` verb stays refused (`src/ci/gh-argv.ts`).
+- **Events.** `ci_rerun_requested {publish_ref, head_sha, job_name, run_id}` and `ci_run_cancelled {publish_ref,
+  head_sha, run_id}`; no `gh` free text is copied.
+
+### 20.2 Host load hold (FR-CAP-12, T3.24)
+
+- **Keys.** `host.max_load1` and `host.resume_load1` (numbers; both unset by default; `resume_load1` must be lower than
+  `max_load1` or the configuration is refused). A `LoadReader` port returns the 1-minute load average
+  (`os.loadavg()[0]` on Linux); tests inject it.
+- **Hold.** In the dispatch pass of `pump()`, the same place as the disk floor (§5, T3.23): above `max_load1` the
+  controller enters a hold episode, every queued run stays `QUEUED`, and each gets one `load_hold {load1, max, resume}`
+  event per episode. The episode ends only when the load falls below `resume_load1` (hysteresis). Running runs are
+  never signalled. `get_run` and `get_digest` show the hold reason `held_load`.
+- **Light items.** A request or work item with `light: true` is admitted during a hold. Because a client could mark
+  everything light, the flag is honoured only for a client whose configuration sets `mcp_clients[].allow_light: true`
+  (default `false`, Delegated least privilege); the operator CLI may always set it.
+- **Unreadable load.** A reader error never holds; `doctor` warns.
+
+### 20.3 Decision requests (FR-CTL-13, T14.15)
+
+- **Record.** A new table (next free migration) `decision_request`: `id` (`dec_*`), `project_id`, `work_item_id`
+  (nullable), `requester_client_id`, `question` (untrusted, at most 2,000 characters), `options_json` (two to six
+  options, each a label of at most 200 characters and an action `resume`, `reroute`, `cancel` or `none`),
+  `recommended_option`, `enqueue_json` (work items in the `enqueue_work` shape), `state` (`open`, `decided`,
+  `withdrawn`), `decided_option`, `decided_by` (`cli`, `mcp_proxy:<client_id>` or `consent_link`), `note`, timestamps.
+- **Parking.** The named work item moves to a new work-item state `PARKED_DECISION` (§18.2), which the dequeue step of
+  §18.7 skips; other items of the project keep running. A decision without a work item parks nothing.
+- **Tools.** `request_decision` and `list_decisions` in the `orchestrator` tool profile; `decide` only for clients
+  marked `approval_proxy` (FR-CTL-08), plus `switchboard decisions list|decide` and a single-use consent link
+  (FR-CTL-09). Deciding twice returns `CONFLICT`.
+- **Exactly once.** `decide` updates the decision, applies the option's action and inserts the `enqueue_json` items in
+  one transaction; the items are admitted later under the requester's ceiling, never the decider's.
+- **Sinks.** Event kind `decision_requested`, reason `awaiting_decision`, the closed ADR-0048 payload; the question,
+  options and note never leave the ledger except through `list_decisions`, labelled untrusted.
+
+### 20.4 Published-ref conflicts and supersede (FR-QUE-07, T15.7)
+
+- **Read.** For each watched published ref the poller reads `gh pr view <ref> --json
+  number,state,isDraft,mergeable,headRefOid` (read-only, added to the ADR-0050 allowlist by amendment 1).
+- **Rebase item.** On `CONFLICTING` the controller enqueues one rebase item. Agents cannot run Git writes (FR-GIT-01),
+  so the controller prepares the worktree: the ref's head with the current base merged in by controller Git, conflicts
+  left as markers for the agent to resolve; the commit tool then records the result. Whether the commit tool can record
+  a two-parent commit, or must squash the resolution onto the ref, is settled in T15.7 (Assumption: two-parent commit
+  through the same sanitiser and provenance record, FR-GIT-04, FR-GIT-07).
+- **Cap and supersede.** Rebase items count against the FR-QUE-05 per-ref counter. At the cap, one re-implementation
+  item starts from the current base with the old ref's diff as a context file (untrusted), the old ref's state gets
+  `superseded_by` (the new item) and the poller stops watching it.
+- **`dedupe_key`.** A text field on work items; a partial unique index on `(project_id, dedupe_key)` over live or
+  published, non-superseded items refuses a second one with `CONFLICT`.
+- **`hot_paths`.** Up to 32 path globs per item. Two items overlap when the literal prefix of any glob of one is a
+  prefix of a literal prefix of the other (conservative). The §18.7 dequeue step skips an item that overlaps a running
+  item of the same project.
+
+### 20.5 Scheduled digest and progress stall (FR-CTL-14, T14.16)
+
+- **Digest schedule.** A schedule of kind `digest` (§18.5, off by default) fires a sink event `digest` whose payload is
+  the ADR-0048 closed shape plus a `counts` object of integers only (runs by state, needs-attention by reason, queue
+  depth, holds by reason, open decisions). The extra object needs an amendment to
+  [ADR-0048](../adr/0048-notification-sinks.md) (Proposed, so it can be amended) before code.
+- **Stall.** `projects.<id>.queue.stall_hours` (unset by default). `stalled_progress` is derived on read: the project has
+  `READY` items and no item reached `DONE` within the window (the window starts at the later of the last `DONE` and the
+  first `READY`). The next `DONE` clears it.
+
+### 20.6 Head-pinned verification evidence and the docs-alignment skill (FR-EXE-10, FR-SKL-11, T8.10)
+
+- **SHA in the report.** Before the verification stage, controller Git records `HEAD` and computes the worktree's tree
+  with a temporary index (`GIT_INDEX_FILE`), never touching the run's index. The `test_report` gains `head_sha` and
+  `tree_sha`; `head_sha` is kept only when `tree_sha` equals `HEAD^{tree}`.
+- **Read.** `get_run` adds `verification.verified_at_sha` and `verification.stale`, which is true when the run's
+  published ref (§12.3) has moved to another commit.
+- **Skill.** `examples/skills/docs-alignment.md` is an ordinary skill file (§19); its run writes
+  `docs_alignment.json` `{head_sha, verdict: "aligned" | "conflict", notes}` as an artifact (notes untrusted). A fix is
+  a normal commit through the commit tool on the item's own branch.
+- **Lessons kept from the harness gate.** Results are keyed in the ledger by `(publish_ref, head_sha)`, never by a file
+  name, and no gate holds a box-wide lock while it waits for a verification slot.
+
+### 20.7 Opt-in merge policy and ref events (FR-SUB-01, FR-SUB-02, T15.8, ADR-0060)
+
+- **Configuration.** `projects[].merge_policy`: `enabled` (default `false`), `method` (`squash` default, `merge`,
+  `rebase`), `required_reports` (skill reports that must say `aligned` at the head, default none). An orchestrator that
+  turns it on waits for operator approval (FR-PRJ-10).
+- **Gate, evaluated by the controller from `gh` JSON only.** The pull request is open, not a draft, on a ref this
+  project published, against the context's base; every required check is completed and successful at the current head
+  SHA (a project whose base branch has no required checks is refused, fail closed); `mergeable` is `MERGEABLE`; a
+  verification result is recorded at that head SHA (§20.6); every `required_reports` entry says `aligned` at that SHA.
+- **Merge.** `gh pr merge <number> --<method> --match-head-commit <head_sha>`, so a head that moved after the read
+  refuses on GitHub's side too. The command used by the operator's harness is the evidence for the flag; T15.8 checks
+  it against the installed `gh` before relying on it, and how required checks are read is settled there too.
+- **Ledger.** `merge_event`: `project_id`, `publish_ref`, `pr_number`, `head_sha`, `outcome` (`merged` or `refused`),
+  `reason` from a closed list (`head_moved`, `check_failed`, `check_pending`, `no_required_checks`, `not_mergeable`,
+  `unverified_at_head`, `report_missing`, `draft`, `policy_off`, `gh_error`).
+- **Ref events (FR-SUB-01 first delivery).** `ref_event` rows of kind `ci_passed`, `ci_failed`, `foreign_commit`,
+  `conflicting`, `merged`, `closed`, read through the same poller, shown in `get_digest` and sent to sinks as closed
+  payloads. No inbound webhook; event text never authorises anything.
+
+### 20.8 Work queue over HTTP (FR-QUE-08, T15.9)
+
+The network transport lists `enqueue_work`, `list_work` and `cancel_work` for a client whose `tool_profile` is
+`orchestrator`, with the same scope check as `delegate_task` over HTTP (FR-MCP-14). The stdio-only filter beside
+`WORK_QUEUE_TOOL_NAMES` in `src/mcp/schemas.ts` is removed; admission stays under the creating client's ceiling
+(§18.4).
+
+### 20.9 Pre-push secret scan (FR-GIT-11, T9.14, ADR-0061)
+
+- **Scanner.** Deterministic and in-process: the rule set of the artifact secret redactor
+  ([ADR-0042](../adr/0042-objective-redaction-at-admission.md)) plus high-signal token formats, each rule with a stable
+  id; no entropy-only rule by default (false positives), Assumption. No external scanner binary.
+- **Scope.** Added lines of `git diff --no-ext-diff --no-textconv -U0 <from>..<head>`, where `<from>` is the remote
+  ref's current tip, or the base checkpoint for a new ref. Binary files are not scanned and are listed in the event.
+- **Outcome.** A hit refuses the push with `SECRET_SCAN_BLOCKED`, appends `secret_scan_hit {stage: "push", rule_id,
+  path, line}` (never the value) and flags `secret_scan_blocked` until a clean push of that ref or an operator
+  acknowledgement through the CLI. The commit tool appends the same event with `stage: "commit"` and does not refuse.
+- **No override in-band.** The only allowlist is operator configuration (`git.secret_scan.allow`, rule id and path
+  glob); no MCP field, privileged scope or bypass flag changes the result. The operator can always push by hand.
+
+### 20.10 Repository-configuration preflight (FR-POL-11, T3.25)
+
+At admission, after the worktree exists, a bounded walk (depth and count capped, symlinks not followed) records
+`policy_snapshot_json.repo_config_seen`: up to 200 `{path, kind}` entries for the paths FR-POL-11 names. In an approved
+bypass run it appends one `repo_config_warning` event; under the untrusted profiles the existing FR-POL-04 handling
+applies unchanged.
+
+### 20.11 MCP SDK v2 and Client ID Metadata Documents (FR-MCP-18, FR-MCP-19, T13.10, T13.11)
+
+An ADR superseding the affected part of [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) comes first and
+follows the T14.12 readiness spike. CIMD fetch limits (Proposed): `https` only; the resolved address and every redirect
+target must not be private, loopback, link-local or unique-local; at most one redirect; 5 s and 64 KiB caps; the
+document's `client_id` must equal its URL; redirect URIs `https` only; the consent page shows the URL's host. Stdio is
+unchanged.
+
+### 20.12 Property tests and coverage (NFR-MAINT-06, T8.11)
+
+A pinned `fast-check` dev dependency and generated-input tests for each parser NFR-MAINT-06 lists, run by the normal
+`npm test`; coverage through the vitest coverage provider, reported in CI without a threshold at first (Delegated).
+[TDD §3.6](TDD.md#36-testing-strategy) records the strategy.
+
+### 20.13 Tamper-evident ledger, provider telemetry, evaluation, brief and critic (T8.13, T8.15, T8.14, T5.14, T14.17)
+
+- **Chain (FR-TEL-05).** An ADR (persistence format) first. Proposed: a `chain_hash` column, SHA-256 over the previous
+  row's hash and the row's canonical JSON, backfilled in id order by the migration; `doctor` verifies.
+- **Provider OTLP (FR-TEL-06).** An ADR (new local listener, per-provider environment additions) first. Proposed: one
+  listener per run on `127.0.0.1:0`, metrics only, attribute allowlist, the provider's documented OTLP variables named
+  in its manifest after they are checked against the provider's documentation.
+- **Evaluation (FR-OPS-06).** `switchboard eval run <suite>`: a suite file in the data directory, each task replayed as
+  a normal run, graded in a network-off container through the ADR-0052 driver with the tests outside the agent's
+  worktree; results in a new `eval_result` table.
+- **Brief (FR-SES-07).** `projects.<id>.brief_file`, a path outside the repository, at most 4 KiB, delivered as a
+  labelled block before retrieved context and counted in its budget; the handoff bundle lists its SHA-256.
+- **Critic (FR-CTL-15).** `projects.<id>.critic`: `enabled` (default `false`), `min_diff_lines` (Assumption 400), always
+  another provider, `inspect-untrusted`; the critic's objective is controller-generated and its findings artifact is
+  untrusted. It counts against the project's budgets (FR-CTL-06).
+
+### 20.14 Notes carried from the harness report
+
+- **FR-EXE-09 lock order.** No box-wide lock (data-directory lock, GC slot, any test lock) is held while a run waits for
+  a verification slot. The run's own write lease stays held; it protects only its worktree.
+- **Slot wait does not fail open.** A wait that outlasts the stage's wall clock ends the stage with
+  `outcome: "timeout"` (§8). The operator's shim runs the command after 30 minutes instead; Switchboard keeps the
+  fail-closed behaviour on purpose.
+- **Network-off login probe.** When login volumes are mounted in containers
+  ([ADR-0013](../adr/0013-projects-environments-and-contexts.md)), FR-AUTH-02's probe runs inside the container with
+  networking off. A probe that cannot decide offline reports `Unverified`, never `AUTH_REQUIRED`: Antigravity stayed
+  undecided offline with its token file present.

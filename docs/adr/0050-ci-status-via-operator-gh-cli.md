@@ -4,7 +4,10 @@
 - Date: 2026-10-15
 - Decided by: Delegated (agent, 2026-10-15) under [owner decision 54](../ROADMAP.md#42-owner-decisions) (answers Q-91;
   zemdregon's verbatim answer: "yes"). The mechanism below is Delegated and not owner-approved beyond that answer.
-- Related: FR-QUE-03, CAP-16, FR-AUTH-01, FR-AUTH-02, NFR-SEC-01, NFR-PRIV-01, [ADR-0003](0003-no-credential-handling.md),
+- Amended: 2026-10-19 (amendment 1 below) for owner decision 76; Delegated wording, not owner-approved beyond the
+  decision.
+- Related: FR-QUE-03, FR-QUE-06, FR-QUE-07, FR-SUB-01, FR-SUB-02,
+  CAP-16, FR-AUTH-01, FR-AUTH-02, NFR-SEC-01, NFR-PRIV-01, [ADR-0003](0003-no-credential-handling.md),
   [ADR-0011](0011-single-operator-local-deployment.md), owner decisions 51 and 54, [LLD §18](../design/LLD.md#18-project-queue-schedules-and-ci-triggers-m15-proposed-t150)
 
 ## Context
@@ -43,6 +46,30 @@ untrusted and must not drive policy.
    any trigger error summary (NFR-SEC-01).
 6. **Tests use a port.** Production code depends on a small `CiStatusPort` (name **Proposed** in LLD §18.6). Unit and
    integration tests inject a fake implementation; only operator verification runs the real `gh` binary, outside CI.
+
+## Amendment 1 (2026-10-19): rerun, stale cancel, mergeability and merge
+
+Owner decision 76 ("Add all 7 including auto-merge", 2026-10-19) adds the harness capabilities R1, R4 and R7. They need
+`gh` verbs beyond the read-only set of item 1, so this amendment widens the allowlist. Items 2 to 6 apply unchanged to
+every verb below, and each write verb is behind its own project switch, off by default.
+
+- **Item 7, rerun failed jobs once** (FR-QUE-06): `gh run rerun <run-id> --failed`, only with
+  `ci_trigger.rerun_failed: true`, at most once per (published ref, head SHA, job), and only for a run on a ref the
+  project published. A conclusion of `cancelled` or `timed_out`, or a runner or infrastructure fault, is classed
+  `CI_INFRA` and never counts toward the FR-QUE-05 cap.
+- **Item 8, cancel stale queued runs** (FR-QUE-06): `gh run cancel <run-id>`, only with
+  `ci_trigger.cancel_stale_queued: true`, only for a run whose status is `queued` (never `in_progress`) on a published
+  ref whose head SHA is no longer that ref's head. This stays inside "branches the project published".
+- **Item 9, read mergeability** (FR-QUE-07, FR-SUB-01): `gh pr view` with a closed `--json` field list (number,
+  state, draft, mergeable, head SHA, check results), read-only.
+- **Item 10, merge** (FR-SUB-02): `gh pr merge <number> --<method> --match-head-commit <sha>`, only for a project
+  whose merge policy is on, under the gate of [ADR-0060](0060-opt-in-head-pinned-merge-policy.md).
+
+Every other `gh` verb stays refused, and the argv allowlist test keeps proving it. Exact field names and flags are
+checked against the installed `gh` in ROADMAP T15.6 to T15.8 before code relies on them
+([LLD §20.1](../design/LLD.md#201-ci-transient-handling-fr-que-06-t156),
+[§20.4](../design/LLD.md#204-published-ref-conflicts-and-supersede-fr-que-07-t157),
+[§20.7](../design/LLD.md#207-opt-in-merge-policy-and-ref-events-fr-sub-01-fr-sub-02-t158-adr-0060)).
 
 ## Alternatives considered
 
