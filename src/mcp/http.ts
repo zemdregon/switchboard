@@ -29,13 +29,29 @@
  *
  * Delegated (T13.1): a plain `node:http` listener rather than the SDK's express `mcpAuthRouter`. The SDK's issuer check
  * accepts plain HTTP for localhost and can be relaxed by an environment variable, and its metadata advertises
- * `client_secret_post`; Switchboard needs neither. The SDK's `StreamableHTTPServerTransport.handleRequest(req, res)`
- * takes `node:http` objects, so later tasks can mount it here without express.
+ * `client_secret_post`; Switchboard needs neither.
+ *
+ * T13.10 (FR-MCP-18, ADR-0062): the MCP endpoint serves both protocol eras with the SDK v2 packages. After every check
+ * above, the request is classified with the SDK's own `isLegacyRequest`: a 2025-era request (an `initialize`, or any
+ * request without the per-request `_meta` envelope) is served by a fresh stateless `WebStandardStreamableHTTPServerTransport`
+ * with JSON responses, and a 2026-07-28 request by one `createMcpHandler` per listener in strict modern mode. One
+ * factory builds the same per-request `SwitchboardMcpServer` for both legs; it finds the request's configured MCP client
+ * and OAuth client through a `WeakMap` keyed by the web `Request` the SDK hands back, never through the SDK's `AuthInfo`
+ * (no token enters an SDK structure). Neither leg issues or accepts a session id. The SDK v2 HTTP entry is web-standard
+ * (`fetch(Request): Promise<Response>`), so this module bridges `node:http` to it itself; `@modelcontextprotocol/node`
+ * is not used (it lags the server package).
  */
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { Readable } from "node:stream";
+import {
+  createMcpHandler,
+  isJsonContentType,
+  isLegacyRequest,
+  type McpHttpHandler,
+  type McpRequestContext,
+  WebStandardStreamableHTTPServerTransport,
+} from "@modelcontextprotocol/server";
 import {
   AS_ENDPOINT_PATHS,
   AUTHORIZATION_SERVER_WELL_KNOWN,
@@ -177,38 +193,127 @@ async function handleRegistration(req: IncomingMessage, res: ServerResponse, aut
   send(res, 201, registrationResponse(result.client));
 }
 
+/** The `node:http` request as a web `Request` for the SDK v2 entry. Only POST reaches here, so the body is streamed. */
+function toWebRequest(req: IncomingMessage): Request {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(req.headers)) {
+    if (value === undefined) continue;
+    if (Array.isArray(value)) for (const v of value) headers.append(name, v);
+    else headers.set(name, value);
+  }
+  return new Request(new URL(req.url ?? "/", "http://listener.invalid"), {
+    method: req.method ?? "POST",
+    headers,
+    body: Readable.toWeb(req) as unknown as ReadableStream,
+    duplex: "half",
+  });
+}
+
+/** Write the SDK's web `Response` to the `node:http` response. */
+async function writeWebResponse(res: ServerResponse, response: Response): Promise<void> {
+  const headers: Record<string, string> = {};
+  response.headers.forEach((value, name) => {
+    headers[name] = value;
+  });
+  res.writeHead(response.status, headers);
+  if (response.body !== null) {
+    for await (const chunk of response.body) res.write(chunk);
+  }
+  res.end();
+}
+
+/** Who one MCP request is for (T13.4): the configured MCP client and the OAuth client of the token that authenticated it. */
+interface McpRequestIdentity {
+  readonly mcpClientId: string;
+  readonly oauthClientId: string;
+}
+
 /**
- * One MCP request in stateless Streamable HTTP mode (T13.4, Q-77): a fresh server and transport per request, closed
- * when the response ends. There is no MCP session, so no session id is issued or ever accepted as authentication
- * (FR-MCP-15); every request is authenticated by its own token. Responses are plain JSON, not SSE streams.
+ * The MCP endpoint's dual-era serving (T13.10, ADR-0062 item 4): a fresh `SwitchboardMcpServer` per request for either
+ * era, closed when the response ends. There is no MCP session, so no session id is issued or ever accepted as
+ * authentication (FR-MCP-15); every request is authenticated by its own token. Responses are plain JSON in both eras:
+ * the legacy transport is built with `enableJsonResponse`, and the modern handler's `auto` mode answers with one JSON
+ * body unless a handler emits a related notification first, which no Switchboard tool does (`"json"` would behave the
+ * same but prints an SDK warning at construction).
  */
-async function serveMcp(
-  req: IncomingMessage,
-  res: ServerResponse,
-  mcpServerFor: (mcpClientId: string, oauthClientId: string) => SwitchboardMcpServer,
-  mcpClientId: string,
-  oauthClientId: string,
-): Promise<void> {
-  const mcp = mcpServerFor(mcpClientId, oauthClientId);
-  // No `sessionIdGenerator`: the SDK's stateless mode.
-  const transport = new StreamableHTTPServerTransport({
-    enableJsonResponse: true,
-    maxRequestBodySize: MAX_MCP_BODY_BYTES,
-  });
-  res.on("close", () => {
-    void transport.close().catch(() => {});
-    void mcp.close().catch(() => {});
-  });
-  // The SDK's transport declares `onclose` as optional-or-undefined, which `exactOptionalPropertyTypes` rejects.
-  await mcp.server.connect(transport as Transport);
-  await transport.handleRequest(req, res);
+class McpEndpoint {
+  /** The identity of each request in flight, keyed by the web `Request` the SDK hands back to the factory. */
+  private readonly identities = new WeakMap<Request, McpRequestIdentity>();
+  /** The server built for each request, so the `node:http` close event can end it (as before T13.10). */
+  private readonly servers = new WeakMap<Request, SwitchboardMcpServer>();
+  private readonly modern: McpHttpHandler;
+
+  constructor(private readonly mcpServerFor: (mcpClientId: string, oauthClientId: string) => SwitchboardMcpServer) {
+    this.modern = createMcpHandler((ctx) => this.build(ctx), {
+      legacy: "reject",
+      responseMode: "auto",
+      maxRequestBodySize: MAX_MCP_BODY_BYTES,
+      // Reporting only; the handler logs nothing itself (the response is unaffected).
+      onerror: () => {},
+    });
+  }
+
+  /** The one factory behind both eras. A request the endpoint did not admit has no identity and is refused. */
+  private build(ctx: McpRequestContext): SwitchboardMcpServer["server"] {
+    const request = ctx.requestInfo;
+    const identity = request === undefined ? undefined : this.identities.get(request);
+    if (request === undefined || identity === undefined) throw new Error("MCP request without an admitted identity");
+    const mcp = this.mcpServerFor(identity.mcpClientId, identity.oauthClientId);
+    this.servers.set(request, mcp);
+    return mcp.server;
+  }
+
+  async serve(req: IncomingMessage, res: ServerResponse, identity: McpRequestIdentity): Promise<void> {
+    const request = toWebRequest(req);
+    this.identities.set(request, identity);
+    res.on("close", () => {
+      void this.servers
+        .get(request)
+        ?.close()
+        .catch(() => {});
+    });
+    // Hand-wired compositions must refuse a non-JSON media type themselves before either leg parses the body.
+    if (!isJsonContentType(request.headers.get("content-type"))) {
+      send(res, 415, { error: "invalid_request", error_description: "the body must be application/json" });
+      return;
+    }
+    // The SDK's own classification, so this routing can never disagree with its entry: a body over the cap or a
+    // malformed modern envelope classifies modern, and the modern leg answers 413 or the JSON-RPC error.
+    const legacy = await isLegacyRequest(request, undefined, { maxRequestBodySize: MAX_MCP_BODY_BYTES });
+    let response: Response;
+    if (legacy) {
+      const server = this.build({ era: "legacy", requestInfo: request });
+      // `sessionIdGenerator: undefined` is the SDK's stateless mode: no session id is issued or validated.
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+        maxRequestBodySize: MAX_MCP_BODY_BYTES,
+      });
+      res.on("close", () => {
+        void transport.close().catch(() => {});
+      });
+      await server.connect(transport);
+      response = await transport.handleRequest(request);
+    } else {
+      response = await this.modern.fetch(request);
+    }
+    await writeWebResponse(res, response);
+  }
+
+  close(): Promise<void> {
+    return this.modern.close();
+  }
+}
+
+/** The request handler with the resources it holds, exported for tests. */
+export interface HttpRequestHandler {
+  (req: IncomingMessage, res: ServerResponse): void;
+  /** Ends the modern-era MCP handler (in-flight modern exchanges are aborted). */
+  close(): Promise<void>;
 }
 
 /** The request handler, exported for tests. Paths are matched exactly; the query string is ignored. */
-export function httpTransportHandler(
-  s: HttpTransportSettings,
-  auth: HttpAuthDeps = {},
-): (req: IncomingMessage, res: ServerResponse) => void {
+export function httpTransportHandler(s: HttpTransportSettings, auth: HttpAuthDeps = {}): HttpRequestHandler {
   const prmUrl = protectedResourceMetadataUrl(s.resource);
   const challenge = `Bearer resource_metadata="${prmUrl}"`;
   const invalid = `Bearer error="invalid_token", resource_metadata="${prmUrl}"`;
@@ -226,7 +331,8 @@ export function httpTransportHandler(
   /** MCP requests being served, in total and per OAuth client (T13.4): each one holds a whole MCP server. */
   let inFlightTotal = 0;
   const inFlight = new Map<string, number>();
-  return (req, res) => {
+  const endpoint = auth.mcpServerFor === undefined ? undefined : new McpEndpoint(auth.mcpServerFor);
+  const handle = (req: IncomingMessage, res: ServerResponse): void => {
     let pathname: string;
     try {
       pathname = new URL(req.url ?? "/", "http://listener.invalid").pathname;
@@ -317,7 +423,7 @@ export function httpTransportHandler(
         send(res, 403, { error: "insufficient_scope" }, { "www-authenticate": insufficient });
         return;
       }
-      if (!auth.mcpServerFor) {
+      if (endpoint === undefined) {
         send(res, 501, { error: "not_implemented" });
         return;
       }
@@ -349,7 +455,7 @@ export function httpTransportHandler(
         if (n <= 0) inFlight.delete(oauthClientId);
         else inFlight.set(oauthClientId, n);
       });
-      serveMcp(req, res, auth.mcpServerFor, mcpClientId, oauthClientId).catch(() => {
+      endpoint.serve(req, res, { mcpClientId, oauthClientId }).catch(() => {
         if (!res.headersSent) send(res, 500, { error: "server_error" });
         else res.destroy();
       });
@@ -357,6 +463,7 @@ export function httpTransportHandler(
     }
     send(res, 404, { error: "not_found" });
   };
+  return Object.assign(handle, { close: (): Promise<void> => endpoint?.close() ?? Promise.resolve() });
 }
 
 export interface HttpTransportListener {
@@ -378,7 +485,8 @@ export async function startHttpTransport(
   deps: HttpTransportDeps = {},
 ): Promise<HttpTransportListener | undefined> {
   if (settings === undefined) return undefined;
-  const server = (deps.createServer ?? http.createServer)(httpTransportHandler(settings, deps));
+  const handler = httpTransportHandler(settings, deps);
+  const server = (deps.createServer ?? http.createServer)(handler);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(settings.port, settings.bind, () => {
@@ -388,10 +496,12 @@ export async function startHttpTransport(
   });
   return {
     address: server.address() as AddressInfo,
-    close: () =>
-      new Promise<void>((resolve) => {
+    close: async () => {
+      await new Promise<void>((resolve) => {
         server.close(() => resolve());
         server.closeAllConnections();
-      }),
+      });
+      await handler.close();
+    },
   };
 }

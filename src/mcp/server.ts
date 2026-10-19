@@ -3,10 +3,12 @@
  * result shaping only; admission, dispatch and cancellation stay in the run lifecycle, and eligibility is the shared
  * stage-1 filter (`src/routing`) reached through `RunLifecycle.checkEligibility`.
  *
- * SDK use: `@modelcontextprotocol/sdk` 1.32.1. Its high-level `McpServer.registerTool` takes zod schemas, so this
- * module uses the lower-level `Server` with `tools/list` and `tools/call` request handlers and publishes the raw JSON
- * Schemas from `./schemas.ts`, validated here with Ajv (TDD §2: Ajv schemas are the source of truth; zod is not a
- * direct dependency).
+ * SDK use: `@modelcontextprotocol/server` 2.3.1 (T13.10, ADR-0062). Its high-level `McpServer.registerTool` takes zod
+ * schemas, so this module uses the lower-level `Server` with `tools/list` and `tools/call` request handlers (registered
+ * by method name in v2) and publishes the raw JSON Schemas from `./schemas.ts`, validated here with Ajv (TDD §2: Ajv
+ * schemas are the source of truth; zod is not a direct dependency). Over stdio the connection follows the client's
+ * opening handshake exactly as before; the HTTP transport (`./http.ts`) serves both protocol eras from this same
+ * server factory.
  *
  * Client identity is fixed per stdio session (`clientId`, bound by `serve --client <id>`, FR-OPS-04, R-9). Proposed
  * (Delegated) choices, all fail-closed:
@@ -120,9 +122,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, type CallToolResult, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { type CallToolResult, Server, type Tool } from "@modelcontextprotocol/server";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type Database from "better-sqlite3";
@@ -1999,7 +2000,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} }, instructions: INSTRUCTIONS },
   );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler("tools/list", async () => ({
     // T14.11 (FR-CTL-11): a console client sees only the console set; an orchestrator list is unchanged.
     tools: applyToolProfile(client.toolProfile, [
       ...toolDescriptors({
@@ -2012,9 +2013,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(approvalProxy !== undefined
         ? approvalProxyToolDescriptors().map((d) => ({ ...d, outputSchema: withError(d.outputSchema) }))
         : []),
-    ]),
+      // The descriptors are the published JSON Schemas (`type: "object"` objects, checked by the schema tests); the
+      // SDK v2 `Tool` type wants that literal, which `Record<string, unknown>` cannot carry.
+    ]) as unknown as Tool[],
   }));
-  server.setRequestHandler(CallToolRequestSchema, async (req) => callTool(req.params.name, req.params.arguments));
+  server.setRequestHandler("tools/call", async (req) => callTool(req.params.name, req.params.arguments));
 
   return {
     server,

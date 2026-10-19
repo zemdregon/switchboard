@@ -7391,6 +7391,30 @@ target must not be private, loopback, link-local or unique-local; at most one re
 document's `client_id` must equal its URL; redirect URIs `https` only; the consent page shows the URL's host. Stdio is
 unchanged.
 
+**T13.10 as built (2026-10-19, Delegated; [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md)).** The packages are
+`@modelcontextprotocol/server`, `client` and `core`, exact-pinned 2.3.1 (`client` is a runtime dependency because the
+fake provider CLI shipped in `dist` is an MCP client). `src/mcp/server.ts` and the Git tool shim keep the low-level
+`Server`; its `tools/list` and `tools/call` handlers are registered by method name (the v2 signature) and still publish
+the Ajv-validated JSON Schemas of [§3](#3-mcp-tool-contracts). Stdio: `startStdioServer` still
+connects one `Server` to `StdioServerTransport`, and the connection follows the client's opening handshake as before
+(`serveStdio` is not used). HTTP (`src/mcp/http.ts`): every check of [§3.3](#33-network-mcp-transport-m13) runs
+unchanged (allowed `Origin`, bearer token, approved client, `mcp` scope, client mapping, POST only, `Mcp-Session-Id`
+refused with 400, in-flight caps, `Authorization` and `Cookie` stripped); then a non-JSON media type is refused with
+415, and the request is classified with the SDK's `isLegacyRequest` under the same 256 KiB body cap. A 2025-era
+request (an `initialize`, or any request without the per-request `_meta` envelope) is served by a fresh
+`WebStandardStreamableHTTPServerTransport` with `sessionIdGenerator: undefined` and `enableJsonResponse`; a 2026-07-28
+request (envelope plus `MCP-Protocol-Version: 2026-07-28`) by one `createMcpHandler` per listener with
+`legacy: "reject"` and `responseMode: "auto"` (one JSON body, since no Switchboard tool emits a related notification
+before its result; `"json"` would print an SDK warning at construction). One factory builds the same fresh
+`SwitchboardMcpServer` per request for both legs and finds the request's configured MCP client and OAuth client in a
+`WeakMap` keyed by the web `Request` the SDK hands back as `ctx.requestInfo`; nothing is passed through the SDK's
+`AuthInfo`, so no token or placeholder enters an SDK structure. The `node:http` request is bridged to the SDK's
+web-standard `fetch(Request)` entry in this module (`@modelcontextprotocol/node` lags the server package and is not
+used). Neither leg issues or accepts a session id. Evidence: `src/mcp/http-eras.test.ts` (a 2025-era client and a
+2026-07-28 client both initialize and call a tool through the real token checks; no response carries a session id; a
+presented session id is still refused; a non-JSON body is refused), the unchanged T13.9 acceptance in
+`src/mcp/mcp.test.ts`, and every unchanged stdio and in-memory suite.
+
 ### 20.12 Property tests and coverage (NFR-MAINT-06, T8.11)
 
 A pinned `fast-check` dev dependency and generated-input tests for each parser NFR-MAINT-06 lists, run by the normal
