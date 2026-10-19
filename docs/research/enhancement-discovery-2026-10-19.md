@@ -28,8 +28,9 @@ sinks, approval proxy, console profile, queue, schedules and CI triggers (M14 `P
 3. **The MCP stack is a generation behind.** SDK 1.32.1 and Dynamic Client Registration, with no task to move.
 4. **Adoption cost is high.** No release, a 3,155-line README that opens with a status log, and no quickstart.
 
-The top recommendation is one provider-independent confinement layer for bypass runs. It needs zemdregon's answer,
-because it touches bypass.
+The note first ranked a provider-independent confinement layer for bypass runs at the top. zemdregon declined it on
+2026-10-19 because full access is what bypass is for (§8), so the top items are now the network work queue and a
+blocking secret scan before push.
 
 ## 2. What changed since 2026-10-15 (relevant facts)
 
@@ -148,7 +149,21 @@ merge deferred, learned routing deferred.
 4. Recommendations 6, 9 and 10.
 5. Recommendation 7, then decide on retrieval (cut 3) and on 8 and 11 with its numbers.
 
-## 8. Questions for zemdregon
+## 8. Owner answers (2026-10-19)
+
+zemdregon answered the questions below on 2026-10-19, verbatim: "1 no. Bypass being bypass is a feature. If they dont
+want them to have full access they shouldn't run them on bypass. 2 block. 3 yes. 4 no."
+
+| Question | Answer | Effect on this note |
+| --- | --- | --- |
+| 1. One confinement layer for bypass | **No.** Bypass is meant to have full access. | Add rank 1 and cut rank 1 are **withdrawn**. The live bypass reads outside the worktree (R-72, R-74, R-76) are expected bypass behaviour, not defects to close. Confinement stays a property of the non-bypass profiles and of the Git-write denial and worktree isolation that bypass keeps (decision 22). Per-provider wrappers already in place (ADR-0059) are not reopened here. |
+| 2. Secret scan on a bypass push | **Block.** | Add rank 3 stands, and a hit refuses the push in bypass runs too. |
+| 3. Work queue over HTTP | **Yes.** | Add rank 2 stands. |
+| 4. First `v0.1.0` release | **No.** | The tagged release is dropped from add rank 9. The rest of the adopter path (quickstart, client snippets, issue forms) stays Proposed. |
+
+With rank 1 withdrawn, the suggested order in §7 starts at recommendations 2, 3 and 5.
+
+## 9. Questions for zemdregon (answered in §8)
 
 1. Should every bypass run go through one Switchboard-owned confinement layer (bubblewrap on the host, or the container
    backend), so it can read only its worktree, its contexts and its own login state? Recommended: yes.
