@@ -318,11 +318,13 @@ Pre-release. The package is private and is not published to any registry; you bu
   on synthetic fixtures except the T4.64 probe's two live `validate` runs (auth `OK`) and the
   T4.68 live `adapters validate` pass on 2026-10-18 (CLI 2.1.1, manifest range `>=2.1.1 <2.2.0`) (README
   [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke and the live malicious leg
-  remain operator work (T4.68). The Grok Build and Muse Code manifests still admit
+  ran on 2026-10-19 (w1408; post-#748 w1601 rerun) and the row closed Partial-by-ruling with permission gating
+  Deferred (T4.68). The Grok Build and Muse Code manifests still admit
   no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex, OpenCode,
   Kimi Code, Antigravity and Cursor already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
-  Delegated). Open items, by blocker: operator live legs (T4.28, T4.68; T4.38 Done 2026-10-19; T4.48 legs ran 2026-10-19
-  but the row stays `Partial` pending an owner ruling or a re-run; T4.12 is Deferred
+  Delegated). Open items, by blocker: operator live legs (T4.28; T4.38 Done 2026-10-19; T4.48 legs ran 2026-10-19
+  but the row stays `Partial` pending an owner ruling or a re-run; T4.68 legs ran 2026-10-19, row closed
+  Partial-by-ruling, gating Deferred; T4.12 is Deferred
   under decision 69 — it needed a Mac and was optional for criterion 2; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
@@ -408,7 +410,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | Antigravity | Launch **`agy`** without arguments (the adapter returns `AUTH_REQUIRED` naming `agy`; the CLI's stderr also says to launch without arguments to sign in) | Auth preflight runs `agy models` and keys on exit code and stderr (`<slug>\t<name>` lines at exit 0 vs `Error: Please sign in` at exit 1 on the 2026-10-14 live check, `agy` 1.3.4; [`docs/research/live-checks-2026-10-14-antigravity.md`](docs/research/live-checks-2026-10-14-antigravity.md)); check Google's Antigravity documentation for the login step |
 | Cursor CLI | `cursor-agent login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `cursor-agent status --format json` and keys on `isAuthenticated` (exit 0 both logged in and logged out on the 2026-10-14 live check; [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)); check Cursor's documentation for the login step |
 | OpenCode | `opencode auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `opencode auth list --format json --standalone` and treats any non-environment connection type as logged in (exit 0 in every state on the 2026-10-14 live check, `opencode v2.0.23`; [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md)); check OpenCode's documentation for the login step |
-| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe ran live twice through Switchboard on 2026-10-18 (final-verify `validate kimi` on the fixed probe and the `adapters validate kimi` pass, both `[ok] auth: OK`, ROADMAP T4.64 and T4.68); the remaining live cells are still T4.68; check Moonshot's Kimi Code documentation for the login step |
+| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe ran live twice through Switchboard on 2026-10-18 (final-verify `validate kimi` on the fixed probe and the `adapters validate kimi` pass, both `[ok] auth: OK`, ROADMAP T4.64 and T4.68); the live legs ran on 2026-10-19 and the row closed Partial-by-ruling with permission gating Deferred (ROADMAP T4.68); check Moonshot's Kimi Code documentation for the login step |
 
 Do not copy credential files between machines or users. Do not put API keys or tokens in the Switchboard config; it has
 no place for them and rejects unknown keys.
@@ -2416,8 +2418,9 @@ call):
   permission request naming it ends the run `PERMISSION_BLOCKED` (fail closed, T4.68; an approved bypass run is exempt).
 
 The bypass prompt and a requested model are one argv word each (`--prompt=<prompt>`, `--model=<alias>`), so a leading
-`-` is never read as a flag; the prompt is visible in the process list. That the CLI accepts the `=` form is an
-Assumption until the operator capture (T4.68): if it does not, the run fails at argument parsing. Every compiled
+`-` is never read as a flag; the prompt is visible in the process list. That the CLI accepts the `=` form held
+in every live run to date (the `adapters validate` smoke on 2026-10-18 and the w1408/w1601 live legs, all through
+compiled `--prompt=<prompt>` argv — see ROADMAP T4.68). Every compiled
 invocation has an empty environment with an allowlist of `PATH` and `HOME`; `KIMI_CODE_HOME`, which relocates Kimi's
 configuration, sessions and credentials, is never passed. The adapter never reads a Kimi credential or configuration
 file and never writes provider configuration (`src/adapters/kimi/adapter.ts`, `src/adapters/kimi/protocol.ts`).
@@ -2425,7 +2428,8 @@ file and never writes provider configuration (`src/adapters/kimi/adapter.ts`, `s
 The compliance manifest range (`src/adapters/manifests/kimi.json`) admits `>=2.1.1 <2.2.0`
 since `switchboard adapters validate kimi` passed on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68).
 Other versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`, and the adapter stays disabled
-until T4.68's remaining operator cells pass (FR-ADP-09).
+(T4.68 closed Partial-by-ruling 2026-10-19 without a pass; permission gating is Deferred — see ROADMAP T4.68,
+FR-ADP-09).
 
 ### Login
 
@@ -2454,7 +2458,7 @@ the `privileged` cells below (Delegated, fail closed; T4.62).
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | yes, two cells | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). Both cells need network `on` and repository configuration `enabled` (owner decision 26, Q-37); anything narrower is `CAPABILITY_MISSING`. **With `bypass`:** only worktree file access with shell `broad` compiles, as `kimi [--model=<alias>] --prompt=<prompt> --output-format stream-json` with nothing added; read-only files or a narrower shell are `CAPABILITY_MISSING` because Never Ask cannot be narrowed. **Without `bypass`:** `kimi acp`, mode `plan` for read-only files and `default` for worktree files, with the shell scope held by the controller's permission answers, and a tool call reported as run without a permission request naming it ending `PERMISSION_BLOCKED` (`requirePermissionRequest` in the ACP plan, fail closed, T4.68; an approved bypass run is exempt) (`Unverified: T4.68`; if `default` mode turns out not to ask, this cell becomes `Ineligible` and Kimi Code is privileged-bypass only, ADR-0049 item 3). A bypass approval on any other profile, or a `bypass` scope without an approval, is `PROFILE_UNSUPPORTED`. |
+| `privileged` | yes, two cells | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). Both cells need network `on` and repository configuration `enabled` (owner decision 26, Q-37); anything narrower is `CAPABILITY_MISSING`. **With `bypass`:** only worktree file access with shell `broad` compiles, as `kimi [--model=<alias>] --prompt=<prompt> --output-format stream-json` with nothing added; read-only files or a narrower shell are `CAPABILITY_MISSING` because Never Ask cannot be narrowed. **Without `bypass`:** `kimi acp`, mode `plan` for read-only files and `default` for worktree files, with the shell scope held by the controller's permission answers, and a tool call reported as run without a permission request naming it ending `PERMISSION_BLOCKED` (`requirePermissionRequest` in the ACP plan, fail closed; an approved bypass run is exempt) (observed 2026-10-19: default mode raises none — see ROADMAP T4.68; per ADR-0049 item 3 this cell becomes `Ineligible` and Kimi Code privileged-bypass-only, but the compile-time marking is not yet in code, so the cell still compiles and fails closed at runtime; the gating change is the Deferred [ROADMAP §8](docs/ROADMAP.md#8-deferred-and-excluded-work) row). A bypass approval on any other profile, or a `bypass` scope without an approval, is `PROFILE_UNSUPPORTED`. |
 
 **Bypass-class flags (ADR-0049).** The registry entry (`src/adapters/providers.ts`) declares `--auto` and `--plan`
 (with the shared `--yolo`) and the short `-y` as bypass flags, and the ACP modes `auto` and `yolo` (as a mode id or the
@@ -2468,8 +2472,9 @@ fail closed), so Claude Code's `-p` and Antigravity's `--prompt` stay accepted i
 Resume (FR-SES-03) runs the stored native id through the same matrix, with the same refusals: `--session <id>` after
 the bypass cell's flags (nothing else added), or ACP `session/resume` for a restricted run. A binding of another
 provider, or an id that is not one safe argument (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`), is refused. Whether the
-resumed run keeps its model, and resume from another directory, are `Unverified: T4.68` (`resumeCwd` is
-`unverified`).
+resumed run keeps its model, and resume from another directory, are unverified (were `Unverified: T4.68`; the carrier
+row closed Partial-by-ruling 2026-10-19 without recording them — see ROADMAP T4.68; `resumeCwd` is still
+`unverified` in `src/adapters/providers.ts`).
 
 ### Parser evidence and gaps
 
@@ -2486,9 +2491,12 @@ A second hint, a changed or unsafe session id, an
 `OUTPUT_PROTOCOL_ERROR`. ACP messages use the shared mapping, with `-32000` as `AUTH_REQUIRED`. The `tool_calls`
 item and `tool` record fields are **Observed** since the T4.68 follow-up-2 `live-run.sh` capture (CLI 2.1.1;
 `src/adapters/kimi/fixtures/captured_tool_call.jsonl` and `captured_tool_error.jsonl`, replayed by
-`src/adapters/kimi/live-capture.test.ts`); the error record and its `Authentication required` text in `-p`, the exit
-codes and the usage and
-model fields stay **Assumptions** carried by T4.68 (owner decision 65 (a); T4.63 is `Done` against its Done-when);
+`src/adapters/kimi/live-capture.test.ts`); the error record and its `Authentication required` text in `-p` and
+the usage and model fields stay **Assumptions** (were carried by T4.68 under owner decision 65 (a) — T4.63 is `Done`
+against its Done-when; the carrier row closed Partial-by-ruling 2026-10-19 without recording them — see ROADMAP
+T4.68); the failed-turn exit code is observed (unknown `--session` id exits 1, `K-F1` HELD w1408 and w1601 — see
+ROADMAP T4.68); the `--prompt=` one-word form held in every live run to date (validate smoke and live legs through
+compiled `--prompt=<prompt>` argv — see ROADMAP T4.68);
 no model is recorded
 from a Kimi run (`reportedModelFlag` `not_accepted`). Tests: `src/adapters/kimi/parser-residual.test.ts` and the
 "kimi compile matrix (T4.62)", "kimi probe", "kimi registry entry and manifest gate (T4.62)" and "kimi auth preflight
@@ -2524,15 +2532,17 @@ streams that chain a Git write with a credential read, an outside write or a net
 exits 0, 1, 2 and 137, four `unknown_events` streams end `OUTPUT_PROTOCOL_ERROR` or `TOOL_FAILURE`, and 36 partial
 streams end `OUTPUT_PROTOCOL_ERROR`. Because `kimi --prompt` never asks and prints no denial record, a credential read,
 outside write or network call **without** a Git write ends `ok` at exit 0 by design (owner decision 25: in a bypass run
-the guard enforces Git writes only), pinned as `kimiUnguardedStreams`. The live malicious leg is operator work (T4.68).
+the guard enforces Git writes only), pinned as `kimiUnguardedStreams`. The live malicious leg ran on 2026-10-19
+(w1408; post-#748 w1601 rerun: `K-M1` NOT_CHECKED, `K-M2`/`K-M3` HELD — see ROADMAP T4.68).
 
 T4.62 is `Done` (2026-10-16); T4.63, T4.64 and T4.66 are `Done` against their Done-when (owner decision 65 (a),
 (d) and (b); synthetic fixtures plus scrubbed captures, with two live validate auth `OK` runs on CLI 2.1.1); T4.65
 and T4.67 are `Done` against their Done-when (2026-10-15); T4.69 is `Done except
 the post-T4.68 update` (owner decision 65 (c)). The validate cell is closed: `switchboard adapters validate kimi`
 passed on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68: manifest, probe, auth `OK`, static conformance and one
-structured-output smoke call). The full live smoke, the live malicious leg and the other operator cells remain open
-under T4.68.
+structured-output smoke call). The full live smoke and the live malicious leg ran on 2026-10-19 (w1408; post-#748
+w1601 rerun) and T4.68 closed Partial-by-ruling with permission gating Deferred (other cells unrecorded at closure —
+see ROADMAP T4.68).
 
 ## Muse Code CLI (milestone 4)
 
@@ -2944,15 +2954,20 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   passed live on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68: manifest, probe, auth `OK`, static conformance and one
   structured-output smoke call). Under owner decision 65, T4.63, T4.64 and T4.66 are Done against their Done-when
   (synthetic fixtures plus three scrubbed captures, owner decision 65 (a), (b), (d); two live `validate` runs observing
-  auth `OK` on CLI 2.1.1; T4.69 Done except the post-T4.68 update, decision 65 (c)). Error record fields, exit codes,
-  the `--prompt=` one-word form and the `kimi acp` permission round trip in `default` mode are Assumptions carried by
-  T4.68. The auth probe's stdin timing is no longer an Assumption: the 2026-10-17 live `validate kimi` run showed
+  auth `OK` on CLI 2.1.1; T4.69 Done except the post-T4.68 update, decision 65 (c)). The error record fields and
+  the usage and model fields stay Assumptions (were carried by T4.68; the carrier row closed Partial-by-ruling
+  2026-10-19 without recording them — see ROADMAP T4.68); the `--prompt=` one-word form held in every live run to
+  date, the failed-turn exit code is observed (`K-F1` HELD, unknown `--session` id exits 1), and the `kimi acp`
+  permission round trip in `default` mode is observed (2.1.1 raises none — see ROADMAP T4.68). The auth probe's
+  stdin timing is no longer an Assumption: the 2026-10-17 live `validate kimi` run showed
   CLI 2.1.1 exits at stdin end-of-file before the `session/new` reply, and the fixed probe (stdin held open until both
   replies arrive) printed `[ok] auth: OK` twice on 2026-10-18 (ROADMAP T4.64, owner decision 65 (d); scrubbed ACP
-  replies carried by T4.68). If `default` mode does not ask, the restricted ACP cell becomes `Ineligible`. The
+  replies were carried by T4.68, which closed without recording them). Since `default` mode does not ask, the
+  restricted ACP cell becomes `Ineligible` per ADR-0049 item 3 (the compile-time marking is not yet in code — the cell
+  still compiles and fails closed at runtime; the gating change is Deferred — see ROADMAP T4.68). The
   malicious-fixture leg (T4.66) replays the approved bypass cell only: a credential read, outside write or network call
-  without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg is operator work
-  (T4.68). See [Kimi Code CLI](#kimi-code-cli-milestone-4).
+  without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg ran on 2026-10-19
+  (`K-M1` NOT_CHECKED, `K-M2`/`K-M3` HELD — see ROADMAP T4.68). See [Kimi Code CLI](#kimi-code-cli-milestone-4).
 - **Muse Code is built on synthetic fixtures only and does not run (ROADMAP T4.72 to T4.79).** No `muse` has been
   installed or run, and Meta access (Q-27) is not verified. The `--json` record spellings and the `muse auth status`
   probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) rests on Switchboard's
