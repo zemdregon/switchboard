@@ -527,15 +527,22 @@ network use or a push is the live leg (T3.9, T4.n8).
 
 #### 3.6.3 Property-based tests and coverage (NFR-MAINT-06, Proposed 2026-10-19)
 
-*Proposed (Delegated, 2026-10-19; ROADMAP T8.11 for owner decision 77's discovery rows).* The parsers that carry the "no
-Git write, no bypass flag, no secret out" guarantees get generated-input tests beside their example tests: the
-Git-write detector, the argv audit ([ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md),
-[ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md)), the commit sanitiser, the secret redactor, the
-untrusted-block renderers and the pre-push scanner of FR-GIT-11. The library is `fast-check`, pinned as a dev
-dependency when T8.11 adds it; properties run in the normal `npm test` with a fixed seed recorded on failure, so a CI
-failure reproduces locally. Coverage comes from the vitest coverage provider and is reported in CI without a threshold
-at first. Generators produce spelling variants (quoting, environment prefixes, `-`/`--` and `_`/`-` forms, path
-prefixes, Unicode look-alikes) rather than random bytes, because the past gaps were spelling gaps (ADR-0037, ADR-0045).
+*Built (Delegated, 2026-10-19; ROADMAP T8.11 for owner decision 77's discovery rows).* The parsers that carry the "no
+Git write, no bypass flag, no secret out" guarantees have generated-input tests beside their example tests:
+`src/adapters/bypass-audit.property.test.ts` (every declared bypass flag, short spelling and flag value refused in
+every generated spelling, [ADR-0037](../adr/0037-argv-audit-short-flags-and-bypass-values.md),
+[ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md)), `src/adapters/git-write-detector.property.test.ts`
+(every generated Git write through quoting, environment prefixes, path variants, launchers and compound lines
+refused), `src/git/sanitize.property.test.ts` and `src/artifacts/redact.property.test.ts` (a generated canary never
+survives), `src/continuity/render.property.test.ts` and `src/ci/untrusted-block.property.test.ts` (generated input
+never opens, closes or escapes the untrusted block), and `src/git/secret-scan.property.test.ts` (every generated
+canary shape found in added lines, never in context lines). The library is `fast-check`, pinned as an exact dev
+dependency (`fast-check 4.10.2`, publisher `ndubien`); properties run in the normal `npm test` with a fixed seed and
+`numRuns: 100` recorded in each file, so a CI failure reproduces locally. Coverage comes from `@vitest/coverage-v8`
+`5.0.4` (matching `vitest 5.0.4`) and is reported in CI without a threshold: the Linux job runs the suite a second
+time with `--coverage` and uploads `coverage/` through the SHA-pinned `actions/upload-artifact`. Generators produce
+spelling variants (quoting, environment prefixes, `-`/`--` and `_`/`-` forms, path prefixes, hostile block markers)
+rather than random bytes, because the past gaps were spelling gaps (ADR-0037, ADR-0045).
 
 ### 3.7 Packaging and release
 
