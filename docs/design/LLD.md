@@ -481,7 +481,7 @@ registry table, `BUILTIN_PROVIDERS` in `src/adapters/providers.ts`; `ProviderId`
 | `claude-code` | `claude` | Adapter | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` ([TDD §4.1.1](TDD.md#411-claude-code-native-controls-per-profile-and-platform-t30), `claude --help` 2.1.296) | Value `--permission-mode bypassPermissions` (same source); active |
 | `codex` | `codex` | Adapter | `--yolo`, `--full-auto` ([R2] L28, L125, L126) | None |
 | `grok-build` | `grok` | Module `src/adapters/grok/` (T4.22; manifest range admits no version) | None (its long bypass flags are shared `BYPASS_FLAGS`) | Values `--permission-mode bypassPermissions`; `--allow` and `--allowed-tools` with `*` or `**` (catch-all, Proposed) ([TDD §4.3.1](TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420)); active since T4.22 |
-| `antigravity` | `antigravity` | Module `src/adapters/antigravity/` (T4.32; manifest range admits no version) | `-dangerously-skip-permissions` (the two-dash form is shared), `--remote-control`, `-remote-control`, `--gemini_dir`, `-gemini_dir`, `--add-dir`, `-add-dir` ([TDD §4.4](TDD.md#44-antigravity-agy-m4), the T4.31 live check, [ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md); Proposed) | None ([TDD §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430): `always-proceed` is a settings value) |
+| `antigravity` | `antigravity` | Module `src/adapters/antigravity/` (T4.32; manifest range `>=1.4.2 <1.5.0` since the live `adapters validate` pass on 2026-10-18, T4.38) | `-dangerously-skip-permissions` (the two-dash form is shared), `--remote-control`, `-remote-control`, `--gemini_dir`, `-gemini_dir`, `--add-dir`, `-add-dir` ([TDD §4.4](TDD.md#44-antigravity-agy-m4), the T4.31 live check, [ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md); Proposed) | None ([TDD §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430): `always-proceed` is a settings value) |
 | `cursor` | `cursor` | Module `src/adapters/cursor/` (T4.42; manifest range admits no version) | `--auto-review`, `--worktree`, `--worktree-base`, `--skip-worktree-setup`, `--workspace`, `--add-dir`, `--plugin-dir`, `--api-key`, `--auth-token`, `--header`, `--endpoint` (`--force`, `--yolo`, `--approve-mcps` are shared; [TDD §4.5](TDD.md#45-cursor-cli-m4) and the T4.41 `--help`, Proposed) | Short `-f`, `-w`, `-H`, `-e`; value `--sandbox disabled` ([TDD §4.5](TDD.md#45-cursor-cli-m4), Proposed); active since T4.42 |
 | `opencode` | `opencode` | Module `src/adapters/opencode/` (T4.52; manifest range `>=2.0.23 <2.1.0` since the live `adapters validate` pass on 2026-10-18, T4.58) | `--auto` ([TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450), Proposed; never emitted, Q-83) | None (the inline `allow` permission is carried in the environment, which the adapter never sets, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
 | `kimi-code` | `kimi` | Module `src/adapters/kimi/` (T4.62; manifest range `>=2.1.1 <2.2.0` since the live `adapters validate` pass on 2026-10-18, T4.68) | `--auto`, `--plan` (`--yolo` is shared; [ADR-0049](../adr/0049-kimi-code-transport-and-bypass-class.md), [TDD §4.7](TDD.md#47-kimi-code-m4-blocked-by-b-1)). `-p`/`--prompt` are bypass-class (ADR-0049) but not declared: the audit is shared and Claude Code `-p` and Antigravity `--prompt` are ordinary flags (Q-95); the compile gate alone emits `--prompt` | Short `-y`; ACP modes `auto`, `yolo` and the `mode` option with those values (ADR-0049 item 2); active since T4.62 |
@@ -681,7 +681,8 @@ fixtures only; no `agy` in CI).
 
 **As built (T4.32).** Module `src/adapters/antigravity/` (`adapter.ts`, `protocol.ts`; spellings cite TDD §4.4 or the
 T4.31 live check, with `--prompt=` marked Assumption where unobserved). Manifest `src/adapters/manifests/antigravity.json`
-(range `<0.0.0` until `adapters validate` passes a live CLI). One registry entry with `create` and bypass-class flags in
+(range `<0.0.0` at the time; `>=1.4.2 <1.5.0` since the live `adapters validate` pass on 2026-10-18, T4.38).
+One registry entry with `create` and bypass-class flags in
 `src/adapters/providers.ts` ([ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md)). Transport
 `subprocess-jsonl` with `outputFormat` `jsonl`. Every non-`privileged` profile and every `privileged` scope without an
 approved bypass is `Ineligible: PROFILE_UNSUPPORTED` because `toolPermission` is a settings value, not per run
@@ -749,8 +750,9 @@ synthetic and replay fixtures only; no `agy` in CI).
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02,
   FR-GIT-09)`): declarations, `list_capabilities`, argv and allowlist guards, finalize-only lifecycle leg.
 
-**Not covered by this evidence (their own tasks):** auth preflight beyond the `UNKNOWN` placeholder (T4.34), conformance
-suite (T4.35), malicious-fixture leg (T4.36), operator live smoke and `adapters validate` (T4.38).
+**Not covered by this evidence (their own tasks):** auth preflight beyond the `UNKNOWN` placeholder (T4.34),
+conformance suite (T4.35), malicious-fixture leg (T4.36), operator live smoke and live malicious leg
+(T4.38; the `adapters validate` leg passed live on 2026-10-18 with no new Git evidence).
 
 ### 2.0.1 Cursor adapter implementation evidence (M4 T4.42, T4.43)
 
