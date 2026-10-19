@@ -501,7 +501,7 @@ Each adapter chooses the transport the provider documents ([R2] adapter matrix;
 | Antigravity | Subprocess `agy -p`, JSON/stream-JSON | None planned | M4 | Fails fast when unauthenticated. |
 | Cursor CLI | Subprocess `agent -p`, JSON/stream-JSON | ACP stdio (`agent acp`) | M4 | Trust, MCP approval, force and sandbox decided independently. |
 | OpenCode | Subprocess `opencode run` | Persistent local service `serve`/`attach` (deferred, FR-EXE-04) | M4 | Record harness and backing provider (FR-ADP-10). |
-| Kimi Code | Undetermined | Undetermined | Blocked | Disabled until the CLI contract is pinned (FR-ADP-09). |
+| Kimi Code | Subprocess `kimi --prompt`, stream-json | ACP stdio (`kimi acp`) | M4 | Disabled until the CLI contract is pinned (FR-ADP-09). |
 | Muse Code | Subprocess `muse exec --json`, JSONL | None planned | M4 (Should) | Unverified (R-33); FR-ADP-12. |
 
 Other interfaces: MCP stdio upstream (COMP-MCP); Git CLI against local repositories (COMP-WS, COMP-GIT) and, under push

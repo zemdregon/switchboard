@@ -397,8 +397,131 @@ as history.
   `src/adapters/kimi/adapter.ts` and `src/adapters/kimi/protocol.ts` still
   say the range admits no version; see item 15.)
 
-## 26. `opencode.json` notes and `adapter.ts` header still read "admits no version" (PR #726, out of scope)
+## 26. TDD §4.7 heading still says "blocked by B-1" (pre-existing, not from PR #713)
 
+- [TDD §4.7](design/TDD.md#47-kimi-code-m4-blocked-by-b-1) is headed
+  "Kimi Code (M4, blocked by B-1)", while its body says B-1 is cleared
+  (2026-10-15, T4.60/T4.61, ADR-0049) and the Kimi rows (T4.62 to T4.69)
+  are Done or operator-only.
+- Left unchanged: the heading text is frozen by its anchor
+  (`#47-kimi-code-m4-blocked-by-b-1`), which the T4.67 row, LLD and other
+  documents cite; renaming it would break those links and
+  `scripts/check-docs.mjs`. It does not block PR #713.
+
+## 27. T4.43 waiting-list claim withdrawn: no contradiction found (checked on this branch for PR #713)
+
+- A draft of this note claimed the T4.43 (Cursor parser) row records
+  `Done against its Done-when` under owner decision 65 (a) while §6.8.2
+  item 2 and the M4 row open-items list (b) still list T4.43 among the
+  rows that "stay `Partial` until scrubbed captures replace their
+  synthetic lines". Re-checked 2026-10-19 against this branch: neither
+  list names T4.43. Item 2 names T4.33, T4.35, T4.36, T4.51, T4.53 and
+  T4.56, then records "and so is T4.43 (its remaining native shapes are
+  carried by T4.48, item 1)"; the M4 row (b) names the same six and says
+  "as T4.43's move to T4.48". Both lists agree with the T4.43 row, so the
+  draft premise was false and is withdrawn here rather than left standing.
+- No action: there is nothing to reconcile, so no other lane's Done claim
+  is endorsed or disturbed (cf. item 8 above for the precedent). It does
+  not block PR #713.
+
+## 28. Kimi manifest `notes` still says `-p`/`--prompt` are unaudited (pre-existing, not from PR #713)
+
+- `src/adapters/manifests/kimi.json` `notes` says "`-p` and `--prompt`
+  are not declared to the audit ... the compile gate alone keeps
+  `--prompt` to the approved bypass cell", while the code
+  (`providerScopedBypassFlags` in `src/adapters/providers.ts`,
+  `src/adapters/audit.ts`), the T4.62 row ("As built (2026-10-16)"),
+  ADR-0049, ADR-0035, LLD §2, TDD §4.7, the README Kimi section and the
+  Q-95 resolution all record the provider-scoped declaration.
+  Verified 2026-10-19: the stale sentence is already on `origin/main`
+  (the scoped-flags code and the T4.62 "As built" note landed before
+  this PR), so PR #713 neither introduces nor worsens it.
+- Left unchanged: the manifest lives in `src/` and the doc-align gate
+  edits documentation only (`*.md`, `docs/**`). A code-lane follow-up
+  should sync the `notes` sentence (mechanical; no owner decision
+  needed). It does not block PR #713.
+
+## 29. README Status waiting-list still names T4.53/T4.56 (pre-existing, other lanes, not from PR #713)
+
+- The README Status bullet lists T4.53 and T4.56 among the "rows waiting
+  on uncaptured live shapes", while ROADMAP §6.8.2 item 2 and the M4 row
+  open-items list (b) record both as `Done` against their Done-when
+  under owner decision 65 (a)/(b), with remaining shapes carried by
+  T4.58. The README sentence predates those Done markers (PR #713 only
+  removed the Kimi rows from that list) and the rows belong to the
+  OpenCode lane.
+- Left unchanged: re-wording another lane's waiting list would endorse
+  its Done claims (cf. items 8 and 24 above). It does not block PR #713.
+
+## 30. ADR-0049 item 1 compile spelling vs as-built `=` form (pre-existing, not from PR #713)
+
+- [ADR-0049](adr/0049-kimi-code-transport-and-bypass-class.md) item 1
+  (Accepted 2026-10-15) says the approved bypass compile is exactly
+  `kimi -m <model> -p <prompt> --output-format stream-json`, while the
+  as-built code compiles one-word `--model=<alias>` / `--prompt=`
+  (`MODEL_FLAG`/`--prompt=` in `src/adapters/kimi/adapter.ts`,
+  `protocol.ts`; pinned by `src/adapters/kimi/kimi.test.ts` and the
+  replay dialect `src/adapters/fixtures/replay-dialects/kimi.mjs`,
+  which refuses the two-word forms). The ADR's own Implementation
+  section (T4.62, 2026-10-16) already records that the compile emits
+  `--prompt=<prompt>`, and TDD §4.7, the T4.62 row and the README Kimi
+  section all use the `=` form; only the item-1 decision sentence keeps
+  the old spelling. Verified 2026-10-19: the `=` form predates this PR,
+  so PR #713 neither introduces nor worsens it.
+- Left unchanged: item 1 is an accepted decision text and is not edited
+  per AGENTS.md (a superseding ADR belongs to the Kimi lane, and the
+  spelling difference changes no bypass behaviour). It does not block
+  PR #713.
+
+## 31. Kimi adapter code comments still label `tool_calls` fields an Assumption (pre-existing, not from PR #713)
+
+- `src/adapters/kimi/protocol.ts` (header comment on the `stream-json`
+  records: "their field names below are an **Assumption** ... until
+  T4.68 captures a tool call"; `TOOL_CALLS_KEY`: "item shape
+  **Assumption**") and `src/adapters/kimi/adapter.ts` (header: "the
+  documented tool records (field names an Assumption)" and "synthetic
+  fixtures plus the one [CAP] capture"; `toolCallEvent`: "Assumption:
+  `{id, type:"function", function:{name, arguments}}`") still read as
+  written before the 2026-10-16 T4.68 follow-up-2 capture, while the
+  capture exists in the repo
+  (`src/adapters/kimi/fixtures/captured_tool_call.jsonl`,
+  `captured_tool_error.jsonl`, replayed by
+  `src/adapters/kimi/live-capture.test.ts`) and the T4.63 row, TDD
+  §4.7, the README Kimi section and `test/malicious/adapters/kimi.case.ts`
+  (this PR) all record the `tool_calls`/`tool` field names as Observed
+  since that capture. The adapter.ts header also still says "the
+  manifest range admits no version" while `src/adapters/manifests/kimi.json`
+  admits `>=2.1.1 <2.2.0` since the 2026-10-18 live validate pass.
+  Verified 2026-10-19: the stale sentences predate this PR (code last
+  touched by #690, a T4.64 stdin fix), so PR #713 neither introduces
+  nor worsens them; behaviour is unchanged, only comments lag.
+- Left unchanged: both files live in `src/` and the doc-align gate
+  edits documentation only (`*.md`, `docs/**`). A code-lane follow-up
+  should sync the comments (mechanical; no owner decision needed).
+  It does not block PR #713.
+
+## 32. README Status waiting-list still names T4.35/T4.51 (pre-existing, other lanes, not from PR #713)
+
+- The README Status bullet lists T4.35 and T4.51 among the "rows
+  waiting on uncaptured live shapes", while the roadmap records both
+  as `Done`: T4.35 (Antigravity conformance incl. resume) under owner
+  decision 67 ([PR #724](https://github.com/zemdregon/switchboard/pull/724),
+  on `main`; §6.8.2 item 2 decision-67 update carries the live resume
+  run by T4.38) and T4.51 (OpenCode operator live checks) as `Done`
+  2026-10-18 with live evidence
+  (`docs/research/live-checks-2026-10-18-opencode.md`;
+  [PR #721](https://github.com/zemdregon/switchboard/pull/721), on
+  `main`). The README sentence predates those Done markers (PR #713
+  only removed the Kimi rows from that list) and the rows belong to
+  the Antigravity and OpenCode lanes.
+- Left unchanged: re-wording another lane's waiting list would endorse
+  its Done claims (cf. items 8, 24 and 29 above). It does not block
+  PR #713.
+
+## 33. `opencode.json` notes and `adapter.ts` header still read "admits no version" (PR #726, out of scope)
+
+- Renumbered from 26 when PR #713 merged `main`: both branches added an
+  item 26; PR #713 items 26 to 32 kept their numbers.
 - PR #726 updates `src/adapters/manifests/opencode.json` to
   `validated_cli_version` `2.0.23`, range `>=2.0.23 <2.1.0`, with a dated
   `Evidence (adapters validate, 2026-10-18)` line appended to `notes`.
