@@ -1925,8 +1925,8 @@ landed on `m3-wave-a`). *Update 2026-10-16 (T3.13):* every row below now carries
 remaining work is T3.9 (operator live leg), T3.8b (zemdregon's review) and the open items of the Partial rows T3.8 and
 T3.12 (T3.4 became Done on 2026-10-16). *Update 2026-10-18 (T3.8b, owner decision 63, Delegated):* T3.8b is Done
 (row below); the remaining work is T3.9 and the open items of the Partial rows. *Update 2026-10-19 (T3.9, Delegated):*
-T3.9 is Done (row below); no M3 task row is `Partial`, so the remaining work is the open items the rows below carry. *Update 2026-10-13:* the sentence
-above is out of date. Code on `main` also has
+T3.9 is Done (row below); no M3 task row is `Partial`, so the remaining work is the open items the rows below carry.
+*Update 2026-10-13:* the sentence above is out of date. Code on `main` also has
 T3.2, T3.3, T3.4, T3.5 to T3.7 (compile matrices), T3.10 (verification), T3.12, T3.17, T3.18, T3.20 and T3.21; see the
 M3 row in §6. The "Facts the
 breakdown relies on" paragraph below is a dated snapshot of 2026-10-12: `approve` and `deny` now exist (T3.4), and the
