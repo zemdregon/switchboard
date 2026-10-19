@@ -2589,7 +2589,8 @@ on Ampere. Decision: [Q-65](../ROADMAP.md#73-open-questions-for-zemdregon-not-bl
 
 Live-check context: [§4.5.4](#454-note-2026-10-14-contradictions-found-by-the-t441-live-checks-delegated-cells-above-not-edited).
 Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.43`, Done against its Done-when
-under owner decision 65 (a); remaining native shapes carried by T4.48). Requirements: FR-ADP-04,
+under owner decision 65 (a); T4.48 is Done 2026-10-19 per owner decision 77 without capturing these shapes —
+now a T4.41 extension or owner decision). Requirements: FR-ADP-04,
 FR-SES-03, FR-ADP-10 (`backingProvider` unset). HLD: [§2.3 T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-done-against-its-done-when).
 LLD as-built: [§2.0.1](LLD.md#201-cursor-adapter-implementation-evidence-m4-t442-t443).
 
@@ -2616,7 +2617,9 @@ work, not owner-approved; synthetic `stream-json` lines only; no `cursor-agent` 
   shell-allowlist and missing-executable cases. Fixture `src/adapters/cursor/fixtures/idless_guard.jsonl` replays an
   id-less Git write under a `success` `result` at exit 0 to `PERMISSION_BLOCKED`.
 
-**Out of scope (carried by T4.48 under owner decision 65 (a)).** A recorded `stream-json` quota-stop shape
+**Out of scope (was carried by T4.48 under owner decision 65 (a); T4.48 is Done 2026-10-19 per owner
+decision 77 without capturing these shapes — now a T4.41 extension or owner decision).** A recorded `stream-json`
+quota-stop shape
 (quota stops are captured as stderr tails in `~/operator-runs/limit-captures/cursor-*.txt`, newest 2026-10-18T16:23Z,
 and classified `QUOTA_EXHAUSTED` by the mapping owned by PR #700, T6.15 / ADR-0058; the stream-parser path still
 ends `TOOL_FAILURE`) and a recorded sandbox event shape (`--sandbox enabled` fails to start on this host, live check
