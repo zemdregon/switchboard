@@ -55,7 +55,12 @@ could be tempted to do to give the provider CLI its login.
 - **Container runtime and logins (Q-6, Delegated, Proposed).** A rootless OCI-compatible runtime (rootless Podman is the
   likely candidate; unverified), driven through its CLI behind the environment port. Provider logins are done by the
   operator running the provider's own login inside the project's container volume once; the controller copies nothing
-  (FR-AUTH-01). M10 is unblocked on that basis, with a spike to verify it for each provider.
+  (FR-AUTH-01). M10 is unblocked on that basis, with a spike to verify it for each provider. *Update 2026-10-18:*
+  verified by the T10.0 operator results (rootless Docker 29.8.2 on the operator host, in-volume native login
+  Observed for all seven providers); the mechanism is now
+  [Accepted](#operator-live-findings-2026-10-18-t100). The Decision text above is kept as decided; the verification
+  conditions and their results are recorded in [Consequences](#consequences) and
+  [Operator live findings](#operator-live-findings-2026-10-18-t100).
 
 ## Alternatives considered
 
@@ -64,7 +69,10 @@ could be tempted to do to give the provider CLI its login.
 - **Orchestrator creates projects with no approval step.** Rejected: creating a project can mount host paths, start
   containers and grant push, which the client ceiling alone does not cover. Hence the approval gate above.
 - **Always run in a container.** Rejected for now: provider logins live in each CLI's own store, and getting them into a
-  container without the controller copying credentials is only a Proposed mechanism, to be verified in M10.
+  container without the controller copying credentials is only a Proposed mechanism, to be verified in M10. *Update
+  2026-10-18:* the mechanism is verified and Accepted on the T10.0 operator results (see
+  [Operator live findings](#operator-live-findings-2026-10-18-t100)); the rejection above still stands because the
+  container backend mounts no login volume yet (ADR-0052).
 - **Rely only on provider-native sandboxes.** Kept for `host`; the container kind exists because [R2] reports uneven
   native sandboxing (Claude Code has none documented).
 
