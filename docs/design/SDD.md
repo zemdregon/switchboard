@@ -218,7 +218,7 @@ transaction; no hostile-pack behavioural test and no `rag.retrieve` span) are li
 `src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). Remaining gap: the tool's `global`/`both` scopes still
 answer `GLOBAL_NOT_AVAILABLE` (ROADMAP T12.7).
 
-### 4.2 COMP-ADP M4 parser implementation evidence (`Partial`)
+### 4.2 COMP-ADP M4 parser implementation evidence (Done against its Done-when)
 
 Milestone boundaries and Done-when gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.23`, `T4.33`,
 `T4.43`, `T4.53`). Mechanism and failure taxonomy: [LLD §2](LLD.md#2-adapter-contract), [LLD §4](LLD.md#4-failure-taxonomy);
@@ -315,7 +315,7 @@ T12.5 admission pack design for FR-RAG-05, FR-RAG-07 and FR-RAG-08 is in [LLD
 implementation evidence is in [§4.1](#t125--admission-context-pack-design-intent). M4 adapter parser hardening on
 synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode;
 T4.23, T4.33, T4.43 and T4.53 are Done against their Done-when under owner decision 65 (a))
-is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial).
+is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-done-against-its-done-when).
 
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
 | --- | --- | --- | --- | --- |
@@ -339,7 +339,7 @@ is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial)
 | FR-ADP-01 | COMP-ADP | Ports-and-adapters: one adapter port, per-provider implementations behind a registry | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-02 | COMP-ADP, COMP-EXE | Ordered preflight pipeline with cached result per adapter | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-03 | COMP-ADP, COMP-RTE, COMP-OPS | Adapter state machine with ADAPTER_VERSION_UNVERIFIED; eligibility filter reads it; operator acceptance via adapters validate; operator-scheduled version canary (T8.5, [§4.4](#44-comp-tel-and-version-canary-implementation-evidence-m8-t81t86)) | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract), [LLD §1](LLD.md#1-data-model) |
-| FR-ADP-04 | COMP-ADP | Parsers consume native JSON/JSONL/ACP messages only; no free-text inference of ids, status or usage | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §2](LLD.md#2-adapter-contract), M4 parser evidence [§4.2](SDD.md#42-comp-adp-m4-parser-implementation-evidence-partial) |
+| FR-ADP-04 | COMP-ADP | Parsers consume native JSON/JSONL/ACP messages only; no free-text inference of ids, status or usage | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §2](LLD.md#2-adapter-contract), M4 parser evidence [§4.2](SDD.md#42-comp-adp-m4-parser-implementation-evidence-done-against-its-done-when) |
 | FR-ADP-05 | COMP-ADP | Refreshable model registry (operator config plus provider listing commands), outside adapter source | — | [TDD §4](TDD.md#4-provider-adapter-strategy), [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-06 | COMP-ADP | Claude Code adapter is the first real adapter behind the port | [ADR-0009](../adr/0009-version-gated-adapters.md) | [TDD §4](TDD.md#4-provider-adapter-strategy) |
 | FR-ADP-07 | COMP-ADP | Codex, Grok Build, Antigravity, Cursor adapters behind the same port | [ADR-0009](../adr/0009-version-gated-adapters.md) | [TDD §4](TDD.md#4-provider-adapter-strategy) |
