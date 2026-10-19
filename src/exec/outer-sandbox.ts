@@ -9,7 +9,8 @@
  *   reason, so a CI runner without them degrades instead of crashing.
  * - The Landlock ABI version is not determined: it needs the `landlock_create_ruleset` system call, which Node.js
  *   does not expose, and this module adds no native helper. It is reported as `null`, never guessed.
- * - Switchboard does not yet wrap any process in the outer sandbox. A profile listed in `required_profiles` is
+ * - This gate wraps no provider process (verification commands are wrapped by T3.11, and the Cursor bypass cell by its
+ *   own wrapper, ADR-0059, outside this gate). A profile listed in `required_profiles` is
  *   therefore refused at admission whatever detection finds: `OUTER_SANDBOX_UNAVAILABLE` when a required mechanism is
  *   missing, `OUTER_SANDBOX_NOT_ENFORCED` when all are present. A run is never started unconfined under a
  *   configuration that requires confinement (fail closed; no claim of a control that is not enforced).

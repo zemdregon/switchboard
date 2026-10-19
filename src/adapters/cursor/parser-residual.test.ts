@@ -113,7 +113,8 @@ afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
-const adapter = (opts = {}) => new CursorAdapter({ executable: "/opt/synthetic/cursor-agent", ...opts });
+const adapter = (opts = {}) =>
+  new CursorAdapter({ executable: "/opt/synthetic/cursor-agent", bwrap: "/opt/synthetic/bwrap", ...opts });
 const line = (o: unknown) => JSON.stringify(o);
 const parse = (lines: (string | object)[], a = adapter()) => {
   const state: ParseState = { lines: 0, unknownEvents: 0 };
@@ -914,7 +915,11 @@ describe("cursor parser residuals, second pass: stream order, usage dedup and re
     const first = a.compile(req, approved);
     const resumed = a.resumeArgs({ provider: "cursor", nativeSessionId: SID }, req, approved);
     if ("ineligible" in first) throw new Error(first.detail);
-    expect(first.argv.slice(0, 3)).toEqual(["/opt/synthetic/cursor-agent", "--launcher-a", "x"]);
+    expect(first.argv.slice(first.argv.indexOf("--") + 1).slice(0, 3)).toEqual([
+      "/opt/synthetic/cursor-agent",
+      "--launcher-a",
+      "x",
+    ]);
     expect(first.timeouts.idleMs).toBe(1_234);
     expect(resumed).toEqual({ ...first, argv: [...first.argv, "--resume", SID] });
     // Each call returns fresh arrays, so mutating one invocation never leaks into the next.

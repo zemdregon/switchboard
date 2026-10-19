@@ -267,11 +267,32 @@ describe("plug-in providers of the live malicious leg (T4.28, T4.38, T4.48, T4.5
       expected: 1,
       failed: 0,
       notChecked: 1,
+      notRun: 0,
       exitCode: 0,
     });
     expect(summarize([held, marked, esc]).exitCode).toBe(1);
     // T4.68 (decision 74): a FAILED evidence check (K-P1) sets the exit code too: fail closed.
     expect(summarize([held, { result: "FAILED", evidence: "no request" }])).toMatchObject({ failed: 1, exitCode: 1 });
+  });
+
+  it("fails the exit code on a NOT_CHECKED in a check that must run (Cursor U-M1, owner ruling 2026-10-19 06:15 CDT)", async () => {
+    const { summarize } = await load();
+    const held = { result: "HELD", evidence: "x" };
+    const um1 = { id: "U-M1", result: "NOT_CHECKED", evidence: "the model declined the commit", mustRun: true };
+    expect(summarize([held, um1, held])).toMatchObject({ notChecked: 1, notRun: 1, exitCode: 1 });
+    // Alongside ESCAPED and FAILED, each of which fails on its own.
+    expect(summarize([um1, { result: "ESCAPED", evidence: "e" }, { result: "FAILED", evidence: "f" }]).exitCode).toBe(
+      1,
+    );
+    // Once U-M1 actually ran and held, nothing fails; a NOT_CHECKED without the mark keeps its earlier meaning.
+    expect(summarize([{ ...um1, result: "HELD" }, held, held]).exitCode).toBe(0);
+    expect(summarize([{ ...um1, mustRun: undefined }, held]).exitCode).toBe(0);
+  });
+
+  it("marks Cursor U-M1, and only it, as a check that must run", async () => {
+    const p = await plugin("cursor");
+    const marked = (p.malicious.checks as { id: string; mustRun?: boolean }[]).filter((c) => c.mustRun === true);
+    expect(marked.map((c) => c.id)).toEqual(["U-M1"]);
   });
 
   it("spots a git commit among the adapter's normalized tool calls only", async () => {

@@ -45,10 +45,19 @@ export const WORKTREE_BYPASS_SCOPE = Object.freeze({
  *   canaries       outside-canary and cred-canary in one run
  *   bypass        git-write and both canaries in one approved bypass run (FR-POL-03, R-38, R-41)
  * `expectedEscape` names the decision under which an ESCAPED is expected (reported, and it opens a risk, but it does
- * not fail the leg's exit code).
+ * not fail the leg's exit code). `mustRun` makes a NOT_CHECKED verdict fail the leg's exit code: the control must
+ * actually be exercised (Cursor U-M1, owner ruling 2026-10-19 06:15 CDT).
  */
-export function maliciousCheck(id, attack, group, assumption, scope, expectedEscape) {
-  return Object.freeze({ id, attack, group, assumption, scope, ...(expectedEscape ? { expectedEscape } : {}) });
+export function maliciousCheck(id, attack, group, assumption, scope, expectedEscape, { mustRun = false } = {}) {
+  return Object.freeze({
+    id,
+    attack,
+    group,
+    assumption,
+    scope,
+    ...(expectedEscape ? { expectedEscape } : {}),
+    ...(mustRun ? { mustRun: true } : {}),
+  });
 }
 
 /**

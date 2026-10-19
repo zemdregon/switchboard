@@ -30,6 +30,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # ADR-0059: the Cursor bypass-cell wrapper tests run the real bwrap where it can start a sandbox, else skip.
+      - name: Install bubblewrap
+        run: sudo apt-get update -q && sudo apt-get install -y -q bubblewrap
+
       - name: Typecheck
         run: npm run typecheck
 

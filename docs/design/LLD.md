@@ -417,7 +417,7 @@ export interface GitWriteControl {
 
 export interface ProbeResult {
   binaryPath: string; binaryVersion: string | null;
-  steps: Array<{ step: 'binary'|'version'|'command'|'output_format'|'flags'|'smoke'; ok: boolean; detail?: string }>;
+  steps: Array<{ step: 'binary'|'version'|'command'|'output_format'|'flags'|'smoke'|'confinement'; ok: boolean; detail?: string }>;
   modelsListed?: string[];              // feeds the model registry (FR-ADP-05)
 }
 export type AuthResult =
@@ -777,6 +777,24 @@ fixtures only; no `cursor-agent` in CI).
 `<0.0.0` at T4.42; `>=2026.10.16 <2026.11.0` since the T4.48 live `adapters validate` pass on 2026-10-19).
 Transport `subprocess-jsonl` with prompt on stdin. Every non-`privileged` profile is `Ineligible: PROFILE_UNSUPPORTED`
 (Q-65); the sole compiled shape is the Q-79 bypass cell (`--print --output-format stream-json --trust --force`).
+
+**Bubblewrap wrapper (ADR-0059, T4.48 fix).** `src/adapters/cursor/confinement.ts`. Every compiled and resumed
+invocation is `bwrap <args> -- <resolved cursor-agent> --print ...`; there is no unconfined path. `cursorBwrapArgs`
+emits, in order: `--ro-bind / /`, `--dev /dev`, `--proc /proc`; then, outermost path first, `--tmpfs` over `$HOME`,
+`os.tmpdir()`, `/tmp`, `/var/tmp` and `/run/user` (each where it exists) and over the worktree's parent unless a hidden
+directory covers it, `--ro-bind-try` of the executable's directory and `~/.config/cursor`, `--bind-try` of
+`~/.cursor` and `--bind` of the worktree; then `--chdir <worktree> --unshare-all --share-net --die-with-parent --`.
+`CursorAdapterOptions` gains `bwrap` (absolute path or `null`; default the first `bwrap` on `PATH`), `home` (default
+`HOME`) and `tmpDir` (default `os.tmpdir()`). The probe appends a `confinement` step (`probeConfinement`): in a scratch
+leg it runs `/bin/sh -c 'touch "$1" && test ! -e "$2"'` inside the same wrapper and then checks on the host that the
+worktree file exists; a missing plan, spawn error, timeout, non-zero exit or missing file fails the step (preflight
+`ELIGIBILITY_NONE`). `compile` and `resumeArgs` return `Ineligible: CAPABILITY_MISSING` when `bwrap` is missing,
+`HOME` is unusable, the install directory contains a hidden directory, the worktree would re-expose a hidden or bound
+path, or the last probe on this adapter failed.
+
+- **Tests:** `src/adapters/cursor/confinement.test.ts` (argument shape and refusals; `ELIGIBILITY_NONE` through
+  `RunLifecycle` with `bwrap` unavailable and with a failing probe; real-host wrapper with a fake CLI and synthetic
+  canaries, skipped where the host's `bwrap` cannot start a sandbox).
 
 - **Tests:** `src/adapters/cursor/cursor.test.ts` (`cursor compile matrix (T4.42)`, `cursor bypass-class declarations
   (ADR-0035, ADR-0037)`, `cursor probe and auth preflight (T4.42, T4.44)`, `cursor registry entry and manifest gate
@@ -3113,8 +3131,11 @@ Admission (`outerSandboxRefusal`): a run whose profile is listed is refused by t
 `OUTER_SANDBOX_NOT_ENFORCED` (both available; this build wraps no process, ADR-0051 item 4). Detection that did not run
 counts as unavailable. `serve` detects once at startup, only when the list is not empty; `doctor` always reports the
 `outer_sandbox` check (`ok` when nothing is required, `fail` for a missing mechanism, `warn` when only the wrapping is
-missing). Wrapping verification commands is implemented by T3.11 (`wrapOuterSandboxVerification`, §8.1); wrapping the
-provider process itself remains follow-up work.
+missing). Wrapping verification commands is implemented by T3.11 (`wrapOuterSandboxVerification`, §8.1). The
+provider process is wrapped for the Cursor bypass cell only
+([ADR-0059](../adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md), its own wrapper in
+`src/adapters/cursor/confinement.ts`, [§2.0.1](#201-cursor-adapter-implementation-evidence-m4-t442-t443)); for every
+other provider it remains follow-up work.
 
 ## 9. Retry/back-off algorithm
 

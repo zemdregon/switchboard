@@ -69,6 +69,9 @@ afterAll(() => {
 });
 
 const EXE = "/opt/synthetic/cursor-agent";
+const BWRAP = "/opt/synthetic/bwrap";
+/** The Cursor argv inside the bwrap wrapper (ADR-0059): everything after the wrapper's `--`. */
+const cursorArgv = (inv: Invocation): string[] => inv.argv.slice(inv.argv.indexOf("--") + 1);
 const request = (over: Partial<CompileRequest> = {}): CompileRequest => ({
   runId: "run_01M4WBZSXSCWYKTKJN77A7MFJQ",
   objective: "--yolo fix the failing test",
@@ -76,7 +79,7 @@ const request = (over: Partial<CompileRequest> = {}): CompileRequest => ({
   workspace: { cwd: "/work/tree", writable: true },
   ...over,
 });
-const adapter = () => new CursorAdapter({ executable: EXE });
+const adapter = () => new CursorAdapter({ executable: EXE, bwrap: BWRAP });
 const PROFILES: TrustProfile[] = ["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"];
 const profileOf = (name: TrustProfile): ResolvedProfile => resolveTrustProfile(name);
 const BYPASS_SCOPE = {
@@ -140,7 +143,8 @@ describe("cursor compile matrix (T4.42)", () => {
 
   it("puts the prompt on stdin, never on the argv, and never emits a flag the TDD §4.5 rules exclude", () => {
     const r = compiled();
-    expect(r.argv).toEqual([EXE, "--print", "--output-format", "stream-json", "--trust", "--force"]);
+    expect(r.argv[0]).toBe(BWRAP);
+    expect(cursorArgv(r)).toEqual([EXE, "--print", "--output-format", "stream-json", "--trust", "--force"]);
     expect(r.stdin).toEqual({ kind: "text", value: "--yolo fix the failing test" });
     expect(r.argv.join(" ")).not.toContain("fix the failing test");
     const never = [
@@ -166,7 +170,7 @@ describe("cursor compile matrix (T4.42)", () => {
       "--model",
       "--mode",
     ];
-    for (const a of r.argv.slice(1)) expect(never.includes(a), a).toBe(false);
+    for (const a of cursorArgv(r).slice(1)) expect(never.includes(a), a).toBe(false);
     expect(r.envAllowlist).toEqual(["PATH", "HOME"]);
     expect(r.env).toEqual({});
     expect(r.transport).toBe("subprocess-jsonl");
@@ -247,6 +251,11 @@ describe("cursor probe and auth preflight (T4.42, T4.44)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
+      // The confinement probe (ADR-0059) under the synthetic bwrap: answered as a host where the wrapper holds.
+      if (argv[0] === BWRAP) {
+        writeFileSync(argv[argv.length - 2] ?? "", "");
+        return { stdout: "", stderr: "", exitCode: 0, timedOut: false } as ProbeOutput;
+      }
       const key = argv.slice(1).join(" ");
       const hit = table[key] ?? { stdout: "", exitCode: 2 };
       return { stdout: hit.stdout, stderr: "", exitCode: hit.exitCode, timedOut: false } as ProbeOutput;
@@ -255,7 +264,7 @@ describe("cursor probe and auth preflight (T4.42, T4.44)", () => {
     "Usage: agent [options] [command] [prompt...]\n  -p, --print\n  --output-format <format>\n  --resume [chatId]\n" +
     "  -f, --force\n  --sandbox <mode>\n  --trust\n";
 
-  it("passes the five steps on the live-check shapes and reports the version line", async () => {
+  it("passes the five steps and the confinement step on the live-check shapes and reports the version line", async () => {
     const r = await adapter().probe(
       runner({
         "--version": { stdout: "2026.10.12-d47ca18\n", exitCode: 0 },
@@ -269,6 +278,7 @@ describe("cursor probe and auth preflight (T4.42, T4.44)", () => {
       ["command", true],
       ["output_format", true],
       ["flags", true],
+      ["confinement", true],
     ]);
   });
 
@@ -628,7 +638,7 @@ describe("cursor parser and result (T4.43)", () => {
       profile,
     );
     if ("ineligible" in r) throw new Error(r.detail);
-    expect(r.argv.slice(1)).toEqual([
+    expect(cursorArgv(r).slice(1)).toEqual([
       "--print",
       "--output-format",
       "stream-json",

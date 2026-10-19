@@ -1,6 +1,7 @@
 # ADR-0051: Outer sandbox: detection, an opt-in requirement that fails closed, and its limits
 
-- Status: Proposed
+- Status: Proposed; items 3 and 6 partly superseded by [ADR-0059](0059-cursor-bypass-cell-bubblewrap-wrapper.md) for
+  the Cursor bypass cell only
 - Date: 2026-10-16
 - Decided by: Delegated (agent, 2026-10-16, under [owner decision 25](../ROADMAP.md#42-owner-decisions); not
   owner-approved). Q-22 stays open for zemdregon; nothing here makes the outer sandbox a required dependency.
