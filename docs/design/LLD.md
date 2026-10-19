@@ -622,7 +622,10 @@ client now holds updates that arrive while `session/new` is unanswered (at most 
 `sessionId`; any other id is still `OUTPUT_PROTOCOL_ERROR`. When a plan sets `requirePermissionRequest` (the Kimi Code
 adapter does, ADR-0049 item 3), a `tool_call` or `tool_call_update` whose `status` is set and is not `pending`, for a
 `toolCallId` no `session/request_permission` named, emits `permission_denied` (`acp_unrequested_tool_call`) and cancels
-the turn, so the run ends `PERMISSION_BLOCKED`; an approved bypass run is exempt. Tests:
+the turn, so the run ends `PERMISSION_BLOCKED`; an approved bypass run is exempt. *Outcome 2026-10-19 (owner
+ruling 05:22 CDT): Kimi 2.1.1 raises no ACP permission requests, so T4.68 is closed Partial-by-ruling and gating is
+the Deferred [ROADMAP §8](../ROADMAP.md#8-deferred-and-excluded-work) row "Kimi ACP permission gating (ADR-0049
+item 3)".* Tests:
 `src/adapters/kimi/acp-stream.test.ts`, `src/exec/acp/client.test.ts`.
 
 `parseEvent` receives the `session/update` notifications and the final `session/prompt` response as `AcpMessage`s.
