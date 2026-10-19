@@ -351,14 +351,17 @@ as history.
   documents cite; renaming it would break those links and
   `scripts/check-docs.mjs`. It does not block PR #713.
 
-## 25. T4.43 row says Done under 65 (a) but both waiting lists still name it (pre-existing, not from PR #713)
-
-- The T4.43 (Cursor parser) row records `Done against its Done-when`
-  under owner decision 65 (a), with remaining native shapes carried by
-  T4.48 — yet §6.8.2 item 2 and the M4 row open-items list (b) both still
-  list T4.43 among the rows that "stay `Partial` until scrubbed captures
-  replace their synthetic lines". Both lists are on `origin/main`, so the
-  contradiction predates PR #713, whose diff touches no Cursor row.
-- Left unchanged: reconciling either list with the row means endorsing
-  another lane's Done claim (see item 8 above for the precedent). It does
+## 25. T4.43 waiting-list claim withdrawn: no contradiction found (checked on this branch for PR #713)
+- A draft of this note claimed the T4.43 (Cursor parser) row records
+  `Done against its Done-when` under owner decision 65 (a) while §6.8.2
+  item 2 and the M4 row open-items list (b) still list T4.43 among the
+  rows that "stay `Partial` until scrubbed captures replace their
+  synthetic lines". Re-checked 2026-10-19 against this branch: neither
+  list names T4.43. Item 2 names T4.33, T4.35, T4.36, T4.51, T4.53 and
+  T4.56, then records "and so is T4.43 (its remaining native shapes are
+  carried by T4.48, item 1)"; the M4 row (b) names the same six and says
+  "as T4.43's move to T4.48". Both lists agree with the T4.43 row, so the
+  draft premise was false and is withdrawn here rather than left standing.
+- No action: there is nothing to reconcile, so no other lane's Done claim
+  is endorsed or disturbed (cf. item 8 above for the precedent). It does
   not block PR #713.
