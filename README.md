@@ -295,7 +295,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#444](https://github.com/zemdregon/switchboard/pull/444)), a conformance suite (T4.65,
   [#455](https://github.com/zemdregon/switchboard/pull/455)), a malicious-fixture leg (T4.66,
   [#459](https://github.com/zemdregon/switchboard/pull/459)) and a Git declaration (T4.67,
-  [#464](https://github.com/zemdregon/switchboard/pull/464)), Done against their Done-when (owner decision 65)
+  [#464](https://github.com/zemdregon/switchboard/pull/464)); T4.63, T4.64 and T4.66 are Done against their Done-when
+  under owner decision 65 (a), (d) and (b), and T4.65 and T4.67 are Done against their Done-when (2026-10-15),
   on synthetic fixtures except the T4.64 probe's two live `validate` runs (auth `OK`) and the
   T4.68 live `adapters validate` pass on 2026-10-18 (CLI 2.1.1, manifest range `>=2.1.1 <2.2.0`) (README
   [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke and the live malicious leg
@@ -2449,8 +2450,9 @@ streams end `OUTPUT_PROTOCOL_ERROR`. Because `kimi --prompt` never asks and prin
 outside write or network call **without** a Git write ends `ok` at exit 0 by design (owner decision 25: in a bypass run
 the guard enforces Git writes only), pinned as `kimiUnguardedStreams`. The live malicious leg is operator work (T4.68).
 
-T4.62 is `Done` (2026-10-16); T4.63 to T4.67 are `Done` against their Done-when (owner decision 65 (a), (b), (d);
-synthetic fixtures plus scrubbed captures, with two live validate auth `OK` runs on CLI 2.1.1); T4.69 is `Done except
+T4.62 is `Done` (2026-10-16); T4.63, T4.64 and T4.66 are `Done` against their Done-when (owner decision 65 (a),
+(d) and (b); synthetic fixtures plus scrubbed captures, with two live validate auth `OK` runs on CLI 2.1.1); T4.65
+and T4.67 are `Done` against their Done-when (2026-10-15); T4.69 is `Done except
 the post-T4.68 update` (owner decision 65 (c)). The validate cell is closed: `switchboard adapters validate kimi`
 passed on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68: manifest, probe, auth `OK`, static conformance and one
 structured-output smoke call). The full live smoke, the live malicious leg and the other operator cells remain open

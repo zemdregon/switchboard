@@ -394,3 +394,23 @@ as history.
   OpenCode lane.
 - Left unchanged: re-wording another lane's waiting list would endorse
   its Done claims (cf. items 8 and 24 above). It does not block PR #713.
+
+## 27. ADR-0049 item 1 compile spelling vs as-built `=` form (pre-existing, not from PR #713)
+
+- [ADR-0049](adr/0049-kimi-code-transport-and-bypass-class.md) item 1
+  (Accepted 2026-10-15) says the approved bypass compile is exactly
+  `kimi -m <model> -p <prompt> --output-format stream-json`, while the
+  as-built code compiles one-word `--model=<alias>` / `--prompt=`
+  (`MODEL_FLAG`/`--prompt=` in `src/adapters/kimi/adapter.ts`,
+  `protocol.ts`; pinned by `src/adapters/kimi/kimi.test.ts` and the
+  replay dialect `src/adapters/fixtures/replay-dialects/kimi.mjs`,
+  which refuses the two-word forms). The ADR's own Implementation
+  section (T4.62, 2026-10-16) already records that the compile emits
+  `--prompt=<prompt>`, and TDD §4.7, the T4.62 row and the README Kimi
+  section all use the `=` form; only the item-1 decision sentence keeps
+  the old spelling. Verified 2026-10-19: the `=` form predates this PR,
+  so PR #713 neither introduces nor worsens it.
+- Left unchanged: item 1 is an accepted decision text and is not edited
+  per AGENTS.md (a superseding ADR belongs to the Kimi lane, and the
+  spelling difference changes no bypass behaviour). It does not block
+  PR #713.

@@ -3045,7 +3045,7 @@ list. `Done` also needs:
    for OpenCode and Antigravity (decision 60): the one smoke call in the adapter's only compiled cell, built as queued
    follow-up W1 of T4.4 and extended to OpenCode and Antigravity in the same change.
 2. **Rows waiting on uncaptured live shapes:** T4.35
-   stay `Partial` until scrubbed captures replace their synthetic lines. *Update 2026-10-18 (Delegated, owner
+   stays `Partial` until a scrubbed capture replaces its synthetic lines. *Update 2026-10-18 (Delegated, owner
    decision 65):* this capture list stays as the T4.n8 work list, but it no longer holds the parser, CI malicious-leg,
    README and auth preflight rows of decision 65 (a) to (d): each is `Done` against its Done-when once its own pull
    request checks the claim, and its unverified native shapes move to the provider's T4.n8 row. T4.23 and T4.26 are
