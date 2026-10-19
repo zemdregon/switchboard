@@ -3061,10 +3061,11 @@ It builds, creates a throwaway Git repository and data directory under the syste
 [TDD §3.6](docs/design/TDD.md#36-testing-strategy). With the current manifests, a codex-cli 0.162.0 or 0.162.1 passes the
 version gate (range `>=0.162.0 <0.163.0`); any other Codex version is refused as `ADAPTER_VERSION_UNVERIFIED`.
 Antigravity (`agy`), OpenCode, Cursor, Kimi Code and Grok Build compile only an approved `privileged` cell, so for them
-the same task runs in that cell (Kimi Code: its ACP cell) and the script approves it through the operator `approve`
-CLI; the bypass-flag audit then requires exactly the cell's own flag. Until `adapters validate <provider>` writes a
-manifest range (Kimi Code and OpenCode have one today: `>=2.1.1 <2.2.0` and `>=2.0.23 <2.1.0`), a provider without one
-stops at the version gate.
+the same task runs in that cell (Kimi Code: its ACP cell, `Ineligible` since the owner-level ruling relayed 2026-10-19
+08:45 CDT — the plug-in must move it to the bypass cell; see ROADMAP T4.68) and the script approves it through the
+operator `approve` CLI; the bypass-flag audit then requires exactly the cell's own flag. Until
+`adapters validate <provider>` writes a manifest range (Kimi Code and OpenCode have one today: `>=2.1.1 <2.2.0` and
+`>=2.0.23 <2.1.0`), a provider without one stops at the version gate.
 
 ### Optional live malicious leg (T3.9)
 
