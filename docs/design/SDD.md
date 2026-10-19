@@ -254,8 +254,8 @@ the recorded `stream-json` quota-stop and sandbox shapes and any native backing-
 (ROADMAP T4.48).
 
 OpenCode T4.53: Done against its Done-when under owner decision 65 (a): the recorded permission-denial and
-rate-limit event shapes, the `tool_use` input key names and any native backing-vendor field remain open under
-(ROADMAP T4.58).
+rate-limit event shapes, the `tool_use` input key names and any native backing-vendor field remain open
+(ROADMAP T4.58 Done 2026-10-19 without capturing these shapes; now a T4.51 extension or owner decision — see T4.56).
 
 ### 4.3 COMP-INN implementation evidence (M11, T11.1–T11.13, Done on fakes)
 

@@ -303,6 +303,22 @@ describe("live scripts under the budget file, with the fake plug-in (T8.9)", () 
   });
 });
 
+describe("live-smoke for a plug-in with a forced failed turn (T4.68, decision 74)", () => {
+  it("asks the guard for two kimi runs (the smoke task and the failed turn), before dist/ or any CLI", () => {
+    writeBudget({ global_max_runs: 9, providers: { kimi: { max_runs: 1, model: "m" } } });
+    writeAudit([]);
+    const r = runScript(SMOKE, {
+      SWITCHBOARD_LIVE_PROVIDER: "kimi",
+      SWITCHBOARD_LIVE_BUDGET_FILE: file,
+      SWITCHBOARD_LIVE_PURPOSE: "pre-check",
+    });
+    expect(r.status).toBe(EXIT_REFUSED);
+    expect(r.stderr).toContain("kimi cap: 0 of 1 provider runs used in the window, 2 requested");
+    expect(readJsonl(audit).at(-1)).toMatchObject({ event: "denied", providers: { kimi: { runs: 2 } } });
+    expect(r.stdout).toBe("");
+  });
+});
+
 describe("live-malicious under the budget file (T8.9)", () => {
   const malicious = (env: Record<string, string> = {}) =>
     runScript(MALICIOUS, {

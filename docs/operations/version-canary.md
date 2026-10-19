@@ -3,7 +3,7 @@
 Switchboard records each enabled provider's installed CLI version under the data directory (`version-canary.json`).
 A scheduled check compares the probed version to the last recorded value (or to the manifest's `validated_cli_version`
 when no row exists yet). The comparison is by release core (`sameVersion` and `versionCanaryCore` in
-`src/adapters/version-canary.ts`, T4.80, [ROADMAP §4.2 decision 74](../ROADMAP.md#42-owner-decisions)): the first
+`src/adapters/version-canary.ts`, T4.80, [ROADMAP §4.2 decision 75](../ROADMAP.md#42-owner-decisions)): the first
 `x.y.z` token of each string, after stripping one trailing suffix that is exactly `-<7 to 40 hex digits>` (Cursor's
 commit hash, as in `2026.10.16-e3cb207`) or `+<anything>`. A raw probe line such as `codex-cli 0.162.0` matches a bare
 `validated_cli_version` of `0.162.0`, and `2026.10.16-e3cb207` matches `2026.10.16`. A change in `x.y.z`, or any other
