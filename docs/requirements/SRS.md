@@ -456,7 +456,8 @@ prevention that T16.6 built (the `native` declaration with its evidence id in `s
 adapter's `.fake/skills/` location, the writer and cleaner in `src/workspace/native-skills.ts`, exclusions in the
 commit tool, checkpoints and artifacts, the `SKILL_PATH_PRESENT` push refusal, the four removal points and the
 `skill_cleanup_failed` reason of FR-CTL-03; T16.7 confirms every shipped provider cell is `prompt_prefix`
-(`src/adapters/skill-delivery-conformance.test.ts`); no cell goes native before T16.8), the
+(`src/adapters/skill-delivery-conformance.test.ts`); no cell goes native without a T16.8 `LOADED` verdict (T16.8 Done
+2026-10-19, decision 70: Claude Code `NOT_LOADED`, the rest `NOT_CHECKED`; every shipped cell stays `prompt_prefix`), the
 FR-SKL-03, FR-SKL-05 continuity aspect that T16.10 built (the previous run's pinned skills as `skills` controller
 facts in the handoff bundle, `src/continuity/bundle-schema.ts`, `src/continuity/bundle.ts`, and re-delivery of the
 same versions in the receiving provider's way with a native resume re-delivering the files for the new run,

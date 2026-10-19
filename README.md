@@ -185,9 +185,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   prevention, the adapter declarations, the MCP tools, continuity across handoff and resume and the malicious-fixture
   leg are built (T16.1 to T16.7, T16.9 to T16.11). The M16 acceptance file (`src/mcp/m16-acceptance.test.ts`, T16.12)
   runs one test per clause of the milestone's acceptance column through a scripted MCP client on the fake adapter.
-  Not run: the operator live checks that would let a real provider's native skill location be used (T16.8,
-  operator-only, not required for `Done`), so every real provider delivers skills as a prompt prefix, and no skill
-  has been delivered to a live provider through Switchboard yet.
+  Not required for `Done`: the operator live checks are Done for the four T16.8 candidates (2026-10-19, decision 70:
+  Claude Code `NOT_LOADED`, Grok Build, Cursor and Muse Code `NOT_CHECKED`, operator-only), so every real provider
+  delivers skills as a prompt prefix, and no skill has been delivered to a live provider through Switchboard yet.
   See [Switchboard-controlled skills (milestone 16)](#switchboard-controlled-skills-milestone-16),
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
@@ -818,7 +818,8 @@ Not enforced:
   copy its text into another file, which then reaches a commit. Path exclusion catches the recorded path, not the
   copy. Native delivery is off for every real provider until T16.8 verifies a cell, and `add` refuses secret-shaped
   text, so a copy exposes operator instructions, not credentials.
-- No real provider's native skill location is verified (T16.8 is operator-only). Prompt-prefix delivery has not been
+- No real provider's native skill location is verified (T16.8 Done 2026-10-19, decision 70: Claude Code `NOT_LOADED`;
+  Grok Build, Cursor and Muse Code `NOT_CHECKED`). Prompt-prefix delivery has not been
   observed on a live provider through Switchboard either; the acceptance tests run on fakes.
 
 ### Status and tests

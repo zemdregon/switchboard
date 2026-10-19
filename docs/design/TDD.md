@@ -1497,7 +1497,8 @@ T16.10 built continuity across handoff and resume (the bundle `skills` facts in
 `src/lifecycle/lifecycle.ts`; `src/continuity/skill-continuity.test.ts`), Delegated,
 not owner-approved; T16.11 built the malicious-fixture leg (`test/malicious/skills-leg.test.ts`) and T16.12 the M16
 acceptance test on fakes (`src/mcp/m16-acceptance.test.ts`), Delegated, not owner-approved;
-per-provider native (T16.8) stays Proposed).
+per-provider native (T16.8) Done 2026-10-19, decision 70: Claude Code `NOT_LOADED`, Grok Build, Cursor and Muse Code
+`NOT_CHECKED`, no native cells).
 Delegated, not owner-approved beyond the direction.* Contract: [LLD §19](LLD.md#19-switchboard-controlled-skills-m16-proposed).
 Tasks: ROADMAP T16.0 to T16.12.
 
