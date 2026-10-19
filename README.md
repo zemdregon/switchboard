@@ -167,11 +167,13 @@ Pre-release. The package is private and is not published to any registry; you bu
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
-  decisions 76 and 77: T15.6 to T15.9 are Planned; the M15 scope below stays Done on fakes (2026-10-18, Delegated
+  decisions 76 and 77: T15.6 to T15.8 are Planned and T15.9 is Done; the M15 scope below stays Done on fakes (2026-10-18, Delegated
   agent work,
   not owner-approved; the `serve` low-water wiring below is a separate open fix)). The durable per-project work queue
   (T15.1, [#527](https://github.com/zemdregon/switchboard/pull/527)) and the CI-failure trigger (T15.3,
-  [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
+  [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The queue tools (`enqueue_work`,
+  `list_work`, `cancel_work`) are offered over stdio and, since T15.9, over the network transport to `orchestrator`
+  clients under the same per-client ceiling and project list (a `console` client sees none). The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
   branches the project pushed, treats the CI text as untrusted and enqueues a work item under the trigger's client
   ceiling. Switchboard reads no GitHub token. Consecutive fix-up items per published ref are capped (T15.5:
@@ -916,9 +918,9 @@ Only one `serve` can hold a data directory at a time.
 | `resume_project` | control | Lift a pause this client set on one of its projects. | Always; `console` sees it |
 | `steer_run` | control | Append a note to a run; on a fake adapter it continues the same native session. | Always; `console` sees it |
 | `list_projects` | project | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. | Always (orchestrator only) |
-| `enqueue_work` | queue | Queue a `delegate_task` request on one project this client may use; the controller admits it later under the creating client's ceiling. | stdio only (not on the network transport) |
-| `list_work` | queue | Work items this client queued, highest priority first, then oldest, with optional project and state filters. | stdio only (not on the network transport) |
-| `cancel_work` | queue | Cancel a `PENDING` or `READY` item this client queued; an admitted item stops with `cancel_run` on its run. | stdio only (not on the network transport) |
+| `enqueue_work` | queue | Queue a `delegate_task` request on one project this client may use; the controller admits it later under the creating client's ceiling. | Orchestrator profile only (stdio and network transport); `console` sees none |
+| `list_work` | queue | Work items this client queued, highest priority first, then oldest, with optional project and state filters. | Orchestrator profile only (stdio and network transport); `console` sees none |
+| `cancel_work` | queue | Cancel a `PENDING` or `READY` item this client queued; an admitted item stops with `cancel_run` on its run. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `search_project_context` | retrieval | Read-only semantic search over a project's indexed contexts. See [Retrieval index](#retrieval-index-milestone-12). | Only when retrieval is on for at least one of the client's projects |
 | `list_skills` | skills | Operator-approved skill names this client may inject, with the newest usable version's metadata (no bodies). | Only when `skills.enabled` |
 | `get_skill` | skills | The text of one visible skill version. | Only when `skills.enabled` |

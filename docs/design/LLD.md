@@ -6618,8 +6618,11 @@ is unknown, `INVALID_REQUEST`). Only the creator may cancel over MCP; the operat
 - `cancel_work { work_item_id }` moves a `PENDING` or `READY` item to `CANCELLED` and returns any other item unchanged.
   `ADMITTING` is not cancelled, so a run never sits behind a `CANCELLED` item; an admitted item is stopped with
   `cancel_run`.
-- Fail closed: the three tools are listed only on stdio sessions, right after the base tools. They are not offered
-  over the network transport (FR-MCP-15), because a work item records its client but no HTTP subject.
+- Fail closed: the three tools are listed right after the base tools. They are offered over stdio, and since
+  T15.9 (FR-QUE-08, §20.8) also over the network transport, but only to an `orchestrator` client under the same scope
+  check as `delegate_task` over HTTP; a `console` client neither lists nor calls them over either transport (answered
+  exactly like an unknown tool, FR-CTL-11). Ownership is by the authenticated client id, and admission stays under the
+  creating client's ceiling.
 
 ### 18.5 Schedules (FR-QUE-02)
 
