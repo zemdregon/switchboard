@@ -367,7 +367,7 @@ as history.
   is endorsed or disturbed (cf. item 8 above for the precedent). It does
   not block PR #713.
 
-## 25. Kimi manifest `notes` still says `-p`/`--prompt` are unaudited (pre-existing, not from PR #713)
+## 26. Kimi manifest `notes` still says `-p`/`--prompt` are unaudited (pre-existing, not from PR #713)
 
 - `src/adapters/manifests/kimi.json` `notes` says "`-p` and `--prompt`
   are not declared to the audit ... the compile gate alone keeps
@@ -384,7 +384,7 @@ as history.
   should sync the `notes` sentence (mechanical; no owner decision
   needed). It does not block PR #713.
 
-## 26. README Status waiting-list still names T4.53/T4.56 (pre-existing, other lanes, not from PR #713)
+## 27. README Status waiting-list still names T4.53/T4.56 (pre-existing, other lanes, not from PR #713)
 
 - The README Status bullet lists T4.53 and T4.56 among the "rows waiting
   on uncaptured live shapes", while ROADMAP §6.8.2 item 2 and the M4 row
@@ -396,7 +396,7 @@ as history.
 - Left unchanged: re-wording another lane's waiting list would endorse
   its Done claims (cf. items 8 and 24 above). It does not block PR #713.
 
-## 27. ADR-0049 item 1 compile spelling vs as-built `=` form (pre-existing, not from PR #713)
+## 28. ADR-0049 item 1 compile spelling vs as-built `=` form (pre-existing, not from PR #713)
 
 - [ADR-0049](adr/0049-kimi-code-transport-and-bypass-class.md) item 1
   (Accepted 2026-10-15) says the approved bypass compile is exactly
@@ -415,3 +415,30 @@ as history.
   per AGENTS.md (a superseding ADR belongs to the Kimi lane, and the
   spelling difference changes no bypass behaviour). It does not block
   PR #713.
+
+## 29. Kimi adapter code comments still label `tool_calls` fields an Assumption (pre-existing, not from PR #713)
+
+- `src/adapters/kimi/protocol.ts` (header comment on the `stream-json`
+  records: "their field names below are an **Assumption** ... until
+  T4.68 captures a tool call"; `TOOL_CALLS_KEY`: "item shape
+  **Assumption**") and `src/adapters/kimi/adapter.ts` (header: "the
+  documented tool records (field names an Assumption)" and "synthetic
+  fixtures plus the one [CAP] capture"; `toolCallEvent`: "Assumption:
+  `{id, type:"function", function:{name, arguments}}`") still read as
+  written before the 2026-10-16 T4.68 follow-up-2 capture, while the
+  capture exists in the repo
+  (`src/adapters/kimi/fixtures/captured_tool_call.jsonl`,
+  `captured_tool_error.jsonl`, replayed by
+  `src/adapters/kimi/live-capture.test.ts`) and the T4.63 row, TDD
+  §4.7, the README Kimi section and `test/malicious/adapters/kimi.case.ts`
+  (this PR) all record the `tool_calls`/`tool` field names as Observed
+  since that capture. The adapter.ts header also still says "the
+  manifest range admits no version" while `src/adapters/manifests/kimi.json`
+  admits `>=2.1.1 <2.2.0` since the 2026-10-18 live validate pass.
+  Verified 2026-10-19: the stale sentences predate this PR (code last
+  touched by #690, a T4.64 stdin fix), so PR #713 neither introduces
+  nor worsens them; behaviour is unchanged, only comments lag.
+- Left unchanged: both files live in `src/` and the doc-align gate
+  edits documentation only (`*.md`, `docs/**`). A code-lane follow-up
+  should sync the comments (mechanical; no owner decision needed).
+  It does not block PR #713.
