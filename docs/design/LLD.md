@@ -4881,7 +4881,8 @@ exists only once an adapter has an injected channel (T9.4b).
             "snippet_id": { "type": "string" }, "path": { "type": "string" },   // relative to the context root, never absolute
             "start_line": { "type": "integer" }, "end_line": { "type": "integer" },
             "score": { "type": "number" }, "file_sha256": { "type": "string" },
-            "origin_project": { "type": "string" },                              // global results only
+            "origin_project": { "type": "string" },                              // global results from a project only
+            "source": { "type": "string" },                                     // global results from an operator source only
             "untrusted": { "const": true },
             "text": { "type": "string" } } } } } } }
 ```
@@ -4891,6 +4892,21 @@ limits of FR-MCP-04; `scope: "global"` or `"both"` requires the project to set `
 path outside the project's contexts is returned; the tool never reads another project's store; retrieval failure is
 `status: "unavailable"` with a reason code, not a tool error (FR-RAG-08). Text in `results` is untrusted data: the tool
 description says so, and a client must treat it as such. The call is recorded as a `rag_retrieval` row (§14.10).
+
+*As built (T12.7, 2026-10-19, Delegated, not owner-approved):* `scope: "global"` reads only the global store and
+`"both"` merges project and global hits by score (then path, then start line) under one `limit` and the same byte
+bounds (`src/mcp/search-context.ts`, wired in `src/cli/serve.ts`; output schema in `src/mcp/schemas.ts`; tests
+`src/mcp/search-context.test.ts`, describes "searchProjectContext over the global store (T12.7, FR-RAG-09, FR-RAG-10)"
+and "search_project_context scope global on the MCP server (T12.7)"). A global row is served only when its origin is in
+the live origins built from current configuration (`globalOrigins`, `src/retrieval/global.ts`, as at admission), the
+row's `origin_project` matches and the origin is not the reading project. Each global hit carries `origin_project` or
+`source`, and its `context_id` is the global-store id (`project:<id>/<context>` or `source:<label>`). It is
+freshness-checked against the origin's directory. Failure is closed: without wired origins, with unresolvable origins or
+with a missing or never-built global store, `global` answers `unavailable` with `GLOBAL_NOT_AVAILABLE` (the query is
+not embedded); for `both` the project results stand and the global failure code (`GLOBAL_NOT_AVAILABLE`,
+`REBUILD_PENDING`, `STORE_UNREADABLE`, `DIMENSION_MISMATCH`) is the `reason`. For `global`, `status` and
+`index_revision` describe the global store; for `both`, the project store. A stale or incomplete global store still
+serves freshness-checked hits here, whereas admission skips it.
 
 *As built (T12.9, 2026-10-16, Delegated, not owner-approved; fakes only):* the agent-callable form is the T12.6 handler
 (`searchProjectContext`) behind the per-run tool channel (§12.2,
@@ -4907,8 +4923,9 @@ channel form has no `project` argument: its input
 is exactly `query` (1..2000 characters), optional `limit` (1..32) and `scope`; any other key, including `project` or a
 path, is `INVALID_ARGUMENTS` before the handler runs, and the handler always gets the project id bound when the channel
 opened. Token, rate limit, run state and binding checks are those of `commit`. Bounds, scope rules
-(`GLOBAL_NOT_AVAILABLE`), freshness and `unavailable` with `NOT_BUILT` for a project without an index are the T12.6
-ones; `MAX_SEARCH_LIMIT`, `MAX_RESULT_TEXT_BYTES`, `MAX_SEARCH_TEXT_BYTES` and `MAX_QUERY_LENGTH` are defined once in
+(including the global scopes of T12.7), freshness and `unavailable` with `NOT_BUILT` for a project without an index are
+the T12.6 ones; `MAX_SEARCH_LIMIT`, `MAX_RESULT_TEXT_BYTES`, `MAX_SEARCH_TEXT_BYTES` and `MAX_QUERY_LENGTH` are defined
+once in
 `src/git/tool-protocol.ts` and re-exported by `src/mcp/search-context.ts`. Delegated differences: a `scope` the
 project may not use is `INVALID_ARGUMENTS`; a project no longer configured is `PROJECT_UNAVAILABLE`; the `rag_record`
 row carries the run id; the shim's response bound rose from 64 KiB to 512 KiB and the controller drops trailing results
@@ -4995,22 +5012,24 @@ sets `use_global` ([§14.7](#147-tool-contract-search_project_context)). Operato
 `index clear global`, and a `doctor` global subsection when `rag.global.enabled` (honoured on `main` since T12.7,
 [§14.5](#145-incremental-build)).
 
-**As built on `main` (T12.7, Partial since 2026-10-19, owner ruling; ROADMAP T12.7).** The `rag.global` block,
-per-project sharing flags, and `PERMISSION_BLOCKED` when a dynamic project definition sets or widens sharing are
+**As built on `main` (T12.7, Done 2026-10-19, Delegated agent work, not owner-approved; ROADMAP T12.7).** The
+`rag.global` block, per-project sharing flags, and `PERMISSION_BLOCKED` when a dynamic project definition sets or widens
+sharing are
 implemented (`src/config/rag.ts`, `src/projects/rules.ts`; tests `src/config/rag.test.ts`,
 `src/mcp/project-tools.test.ts`). The global file path and `rag_meta` / `rag_file.origin_project` columns exist in
 the store schema (`src/retrieval/store.ts`; tests `src/retrieval/store.test.ts`). The global build and contribution
 copy (`src/retrieval/global.ts`), the admission merge for `use_global` projects (`src/retrieval/admission.ts`), the
 `serve` build wiring and `index rebuild global`, `index clear global`, `index status global` and the `doctor` global
 check (`src/cli/rag-index.ts`) are on `main`, pinned by `src/retrieval/global.test.ts` and `src/cli/rag-index.test.ts`
-("global index (T12.7)"). **Remaining gap:** `search_project_context` scopes `global` / `both` still answer
-`GLOBAL_NOT_AVAILABLE` (`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`); reading the built global
-store there is a follow-up (fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f)).
+("global index (T12.7)"). `search_project_context` scopes `global` / `both` read the built global store
+([§14.7](#147-tool-contract-search_project_context) as-built; `src/mcp/search-context.ts`,
+`src/mcp/search-context.test.ts`). It was `Partial` earlier on 2026-10-19 (owner ruling) while those scopes answered
+only `GLOBAL_NOT_AVAILABLE`.
 
-**Runtime gaps on `origin/main` (evidence paths, no unmerged behaviour).** Only the tool gap above: admission merges
-the global store for `use_global` projects ([§14.8](#148-freshness-and-fallback) as-built) and the global CLI targets
-are honoured ([§14.5](#145-incremental-build)); T12.6 returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the
-built global store is wired into the tool (`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`).
+**Runtime gaps on `origin/main` (evidence paths, no unmerged behaviour).** None for T12.7: admission merges the global
+store for `use_global` projects ([§14.8](#148-freshness-and-fallback) as-built), the global CLI targets are honoured
+([§14.5](#145-incremental-build)) and the tool serves `global` / `both` from the built global store, answering
+`GLOBAL_NOT_AVAILABLE` only when it is unavailable.
 
 **Tests (fake embedder only, no network; landed with the T12.7 runtime).** As in [TDD §3.13.9](TDD.md#3139-t127-global-index-and-sharing-2026-10-14):
 two-project isolation with planted markers; operator `sources` labelled; contribution copy respects redaction,
@@ -5158,8 +5177,8 @@ transaction, and the lifecycle reaches it only through a structurally typed port
 `unavailable` / `TIMEOUT`, and a pack that freshness or the budget empties is `empty` (`NO_HITS`, `NOTHING_SELECTED`)
 rather than `skipped` / `empty_after_freshness`; the import-boundary test also forbids lifecycle dispatch and adapter
 `compile` modules; the hostile-pack behavioural test and the `rag.retrieve` span are not built. Global-index merge at
-admission is built by T12.7 (Partial; ROADMAP T12.7); `search_project_context` `global` / `both` against the built
-store still answers `GLOBAL_NOT_AVAILABLE` (remaining gap, ROADMAP T12.7)
+admission is built by T12.7 (Done; ROADMAP T12.7); `search_project_context` `global` / `both` read the built
+store (§14.7 as-built, ROADMAP T12.7)
 ([§14.9.1](#1491-design-status-and-evidence-t127-2026-10-14), [TDD §3.13.9](TDD.md#3139-t127-global-index-and-sharing-2026-10-14)).
 
 ## 15. Continuity and the handoff bundle (M5)

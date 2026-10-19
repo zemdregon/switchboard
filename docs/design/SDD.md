@@ -212,14 +212,17 @@ in [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14); auth
 structurally typed port. Differences from the design (retrieval at dispatch rather than inside the admission
 transaction; no hostile-pack behavioural test and no `rag.retrieve` span) are listed in the LLD §14.11 as-built note.
 
-**Runtime (implemented, T12.6 Done on fakes, T12.7 Partial; ROADMAP §6.7).**
-T12.7 is Partial (2026-10-19, owner ruling): global/both scope
-returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f).
+**Runtime (implemented, T12.6 and T12.7 Done on fakes; ROADMAP §6.7).**
+T12.7 Done (2026-10-19, Delegated agent work, not owner-approved; it was Partial earlier that day while `global`/`both`
+scope answered only `GLOBAL_NOT_AVAILABLE`).
 `search_project_context` (FR-RAG-06, T12.6;
 `src/mcp/search-context.test.ts`) and global build, contribution copy, admission merge, `index rebuild global`,
 `index clear global`, `index status global` and the `doctor` global check (FR-RAG-09, FR-RAG-10, T12.7;
-`src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). Remaining gap: the tool's `global`/`both` scopes still
-answer `GLOBAL_NOT_AVAILABLE` (ROADMAP T12.7).
+`src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). The tool's `global` scope reads only the global store and
+`both` merges project and global hits by score under one limit, with each global hit labelled `origin_project` or
+`source`
+(`src/mcp/search-context.ts`, wired in `src/cli/serve.ts`); `GLOBAL_NOT_AVAILABLE` remains the fail-closed answer when
+the global index is unavailable.
 
 ### 4.2 COMP-ADP M4 parser implementation evidence (Done against its Done-when)
 

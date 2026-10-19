@@ -1440,15 +1440,15 @@ budget](LLD.md#146-selection-and-token-budget), [§14.8 Freshness and fallback](
   row; pack labelling and token budget (de-overlap and cap); ledger and event payloads contain ids and hashes only
   (recursive scan for planted canary strings); admission integration on the fake lifecycle path with retrieval on versus
   off and versus hostile snippets. Global-index merge at admission is specified in [§3.13.9](#3139-t127-global-index-and-sharing-2026-10-14)
-  and landed with the T12.7 runtime (Partial; the tool's `global`/`both` scopes still answer `GLOBAL_NOT_AVAILABLE`,
+  and landed with the T12.7 runtime (Done; the tool's `global`/`both` scopes read the global store,
   ROADMAP T12.7); T12.5 alone stubbed `use_global: false`.
 
 #### 3.13.9 T12.7 global index and sharing (2026-10-14)
 
 **Design evidence (on `main`).** Specifies FR-RAG-09 and FR-RAG-10 ([SRS
 §3.15](../requirements/SRS.md#315-retrieval-index-fr-rag), [FRD BR-47](../requirements/FRD.md#3-business-rules), WF-14
-global leg). **Runtime (implemented, Partial; ROADMAP T12.7).** Partial (2026-10-19, owner ruling): global/both scope
-returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f). Landed after
+global leg). **Runtime (implemented, Done; ROADMAP T12.7).** Done (2026-10-19, Delegated agent work, not owner-approved;
+it was Partial earlier that day while `global`/`both` scope answered only `GLOBAL_NOT_AVAILABLE`). Landed after
 [#197](https://github.com/zemdregon/switchboard/pull/197) (w61-t127 on sb-worker-a).
 
 - **Specification.** [LLD §14.9](LLD.md#149-global-index-and-sharing): optional `rag.global.enabled` (default off),
@@ -1465,13 +1465,24 @@ returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-searc
 - **Configuration and narrowing (implemented, T12.1).** Global `sources` under an allowed root; per-project sharing flags
   in config; dynamic project definitions cannot set or widen `use_global` or `contribute_to_global` ([§3.13.5](#3135-t121-config-and-store-2026-10-14),
   `src/config/rag.ts`, `src/projects/rules.ts`, `src/mcp/project-tools.test.ts`).
-- **Runtime (implemented, Partial; ROADMAP T12.7; global/both scope returns GLOBAL_NOT_AVAILABLE on main; fix in
-  #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f)).** The global store is built under `<data>/rag/` by
+- **Runtime (implemented, Done; ROADMAP T12.7).** The global store is built under `<data>/rag/` by
 `serve` after the projects (`src/retrieval/global.ts`); `index rebuild global`, `index clear global`,
 `index status global` and the `doctor` global check are honoured (`src/cli/rag-index.ts`,
-`src/cli/rag-index.test.ts`); admission merges global hits with `use_global` (T12.5 as-built note). T12.6 still
-returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the global store is wired into the tool
-(`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`).
+`src/cli/rag-index.test.ts`); admission merges global hits with `use_global` (T12.5 as-built note). The tool
+(`src/mcp/search-context.ts`, wired in `src/cli/serve.ts`, output schema in `src/mcp/schemas.ts`) serves `global` from
+`<data>/rag/global/index.db` only and `both` by merging project and global hits by score (then path, then start line)
+under one `limit` and the same byte bounds. Either scope still needs `use_global`. A global row is served only when its
+origin is in the live origins map built from current configuration (`globalOrigins` in `src/retrieval/global.ts`, as at
+admission), its `origin_project` matches and the origin is not the reading project, so a project that stopped
+contributing is never served before the next build and no project gets its own contribution back. Each global hit
+carries `origin_project` or `source`, its `context_id` is the global-store id (`project:<id>/<context>` or
+`source:<label>`), and it is freshness-checked against its origin's directory. It fails closed: no wired origins,
+unresolvable origins or a missing or never-built global store give `unavailable` with `GLOBAL_NOT_AVAILABLE` for
+`global` (the query is not embedded); for `both` the project results stand and the global failure code
+(`GLOBAL_NOT_AVAILABLE`, `REBUILD_PENDING`, `STORE_UNREADABLE`, `DIMENSION_MISMATCH`) is the `reason`. Delegated
+choices (not owner-approved): the bounds apply to the merged answer, and a stale or incomplete global store still
+serves freshness-checked hits from the tool (admission skips a stale global store). The per-run channel (T12.9) uses
+the same handler and so serves `global`/`both` the same way.
 - **Tests (fake embedder only, no network; landed with the T12.7 runtime).** Extend [§3.13.3](#3133-testing-affinity-and-retrieval)
   isolation: two projects with distinct planted markers — B with `use_global: true` sees A's marker in the global index
   only when A has `contribute_to_global: true` and the global store is built; otherwise never; operator `sources` chunks
@@ -1483,9 +1494,15 @@ returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the global store is 
   global` (the existing rebuild test), `index clear global` ("index clear global deletes the global store at once and
   records counts"), `index status global` ("index status global reports only the global store: off, absent and
   present"), and a `doctor` global subsection when enabled ("covers the global store: absent, present, stale, off and
-  missing", asserting the `rag_index_global` check in its present, absent, stale, off and missing states). Tool:
-  `global` and `both` still answer `GLOBAL_NOT_AVAILABLE` (remaining gap, ROADMAP T12.7); reading the built
-global store there is a follow-up.
+  missing", asserting the `rag_index_global` check in its present, absent, stale, off and missing states). Tool
+  (`src/mcp/search-context.test.ts`, describe "searchProjectContext over the global store (T12.7, FR-RAG-09,
+  FR-RAG-10)"): "scope global returns global-index results labelled with their origin, never the reader's own store";
+  "scope both merges project and global hits by score under one limit"; "serves no row of a project that stopped
+  contributing, and never a project its own contribution"; "drops a global hit whose origin file changed since the
+  build"; "scope global stays fail-closed GLOBAL_NOT_AVAILABLE when the global index is unavailable"; and, for the
+  published output schema, describe "search_project_context scope global on the MCP server (T12.7)" ("returns
+  origin-labelled global hits that match the published output schema"). The existing "needs use_global for scope global
+  or both; without global origins the global store is not read" covers the gate.
 
 ### 3.14 Network MCP transport (M13)
 
