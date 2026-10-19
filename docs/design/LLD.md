@@ -4881,14 +4881,16 @@ exists only once an adapter has an injected channel (T9.4b).
             "snippet_id": { "type": "string" }, "path": { "type": "string" },   // relative to the context root, never absolute
             "start_line": { "type": "integer" }, "end_line": { "type": "integer" },
             "score": { "type": "number" }, "file_sha256": { "type": "string" },
-            "origin_project": { "type": "string" },                              // global results only
+            "origin_project": { "type": "string" },                              // global results only: contributing project id
+            "source": { "type": "string" },                                      // global results only: operator source label
             "untrusted": { "const": true },
             "text": { "type": "string" } } } } } } }
 ```
 
 Rules: `limit` and each `text` are bounded (`<chosen in T12.0>`), and the total response is bounded by the envelope
 limits of FR-MCP-04; `scope: "global"` or `"both"` requires the project to set `use_global` (else `INVALID_REQUEST`); no
-path outside the project's contexts is returned; the tool never reads another project's store; retrieval failure is
+path outside the project's contexts is returned; the tool reads only the resolved project's store, plus the shared
+global store for `scope: "global"` or `"both"` (through the live origins map, `use_global` still required); retrieval failure is
 `status: "unavailable"` with a reason code, not a tool error (FR-RAG-08). Text in `results` is untrusted data: the tool
 description says so, and a client must treat it as such. The call is recorded as a `rag_retrieval` row (§14.10).
 

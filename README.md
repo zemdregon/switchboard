@@ -2881,8 +2881,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   rate gate: no provider publishes an enforceable limit for the logins used, so the pacing gate
   paces usage per subscription window from observed usage instead (ROADMAP T6.8, `Done` 2026-10-17).
 - Retrieval is tested with a deterministic in-process fake embedder and scripted HTTP fixtures; no live embedding model
-  runs in CI. `search_project_context` with `scope: "global"` or `"both"` does not read the global store yet (admission
-  merge with `use_global` does).
+  runs in CI. `search_project_context` with `scope: "global"` or `"both"` reads the built global store when the project
+  sets `use_global` (a missing or unbuilt global store is `unavailable` with `GLOBAL_NOT_AVAILABLE`).
 - The inner agent (milestone 11) is tested on a scripted in-process fake backend and a loopback fake HTTP server only.
   No live inner backend has been exercised, and `npm run test:live` has no inner-agent leg. The `cli` backend kind is
   reported `Ineligible` by `doctor` and never started (`src/cli/inner.test.ts`; ROADMAP T11.0, T11.13). T11.0 ran the
