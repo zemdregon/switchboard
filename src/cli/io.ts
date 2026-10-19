@@ -1,6 +1,7 @@
 import type { AdapterRegistry } from "../adapters/index.js";
 import type { LoadReader } from "../capacity/host-load.js";
 import type { ContainerRuntime } from "../environment/runtime.js";
+import type { GraderExec } from "../eval/grader.js";
 import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import type { InnerBackend } from "../inner/port.js";
 import type { EmbeddingBackend } from "../retrieval/embedding.js";
@@ -35,6 +36,8 @@ export interface CliIo {
   readonly containerRuntime?: () => ContainerRuntime;
   /** Test seam (T3.23): the free-space probe `doctor` and `serve` use for `limits.min_free_disk_mb` instead of `statfs`. */
   readonly diskProbe?: DiskProbe;
+  /** Test seam (T8.14): spawns the evaluation grader's runtime argv instead of the real runtime client. */
+  readonly graderExec?: GraderExec;
   /** Test seam (T3.24): the load reader `doctor` uses for `host.max_load1` instead of `os.loadavg()`. */
   readonly loadReader?: LoadReader;
 }
