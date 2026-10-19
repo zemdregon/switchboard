@@ -240,6 +240,7 @@ import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
 import type { SubjectBindings } from "./http-subjects.js";
 import {
+  admitBrief,
   createProjectTools,
   dynamicListItem,
   type PendingRevisionAnnouncement,
@@ -644,6 +645,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         ...(context.finalizeCommit ? { finalize_commit: true as const } : {}),
         // T9.10 (FR-GIT-10): the signing option, frozen the same way; absent when off.
         ...(context.sign ? { sign: true as const } : {}),
+        // T5.14 (FR-SES-07): the brief's hash, read now; an unreadable brief refuses the run (fail closed).
+        ...admitBrief(project, deps.config.allowedRoots),
       },
     };
   };

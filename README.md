@@ -1045,6 +1045,16 @@ or by the repository. Size is bounded by the `continuity.max_bundle_bytes`, `con
 bundle's `truncation`. A bundle that cannot be built fails the call with `TOOL_FAILURE`
 (`details.reason: "HANDOFF_BUNDLE_UNAVAILABLE"`) and writes nothing.
 
+**Project brief** (T5.14, FR-SES-07): `projects[].brief_file` in the configuration file names an operator-maintained
+text file (goal, definition of done, known failures) that must sit outside every allowed root and context and hold at
+most 4 KiB of UTF-8; anything else stops `serve` at startup. Each run admitted on a briefed project reads
+it at admission (an unreadable brief refuses the run with `TOOL_FAILURE`,
+`details.reason: "PROJECT_BRIEF_UNAVAILABLE"`), freezes its SHA-256 so later edits do not change that run, and gets
+it as a labelled block before the retrieved context, inside `rag.retrieval.max_context_tokens` (retrieval is trimmed
+first). A handoff successor re-resolves the project and gets the block too; a native resume reuses the session that
+already had it. The handoff bundle (version 3) lists the hash as `brief`, never the text. Unset, prompts are
+unchanged.
+
 `get_artifacts` returns the `handoff_view` of a handoff run; `get_run` names its artifact id and never carries bundle
 text. `runs show <run>` prints a Handoff block: bundle artifact id and hash, the provider handed off from and why, the
 source runs, and the binding the run started.

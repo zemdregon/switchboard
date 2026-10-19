@@ -142,7 +142,8 @@ export interface ServeRag {
    * Records one `rag_record` row of kind `retrieval` (snippet ids and hashes, no text) and returns the run event's
    * payload. When the store is missing, stale, flagged or had a changed file, it queues a refresh (never awaited).
    */
-  prepareContextPack(request: ContextPackRequest): Promise<ContextPackOutcome | undefined>;
+  /** `reservedTokens` (T5.14): taken from `max_context_tokens` first, by the project brief placed before the pack. */
+  prepareContextPack(request: ContextPackRequest, reservedTokens?: number): Promise<ContextPackOutcome | undefined>;
   /** Apply pending `index rebuild|clear` requests; called from the daemon's operator poll. */
   applyRequests(): Promise<void>;
   stop(): Promise<void>;
@@ -262,7 +263,10 @@ export function startServeRag(opts: {
     }
   };
 
-  const prepareContextPack = async (request: ContextPackRequest): Promise<ContextPackOutcome | undefined> => {
+  const prepareContextPack = async (
+    request: ContextPackRequest,
+    reservedTokens = 0,
+  ): Promise<ContextPackOutcome | undefined> => {
     const project = projectsNow().find((p) => p.id === request.projectId);
     if (project === undefined || !project.effective.enabled) return undefined;
     const r = await retrieveContextPack(
@@ -270,7 +274,10 @@ export function startServeRag(opts: {
         dataDir: config.dataDir,
         backend,
         embedding,
-        retrieval: config.rag.retrieval,
+        retrieval: {
+          ...config.rag.retrieval,
+          maxContextTokens: Math.max(0, config.rag.retrieval.maxContextTokens - reservedTokens),
+        },
         ...(opts.io.homedir !== undefined ? { homeDir: opts.io.homedir } : {}),
         ...(opts.now ? { now: opts.now } : {}),
       },
