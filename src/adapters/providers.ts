@@ -137,8 +137,9 @@ export const BUILTIN_PROVIDERS = [
     label: "Codex (real provider)",
     // [R2] L28, L125 (`--yolo`, not to be built around) and L126 (`--full-auto`, deprecated compatibility option).
     bypassFlags: ["--yolo", "--full-auto"],
-    // TDD §4.10: `Unverified: T5.12`.
-    resumeCwd: "unverified",
+    // TDD §4.10: "Tied to the working directory" is `No` (T5.12 cell 2, codex-cli 0.162.0;
+    // docs/research/live-checks-2026-10-19-codex-container-resume.md).
+    resumeCwd: "independent",
     create: (): ProviderAdapter => new CodexAdapter(),
   },
   {
