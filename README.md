@@ -2892,8 +2892,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   [Muse Code CLI](#muse-code-cli-milestone-4).
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
-  Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI version may
-  differ. See `docs/research/live-checks-2026-10-13.md`.
+  live-smoke Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI
+  version may differ. See `docs/research/live-checks-2026-10-13.md`. (The T3.9 malicious leg held its C-G2 at the
+  outcome level on 2026-10-18; see ROADMAP T3.9.)
 - Linux only. Single operator only. No hosted or multi-user mode.
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
