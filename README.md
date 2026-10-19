@@ -556,7 +556,8 @@ switchboard doctor            # add --json for machine-readable output
 switchboard doctor --config /path/to/config.json
 ```
 
-`doctor` checks Node, Git, the config, the data directory, the ledger and the data-directory lock, reports what
+`doctor` checks Node, Git, the config, the data directory, the ledger, the ledger hash chain and the
+data-directory lock, reports what
 retention would collect and any orphans (read-only), reports free disk space against `limits.min_free_disk_mb` when
 that key is set (`[warn]` under the floor: `serve` holds new runs; never `[FAIL]`), then probes each
 adapter (Claude Code, Codex and a fake test adapter that is not a real provider). It exits 0 when no check failed and 1
@@ -567,7 +568,12 @@ otherwise. Markers:
 | `[ok]` | Check passed. |
 | `[warn]` | Not fatal, exit stays 0. For a provider: CLI not installed, or installed but not logged in or auth unknown. For the ledger: not created yet (`serve` creates it) or an older schema that `serve` migrates. For the lock: a stale lock file. |
 | `[FAIL]` | Exit code 1. For a provider: the probe failed, or the version gate rejected the installed version. |
-| `[skip]` | Skipped: because the config is not valid, or (for a provider) because `providers.<id>.enabled` is `false`. Skips never change the exit code. |
+| `[skip]` | Skipped: because the config is not valid, or (for a provider) because `providers.<id>.enabled` is `false`, or (for the ledger hash chain) because no ledger exists yet or the chain migration is still pending (`serve` migrates). Skips never change the exit code. |
+
+When the ledger has the chain columns (migration 26), `doctor` also verifies both hash chains
+(`ledger_chain`, T8.13, FR-TEL-05, [ADR-0064](docs/adr/0064-hash-chained-ledger-rows.md)): `[ok]` carries each
+chain's length and head hash, and `[FAIL]` names the table and the first broken row. It detects edits made
+without the chain code, not a rewritten chain or a truncated tail.
 
 Per adapter, the auth state is `OK`, `AUTH_REQUIRED` (doctor prints the native login command to run) or `UNKNOWN`
 (Switchboard could not tell; the reason is printed). `UNKNOWN` means the status command exited with
