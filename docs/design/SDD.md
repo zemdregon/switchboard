@@ -230,14 +230,14 @@ T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-partial).
 
 | Task | Requirements (primary) | Tests (parser suites) |
 | --- | --- | --- |
-| T4.23 Grok Build (`Partial`) | FR-ADP-04, FR-SES-03, FR-EXE-03 | `src/adapters/grok/grok.test.ts` (`grok parser to resume round trip (T4.23 residual; SYNTHETIC lines, parser unchanged)`); `src/adapters/grok/protocol.ts` EVENT comment ([#384](https://github.com/zemdregon/switchboard/pull/384)); [ROADMAP T4.23](../ROADMAP.md#68-m4-adapter-expansion-tasks) ([#385](https://github.com/zemdregon/switchboard/pull/385)) |
+| T4.23 Grok Build (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-EXE-03 | `src/adapters/grok/grok.test.ts` (`grok parser to resume round trip (T4.23 residual; SYNTHETIC lines, parser unchanged)`); `src/adapters/grok/protocol.ts` EVENT comment ([#384](https://github.com/zemdregon/switchboard/pull/384)); [ROADMAP T4.23](../ROADMAP.md#68-m4-adapter-expansion-tasks) ([#385](https://github.com/zemdregon/switchboard/pull/385)) |
 | T4.33 Antigravity (`Partial`) | FR-ADP-04, FR-CAP-01, FR-SES-03 | `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`, `antigravity parser hardening (T4.33, synthetic shapes)`) |
 | T4.43 Cursor (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/cursor/cursor.test.ts` (`cursor parser and result (T4.43)`, `cursor parser hardening (T4.43, synthetic shapes)`, `cursor parser residual branches (T4.43, synthetic)`); `src/adapters/cursor/parser-residual.test.ts` and `fixtures/idless_guard.jsonl` ([#360](https://github.com/zemdregon/switchboard/pull/360)) |
 | T4.53 OpenCode (`Partial`) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/opencode/opencode.test.ts` (`opencode parser and result (T4.53)`, nested `cases with no recorded native shape (live check rows 7, 11, 14c)`) |
 
 Grok T4.23: parser-to-resume and session-id/`resumeArgs` boundary pins landed in
-[#384](https://github.com/zemdregon/switchboard/pull/384); unrecorded native `tool_call` parameter shapes and operator
-capture gaps remain open (ROADMAP T4.23, [#385](https://github.com/zemdregon/switchboard/pull/385)).
+[#384](https://github.com/zemdregon/switchboard/pull/384); Done against its Done-when under owner decision 65 (a):
+unrecorded native `tool_call` parameter shapes and operator capture gaps remain open under (ROADMAP T4.28).
 
 Cursor T4.43: ADR-0039 `extractResult` guard over a flagged `tool_call` landed in
 [#238](https://github.com/zemdregon/switchboard/pull/238); Done against its Done-when under owner decision 65 (a):
