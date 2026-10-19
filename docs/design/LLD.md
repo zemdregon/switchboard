@@ -1493,7 +1493,8 @@ previous provider and model, runs that switched, by reason) are a query over `ro
 
 ### 3.3 Network MCP transport (M13)
 
-Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted 2026-10-14 under T13.1).
+Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted 2026-10-14 under T13.1), with its
+SDK and protocol-era statements superseded in part by [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md) (T13.10).
 Requirements FR-MCP-12 to 17. Off unless the config enables it.
 
 - **Endpoint.** One Streamable HTTP path (`/mcp`), bound to `127.0.0.1` unless `transport.http.bind` is set explicitly.
@@ -1639,9 +1640,12 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
   the OAuth client id. Only `POST` is served (405 with `Allow: POST` otherwise: a stateless `GET` would hold an endless
   event stream). At most 16 requests are in flight, 4 per OAuth client (503 with `Retry-After: 1`), and a body is at
   most 256 KiB (Assumptions). The `Authorization` and `Cookie` headers are removed before the SDK copies headers into
-  the handlers' request info. Otherwise the request is served in the MCP SDK's stateless Streamable HTTP mode: a fresh
-  `createSwitchboardServer` for the mapped client (the same lifecycle, ledger, projects and policy as stdio, so the same
-  ceiling and admission checks) and a fresh transport per request, JSON responses, closed when the response ends. Token
+  the handlers' request info. Otherwise the request is served in either protocol era as built under T13.10
+  ([§20.11](#2011-mcp-sdk-v2-and-client-id-metadata-documents-fr-mcp-18-fr-mcp-19-t1310-t1311),
+  [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md)): a fresh `createSwitchboardServer` for the mapped client (the
+  same lifecycle, ledger, projects and policy as stdio, so the same ceiling and admission checks) per request in both
+  eras — a fresh stateless transport with JSON responses for a 2025-era request, the strict modern handler leg for a
+  2026-07-28 request — closed when the response ends. Token
   scopes and claims never reach the server, so nothing in a token can raise the profile. Runs are recorded under the MCP
   client id; T13.5 also binds them to the OAuth client (below). Code: `src/mcp/http.ts`,
   `src/config/http-transport.ts`, `src/config/load.ts`, `src/cli/serve.ts`.
