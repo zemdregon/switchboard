@@ -7408,8 +7408,9 @@ Tests: `src/ci/ci-transient.test.ts` (fake `CiStatusPort`, fake `CiActionsPort` 
 - **SHA in the report.** Before the verification stage, controller Git records `HEAD` and computes the worktree's tree
   with a temporary index (`GIT_INDEX_FILE`), never touching the run's index. The `test_report` gains `head_sha` and
   `tree_sha`; `head_sha` is kept only when `tree_sha` equals `HEAD^{tree}`.
-- **Read.** `get_run` adds `verification.verified_at_sha` and `verification.stale`, which is true when the run's
-  published ref (§12.3) has moved to another commit.
+- **Read.** `get_run` adds `verification.verified_at_sha`, `verification.tree_sha` and `verification.stale`
+  (`stale` is true when the run's
+  published ref (§12.3) has moved to another commit).
 - **Skill.** `examples/skills/docs-alignment.md` is an ordinary skill file (§19); its run writes
   `docs_alignment.json` `{head_sha, verdict: "aligned" | "conflict", notes}` as an artifact (notes untrusted). A fix is
   a normal commit through the commit tool on the item's own branch.
