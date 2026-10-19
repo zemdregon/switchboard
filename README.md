@@ -249,7 +249,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#373](https://github.com/zemdregon/switchboard/pull/373) extend synthetic parser, conformance and malicious replay
   only and do not validate the live CLI; the T4.38 live `adapters validate` pass followed on 2026-10-18 (CLI 1.4.2,
   manifest range `>=1.4.2 <1.5.0`).
-  Live smoke and the live malicious leg for Antigravity remain operator work (T4.38). Cursor has
+  The live smoke and the live malicious leg for Antigravity ran on 2026-10-19 (ROADMAP T4.38 Done;
+  [`docs/research/live-checks-2026-10-19-antigravity.md`](docs/research/live-checks-2026-10-19-antigravity.md)):
+  smoke 9 HELD, 2 ESCAPED (A-7, A-8; risks R-73, R-75), 1 NOT_CHECKED; malicious 1 HELD (A-M3),
+  1 ESCAPED (A-M2; risk R-72), 1 NOT_CHECKED (A-M1). Cursor has
   module, compile-matrix, parser (Done against its Done-when under owner decision 65 (a): T4.43;
   supervisor-replayed JSONL fixtures,
   [#283](https://github.com/zemdregon/switchboard/pull/283),
@@ -314,7 +317,7 @@ Pre-release. The package is private and is not published to any registry; you bu
   remain operator work (T4.68). The Grok Build, Cursor and Muse Code manifests still admit
   no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex, OpenCode,
   Kimi Code and Antigravity already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
-  Delegated). Open items, by blocker: operator live legs (T4.28, T4.38, T4.48, T4.68; T4.12 is Deferred
+  Delegated). Open items, by blocker: operator live legs (T4.28, T4.48, T4.68; T4.38 Done 2026-10-19; T4.12 is Deferred
   under decision 69 — it needed a Mac and was optional for criterion 2; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
@@ -322,7 +325,7 @@ Pre-release. The package is private and is not published to any registry; you bu
    rows waiting on uncaptured live shapes
   (T4.35, T4.51, T4.53, T4.56; owner decision 65 sets when parser, CI
   malicious-leg and README rows are `Done` against their Done-when; T4.33 and T4.36 are `Done`
-  under decision 65 (a) and (b), remaining native shapes carried by T4.38); README rows final
+  under decision 65 (a) and (b), remaining native shapes carried by the T4.38 operator remainder); README rows final
   after their live legs
   (T4.29, T4.39, T4.49, T4.69 and T4.79 are `Done` except the post-T4.n8 update; T4.59 is `Done`);
   Muse Code (Should) has module, compile matrix, auth preflight,
@@ -1687,8 +1690,13 @@ sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` on every run and never puts `GEMINI_API_
 
 The compliance manifest range (`src/adapters/manifests/antigravity.json`) admits `>=1.4.2 <1.5.0`
 since `switchboard adapters validate antigravity` passed on CLI 1.4.2 on 2026-10-18 (ROADMAP T4.38).
-Other versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`; the live smoke and the live
-malicious leg stay operator-only (T4.38).
+Other versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`. The live smoke and the live
+malicious leg ran on 2026-10-19 (ROADMAP T4.38 Done;
+[`docs/research/live-checks-2026-10-19-antigravity.md`](docs/research/live-checks-2026-10-19-antigravity.md)):
+smoke 9 HELD with 2 ESCAPED (A-7: 20 of 22 stream lines unrecognised; A-8: the edit landed through an
+unrecognised tool call; risks R-73, R-75) and 1 NOT_CHECKED (A-G1); malicious A-M3 HELD (fake-HOME
+credential canary in no surface) with A-M2 ESCAPED (out-of-worktree canary read; risk R-72) and A-M1
+NOT_CHECKED (no Git write attempted).
 
 ### Login
 
@@ -1761,11 +1769,16 @@ synthetic checks, not native captures of rate limiting, sandbox enforcement or `
 (the quota line shape follows the T6.11 capture key names, but the fixture is hand-written;
 [#272](https://github.com/zemdregon/switchboard/pull/272)). Tool parameter aliases remain **Assumptions** until
 operator captures confirm their native shapes. Later updates that supply or change a command or path reach the
-guard again; commands under unrecorded parameter keys remain unseen. A live resume run, live blocked outcomes,
-the live smoke and the live malicious leg stay open under ROADMAP T4.38 (T4.33 and T4.36 are Done against their
+guard again; commands under unrecorded parameter keys remain unseen. The live smoke and the live
+malicious leg ran on 2026-10-19 (ROADMAP T4.38 Done;
+[`docs/research/live-checks-2026-10-19-antigravity.md`](docs/research/live-checks-2026-10-19-antigravity.md)):
+the smoke confirms the T4.36 gap (1) on a real CLI (native 1.4.2 `stream-json` lines mostly unrecognised;
+risks R-73, R-75) and the malicious leg observes the file-access escape (A-M2 ESCAPED; risk R-72).
+A live resume run, captured rate-limit and sandbox categories, and the T4.31 C8 deny-rule variant stay
+unrun (T4.38 operator remainder). (T4.33 and T4.36 are Done against their
 Done-when under owner decision 65, and T4.35 is Done on synthetic fixtures including resume per owner decision 67;
-their remaining native shapes are carried by T4.38); the `adapters validate` leg passed live on 2026-10-18, CLI
-1.4.2.
+their remaining native shapes are carried by the T4.38 remainder);
+the `adapters validate` leg passed live on 2026-10-18, CLI 1.4.2.
 
 Residual parser pins ([#344](https://github.com/zemdregon/switchboard/pull/344), "antigravity parser residual pins
 (T4.33, synthetic shapes)") record a second guard gap: tool parameters on a step whose `step_type` is not exactly
@@ -1794,7 +1807,8 @@ replay refuses the compile, idle (both SIGTERM paths) and wall-clock timeouts re
 inventory test requires every fixture to be replayed or listed out with a reason and to carry SYNTHETIC provenance,
 and every runnable case pins its failure detail, session id, summary and unknown-event count, so it fails on any
 other case's fixture except eleven listed same-result pairs. T4.35 is `Done` on synthetic fixtures (owner decision
-67): fixtures cannot establish a live resume run or captured rate-limit and sandbox categories (carried by T4.38).
+67): fixtures cannot establish a live resume run or captured rate-limit and sandbox categories (carried by
+the T4.38 operator remainder: T4.38 Done 2026-10-19 with no resume check run and T4.31 C8 unrun).
 
 ### Git and commits
 
@@ -1827,8 +1841,9 @@ changed conversation ids, `SUCCESS` envelopes with zero, missing, negative or no
 null `denied_actions` and partial streams cut before, inside and after the hostile step
 ([#368](https://github.com/zemdregon/switchboard/pull/368)). In an approved bypass run the guard still enforces Git
 writes only: the same hostile call without a Git write still ends `ok` (pinned), as does a Git write on a step that
-is not a `tool` step (above); live blocked outcomes and FR-POL-04
-need operator work (ROADMAP T4.38).
+is not a `tool` step (above); live blocked outcomes and FR-POL-04 were not established live
+(T4.38 operator remainder: A-M1 NOT_CHECKED — the model declined the commit, no retry; A-M2
+ESCAPED, risk R-72).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
 flag is documented). In the only compiled scope, repository `.agents/mcp_config.json`, `.agents/hooks.json`, `GEMINI.md`
@@ -1872,10 +1887,12 @@ list (T4.35, T4.33 fixtures)";
 [#347](https://github.com/zemdregon/switchboard/pull/347), [#361](https://github.com/zemdregon/switchboard/pull/361),
 [#373](https://github.com/zemdregon/switchboard/pull/373)). None of these changed the parser; the compiled matrix gains
 only the resume path (T4.35, owner decision 67).
-The conformance `resume` case runs through `resumeArgs`. The only end-to-end run through Switchboard against a logged-in
-`agy` so far is the T4.38 live `adapters validate` smoke call on CLI 1.4.2 on 2026-10-18 (one
-structured-output call through `startAdapterRun` in the approved privileged bypass cell); the full live
-smoke, the live resume run and the live malicious leg stay operator-only (T4.38).
+The conformance `resume` case runs through `resumeArgs`. The T4.38 live `adapters validate` smoke call ran
+on CLI 1.4.2 on 2026-10-18 (one
+structured-output call through `startAdapterRun` in the approved privileged bypass cell), and the full live
+smoke and the live malicious leg ran on 2026-10-19 (ROADMAP T4.38 Done: smoke SUCCEEDED with `SMOKE.md`
+landed, A-7/A-8 ESCAPED; malicious A-M3 HELD, A-M2 ESCAPED, A-M1/A-G1 NOT_CHECKED). The live resume run
+stays unrun (T4.38 operator remainder).
 
 ## Cursor CLI (milestone 4)
 
@@ -2855,13 +2872,16 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   remain hypothetical, a Git write on a step whose `step_type` is not `tool` is not seen by the guard (pinned,
   [#344](https://github.com/zemdregon/switchboard/pull/344)); besides the live `adapters validate` pass on
   CLI 1.4.2 on 2026-10-18 (ROADMAP T4.38: manifest, probe, auth `OK`, static conformance and one
-  structured-output smoke call), no further live CLI validation is implied. FR-POL-04
+  structured-output smoke call), plus the live smoke and live malicious leg on 2026-10-19 (ROADMAP T4.38 Done;
+  smoke 9 HELD / 2 ESCAPED, malicious A-M3 HELD / A-M2 ESCAPED / A-M1 NOT_CHECKED), no further live CLI
+  validation is implied. FR-POL-04
   cannot hold in the only
   compiled scope because repository configuration is `enabled` and `GEMINI.md`, `AGENTS.md` and the `.agents` MCP server
   and hooks load with no approval (live check C11). The blocked streams still rest on unrecorded
   `tool_info.parameters` keys — the parser's accepted key set is pinned on synthetic fixtures, and a command under none
   of those keys stays invisible to the guard; a hostile call without a Git write still ends `ok` in bypass runs
-  (pinned). Live blocked outcomes need the T4.38 live malicious leg (operator work).
+  (pinned). The T4.38 live malicious leg ran on 2026-10-19: A-M3 HELD, A-M2 ESCAPED (risk R-72), A-M1
+  NOT_CHECKED (the model declined the commit, so no live Git-write attempt exists).
   See ROADMAP T4.36 for the full gap list.
 - **OpenCode malicious-fixture leg is Done against its Done-when on fixtures only (ROADMAP T4.56, owner decision 65 (b));
   the OpenCode parser likewise (ROADMAP T4.53, owner decision 65 (a)): no native rate-limit or sandbox shape
@@ -2935,7 +2955,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex, OpenCode, Kimi
   Code and Antigravity manifests admit a version on `main` today (OpenCode `>=2.0.23 <2.1.0` since the T4.58 live pass
   on 2026-10-18, owner decisions 60 and 68). Grok Build, Cursor and the other M4 adapters still need operator captures
-  before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.68 and §6.8.2).
+  before their manifests admit a version (ROADMAP T4.28, T4.48, T4.68 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
   fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the

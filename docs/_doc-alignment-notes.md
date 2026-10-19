@@ -603,3 +603,17 @@ as history.
   lines and the newly appended 2026-10-19 T3.9 sentences, which are what the
   gate and the version check read, are correct; the roadmap rows state the
   current status).
+
+## 36. README manifest-version list still names T4.68 (pre-existing, Kimi lane, not from PR #745)
+
+- The README bullet ("`adapters validate` is implemented for every
+  registered provider ...") says Grok Build, Cursor and the other M4
+  adapters "still need operator captures before their manifests admit a
+  version (ROADMAP T4.28, T4.48, T4.68 and §6.8.2)". Kimi Code's manifest
+  has admitted `>=2.1.1 <2.2.0` since the T4.68 live `adapters validate`
+  pass on 2026-10-18 (same bullet, two lines above), so the T4.68
+  citation was already stale on `origin/main` before this PR; PR #745
+  only removed its own lane's entry (T4.38, now Done) from that list.
+- Left unchanged: the T4.68 citation belongs to the Kimi lane (cf. items
+  8, 24, 29 and 32 above for the precedent of not re-wording another
+  lane's list). It does not block PR #745.
