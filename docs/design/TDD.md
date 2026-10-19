@@ -2237,7 +2237,7 @@ obligations as `grok Git declaration (T4.27)`, `cursor Git declaration (T4.47)` 
   cases above; finalize-only lifecycle leg.
 
 **Out of scope for T4.37 (other tasks).** Operator live Git-write and bypass cells (T4.38), README final status after
-live validate (T4.39), and tool-step parameter keys for the Switchboard tool-call guard while T4.33 stays `Partial`.
+live validate (T4.39), and tool-step parameter keys for the Switchboard tool-call guard (T4.33 is Done against its Done-when under owner decision 65 (a); remaining native shapes carried by T4.38).
 
 #### 4.4.7 Antigravity parser implementation evidence (M4, T4.33)
 
