@@ -511,7 +511,8 @@ switchboard doctor            # add --json for machine-readable output
 switchboard doctor --config /path/to/config.json
 ```
 
-`doctor` checks Node, Git, the config, the data directory, the ledger and the data-directory lock, reports what
+`doctor` checks Node, Git, the config, the data directory, the ledger, the ledger hash chain and the
+data-directory lock, reports what
 retention would collect and any orphans (read-only), reports free disk space against `limits.min_free_disk_mb` when
 that key is set (`[warn]` under the floor: `serve` holds new runs; never `[FAIL]`), then probes each
 adapter (Claude Code, Codex and a fake test adapter that is not a real provider). It exits 0 when no check failed and 1
@@ -522,7 +523,12 @@ otherwise. Markers:
 | `[ok]` | Check passed. |
 | `[warn]` | Not fatal, exit stays 0. For a provider: CLI not installed, or installed but not logged in or auth unknown. For the ledger: not created yet (`serve` creates it) or an older schema that `serve` migrates. For the lock: a stale lock file. |
 | `[FAIL]` | Exit code 1. For a provider: the probe failed, or the version gate rejected the installed version. |
-| `[skip]` | Skipped: because the config is not valid, or (for a provider) because `providers.<id>.enabled` is `false`. Skips never change the exit code. |
+| `[skip]` | Skipped: because the config is not valid, or (for a provider) because `providers.<id>.enabled` is `false`, or (for the ledger hash chain) because no ledger exists yet or the chain migration is still pending (`serve` migrates). Skips never change the exit code. |
+
+When the ledger has the chain columns (migration 26), `doctor` also verifies both hash chains
+(`ledger_chain`, T8.13, FR-TEL-05, [ADR-0064](docs/adr/0064-hash-chained-ledger-rows.md)): `[ok]` carries each
+chain's length and head hash, and `[FAIL]` names the table and the first broken row. It detects edits made
+without the chain code, not a rewritten chain or a truncated tail.
 
 Per adapter, the auth state is `OK`, `AUTH_REQUIRED` (doctor prints the native login command to run) or `UNKNOWN`
 (Switchboard could not tell; the reason is printed). `UNKNOWN` means the status command exited with
@@ -999,6 +1005,16 @@ or by the repository. Size is bounded by the `continuity.max_bundle_bytes`, `con
 `continuity.max_text_chars` configuration keys, and what was cut is listed in the
 bundle's `truncation`. A bundle that cannot be built fails the call with `TOOL_FAILURE`
 (`details.reason: "HANDOFF_BUNDLE_UNAVAILABLE"`) and writes nothing.
+
+**Project brief** (T5.14, FR-SES-07): `projects[].brief_file` in the configuration file names an operator-maintained
+text file (goal, definition of done, known failures) that must sit outside every allowed root and context and hold at
+most 4 KiB of UTF-8; anything else stops `serve` at startup. Each run admitted on a briefed project reads
+it at admission (an unreadable brief refuses the run with `TOOL_FAILURE`,
+`details.reason: "PROJECT_BRIEF_UNAVAILABLE"`), freezes its SHA-256 so later edits do not change that run, and gets
+it as a labelled block before the retrieved context, inside `rag.retrieval.max_context_tokens` (retrieval is trimmed
+first). A handoff successor re-resolves the project and gets the block too; a native resume reuses the session that
+already had it. The handoff bundle (version 3) lists the hash as `brief`, never the text. Unset, prompts are
+unchanged.
 
 `get_artifacts` returns the `handoff_view` of a handoff run; `get_run` names its artifact id and never carries bundle
 text. `runs show <run>` prints a Handoff block: bundle artifact id and hash, the provider handed off from and why, the

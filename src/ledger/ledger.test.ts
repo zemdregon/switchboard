@@ -281,7 +281,10 @@ describe("ledger migrations", () => {
       sizeBytes: 3,
       mediaType: "text/plain",
     });
-    ledger.appendRunEvent({ runId: run.id, type: "x", artifactId: art });
+    // A plain insert, as a writer of this schema version did (the chained writer needs migration 26's columns).
+    d.prepare(
+      "INSERT INTO run_event (id, run_id, seq, ts, type, payload_json, artifact_id) VALUES ('evt_old', ?, 1, 't', 'x', '{}', ?)",
+    ).run(run.id, art);
     expect(() =>
       ledger.insertArtifact({
         runId: run.id,
@@ -343,7 +346,10 @@ describe("ledger migrations", () => {
       sizeBytes: 3,
       mediaType: "application/json",
     });
-    ledger.appendRunEvent({ runId: run.id, type: "handoff_built", artifactId: art });
+    // A plain insert, as a writer of this schema version did (the chained writer needs migration 26's columns).
+    d.prepare(
+      "INSERT INTO run_event (id, run_id, seq, ts, type, payload_json, artifact_id) VALUES ('evt_old', ?, 1, 't', 'handoff_built', '{}', ?)",
+    ).run(run.id, art);
     expect(() =>
       ledger.insertArtifact({
         runId: run.id,
@@ -581,19 +587,19 @@ describe("ledger migrations", () => {
     expect(() => cancel.run("crc_2", "a".repeat(40))).toThrow(/UNIQUE/u);
   });
 
-  it("0026 adds oauth_cimd_client on a version 25 database: one URL per derived sbc_ id, cascading from oauth_client (T13.11, FR-MCP-19)", () => {
+  it("0027 adds oauth_cimd_client on a version 26 database: one URL per derived sbc_ id, cascading from oauth_client (T13.11, FR-MCP-19)", () => {
     db = new Database(path.join(dir, LEDGER_FILE_NAME));
     db.pragma("foreign_keys = ON");
     const d = db;
-    const upTo25 = MIGRATIONS.filter((m) => m.version <= 25);
-    expect(migrate(d, undefined, upTo25)).toEqual(upTo25.map((m) => m.version));
+    const upTo26 = MIGRATIONS.filter((m) => m.version <= 26);
+    expect(migrate(d, undefined, upTo26)).toEqual(upTo26.map((m) => m.version));
     expect(
       migrate(
         d,
         undefined,
-        MIGRATIONS.filter((m) => m.version <= 26),
+        MIGRATIONS.filter((m) => m.version <= 27),
       ),
-    ).toEqual([26]);
+    ).toEqual([27]);
     const client = d.prepare(
       `INSERT INTO oauth_client (client_id, redirect_uris_json, grant_types_json, status, created_at)
        VALUES (?, '["https://app.example/cb"]', '["authorization_code"]', 'pending', '2026-10-19T00:00:00Z')`,

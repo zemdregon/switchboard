@@ -1,5 +1,5 @@
 /**
- * Migration 0026 (T13.11; FR-MCP-19, LLD §20.11, ADR-0063): `oauth_cimd_client`, the Client Identifier URL of each
+ * Migration 0027 (T13.11; FR-MCP-19, LLD §20.11, ADR-0063): `oauth_cimd_client`, the Client Identifier URL of each
  * OAuth client that identified itself with a Client ID Metadata Document. The client's row in `oauth_client` is keyed
  * by the `sbc_` identifier derived from the URL (128 bits of its SHA-256), so tokens, meta-session bindings and the
  * `transport.http.clients` mapping keep the identifier form every existing table checks; this table keeps the URL

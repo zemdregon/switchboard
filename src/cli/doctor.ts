@@ -32,7 +32,14 @@ import {
   type OuterSandboxAvailability,
   outerSandboxRefusal,
 } from "../exec/outer-sandbox.js";
-import { currentSchemaVersion, LEDGER_FILE_NAME, MIGRATIONS } from "../ledger/index.js";
+import {
+  type ChainVerification,
+  currentSchemaVersion,
+  hasChainColumns,
+  LEDGER_FILE_NAME,
+  MIGRATIONS,
+  verifyChain,
+} from "../ledger/index.js";
 import { inspectDataDirLock } from "../lock/index.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { type AppliedOverride, validateProfileOverrides } from "../policy/index.js";
@@ -281,6 +288,44 @@ function checkLedger(dataDir: string): DoctorCheck {
     return check("ledger", "Ledger", "ok", `${file} opens, schema version ${v} (current)`);
   } catch (err) {
     return check("ledger", "Ledger", "fail", `cannot open ${file}: ${(err as Error).message.split("\n")[0]}`);
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * Hash chains of `run_event` and approval rows (T8.13; FR-TEL-05, ADR-0064). Read-only. `ok` with each chain's length
+ * and head hash (an operator can record them elsewhere to notice a truncated tail later), or `fail` naming the table
+ * and the first broken row's id. Detects edits made without the chain code, not a rewrite of the whole chain.
+ */
+function checkLedgerChain(dataDir: string): DoctorCheck {
+  const label = "Ledger hash chain";
+  const file = path.join(dataDir, LEDGER_FILE_NAME);
+  if (!existsSync(file)) return check("ledger_chain", label, "skip", "skipped: no ledger yet");
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(file, { readonly: true, fileMustExist: true });
+    if (!hasChainColumns(db))
+      return check("ledger_chain", label, "skip", "skipped: chain migration pending (serve migrates)");
+    const results: ChainVerification[] = [verifyChain(db, "run_event"), verifyChain(db, "approval")];
+    const bad = results.find((r) => r.broken !== undefined);
+    if (bad?.broken !== undefined) {
+      const at = bad.broken.chain_seq === null ? "" : ` (chain_seq ${bad.broken.chain_seq})`;
+      return check(
+        "ledger_chain",
+        label,
+        "fail",
+        `${bad.table} chain broken at row ${bad.broken.id}${at}: ${bad.broken.reason}; ${bad.length} row(s) before it verify`,
+      );
+    }
+    return check(
+      "ledger_chain",
+      label,
+      "ok",
+      results.map((r) => `${r.table}: ${r.length} row(s) linked, head ${r.head}`).join("; "),
+    );
+  } catch (err) {
+    return check("ledger_chain", label, "fail", `cannot verify ${file}: ${(err as Error).message.split("\n")[0]}`);
   } finally {
     db?.close();
   }
@@ -608,7 +653,8 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   }
 
   if (cfg) {
-    checks.push(checkDataDir(cfg.dataDir), checkLedger(cfg.dataDir), checkLock(cfg.dataDir));
+    checks.push(checkDataDir(cfg.dataDir), checkLedger(cfg.dataDir), checkLedgerChain(cfg.dataDir));
+    checks.push(checkLock(cfg.dataDir));
     checks.push(...(await checkRetentionAndOrphans(cfg, (io.now ?? (() => new Date()))())));
     const disk = checkDiskFloor(cfg, io.diskProbe ?? statfsDiskProbe);
     if (disk) checks.push(disk);
@@ -619,6 +665,7 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     for (const [id, label] of [
       ["data_dir", "Data directory"],
       ["ledger", "Ledger"],
+      ["ledger_chain", "Ledger hash chain"],
       ["lock", "Data-dir lock"],
       ["gc", "Retention GC"],
       ["orphans", "Orphan sweep"],

@@ -31,7 +31,7 @@
  *
  * Inside Switchboard a CIMD client is keyed by {@link cimdInternalClientId}, a `sbc_` identifier derived from the URL,
  * so tokens, meta-session bindings and the `transport.http.clients` mapping keep the identifier form every table
- * checks; the URL itself is kept beside it (`oauth_cimd_client`, migration 0026) and shown to the operator.
+ * checks; the URL itself is kept beside it (`oauth_cimd_client`, migration 0027) and shown to the operator.
  */
 import { hash } from "node:crypto";
 import type { LookupAddress, LookupOptions } from "node:dns";

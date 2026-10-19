@@ -28,7 +28,7 @@ import { type ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { type SeedSpec, seedPathProblem } from "../config/projects.js";
 import { type OuterSandboxAvailability, procStartTicks } from "../exec/index.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
-import type { TrustProfile } from "../ledger/index.js";
+import { insertChainedRunEvent, type TrustProfile } from "../ledger/index.js";
 import {
   startVerification,
   type VerificationCommandResult,
@@ -736,12 +736,13 @@ class LedgerSeedStore implements SeedStore {
     try {
       this.db
         .transaction(() => {
-          const seq = this.db
-            .prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM run_event WHERE run_id = ?")
-            .get(runId) as { n: number };
-          this.db
-            .prepare("INSERT INTO run_event (id, run_id, seq, ts, type, payload_json) VALUES (?, ?, ?, ?, ?, ?)")
-            .run(this.ids.id("evt"), runId, seq.n, this.now().toISOString(), type, JSON.stringify(payload));
+          insertChainedRunEvent(this.db, {
+            id: this.ids.id("evt"),
+            runId,
+            ts: this.now().toISOString(),
+            type,
+            payloadJson: JSON.stringify(payload),
+          });
         })
         .immediate();
     } catch {

@@ -280,7 +280,7 @@ describe("skill continuity across handoff and resume (T16.10)", () => {
 
     // Handoff to the second fake (prompt prefix). The bundle lists A's skills as facts, never their text.
     const toB = await prepare(a.metaSessionId, "fake");
-    expect(toB.built.bundle.version).toBe(2);
+    expect(toB.built.bundle.version).toBe(3); // T5.14 moved the bundle to version 3
     expect(toB.built.bundle.skills).toEqual(
       pinned(["alpha-docs", "beta-review"]).map((s) => ({ run_id: a.runId, ...s })),
     );
