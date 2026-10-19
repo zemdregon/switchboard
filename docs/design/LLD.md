@@ -483,7 +483,7 @@ registry table, `BUILTIN_PROVIDERS` in `src/adapters/providers.ts`; `ProviderId`
 | `grok-build` | `grok` | Module `src/adapters/grok/` (T4.22; manifest range admits no version) | None (its long bypass flags are shared `BYPASS_FLAGS`) | Values `--permission-mode bypassPermissions`; `--allow` and `--allowed-tools` with `*` or `**` (catch-all, Proposed) ([TDD §4.3.1](TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420)); active since T4.22 |
 | `antigravity` | `antigravity` | Module `src/adapters/antigravity/` (T4.32; manifest range `>=1.4.2 <1.5.0` since the live `adapters validate` pass on 2026-10-18, T4.38) | `-dangerously-skip-permissions` (the two-dash form is shared), `--remote-control`, `-remote-control`, `--gemini_dir`, `-gemini_dir`, `--add-dir`, `-add-dir` ([TDD §4.4](TDD.md#44-antigravity-agy-m4), the T4.31 live check, [ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md); Proposed) | None ([TDD §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430): `always-proceed` is a settings value) |
 | `cursor` | `cursor` | Module `src/adapters/cursor/` (T4.42; manifest range admits no version) | `--auto-review`, `--worktree`, `--worktree-base`, `--skip-worktree-setup`, `--workspace`, `--add-dir`, `--plugin-dir`, `--api-key`, `--auth-token`, `--header`, `--endpoint` (`--force`, `--yolo`, `--approve-mcps` are shared; [TDD §4.5](TDD.md#45-cursor-cli-m4) and the T4.41 `--help`, Proposed) | Short `-f`, `-w`, `-H`, `-e`; value `--sandbox disabled` ([TDD §4.5](TDD.md#45-cursor-cli-m4), Proposed); active since T4.42 |
-| `opencode` | `opencode` | Module `src/adapters/opencode/` (T4.52; manifest range admits no version) | `--auto` ([TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450), Proposed; never emitted, Q-83) | None (the inline `allow` permission is carried in the environment, which the adapter never sets, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
+| `opencode` | `opencode` | Module `src/adapters/opencode/` (T4.52; manifest range `>=2.0.23 <2.1.0` since the live `adapters validate` pass on 2026-10-18, T4.58) | `--auto` ([TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450), Proposed; never emitted, Q-83) | None (the inline `allow` permission is carried in the environment, which the adapter never sets, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
 | `kimi-code` | `kimi` | Module `src/adapters/kimi/` (T4.62; manifest range `>=2.1.1 <2.2.0` since the live `adapters validate` pass on 2026-10-18, T4.68) | `--auto`, `--plan` (`--yolo` is shared; [ADR-0049](../adr/0049-kimi-code-transport-and-bypass-class.md), [TDD §4.7](TDD.md#47-kimi-code-m4-blocked-by-b-1)). `-p`/`--prompt` are bypass-class (ADR-0049) but not declared: the audit is shared and Claude Code `-p` and Antigravity `--prompt` are ordinary flags (Q-95); the compile gate alone emits `--prompt` | Short `-y`; ACP modes `auto`, `yolo` and the `mode` option with those values (ADR-0049 item 2); active since T4.62 |
 | `muse-code` | `muse` | Module `src/adapters/muse/` (T4.72; manifest range admits no version) | `--disable-approval`, `--disable-sandbox`, `--trust-workspace` (`--yolo` is shared; [TDD §4.8](TDD.md#48-muse-code-m4), Proposed) | Values `--approval-mode never`, `--sandbox-network unrestricted` and the deprecated alias `--sandbox-network enabled` (deliberate over-refusal; [TDD §4.8](TDD.md#48-muse-code-m4), Proposed); active since T4.72 |
 | none | `fake` | Test-only adapter (`serve` registers it only behind the test-only switch) | None | None |
@@ -796,7 +796,8 @@ Compile matrix and transport: [TDD §4.6](TDD.md#46-opencode-m4). Task status: [
 fixtures only; no `opencode` in CI).
 
 **As built (T4.52).** Module `src/adapters/opencode/`; manifest `src/adapters/manifests/opencode.json` (range
-`<0.0.0`). Transport `subprocess-jsonl` with `run --format json --standalone -- <prompt>`. Every non-`privileged`
+`>=2.0.23 <2.1.0` since the live `adapters validate` pass on 2026-10-18, T4.58). Transport `subprocess-jsonl` with
+`run --format json --standalone -- <prompt>`. Every non-`privileged`
 profile is `Ineligible: PROFILE_UNSUPPORTED` (Q-64); the sole compiled shape is the Q-83 bypass cell without `--auto`.
 
 - **Tests:** `src/adapters/opencode/opencode.test.ts` (`opencode compile matrix (T4.52)`, `opencode bypass-class
@@ -804,8 +805,9 @@ profile is `Ineligible: PROFILE_UNSUPPORTED` (Q-64); the sole compiled shape is 
   gate (T4.52)`).
 
 **As built (T4.53, Done against its Done-when under owner decision 65 (a)).** `parseEvent`, `extractResult`,
-`classifyFailure` and `resumeArgs` in `adapter.ts`;
-`--format json` fields in `protocol.ts`. Success needs a `step_finish` with `reason` `stop` (Q-85). Hardening
+`classifyFailure` and `resumeArgs` in `adapter.ts`; `--format json` fields in `protocol.ts`. Success needs a
+`step_finish` with `reason` `stop` (Q-85), or a text-only reply with no tool event and no `step_finish`
+(owner decision 68, Q-85 narrowed). Hardening
 ([#229](https://github.com/zemdregon/switchboard/pull/229)): finite non-negative usage only; unknown `type` clipped to
 64 characters; changed `sessionID` ends `OUTPUT_PROTOCOL_ERROR`; non-object roots and unstructured errors fail closed.
 Nested tests `cases with no recorded native shape (live check rows 7, 11, 14c)` pin row 11 (out-of-worktree denial not
@@ -817,8 +819,8 @@ detected at exit 0), row 14c (rate limit `TOOL_FAILURE`) and omitted tool input 
   T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 **Not covered here:** conformance (T4.55 Done), malicious leg (T4.56 Done against its Done-when under
-owner decision 65 (b)), Git declaration (T4.57 Done), operator
-live validate (T4.58).
+owner decision 65 (b)), Git declaration (T4.57 Done), operator live smoke and live malicious leg (T4.58; the
+`adapters validate` cell passed live on 2026-10-18).
 
 ### 2.1 Model registry (M4, T4.5)
 

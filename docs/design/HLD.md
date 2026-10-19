@@ -438,7 +438,8 @@ modules from nowhere outside `src/inner/`, and not imported by the `inner test` 
   `ARGV_AUDIT` spawns nothing; an eligible gate spawns only the TDD §4.6 tool-free argv with the deny-all environment
   and an empty argv audit; a tool call in the stream is refused), `src/inner/cli-doctor-surfaces.test.ts` and
   `src/cli/inner.test.ts` (the shipped surfaces stay `no_backend`/`Ineligible` with no process). Modules:
-  `src/inner/cli-backend.ts` (`CLI_TOOL_FREE_VERIFICATION` null; the shipped manifest range `<0.0.0`, so a configured
+  `src/inner/cli-backend.ts` (`CLI_TOOL_FREE_VERIFICATION` null; the shipped manifest range `>=2.0.23 <2.1.0`
+  since the T4.58 live pass (the null verification alone keeps the gate closed), so a configured
   `cli` kind stays `no_backend`). Done 2026-10-18 on the gate (owner decision 66); no OpenCode release through v2.0.32
   offers a tool-free control ([TDD §4.6.7](TDD.md#467-t110-live-result-2026-10-17)).
 
