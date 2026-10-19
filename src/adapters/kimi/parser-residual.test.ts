@@ -29,6 +29,7 @@ import {
   RESUMED_SESSION_ID,
   replayAdapter,
 } from "./fixtures/cases.js";
+import { deferredAcpInvocation } from "./fixtures/deferred-acp.js";
 
 const dirs: string[] = [];
 const makeCwd = () => {
@@ -54,6 +55,14 @@ const exitWith = (exitCode: number | null, signal: string | null = null): ExitIn
   exitCode,
   signal,
 });
+/** T4.68 bypass-only gate: a privileged scope without `bypass` (the ACP approval cell) is never compiled. */
+const expectApprovalRefused = (r: unknown): void => {
+  expect(r).toMatchObject({
+    ineligible: true,
+    reason: "PROFILE_UNSUPPORTED",
+    detail: expect.stringContaining("Kimi has no permission requests"),
+  });
+};
 const SID = "session_9f1c2b44-0d5e-4a77-8f3a-2b6c1d0e7a55";
 const VERSION = { role: "meta", type: "system.version", version: "2.1.1" };
 const hint = (id: string = SID) => ({
@@ -471,14 +480,11 @@ describe("kimi resumeArgs (T4.63, FR-SES-03)", () => {
     expect(auditInvocation(resumed)).toEqual([]);
   });
 
-  it("restricted: the same `kimi acp` argv with an ACP session/resume of the id, mode and model kept", () => {
+  it("restricted: compile and resume are both Ineligible PROFILE_UNSUPPORTED (no permission requests), model or not", () => {
     for (const profile of [restricted, readOnly]) {
       const req = request({ model: "kimi-code/k3", bypassApproved: false });
-      const fresh = compiled(adapter().compile(req, profile));
-      const resumed = compiled(adapter().resumeArgs({ provider: "kimi", nativeSessionId: SID }, req, profile));
-      expect(resumed.argv).toEqual(fresh.argv);
-      expect(resumed.acp?.session).toEqual({ kind: "resume", nativeSessionId: SID });
-      expect({ ...resumed.acp, session: { kind: "new" } }).toEqual(fresh.acp);
+      expectApprovalRefused(adapter().compile(req, profile));
+      expectApprovalRefused(adapter().resumeArgs({ provider: "kimi", nativeSessionId: SID }, req, profile));
     }
   });
 
@@ -832,7 +838,7 @@ describe("kimi parser residuals, seventh pass (T4.63, synthetic only)", () => {
     expect(inv.stdin).toEqual({ kind: "none" });
   });
 
-  it("a non-writable workspace: bypass resume is Ineligible as compile is; restricted resume keeps `plan` mode", () => {
+  it("a non-writable workspace: bypass resume is Ineligible as compile is; restricted resume is refused by the bypass-only gate", () => {
     const binding = { provider: "kimi", nativeSessionId: SID } as const;
     const req = request({ workspace: { cwd: makeCwd(), writable: false } });
     const fresh = adapter().compile(req, PRIVILEGED_BYPASS_PROFILE);
@@ -840,12 +846,8 @@ describe("kimi parser residuals, seventh pass (T4.63, synthetic only)", () => {
     expect(adapter().resumeArgs(binding, req, PRIVILEGED_BYPASS_PROFILE)).toEqual(fresh);
     const restricted = privilegedProfile({ ...BYPASS_SCOPE, bypass: false });
     const rreq = { ...req, bypassApproved: false };
-    const resumed = compiled(adapter().resumeArgs(binding, rreq, restricted));
-    expect(resumed.acp).toMatchObject({ modeId: "plan", session: { kind: "resume", nativeSessionId: SID } });
-    expect(compiled(adapter().compile(rreq, restricted)).acp).toMatchObject({
-      modeId: "plan",
-      session: { kind: "new" },
-    });
+    expectApprovalRefused(adapter().resumeArgs(binding, rreq, restricted));
+    expectApprovalRefused(adapter().compile(rreq, restricted));
   });
 
   it("the replayed resume argv is the bypass cell's three words plus `--session <id>`", () => {
@@ -1073,7 +1075,7 @@ describe("kimi parser residuals, eighth pass (T4.63, synthetic only)", () => {
     }
   });
 
-  it("a restricted scope allowlist naming Git resumes over ACP, and the permission answer still refuses the call", () => {
+  it("a restricted scope allowlist naming Git is refused at resume, and the Deferred ACP permission answer still refuses the call", () => {
     // Check 0 reads the profile-level `shellAllowlist` only; a privileged scope's own allowlist compiles here.
     const gitRestricted = privilegedProfile({
       ...BYPASS_SCOPE,
@@ -1081,7 +1083,8 @@ describe("kimi parser residuals, eighth pass (T4.63, synthetic only)", () => {
       shell: { mode: "allowlist", allowlist: [["git", "commit"]] },
     });
     const req = request({ bypassApproved: false });
-    const inv = compiled(adapter().resumeArgs(binding, req, gitRestricted));
+    expectApprovalRefused(adapter().resumeArgs(binding, req, gitRestricted));
+    const inv = deferredAcpInvocation({ exe: EXE, cwd: req.workspace.cwd, resumeId: SID });
     expect(inv.acp?.session).toEqual({ kind: "resume", nativeSessionId: SID });
     // The Kimi registry entry declares no `parseExecute`, so an allowlisted `execute` is never allowed (fail closed).
     const decl = acpDeclarations("kimi");
@@ -1115,9 +1118,15 @@ describe("kimi parser residuals, eighth pass (T4.63, synthetic only)", () => {
     expect(first.env).toEqual({});
   });
 
-  it("restricted resume puts the id only in the ACP plan, never in argv, with no `mcpServers` and no prompt in argv", () => {
+  it("restricted resume is refused; the Deferred ACP plan puts the id only in the plan, never in argv, with no `mcpServers` and no prompt in argv", () => {
     const restricted = privilegedProfile({ ...BYPASS_SCOPE, bypass: false });
-    const inv = compiled(adapter().resumeArgs(binding, request({ bypassApproved: false }), restricted));
+    expectApprovalRefused(adapter().resumeArgs(binding, request({ bypassApproved: false }), restricted));
+    const inv = deferredAcpInvocation({
+      exe: EXE,
+      cwd: "/work/tree",
+      resumeId: SID,
+      prompt: "synthetic kimi objective",
+    });
     expect(inv.argv).toEqual([EXE, "acp"]);
     expect(inv.policyFlags).toEqual([]);
     expect(inv.acp).toMatchObject({
@@ -1377,16 +1386,15 @@ describe("kimi parser residuals, ninth pass (T4.63, synthetic only)", () => {
     expect(events[0]).toEqual({ kind: "provider_error", category: "protocol", message: UNSAFE });
   });
 
-  it("resume parity: the `--session` word and the bound id are the same string, and a case-different id is a different id", () => {
+  it("resume parity: the `--session` word and the bound id are the same string, a case-different id is a different id, and the approval cell is refused", () => {
     for (const id of [SID, CAPTURED_SESSION_ID, RESUMED_SESSION_ID, "a.b:c-d_e"]) {
       const inv = compiled(adapter().resumeArgs(binding(id), request(), PRIVILEGED_BYPASS_PROFILE));
       const { events, state } = parse([line(hint(id))]);
       expect(state.nativeSessionId, id).toBe(inv.argv.at(-1));
       expect(extract(events).nativeSessionId, id).toBe(inv.argv.at(-1));
-      // The restricted cell carries the same string in its ACP plan.
+      // The restricted (approval) cell is refused by the bypass-only gate, whatever the id.
       const restricted = privilegedProfile({ ...BYPASS_SCOPE, bypass: false });
-      const acp = compiled(adapter().resumeArgs(binding(id), request({ bypassApproved: false }), restricted));
-      expect(acp.acp?.session).toEqual({ kind: "resume", nativeSessionId: inv.argv.at(-1) });
+      expectApprovalRefused(adapter().resumeArgs(binding(id), request({ bypassApproved: false }), restricted));
     }
     const { events, state } = parse([line(hint(SID)), line(hint(SID.toUpperCase()))]);
     expect(state.nativeSessionId).toBe(SID);
