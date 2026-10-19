@@ -218,7 +218,7 @@ transaction; no hostile-pack behavioural test and no `rag.retrieve` span) are li
 `src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). Remaining gap: the tool's `global`/`both` scopes still
 answer `GLOBAL_NOT_AVAILABLE` (ROADMAP T12.7).
 
-### 4.2 COMP-ADP M4 parser implementation evidence (`Partial`)
+### 4.2 COMP-ADP M4 parser implementation evidence (Done against its Done-when)
 
 Milestone boundaries and Done-when gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.23`, `T4.33`,
 `T4.43`, `T4.53`). Mechanism and failure taxonomy: [LLD §2](LLD.md#2-adapter-contract), [LLD §4](LLD.md#4-failure-taxonomy);
@@ -227,14 +227,14 @@ provider-specific as-built detail in [LLD §2.0](LLD.md#20-antigravity-adapter-i
 [§2.0.2](LLD.md#202-opencode-adapter-implementation-evidence-m4-t452-t453); sourcing in [TDD
 §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433), [§4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443)
 and [§4.6.5](TDD.md#465-opencode-parser-implementation-evidence-m4-t453). HLD component evidence: [§2.2
-T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-partial), [§2.3
+T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-done-against-its-done-when), [§2.3
 T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-done-against-its-done-when), [§2.4
 T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 | Task | Requirements (primary) | Tests (parser suites) |
 | --- | --- | --- |
 | T4.23 Grok Build (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-EXE-03 | `src/adapters/grok/grok.test.ts` (`grok parser to resume round trip (T4.23 residual; SYNTHETIC lines, parser unchanged)`); `src/adapters/grok/protocol.ts` EVENT comment ([#384](https://github.com/zemdregon/switchboard/pull/384)); [ROADMAP T4.23](../ROADMAP.md#68-m4-adapter-expansion-tasks) ([#385](https://github.com/zemdregon/switchboard/pull/385)) |
-| T4.33 Antigravity (`Partial`) | FR-ADP-04, FR-CAP-01, FR-SES-03 | `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`, `antigravity parser hardening (T4.33, synthetic shapes)`) |
+| T4.33 Antigravity (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-CAP-01, FR-SES-03 | `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`, `antigravity parser hardening (T4.33, synthetic shapes)`, `antigravity cases with no recorded native shape (T4.33, synthetic shapes)`, `antigravity parser fallbacks and exact matching (T4.33, synthetic shapes)`); `src/adapters/antigravity/parser-residual.test.ts` |
 | T4.43 Cursor (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/cursor/cursor.test.ts` (`cursor parser and result (T4.43)`, `cursor parser hardening (T4.43, synthetic shapes)`, `cursor parser residual branches (T4.43, synthetic)`); `src/adapters/cursor/parser-residual.test.ts` and `fixtures/idless_guard.jsonl` ([#360](https://github.com/zemdregon/switchboard/pull/360)) |
 | T4.53 OpenCode (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/opencode/opencode.test.ts` (`opencode parser and result (T4.53)`, nested `cases with no recorded native shape (live check rows 7, 11, 14c)`) |
 
@@ -314,8 +314,8 @@ T12.5 admission pack design for FR-RAG-05, FR-RAG-07 and FR-RAG-08 is in [LLD
 §14.11](LLD.md#1411-admission-context-pack-t125) and [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14);
 implementation evidence is in [§4.1](#t125--admission-context-pack-design-intent). M4 adapter parser hardening on
 synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode;
-T4.43 and T4.53 are Done against their Done-when under owner decision 65 (a), the rest stay `Partial`)
-is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial).
+T4.23, T4.33, T4.43 and T4.53 are Done against their Done-when under owner decision 65 (a))
+is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-done-against-its-done-when).
 
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
 | --- | --- | --- | --- | --- |
@@ -339,7 +339,7 @@ is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial)
 | FR-ADP-01 | COMP-ADP | Ports-and-adapters: one adapter port, per-provider implementations behind a registry | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-02 | COMP-ADP, COMP-EXE | Ordered preflight pipeline with cached result per adapter | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-03 | COMP-ADP, COMP-RTE, COMP-OPS | Adapter state machine with ADAPTER_VERSION_UNVERIFIED; eligibility filter reads it; operator acceptance via adapters validate; operator-scheduled version canary (T8.5, [§4.4](#44-comp-tel-and-version-canary-implementation-evidence-m8-t81t86)) | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract), [LLD §1](LLD.md#1-data-model) |
-| FR-ADP-04 | COMP-ADP | Parsers consume native JSON/JSONL/ACP messages only; no free-text inference of ids, status or usage | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §2](LLD.md#2-adapter-contract), M4 parser evidence [§4.2](SDD.md#42-comp-adp-m4-parser-implementation-evidence-partial) |
+| FR-ADP-04 | COMP-ADP | Parsers consume native JSON/JSONL/ACP messages only; no free-text inference of ids, status or usage | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §2](LLD.md#2-adapter-contract), M4 parser evidence [§4.2](SDD.md#42-comp-adp-m4-parser-implementation-evidence-done-against-its-done-when) |
 | FR-ADP-05 | COMP-ADP | Refreshable model registry (operator config plus provider listing commands), outside adapter source | — | [TDD §4](TDD.md#4-provider-adapter-strategy), [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-06 | COMP-ADP | Claude Code adapter is the first real adapter behind the port | [ADR-0009](../adr/0009-version-gated-adapters.md) | [TDD §4](TDD.md#4-provider-adapter-strategy) |
 | FR-ADP-07 | COMP-ADP | Codex, Grok Build, Antigravity, Cursor adapters behind the same port | [ADR-0009](../adr/0009-version-gated-adapters.md) | [TDD §4](TDD.md#4-provider-adapter-strategy) |
