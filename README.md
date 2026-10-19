@@ -1727,7 +1727,8 @@ synthetic checks, not native captures of rate limiting, sandbox enforcement or `
 [#272](https://github.com/zemdregon/switchboard/pull/272)). Tool parameter aliases remain **Assumptions** until
 operator captures confirm their native shapes. Later updates that supply or change a command or path reach the
 guard again; commands under unrecorded parameter keys remain unseen. Native resume, blocked outcomes and provider
-validation stay open under ROADMAP T4.33, T4.35, T4.36 and T4.38.
+validation stay open under ROADMAP T4.35 and T4.38 (T4.33 and T4.36 are Done against their Done-when under owner
+decision 65; their remaining native shapes are carried by T4.38).
 
 Residual parser pins ([#344](https://github.com/zemdregon/switchboard/pull/344), "antigravity parser residual pins
 (T4.33, synthetic shapes)") record a second guard gap: tool parameters on a step whose `step_type` is not exactly
