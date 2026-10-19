@@ -18,7 +18,7 @@ import {
   checkExpectation,
   runConformanceCase,
 } from "../conformance.js";
-import type { Invocation } from "../types.js";
+import type { Ineligible, Invocation } from "../types.js";
 import type { AntigravityAdapter } from "./adapter.js";
 import {
   ANTIGRAVITY_RUNNABLE_KINDS,
@@ -39,14 +39,24 @@ afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
+/** `c`'s compiled invocation: `resumeArgs` for the resume case (owner decision 67), `compile` otherwise. */
+const compiledOf = (c: ConformanceCase): Invocation | Ineligible =>
+  c.binding ? c.adapter.resumeArgs(c.binding, c.request, c.profile) : c.adapter.compile(c.request, c.profile);
+/** The adapter methods that compile an invocation; the proxies below rewrite what either returns. */
+const COMPILERS = new Set<PropertyKey>(["compile", "resumeArgs"]);
+const callCompiler = (target: AntigravityAdapter, key: PropertyKey, args: unknown[]): Invocation | Ineligible =>
+  key === "compile"
+    ? target.compile(...(args as Parameters<AntigravityAdapter["compile"]>))
+    : target.resumeArgs(...(args as Parameters<AntigravityAdapter["resumeArgs"]>));
+
 /** `c` with its compiled argv rewritten by `edit`. A Proxy, because the adapter's `#` members reject a copy. */
 const refusedBy = (c: ConformanceCase, edit: (argv: string[]) => string[]): ConformanceCase => {
   const a = c.adapter as AntigravityAdapter;
   const adapter = new Proxy(a, {
     get(target, key) {
-      if (key === "compile") {
-        return (...args: Parameters<AntigravityAdapter["compile"]>) => {
-          const inv = target.compile(...args);
+      if (COMPILERS.has(key)) {
+        return (...args: unknown[]) => {
+          const inv = callCompiler(target, key, args);
           return "ineligible" in inv ? inv : ({ ...inv, argv: edit(inv.argv), policyFlags: [] } satisfies Invocation);
         };
       }
@@ -59,7 +69,7 @@ const refusedBy = (c: ConformanceCase, edit: (argv: string[]) => string[]): Conf
 
 const runnable = () => antigravityConformanceCases(makeCwd).filter((c) => ANTIGRAVITY_RUNNABLE_KINDS.includes(c.kind));
 const fixtureOf = (c: ConformanceCase): string => {
-  const inv = c.adapter.compile(c.request, c.profile);
+  const inv = compiledOf(c);
   const path = "ineligible" in inv ? undefined : inv.argv.find((w) => w.endsWith(".jsonl"));
   return path?.slice(path.lastIndexOf("/") + 1, -".jsonl".length) ?? "";
 };
@@ -103,7 +113,7 @@ describe("antigravity whole-stream order shapes in the case list (T4.35, T4.33 f
     const listed = (fixture: string) =>
       cases
         .filter((c) => {
-          const inv = c.adapter.compile(c.request, c.profile);
+          const inv = compiledOf(c);
           return !("ineligible" in inv) && inv.argv.includes(fixturePath(fixture));
         })
         .map((c) => [c.kind, c.expect]);
@@ -165,8 +175,9 @@ describe("antigravity fixture inventory (T4.35, FR-ADP-11)", () => {
       "replays to a success: fractional and unreconciled counters are recorded as reported (T4.33 gap, pinned)",
     agy_error_quota:
       "replays to TOOL_FAILURE `exit code 3` like agy_error_exit3 (extractResult gets no stderr); the T6.15 mapping of its stderr AGY_ERROR line is shown in limit-signals.test.ts from the run's stderr tail",
-    resume_failure: "needs `--conversation <id>`, which is not compiled while resumeArgs is Ineligible (Q-86)",
-    resume_unknown_id: "needs `--conversation <id>`, which is not compiled while resumeArgs is Ineligible (Q-86)",
+    resume_failure: "replayed through resumeArgs as a resume variant in antigravity.test.ts (owner decision 67)",
+    resume_missing_id: "replayed through resumeArgs as a resume variant in antigravity.test.ts (owner decision 67)",
+    resume_unknown_id: "replayed through resumeArgs as a resume variant in antigravity.test.ts (owner decision 67)",
   };
   const dir = dirname(fixturePath("hang"));
   const onDisk = readdirSync(dir)
@@ -197,7 +208,7 @@ describe("antigravity fixture inventory (T4.35, FR-ADP-11)", () => {
 describe("antigravity timeout cases through the replay (T4.35, FR-ADP-11)", () => {
   const timeouts = () => antigravityConformanceCases(makeCwd).filter((c) => c.kind === "timeout");
   const own = (c: ConformanceCase): string[] => {
-    const inv = c.adapter.compile(c.request, c.profile);
+    const inv = compiledOf(c);
     return "ineligible" in inv ? [] : inv.argv.slice(0, inv.argv.indexOf("--"));
   };
 
@@ -226,7 +237,7 @@ describe("antigravity timeout cases through the replay (T4.35, FR-ADP-11)", () =
 
 /** `kind:fixture` plus the replay options that change the run, so two cases on one fixture get distinct labels. */
 const label = (c: ConformanceCase): string => {
-  const inv = c.adapter.compile(c.request, c.profile);
+  const inv = compiledOf(c);
   const own = "ineligible" in inv ? [] : inv.argv.slice(0, inv.argv.indexOf("--"));
   const opts = [
     own.includes("--exit-code") ? `exit ${own[own.indexOf("--exit-code") + 1]}` : "",
@@ -391,9 +402,9 @@ describe("antigravity whole-stream order: which cases pin the order of their own
     const a = c.adapter as AntigravityAdapter;
     const adapter = new Proxy(a, {
       get(target, key) {
-        if (key === "compile") {
-          return (...args: Parameters<AntigravityAdapter["compile"]>) => {
-            const inv = target.compile(...args);
+        if (COMPILERS.has(key)) {
+          return (...args: unknown[]) => {
+            const inv = callCompiler(target, key, args);
             if ("ineligible" in inv) return inv;
             const at = inv.argv.indexOf("--fixture") + 1;
             const [meta = "", ...events] = readFileSync(inv.argv[at] ?? "", "utf8")
@@ -504,7 +515,7 @@ describe("the antigravity replay dialect refuses every one-word slip in the comp
   it("the compiled provider argv is the four words the dialect expects", () => {
     const c = runnable()[0];
     if (!c) throw new Error("no case");
-    const inv = c.adapter.compile(c.request, c.profile);
+    const inv = compiledOf(c);
     expect("ineligible" in inv ? [] : inv.argv.slice(inv.argv.indexOf("--") + 1)).toEqual(COMPILED);
   });
 
@@ -567,7 +578,7 @@ describe("the compiled run survives objectives the argv could misread (T4.35, co
     async (_label, objective) => {
       const base = success();
       const c = { ...base, request: { ...base.request, objective } };
-      const inv = c.adapter.compile(c.request, c.profile);
+      const inv = compiledOf(c);
       if ("ineligible" in inv) throw new Error("hostile objective must compile");
       expect(inv.argv.slice(inv.argv.indexOf("--") + 1)).toEqual([
         `--prompt=${objective}`,
@@ -614,9 +625,9 @@ describe("every antigravity conformance case fails a compile whose environment t
     const a = c.adapter as AntigravityAdapter;
     const adapter = new Proxy(a, {
       get(target, key) {
-        if (key === "compile") {
-          return (...args: Parameters<AntigravityAdapter["compile"]>) => {
-            const inv = target.compile(...args);
+        if (COMPILERS.has(key)) {
+          return (...args: unknown[]) => {
+            const inv = callCompiler(target, key, args);
             return "ineligible" in inv ? inv : ({ ...inv, env: edit(inv.env) } satisfies Invocation);
           };
         }
@@ -653,7 +664,7 @@ describe("antigravity empty stream at a clean exit (T4.35, stream/exit interacti
   // and unknown events; `unknown_events` keeps five).
   it("lists exactly one case on empty_exit0, with the expectation", () => {
     const listed = antigravityConformanceCases(makeCwd).filter((c) => {
-      const inv = c.adapter.compile(c.request, c.profile);
+      const inv = compiledOf(c);
       return !("ineligible" in inv) && inv.argv.includes(fixturePath("empty_exit0"));
     });
     expect(listed.map((c) => [c.kind, c.expect])).toEqual([
@@ -699,9 +710,9 @@ describe("antigravity capture-file encodings through the replay (T4.35, stream f
     const a = c.adapter as AntigravityAdapter;
     const adapter = new Proxy(a, {
       get(target, key) {
-        if (key === "compile") {
-          return (...args: Parameters<AntigravityAdapter["compile"]>) => {
-            const inv = target.compile(...args);
+        if (COMPILERS.has(key)) {
+          return (...args: unknown[]) => {
+            const inv = callCompiler(target, key, args);
             if ("ineligible" in inv) return inv;
             const at = inv.argv.indexOf("--fixture") + 1;
             writeFileSync(copy, edit(readFileSync(inv.argv[at] ?? "", "utf8")));
@@ -759,7 +770,7 @@ describe("antigravity hang, host environment, probe and fixture-metadata interac
    * settle delay after the last line rather than racing the first byte.
    */
   const sigterm = async (c: ConformanceCase, events: number) => {
-    const inv = c.adapter.compile(c.request, c.profile);
+    const inv = compiledOf(c);
     if ("ineligible" in inv) throw new Error("hang case must compile");
     const [exe = "", ...args] = inv.argv;
     const child = spawn(exe, args, { cwd: inv.cwd, env: { PATH: process.env.PATH ?? "", ...inv.env } });
@@ -826,7 +837,7 @@ describe("antigravity hang, host environment, probe and fixture-metadata interac
     // supervisor drops the ones not allowlisted and the declared fragment wins, so the success still passes; if any
     // reached the replay it would exit 64.
     const c = successCase();
-    const inv = c.adapter.compile(c.request, c.profile);
+    const inv = compiledOf(c);
     if ("ineligible" in inv) throw new Error("success must compile");
     const HOST = {
       GEMINI_API_KEY: "synthetic-not-a-key",
@@ -880,14 +891,16 @@ describe("antigravity hang, host environment, probe and fixture-metadata interac
     expect(names.filter((n) => metaOf(n).requireResume === true)).toEqual([
       "resume",
       "resume_failure",
+      "resume_missing_id",
       "resume_unknown_id",
     ]);
   });
 
   it("only the first line carries `_fixture`, and the session placeholder appears only in resume fixtures", () => {
-    // The replay skips every `_fixture` line, so a later one would vanish from the stream; and `--conversation` is never
-    // compiled (Q-86), so a `{{SESSION_ID}}` placeholder in a fresh-run fixture would replay literally.
-    // resume_unknown_id has none: an unknown id lands in a new conversation (C9 run 5), so its id is fixed.
+    // The replay skips every `_fixture` line, so a later one would vanish from the stream; and `--conversation` is
+    // compiled only by resumeArgs, so a `{{SESSION_ID}}` placeholder in a fresh-run fixture would replay literally.
+    // resume_unknown_id has none: an unknown id lands in a new conversation (C9 run 5), so its id is fixed;
+    // resume_missing_id names no id at all.
     const later = (n: string, text: string) =>
       linesOf(n)
         .slice(1)
@@ -899,7 +912,7 @@ describe("antigravity hang, host environment, probe and fixture-metadata interac
   it("a case on a fixture that writes expects that path, unless its replay flag writes another", () => {
     const writes = runnable()
       .map((c) => {
-        const inv = c.adapter.compile(c.request, c.profile);
+        const inv = compiledOf(c);
         const own = "ineligible" in inv ? [] : inv.argv.slice(0, inv.argv.indexOf("--"));
         const flag = own.includes("--write") ? own[own.indexOf("--write") + 1] : undefined;
         return [label(c), flag ?? metaOf(fixtureOf(c)).write?.path, c.expect.mutatedPath] as const;
@@ -998,7 +1011,7 @@ describe("antigravity replay provenance, blank-line framing, exit source and fix
     const exits = runnable()
       .filter((c) => c.kind !== "timeout" && c.kind !== "cancellation")
       .map((c) => {
-        const inv = c.adapter.compile(c.request, c.profile);
+        const inv = compiledOf(c);
         const own = "ineligible" in inv ? [] : inv.argv.slice(0, inv.argv.indexOf("--"));
         const flag = own.includes("--exit-code") ? Number(own[own.indexOf("--exit-code") + 1]) : undefined;
         return [label(c), flag ?? Number(metaOf(fixtureOf(c)).exit ?? 0), c.expect.failureDetail] as const;

@@ -207,6 +207,12 @@ const seenToolCalls = new WeakMap<ParseState, Map<string, Set<string>>>();
 /** Category of a stream anomaly (two results, two session ids); classified OUTPUT_PROTOCOL_ERROR. */
 const PROTOCOL_CATEGORY = "protocol";
 const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
+/**
+ * T6.15 quota-stop phrases (`cursorQuotaClassification`): the `ActionRequiredError` marker is matched exactly (it is
+ * an identifier-like token), `out of usage` case-insensitively, both on one stderr line.
+ */
+const CURSOR_QUOTA_ERROR = "ActionRequiredError";
+const CURSOR_QUOTA_USAGE_RE = /out of usage/i;
 
 export class CursorAdapter implements ProviderAdapter {
   readonly id = "cursor" as const;
@@ -703,7 +709,9 @@ export class CursorAdapter implements ProviderAdapter {
    * closed, as Grok Build; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_call`
    * after the `result` line. The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS} characters. A
    * failed run prints no stream at all ([LIVE] 4, 14), so it ends `TOOL_FAILURE` on its exit code; the stderr text is
-   * not read (the adapter contract passes none).
+   * not read (the adapter contract passes none). The T6.15 `ActionRequiredError` quota mapping is not reached on this
+   * path either: it lives in `classifyFailure`, which a caller reaches with the stderr tail `startAdapterRun`
+   * (`src/adapters/run.ts`) already captures.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -758,6 +766,32 @@ export class CursorAdapter implements ProviderAdapter {
   }
 
   classifyFailure(evidence: FailureEvidence): FailureClassification {
-    return classifyCommon(evidence, CATEGORY_CODES);
+    const common = classifyCommon(evidence, CATEGORY_CODES);
+    if (common.code !== "TOOL_FAILURE") return common;
+    return cursorQuotaClassification(evidence) ?? common;
   }
+}
+
+/**
+ * T6.15 (FR-CAP-11, FR-ADP-04; accepted: owner decision 64, ADR-0058): the Cursor "out of usage" quota stop of the 2026-10-18 T6.11 capture
+ * (`cursor-20261018T091208Z.txt`, exit 1, stderr `ActionRequiredError: ... You're out of usage. ...`). A non-zero
+ * exited run whose stderr tail holds a line with both `ActionRequiredError` and `out of usage` maps to
+ * `QUOTA_EXHAUSTED`. Both phrases are required on one line so another `ActionRequiredError` text (for example a
+ * login prompt) is not misread; the detail names the matched signal only, never account text from the tail, and no
+ * account identifier is matched. Requires an unexpected exit, so exit 0 never maps; a cancelled run never maps.
+ * Replaces the common verdict only when it is `TOOL_FAILURE`: every more specific verdict (cancel, timeout, crash,
+ * the tool-call guard, a denial, an auth or model error, a protocol anomaly) stands, as Antigravity's
+ * `agyErrorClassification`. Reached only through `FailureEvidence.stderrTail`, which `extractResult` cannot supply.
+ */
+export function cursorQuotaClassification(evidence: FailureEvidence): FailureClassification | undefined {
+  const { exit } = evidence;
+  if (evidence.cancelled) return undefined;
+  if (exit.outcome !== "exited" || exit.exitCode === null || exit.expectedExitCodes.includes(exit.exitCode)) {
+    return undefined;
+  }
+  const hit = evidence.stderrTail
+    .split("\n")
+    .some((line) => line.includes(CURSOR_QUOTA_ERROR) && CURSOR_QUOTA_USAGE_RE.test(line));
+  if (!hit) return undefined;
+  return { code: "QUOTA_EXHAUSTED", detail: "quota: ActionRequiredError out of usage" };
 }
