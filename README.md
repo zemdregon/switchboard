@@ -292,13 +292,14 @@ Pre-release. The package is private and is not published to any registry; you bu
   so the manifest admits `>=2.0.23 <2.1.0`. T4.52, T4.54, T4.55 and T4.57 are Done against their
   Done-when on synthetic fixtures; T4.53 and T4.56 are Done against their Done-when under owner decision 65 (a) and (b),
   with their native-shape gaps carried by T4.58. Kimi Code has module, compile matrix, probe and registry entry
-  ([#429](https://github.com/zemdregon/switchboard/pull/429)), parser and resume (partial: T4.63, one scrubbed capture
-  plus synthetic fixtures, [#436](https://github.com/zemdregon/switchboard/pull/436)), auth preflight (partial: T4.64,
+  ([#429](https://github.com/zemdregon/switchboard/pull/429)), parser and resume (T4.63, three scrubbed captures
+  plus synthetic fixtures, [#436](https://github.com/zemdregon/switchboard/pull/436)), auth preflight (T4.64,
   [#444](https://github.com/zemdregon/switchboard/pull/444)), a conformance suite (T4.65,
-  [#455](https://github.com/zemdregon/switchboard/pull/455)), a malicious-fixture leg (partial: T4.66,
+  [#455](https://github.com/zemdregon/switchboard/pull/455)), a malicious-fixture leg (T4.66,
   [#459](https://github.com/zemdregon/switchboard/pull/459)) and a Git declaration (T4.67,
-  [#464](https://github.com/zemdregon/switchboard/pull/464)), all on synthetic fixtures except the T4.64 probe's
-  2026-10-18 live final-verify (auth `OK`; still `Partial` pending a scrubbed capture, ROADMAP T4.64) and the
+  [#464](https://github.com/zemdregon/switchboard/pull/464)); T4.63, T4.64 and T4.66 are Done against their Done-when
+  under owner decision 65 (a), (d) and (b), and T4.65 and T4.67 are Done against their Done-when (2026-10-15),
+  on synthetic fixtures except the T4.64 probe's two live `validate` runs (auth `OK`) and the
   T4.68 live `adapters validate` pass on 2026-10-18 (CLI 2.1.1, manifest range `>=2.1.1 <2.2.0`) (README
   [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke and the live malicious leg
   remain operator work (T4.68). The Grok Build, Cursor and Muse Code manifests still admit
@@ -309,12 +310,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
   Antigravity reach the smoke step in the adapter's only compiled cell instead (T4.4));
    rows waiting on uncaptured live shapes
-  (T4.35, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66; owner decision 65 sets when parser, CI
+  (T4.35, T4.51, T4.53, T4.56; owner decision 65 sets when parser, CI
   malicious-leg and README rows are `Done` against their Done-when; T4.33 and T4.36 are `Done`
   under decision 65 (a) and (b), remaining native shapes carried by T4.38); README rows final
   after their live legs
-  (T4.69; T4.29, T4.39, T4.49, T4.59 and T4.79 are `Done` except the post-T4.n8 update); Muse Code (Should) has module,
-  compile matrix, auth preflight,
+  (T4.29, T4.39, T4.49, T4.59, T4.69 and T4.79 are `Done` except the post-T4.n8 update);
+  Muse Code (Should) has module, compile matrix, auth preflight,
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
   [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
   is `Done` against its Done-when under owner decision 65 (a), with record spellings, session-id field and `terminal`
@@ -387,7 +388,7 @@ each provider's own CLI, and Switchboard asks that CLI whether it is logged in.
 | Antigravity | Launch **`agy`** without arguments (the adapter returns `AUTH_REQUIRED` naming `agy`; the CLI's stderr also says to launch without arguments to sign in) | Auth preflight runs `agy models` and keys on exit code and stderr (`<slug>\t<name>` lines at exit 0 vs `Error: Please sign in` at exit 1 on the 2026-10-14 live check, `agy` 1.3.4; [`docs/research/live-checks-2026-10-14-antigravity.md`](docs/research/live-checks-2026-10-14-antigravity.md)); check Google's Antigravity documentation for the login step |
 | Cursor CLI | `cursor-agent login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `cursor-agent status --format json` and keys on `isAuthenticated` (exit 0 both logged in and logged out on the 2026-10-14 live check; [`docs/research/live-checks-2026-10-14-cursor.md`](docs/research/live-checks-2026-10-14-cursor.md)); check Cursor's documentation for the login step |
 | OpenCode | `opencode auth login` (the adapter returns `AUTH_REQUIRED` naming it) | Auth preflight runs `opencode auth list --format json --standalone` and treats any non-environment connection type as logged in (exit 0 in every state on the 2026-10-14 live check, `opencode v2.0.23`; [`docs/research/live-checks-2026-10-14-opencode.md`](docs/research/live-checks-2026-10-14-opencode.md)); check OpenCode's documentation for the login step |
-| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe ran live once through Switchboard on 2026-10-18 (final-verify `validate kimi` on the fixed probe: `[ok] auth: OK`, ROADMAP T4.64), and `adapters validate kimi` has since passed live on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68); the remaining live cells are still T4.68; check Moonshot's Kimi Code documentation for the login step |
+| Kimi Code | `kimi login` (the adapter returns `AUTH_REQUIRED` naming it; Switchboard never runs `kimi login` or `kimi acp --login`) | No status command exists; auth preflight runs `kimi acp` and sends ACP `initialize` then `session/new`, keying on the JSON-RPC replies only: a `sessionId` is logged in, error `-32000` (`Authentication required`) is logged out (Kimi Code CLI 2.1.1, rows 8 to 10 of [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), no model call); the probe ran live twice through Switchboard on 2026-10-18 (final-verify `validate kimi` on the fixed probe and the `adapters validate kimi` pass, both `[ok] auth: OK`, ROADMAP T4.64 and T4.68); the remaining live cells are still T4.68; check Moonshot's Kimi Code documentation for the login step |
 
 Do not copy credential files between machines or users. Do not put API keys or tokens in the Switchboard config; it has
 no place for them and rejects unknown keys.
@@ -2409,9 +2410,10 @@ the `privileged` cells below (Delegated, fail closed; T4.62).
 (with the shared `--yolo`) and the short `-y` as bypass flags, and the ACP modes `auto` and `yolo` (as a mode id or the
 `mode` config option) as bypass modes, so the argv and ACP plan audits refuse them outside an approved bypass run. The
 adapter never emits them even inside one, and never emits `--continue`, `--agent`, `--agent-file`, `--skills-dir` or
-`--add-dir`. `-p`/`--prompt` are not declared to the shared argv audit, because Claude Code's `-p` and Antigravity's
-`--prompt` are ordinary flags in their runs; the Kimi compile gate alone keeps `--prompt` to the approved bypass cell
-(open question Q-95, ROADMAP T4.62).
+`--add-dir`. `-p`/`--prompt` are declared as provider-scoped bypass flags (`providerScopedBypassFlags` in
+`src/adapters/providers.ts`, ADR-0049 item 1, Q-95, ROADMAP T4.62): the argv audit refuses them outside the approved
+bypass cell only in Kimi argv (argv of an adapter id the table does not know is checked against every scoped list,
+fail closed), so Claude Code's `-p` and Antigravity's `--prompt` stay accepted in their own runs.
 
 Resume (FR-SES-03) runs the stored native id through the same matrix, with the same refusals: `--session <id>` after
 the bypass cell's flags (nothing else added), or ACP `session/resume` for a restricted run. A binding of another
@@ -2422,7 +2424,7 @@ resumed run keeps its model, and resume from another directory, are `Unverified:
 ### Parser evidence and gaps
 
 The `stream-json` parser (T4.63, [#436](https://github.com/zemdregon/switchboard/pull/436)) reads the records of the
-one scrubbed 2.1.1 capture (`src/adapters/kimi/fixtures/captured_success.jsonl`, from the T4.61 validation run): `meta`
+scrubbed 2.1.1 success capture (`src/adapters/kimi/fixtures/captured_success.jsonl`, from the T4.61 validation run): `meta`
 `system.version` is ignored, `assistant` text is a message, `tool` output is never an event, and `meta`
 `session.resume_hint` binds `session_id` and ends the turn. Success also needs exit 0, so exit 0 without the hint ends
 `OUTPUT_PROTOCOL_ERROR` and a non-zero exit `TOOL_FAILURE`. A 5-hour usage-limit stop has since been captured
@@ -2436,7 +2438,8 @@ item and `tool` record fields are **Observed** since the T4.68 follow-up-2 `live
 `src/adapters/kimi/fixtures/captured_tool_call.jsonl` and `captured_tool_error.jsonl`, replayed by
 `src/adapters/kimi/live-capture.test.ts`); the error record and its `Authentication required` text in `-p`, the exit
 codes and the usage and
-model fields stay **Assumptions** until the operator capture (T4.68), so T4.63 stays `Partial`; no model is recorded
+model fields stay **Assumptions** carried by T4.68 (owner decision 65 (a); T4.63 is `Done` against its Done-when);
+no model is recorded
 from a Kimi run (`reportedModelFlag` `not_accepted`). Tests: `src/adapters/kimi/parser-residual.test.ts` and the
 "kimi compile matrix (T4.62)", "kimi probe", "kimi registry entry and manifest gate (T4.62)" and "kimi auth preflight
 (T4.64, ...)" suites in `src/adapters/kimi/kimi.test.ts` ([#429](https://github.com/zemdregon/switchboard/pull/429),
@@ -2471,10 +2474,13 @@ streams end `OUTPUT_PROTOCOL_ERROR`. Because `kimi --prompt` never asks and prin
 outside write or network call **without** a Git write ends `ok` at exit 0 by design (owner decision 25: in a bypass run
 the guard enforces Git writes only), pinned as `kimiUnguardedStreams`. The live malicious leg is operator work (T4.68).
 
-T4.65 and T4.67 are `Done` against their Done-when on synthetic fixtures; T4.62 to T4.64 and T4.66 stay `Partial`.
-One live smoke call through Switchboard against a logged-in `kimi` has been recorded (`adapters validate kimi`
-passed on CLI 2.1.1 on 2026-10-18, T4.68); the full live smoke, the live malicious leg and the other operator cells
-are still open.
+T4.62 is `Done` (2026-10-16); T4.63, T4.64 and T4.66 are `Done` against their Done-when (owner decision 65 (a),
+(d) and (b); synthetic fixtures plus scrubbed captures, with two live validate auth `OK` runs on CLI 2.1.1); T4.65
+and T4.67 are `Done` against their Done-when (2026-10-15); T4.69 is `Done except
+the post-T4.68 update` (owner decision 65 (c)). The validate cell is closed: `switchboard adapters validate kimi`
+passed on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68: manifest, probe, auth `OK`, static conformance and one
+structured-output smoke call). The full live smoke, the live malicious leg and the other operator cells remain open
+under T4.68.
 
 ## Muse Code CLI (milestone 4)
 
@@ -2866,17 +2872,17 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   fields (T4.58) or an owner decision on classifying `status` `error`. See ROADMAP T4.56 for the full gap list.
 - **Kimi Code was validated on synthetic fixtures only (ROADMAP T4.62 to T4.67) until `adapters validate kimi`
   passed live on CLI 2.1.1 on 2026-10-18 (ROADMAP T4.68: manifest, probe, auth `OK`, static conformance and one
-  structured-output smoke call). The parser still rests on one scrubbed
-  `stream-json` capture of a successful run plus synthetic lines; tool-call and error record fields, exit codes, the
-  `--prompt=` one-word form and the `kimi acp` permission round trip in `default` mode
-  are Assumptions until the operator capture (T4.68). The auth probe's stdin timing is no longer an Assumption: the
-  2026-10-17 live `validate kimi` run showed CLI 2.1.1 exits at stdin end-of-file before the `session/new` reply, and
-  the fixed probe (stdin held open until both replies arrive) printed `[ok] auth: OK` on the 2026-10-18 final-verify
-  (ROADMAP T4.64); T4.64 stays `Partial` until a scrubbed capture of the replies replaces the synthetic lines (ROADMAP
-  §6.8.2 item 2). If `default` mode does not ask, the restricted ACP cell becomes
-  `Ineligible`. The malicious-fixture leg (T4.66) replays the approved bypass cell only: a credential read, outside
-  write or network call without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg
-  is operator work. See [Kimi Code CLI](#kimi-code-cli-milestone-4).
+  structured-output smoke call). Under owner decision 65, T4.63, T4.64 and T4.66 are Done against their Done-when
+  (synthetic fixtures plus three scrubbed captures, owner decision 65 (a), (b), (d); two live `validate` runs observing
+  auth `OK` on CLI 2.1.1; T4.69 Done except the post-T4.68 update, decision 65 (c)). Error record fields, exit codes,
+  the `--prompt=` one-word form and the `kimi acp` permission round trip in `default` mode are Assumptions carried by
+  T4.68. The auth probe's stdin timing is no longer an Assumption: the 2026-10-17 live `validate kimi` run showed
+  CLI 2.1.1 exits at stdin end-of-file before the `session/new` reply, and the fixed probe (stdin held open until both
+  replies arrive) printed `[ok] auth: OK` twice on 2026-10-18 (ROADMAP T4.64, owner decision 65 (d); scrubbed ACP
+  replies carried by T4.68). If `default` mode does not ask, the restricted ACP cell becomes `Ineligible`. The
+  malicious-fixture leg (T4.66) replays the approved bypass cell only: a credential read, outside write or network call
+  without a Git write ends `ok` there by design (owner decision 25), and the live malicious leg is operator work
+  (T4.68). See [Kimi Code CLI](#kimi-code-cli-milestone-4).
 - **Muse Code is built on synthetic fixtures only and does not run (ROADMAP T4.72 to T4.79).** No `muse` has been
   installed or run, and Meta access (Q-27) is not verified. The `--json` record spellings and the `muse auth status`
   probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) is blocked because the
