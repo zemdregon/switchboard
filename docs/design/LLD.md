@@ -3650,9 +3650,10 @@ Observations the algorithm should respect:
   `--pathspec-from-file`, which the Git 2.25.0 release notes introduce for "a few commands" without naming `git add`,
   so its availability for `add` below 2.43 is unverified. The decision on `MIN_GIT_VERSION` (raised to 2.32, ADR-0023) is
   in TDD §3.10 and ROADMAP Q-39.
-- **Not tested.** Clean and smudge filters during `git add` (the controller already neutralises driver keys, TDD §3.4),
-  nested repositories (ADR-0022), submodules, symlinks, very large path sets, concurrent publishers beyond the
-  compare-and-swap above, and `-c core.hooksPath=/dev/null` under a Git older than 2.43.
+- **Not tested.** Nested repositories (ADR-0022), symlinks, very large path sets, concurrent publishers beyond the
+  compare-and-swap above, and `-c core.hooksPath=/dev/null` under a Git older than 2.43. (Clean and smudge filters
+  during `git add`, and submodules, are covered through the publisher path instead: `src/git/commit.test.ts`,
+  "repository filter drivers and submodules".)
 
 **As built (2026-10-13, Delegated, T9.3, [ADR-0025](../adr/0025-git-commit-provenance-and-sanitiser.md); owner text above
 unchanged).** Code: `src/git/commit.ts` (`GitPublisher.commit`, `GitPublisher.recover`), `src/git/publish-ref.ts`;
@@ -3691,8 +3692,12 @@ author and committer variables) and `input` (standard input). Choices where §12
   refused unless the parent tree already tracks it. A directory path that contains a nested repository (ADR-0022) is
   refused: name the files. Staging uses `git --literal-pathspecs add -- <paths>`; names starting with `-` or `:` were
   tested. Without `paths`, `git add -A -- . <nested excludes>` stages every change; ignored files are skipped.
-- **Not tested here.** Clean and smudge filters, submodules, very large path sets (the limit is 256), Git older than 2.43.0
-  and concurrent publishers in separate processes (only the compare-and-swap protects them).
+- **Not tested here.** Very large path sets (the limit is 256; T9.7 covers 300 paths with the loosened finalize-only
+  flag), Git older than 2.43.0 and concurrent publishers in separate processes (only the compare-and-swap protects
+  them). Clean/smudge/process filters, textconv/external diff drivers and submodules are covered by
+  `src/git/commit.test.ts` ("repository filter drivers and submodules"): the drivers never run and the working-tree
+  bytes are committed; a submodule gitlink is left at the parent's, and naming it (or a directory above it) is refused
+  as a nested repository.
 
 **As built (2026-10-13, Delegated, T9.7, finalize-only mode, FR-GIT-09, FRD BR-30; [decision
 38](../ROADMAP.md#42-owner-decisions); owner text above unchanged).** Code: `src/git/finalize.ts`, called from

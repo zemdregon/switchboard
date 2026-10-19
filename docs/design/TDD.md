@@ -686,8 +686,12 @@ configuration). Additions and findings:
 - **Regular-expression safety.** Measured on Node 22.22.0: `.*a.*b` (two unbounded quantifiers) took 36 s on a 4096-character
   line of `a`, so the operator-pattern subset allows one unbounded quantifier and windows of 1024 characters; see ADR-0025
   and LLD §12.4. Node has no RE2 and cannot time-box a synchronous `RegExp`.
-- **Still open.** Git 2.32 to 2.42 were not exercised; clean and smudge filters, submodules and large path sets were not
-  tested; the shim, socket, snapshot freeze (Q-41) and start-up `recover()` call belong to T9.4.
+- **Still open.** Git 2.32 to 2.42 were not exercised; large path sets were not tested beyond the 256-path limit (T9.7
+  covers 300 paths with the loosened finalize-only flag); the shim, socket, snapshot freeze (Q-41) and start-up
+  `recover()` call belong to T9.4. Clean/smudge/process filters, textconv/external diff drivers and submodules through
+  the commit tool are covered by `src/git/commit.test.ts` ("repository filter drivers and submodules"): canary drivers
+  never run and the working-tree bytes are committed; an initialised submodule's gitlink stays at the parent's, and
+  naming it (or a directory above it) is refused as a nested repository.
 
 *T9.4 build notes (2026-10-13; Delegated; [ADR-0026](../adr/0026-per-run-tool-channel-socket-and-token.md); fake adapter
 only).* The injected channel is built and tested end to end with the fake adapter; mechanism in [LLD
