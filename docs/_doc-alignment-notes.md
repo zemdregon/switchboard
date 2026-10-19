@@ -325,3 +325,17 @@ as history.
 - Left unchanged: re-tensing another lane's history belongs to that lane's follow-up, and the gap predates
   PR #709 (which touches only T4.33, T4.36 and T4.39). It does not block PR #709 (no code change; the T4.23
   header and its Done-when evidence agree).
+
+## 23. Roadmap §6.5 intro still says "T3.8 is `Partial`" (pre-existing, not from PR #719)
+
+- [ROADMAP §6.5](ROADMAP.md#65-m3-isolation-tasks) opens with a dated
+  2026-10-12 breakdown snapshot saying "T3.8 is `Partial` (controller Git
+  driver hardening landed on `m3-wave-a`)", while the T3.8 row itself reads
+  Status Done (2026-10-16) and the M3 milestone row lists T3.8 among the
+  Done tasks. The wording predates this PR (identical on `main`), and the
+  same paragraph carries dated updates (2026-10-16 T3.13, 2026-10-18 T3.8b)
+  that supersede the snapshot.
+- Left unchanged: the sentence is historical narrative inside an explicitly
+  dated snapshot, and rewriting it would falsify the record; the live
+  status lives in the T3.8 row and the M3 row, which agree. It does not
+  block PR #719.
