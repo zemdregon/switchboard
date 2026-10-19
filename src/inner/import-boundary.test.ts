@@ -2,11 +2,13 @@
  * Import-boundary test (T11.1; FR-INN-06, TDD §3.12, SDD "structural authority boundary"). No inner-agent output may reach
  * a security or policy decision, and the enforcement is structural: the modules that make those decisions must not import
  * the inner-agent service (`src/inner/`) or its types, so it cannot be injected into them. The check is on DIRECT imports
- * (static, type-only, re-export and dynamic forms) of each protected module. It is deliberately not transitive: a
- * protected module such as `lifecycle.ts` reaches most of the tree (for example `git/channel.ts`, where the commit-message
- * task of T11.4 legitimately calls the service), and reaching a caller is not being handed the service. Known gap
- * (Assumption): a protected module that imports a helper which itself re-exports `src/inner/` would not be caught; no
- * such helper exists, and the helper's own import would have to be added in a reviewed change.
+ * (static, type-only, re-export and dynamic forms) of each protected module, plus a TRANSITIVE re-export walk: from each
+ * protected module, every `export … from` / `export *` chain is followed, and a chain that reaches `src/inner/` fails.
+ * Only re-exports are followed transitively, not ordinary imports: a protected module such as `lifecycle.ts` reaches most
+ * of the tree through imports (for example `git/channel.ts`, where the commit-message task of T11.4 legitimately calls
+ * the service), and reaching a caller is not being handed the service. A protected module that re-exports a helper which
+ * itself re-exports `src/inner/` is now caught (the re-export gap is closed); what remains untested by design is a
+ * runtime-only handoff with no static `export … from` edge, which no reviewed change may add without touching imports.
  *
  * Protected modules (Delegated reading of FR-INN-06 "COMP-POL, the adapters' profile compilers, the retry logic or the
  * push path", plus the other items it lists):
@@ -28,7 +30,8 @@
  * `lifecycle.ts` is protected whole because the retry decision lives inside it. T11.11 wires the inner agent near
  * dispatch by injecting `classifyRouteFeatures` from `serve.ts` (and tests), so this module never imports `src/inner/`.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -53,10 +56,17 @@ const isInner = (rel: string) => rel.startsWith("inner/");
 const isProtected = (rel: string) => PROTECTED.some((re) => re.test(rel));
 
 const IMPORT_RE = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*|\brequire\s*\(\s*)(["'])(\.{1,2}\/[^"']*)\1/g;
+/** Re-export specifiers only (`export … from`, `export * from`): the edges the transitive walk follows. */
+const REEXPORT_RE = /\bexport\s[^;]*?\bfrom\s*(["'])(\.{1,2}\/[^"']*)\1/g;
 
 /** Relative import specifiers of one source text (static, type-only, re-export and dynamic forms). */
 function relativeImports(source: string): string[] {
   return [...source.matchAll(IMPORT_RE)].map((m) => m[2] as string);
+}
+
+/** Relative re-export specifiers of one source text (`export … from` / `export * from` forms only). */
+function relativeReexports(source: string): string[] {
+  return [...source.matchAll(REEXPORT_RE)].map((m) => m[2] as string);
 }
 
 function resolveSpecifier(fromRel: string, spec: string, known: ReadonlySet<string>): string | undefined {
@@ -89,6 +99,48 @@ function findBoundaryViolations(files: ReadonlyMap<string, string>): string[] {
   return violations;
 }
 
+/**
+ * Each protected module's transitive re-export chain into `src/inner/`, as `from -(re-export)-> … -> to`. Only
+ * `export … from` edges are followed (ordinary imports are legitimately transitive, see the header): a protected
+ * module that re-exports a helper which itself re-exports the service hands the service to its own importers.
+ * Pure over a map of relative path (posix, under `src/`) to source text, so it can be tested with a synthetic tree.
+ */
+function findReexportViolations(files: ReadonlyMap<string, string>): string[] {
+  const known = new Set(files.keys());
+  const edges = new Map<string, string[]>();
+  for (const [rel, text] of files) {
+    const out: string[] = [];
+    for (const spec of relativeReexports(text)) {
+      const target = resolveSpecifier(rel, spec, known);
+      if (target !== undefined) out.push(target);
+    }
+    edges.set(rel, out);
+  }
+  const violations: string[] = [];
+  for (const root of known) {
+    if (!isProtected(root) || isInner(root)) continue;
+    // BFS over re-export edges only; the first chain that reaches the service is reported.
+    const parent = new Map<string, string | null>([[root, null]]);
+    const queue = [root];
+    while (queue.length > 0) {
+      const current = queue.shift() as string;
+      if (isInner(current) && current !== root) {
+        const chain: string[] = [];
+        for (let c: string | null = current; c !== null; c = parent.get(c) ?? null) chain.unshift(c);
+        violations.push(`${root} -(re-export)-> ${chain.slice(1).join(" -> ")}`);
+        break;
+      }
+      for (const next of edges.get(current) ?? []) {
+        if (!parent.has(next)) {
+          parent.set(next, current);
+          queue.push(next);
+        }
+      }
+    }
+  }
+  return violations;
+}
+
 function listSources(dir: string, rel = ""): string[] {
   const out: string[] = [];
   for (const e of readdirSync(path.join(dir, rel), { withFileTypes: true })) {
@@ -101,11 +153,12 @@ function listSources(dir: string, rel = ""): string[] {
 }
 
 describe("inner-agent import boundary (FR-INN-06)", () => {
-  it("no protected module imports src/inner/", () => {
+  it("no protected module imports src/inner/, directly or through a re-export chain", () => {
     const files = new Map(listSources(SRC).map((r) => [r, readFileSync(path.join(SRC, r), "utf8")]));
     expect([...files.keys()].some(isInner)).toBe(true); // the tree under test really contains the service
     expect([...files.keys()].some((r) => r.startsWith("policy/"))).toBe(true);
     expect(findBoundaryViolations(files)).toEqual([]);
+    expect(findReexportViolations(files)).toEqual([]);
   });
 
   it("detects a direct, a type-only, a re-export and a dynamic import, and ignores unprotected importers", () => {
@@ -134,6 +187,38 @@ describe("inner-agent import boundary (FR-INN-06)", () => {
         ]),
       ),
     ).toEqual(["git/push.ts -> inner/index.ts", "adapters/claude/adapter.ts -> inner/port.ts"]);
+  });
+
+  it("a re-export chain from a protected module to src/inner/ is caught, on a temp fixture tree", () => {
+    // Protected-module stand-in -> re-exporting helper -> the service (the retrieval boundary's full-walk control
+    // in src/retrieval/import-boundary.test.ts does the same shape for ordinary imports).
+    const dir = mkdtempSync(path.join(tmpdir(), "sb-inner-reexport-"));
+    try {
+      const write = (rel: string, text: string) => {
+        const abs = path.join(dir, rel);
+        mkdirSync(path.dirname(abs), { recursive: true });
+        writeFileSync(abs, text);
+      };
+      write("policy/profiles.ts", 'export * from "../util/mid.js";\n');
+      write("util/mid.ts", 'export type { S } from "../inner/index.js";\n');
+      write("inner/index.ts", "export const s = 1;\n");
+      const files = new Map(
+        ["policy/profiles.ts", "util/mid.ts", "inner/index.ts"].map(
+          (r) => [r, readFileSync(path.join(dir, r), "utf8")] as [string, string],
+        ),
+      );
+      expect(findReexportViolations(files)).toEqual([
+        "policy/profiles.ts -(re-export)-> util/mid.ts -> inner/index.ts",
+      ]);
+      // Ordinary imports stay legitimately transitive: the same shape through `import` is not a re-export.
+      const imported = new Map(files);
+      imported.set("policy/profiles.ts", 'import { m } from "../util/mid.js";\nexport const p = m;\n');
+      imported.set("util/mid.ts", 'import { s } from "../inner/index.js";\nexport const m = s;\n');
+      expect(findReexportViolations(imported)).toEqual([]);
+      expect(findBoundaryViolations(imported)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("the protected list matches the modules it names", () => {

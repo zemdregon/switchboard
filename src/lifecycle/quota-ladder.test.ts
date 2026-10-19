@@ -105,8 +105,12 @@ else {
 }
 `;
 
-function scripted(id: string, script: string): ProviderAdapter {
+function scripted(id: string, script: string, privilegedAs?: TrustProfile): ProviderAdapter {
   const base = new FakeAdapter({ script, timeouts: PATIENT });
+  // T6.6: the fake CLI has no privileged mode, so a privileged profile compiles as this profile (the same test
+  // double as `privilegedAs` in src/lifecycle/lifecycle.test.ts). Unset, the fake adapter refuses `privileged`.
+  const compileProfile = (p: ResolvedProfile): ResolvedProfile =>
+    p.name === "privileged" && privilegedAs !== undefined ? { ...p, name: privilegedAs } : p;
   return {
     id: id as ProviderId,
     transports: base.transports,
@@ -115,8 +119,8 @@ function scripted(id: string, script: string): ProviderAdapter {
     gitCapabilities: { commitChannel: "none", detail: "test double" },
     probe: (r) => base.probe(r),
     authPreflight: (r) => base.authPreflight(r),
-    compile: (req, p) => base.compile(req, p),
-    resumeArgs: (b, req, p) => base.resumeArgs(b, req, p),
+    compile: (req, p) => base.compile(req, compileProfile(p)),
+    resumeArgs: (b, req, p) => base.resumeArgs(b, req, compileProfile(p)),
     parseEvent: (i, s) => base.parseEvent(i, s),
     extractResult: (e, x) => base.extractResult(e, x),
     classifyFailure: (e) => base.classifyFailure(e),
@@ -133,7 +137,7 @@ let artifacts: ArtifactStore;
 let lifecycle: RunLifecycle | undefined;
 let unregister: () => void;
 
-function makeLifecycle(over: Partial<RunLifecycleOptions> = {}): RunLifecycle {
+function makeLifecycle(over: Partial<RunLifecycleOptions> = {}, privilegedAs?: TrustProfile): RunLifecycle {
   const workspace = new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids: createIdGenerator() });
   const a = path.join(root, "a", "cli.mjs");
   const b = path.join(bDir, "cli.mjs");
@@ -141,7 +145,7 @@ function makeLifecycle(over: Partial<RunLifecycleOptions> = {}): RunLifecycle {
     ledger,
     workspace,
     artifacts,
-    adapters: new AdapterRegistry().register(scripted("fake", a)).register(scripted("fake-b", b)),
+    adapters: new AdapterRegistry().register(scripted("fake", a, privilegedAs)).register(scripted("fake-b", b)),
     allowedRoots: [root],
     globalConcurrency: 4,
     perProviderConcurrency: 2,
@@ -229,6 +233,28 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+/** A valid structured privileged scope (LLD §3.1; same shape as src/lifecycle/lifecycle.test.ts). */
+const SCOPE = {
+  files: { access: "worktree" },
+  shell: { mode: "allowlist", allowlist: [["npm", "test"]] },
+  network: { mode: "allowlist", hosts: ["registry.npmjs.org"] },
+  repository_config: { mode: "approved" },
+  bypass: false,
+};
+/** Stand-in for T3.4's `approve`: the approval decided and the run queued (tests only). */
+const approveDirect = (runId: string) => {
+  const approval = ledger.getApprovalForRun(runId);
+  ledger.decideApproval({ id: approval?.id as string, status: "APPROVED", decidedBy: "op" });
+  const run = ledger.getRunRecord(runId);
+  ledger.casRunState({
+    runId,
+    from: "AWAITING_APPROVAL",
+    to: "QUEUED",
+    expectedVersion: run?.version as number,
+    payload: { rule: "T3" },
+  });
+};
+
 describe("QUOTA_EXHAUSTED ladder (T6.6, LLD §16.6)", () => {
   it("fails over to the other eligible provider through a handoff that lists the failed attempt", async () => {
     lifecycle = makeLifecycle();
@@ -305,6 +331,32 @@ describe("QUOTA_EXHAUSTED ladder (T6.6, LLD §16.6)", () => {
     expect(ladder(only?.id as string)).toEqual([
       { outcome: "returned", not_taken: ["failover:no_route_decision", "wait:no_reported_reset"] },
     ]);
+  });
+
+  it("a privileged run hitting QUOTA_EXHAUSTED is not failed over cross-provider (Q-61 default)", async () => {
+    lifecycle = makeLifecycle({}, "edit-untrusted");
+    const r = await live().submit({
+      clientId: "c",
+      objective: "quota",
+      workspace: repo,
+      trustProfile: "privileged",
+      privileged: { scope: SCOPE },
+      provider: "fake",
+      routeDecision: route(false),
+    });
+    expect(r.state).toBe("AWAITING_APPROVAL");
+    approveDirect(r.runId);
+    live().start(); // dispatch (and its pump) happens only after start, as in src/lifecycle/lifecycle.test.ts
+    const [only] = await settled(r.metaSessionId, 1);
+    expect([only?.provider, only?.state, only?.failure_code]).toEqual(["fake", "FAILED", "QUOTA_EXHAUSTED"]);
+    // No successor: the privileged refusal fires before any other failover branch, and with no reported reset the
+    // run is returned. (The non-privileged control above this test fails over to `fake-b` in the same setup.)
+    expect(ledger.listRunsForMetaSession(r.metaSessionId)).toHaveLength(1);
+    expect(ladder(only?.id as string)).toEqual([
+      { outcome: "returned", not_taken: ["failover:privileged_cross_provider", "wait:no_reported_reset"] },
+    ]);
+    // The eligible other provider was never reached.
+    expect(existsSync(path.join(bDir, "b-prompt.txt"))).toBe(false);
   });
 
   it("a known future reset makes the provider QUOTA_EXHAUSTED at admission (BR-3)", async () => {

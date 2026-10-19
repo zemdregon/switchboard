@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SMOKE = path.join(ROOT, "scripts", "live-smoke.mjs");
 const PAIR = path.join(ROOT, "scripts", "live-pair.mjs");
+const MALICIOUS = path.join(ROOT, "scripts", "live-malicious.mjs");
 const budgetMod = await import(pathToFileURL(path.join(ROOT, "scripts", "live", "budget.mjs")).href);
 const { admitLiveRun, decide, EXIT_REFUSED, modelHandoff, parseBudget, withBudgetModel } = budgetMod;
 
@@ -299,6 +300,39 @@ describe("live scripts under the budget file, with the fake plug-in (T8.9)", () 
     expect(capped.stderr).toContain("live-pair: REFUSED by the live-test budget: fake cap: 1 of 1");
     expect(readJsonl(audit).map((x) => x.event)).toEqual(["start", "finish", "denied"]);
     expect(existsSync(fakeRecord)).toBe(false);
+  });
+});
+
+describe("live-malicious under the budget file (T8.9)", () => {
+  const malicious = (env: Record<string, string> = {}) =>
+    runScript(MALICIOUS, {
+      SWITCHBOARD_LIVE_MALICIOUS: "1",
+      SWITCHBOARD_LIVE_PROVIDER: "claude",
+      SWITCHBOARD_LIVE_BUDGET_FILE: file,
+      SWITCHBOARD_LIVE_PURPOSE: "pre-check",
+      ...env,
+    });
+
+  it("a live-malicious invocation past the cap is refused with exit 75 and a denied record, before dist/ or any CLI", () => {
+    writeBudget({
+      global_max_runs: 9,
+      providers: { claude: { max_runs: 3, model: "claude-file-model" } },
+    });
+    writeAudit([start(Date.now() - 10 * MIN, { claude: 3 })]);
+    const r = malicious();
+    expect(r.status).toBe(EXIT_REFUSED);
+    expect(r.status).toBe(75);
+    expect(r.stderr).toContain("live-malicious: REFUSED by the live-test budget: claude cap: 3 of 3");
+    const last = readJsonl(audit).at(-1);
+    expect(last).toMatchObject({
+      event: "denied",
+      script: "live-malicious",
+      purpose: "pre-check",
+      providers: { claude: { runs: 3 } },
+    });
+    // The admitted path (dist/ load, provider probe, serve) was never reached: no stdout, no record beyond denied.
+    expect(r.stdout).toBe("");
+    expect(readJsonl(audit).map((x) => x.event)).toEqual(["start", "denied"]);
   });
 });
 
