@@ -2398,7 +2398,9 @@ call):
 - a `privileged` scope without `bypass` runs `kimi acp` (ACP over stdio through the shared ACP client,
   [ADR-0036](docs/adr/0036-per-run-acp-stdio-client.md)): the prompt travels in the ACP plan, `session/new` carries an empty
   `mcpServers`, the session mode is `plan` for read-only files and stays `default` otherwise, and the controller answers
-  every `session/request_permission`.
+  every `session/request_permission`. The plan sets `requirePermissionRequest`
+  ([LLD §2](docs/design/LLD.md#2-adapter-contract)): a `tool_call` or `tool_call_update` reported as run without a
+  permission request naming it ends the run `PERMISSION_BLOCKED` (fail closed, T4.68; an approved bypass run is exempt).
 
 The bypass prompt and a requested model are one argv word each (`--prompt=<prompt>`, `--model=<alias>`), so a leading
 `-` is never read as a flag; the prompt is visible in the process list. That the CLI accepts the `=` form is an
@@ -2439,7 +2441,7 @@ the `privileged` cells below (Delegated, fail closed; T4.62).
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | yes, two cells | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). Both cells need network `on` and repository configuration `enabled` (owner decision 26, Q-37); anything narrower is `CAPABILITY_MISSING`. **With `bypass`:** only worktree file access with shell `broad` compiles, as `kimi [--model=<alias>] --prompt=<prompt> --output-format stream-json` with nothing added; read-only files or a narrower shell are `CAPABILITY_MISSING` because Never Ask cannot be narrowed. **Without `bypass`:** `kimi acp`, mode `plan` for read-only files and `default` for worktree files, with the shell scope held by the controller's permission answers (`Unverified: T4.68`; if `default` mode turns out not to ask, this cell becomes `Ineligible` and Kimi Code is privileged-bypass only, ADR-0049 item 3). A bypass approval on any other profile, or a `bypass` scope without an approval, is `PROFILE_UNSUPPORTED`. |
+| `privileged` | yes, two cells | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). Both cells need network `on` and repository configuration `enabled` (owner decision 26, Q-37); anything narrower is `CAPABILITY_MISSING`. **With `bypass`:** only worktree file access with shell `broad` compiles, as `kimi [--model=<alias>] --prompt=<prompt> --output-format stream-json` with nothing added; read-only files or a narrower shell are `CAPABILITY_MISSING` because Never Ask cannot be narrowed. **Without `bypass`:** `kimi acp`, mode `plan` for read-only files and `default` for worktree files, with the shell scope held by the controller's permission answers, and a tool call reported as run without a permission request naming it ending `PERMISSION_BLOCKED` (`requirePermissionRequest` in the ACP plan, fail closed, T4.68; an approved bypass run is exempt) (`Unverified: T4.68`; if `default` mode turns out not to ask, this cell becomes `Ineligible` and Kimi Code is privileged-bypass only, ADR-0049 item 3). A bypass approval on any other profile, or a `bypass` scope without an approval, is `PROFILE_UNSUPPORTED`. |
 
 **Bypass-class flags (ADR-0049).** The registry entry (`src/adapters/providers.ts`) declares `--auto` and `--plan`
 (with the shared `--yolo`) and the short `-y` as bypass flags, and the ACP modes `auto` and `yolo` (as a mode id or the

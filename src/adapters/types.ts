@@ -249,6 +249,11 @@ export interface AcpPlan {
   configOptions?: Array<{ configId: string; value: string }>;
   /** Native login command named on `AUTH_REQUIRED` (FR-AUTH-02). The client never logs in itself. */
   loginCommand: string;
+  /**
+   * Fail closed when a tool call runs without a `session/request_permission` naming it (outside an approved bypass
+   * run): the client ends the run `PERMISSION_BLOCKED` (ADR-0049 item 3; set by the Kimi Code adapter, T4.68).
+   */
+  requirePermissionRequest?: boolean;
 }
 
 /** A stdio MCP server entry of `session/new` (ADR-0036 item 7.3). The tool token never travels here. */

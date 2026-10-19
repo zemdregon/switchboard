@@ -64,6 +64,7 @@ describe("K-P1 permission round trip (fail closed)", () => {
     expect(v.result).toBe("HELD");
     expect(v.record).toEqual({
       requests: 2,
+      tool_call_updates: 1,
       tool_call_fields: ["kind", "rawInput", "title", "toolCallId"],
       with_name: 2,
       with_arguments: 2,
@@ -80,8 +81,13 @@ describe("K-P1 permission round trip (fail closed)", () => {
     expect(v.result).toBe("FAILED");
     expect(v.evidence).toContain("did not ask (fail closed)");
     expect(v.record.requests).toBe(0);
-    // An empty stream of a run that ran is the same: never passes.
-    expect(ev.permissionRoundTrip({ ran: true, stream: "", runEvents: [] }).result).toBe("FAILED");
+    expect(v.evidence).toContain("2 tool_call update(s)");
+    expect(v.record.tool_call_updates).toBe(2);
+    // An empty stream of a run that ran is the same: never passes; the evidence says no tool call was reached.
+    const empty = ev.permissionRoundTrip({ ran: true, stream: "", runEvents: [] });
+    expect(empty.result).toBe("FAILED");
+    expect(empty.evidence).toContain("never reached a tool call");
+    expect(empty.record.tool_call_updates).toBe(0);
   });
 
   it("FAILS a request without the tool name or the arguments", () => {

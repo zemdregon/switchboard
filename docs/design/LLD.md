@@ -561,6 +561,7 @@ export interface AcpPlan {                        // pure data: Invocation.acp w
   modeId?: string;                                // `session/set_mode` value compiled for the profile, audited
   configOptions?: Array<{ configId: string; value: string }>;  // `session/set_config_option`, audited (Unverified use)
   loginCommand: string;                           // native login named on AUTH_REQUIRED (FR-AUTH-02)
+  requirePermissionRequest?: boolean;             // fail closed on a tool call run without a request (T4.68)
 }
 export interface AcpStdioServer { name: string; command: string; args: string[]; env: [] }  // token never here
 export interface AcpDeclarations {                // on the provider registry entry, additive only (ADR-0035)
@@ -612,6 +613,17 @@ caught by the client is `unknown`. The run events are written by the lifecycle t
 `acp_initialized` (`protocol_version`, boolean capability flags only, auth method `id` and `type`), `acp_permission`
 (`tool_kind`, `decision`, `reason`, `option_kind`, `location_count`; after 256, one `{summary, suppressed}` event) and
 `acp_request_refused` (`method`).
+
+*As built (2026-10-19, Delegated, T4.68; not owner-approved; fake ACP agent and the redacted w1408 Kimi capture
+only).* Kimi Code CLI 2.1.1 sends a `session/update` (`available_commands_update`) for the new session before its
+`session/new` reply, which the client used to fail as an update "for another session" (`OUTPUT_PROTOCOL_ERROR`). The
+client now holds updates that arrive while `session/new` is unanswered (at most 64, Proposed; more is
+`OUTPUT_PROTOCOL_ERROR`) and handles them in order after `session_bound`, each checked against the returned
+`sessionId`; any other id is still `OUTPUT_PROTOCOL_ERROR`. When a plan sets `requirePermissionRequest` (the Kimi Code
+adapter does, ADR-0049 item 3), a `tool_call` or `tool_call_update` whose `status` is set and is not `pending`, for a
+`toolCallId` no `session/request_permission` named, emits `permission_denied` (`acp_unrequested_tool_call`) and cancels
+the turn, so the run ends `PERMISSION_BLOCKED`; an approved bypass run is exempt. Tests:
+`src/adapters/kimi/acp-stream.test.ts`, `src/exec/acp/client.test.ts`.
 
 `parseEvent` receives the `session/update` notifications and the final `session/prompt` response as `AcpMessage`s.
 Mapping to `NormalizedEvent`:
