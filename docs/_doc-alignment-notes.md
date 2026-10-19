@@ -783,7 +783,7 @@ as history.
   narrowing the SRS guarantee to "from an allowed client" is the SRS
   owner's call. It does not block PR #760.
 
-## 43. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
+## 45. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
 
 - PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
   owner's macOS merge waiver" / "under the owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux
@@ -800,7 +800,7 @@ as history.
   ADR-0060 ("the macOS leg was dropped from gating by a ruling") instead of a dated owner waiver, so no §4.2
   entry is needed and no owner approval is implied. Resolved, not outstanding.
 
-## 44. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
+## 46. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
 
 - TDD §5 (implementation strategy, M4 row) listed "macOS CI leg (NFR-PORT-02)" in the present tense as the
   technical approach; past-tensed to "ran 2026-10-14, removed 2026-10-19 when CI went Linux-only, §3.8",
