@@ -4505,11 +4505,14 @@ Pre-release. The package is private and is not published to any registry; you bu
   [Control plane (milestone 14)](../README.md#control-plane-milestone-14) and
   [ROADMAP §6.13](ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
-  decisions 76 and 77: T15.6 to T15.9 are Planned; the M15 scope below stays Done on fakes (2026-10-18, Delegated
+  decisions 76 and 77: T15.6 to T15.8 are Planned and T15.9 is Done; the M15 scope below stays Done on fakes
+  (2026-10-18, Delegated
   agent work,
   not owner-approved; the `serve` low-water wiring below is a separate open fix)). The durable per-project work queue
   (T15.1, [#527](https://github.com/zemdregon/switchboard/pull/527)) and the CI-failure trigger (T15.3,
-  [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
+  [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The queue tools (`enqueue_work`,
+  `list_work`, `cancel_work`) are offered over stdio and, since T15.9, over the network transport to `orchestrator`
+  clients under the same per-client ceiling and project list (a `console` client sees none). The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
   branches the project pushed, treats the CI text as untrusted and enqueues a work item under the trigger's client
   ceiling. Switchboard reads no GitHub token. Consecutive fix-up items per published ref are capped (T15.5:
@@ -4556,8 +4559,7 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#393](https://github.com/zemdregon/switchboard/pull/393),
   [#422](https://github.com/zemdregon/switchboard/pull/422),
   [#449](https://github.com/zemdregon/switchboard/pull/449)) and Git declaration fixture tests on
-  synthetic fixtures (README [Grok Build CLI](../README.md#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live
-  smoke, live
+  synthetic fixtures (README [Grok Build CLI](../README.md#grok-build-cli-milestone-4), ROADMAP T4.22 to T4.27); live smoke, live
   malicious leg and `adapters validate` remain operator work (T4.28: the 2026-10-18 `adapters validate grok` run
   passed probe, auth and conformance but stopped at the smoke step on a provider usage limit, so the manifest range
   still admits no version).
@@ -4586,8 +4588,7 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#257](https://github.com/zemdregon/switchboard/pull/257),
   [#262](https://github.com/zemdregon/switchboard/pull/262),
   [#280](https://github.com/zemdregon/switchboard/pull/280))
-  and a Git declaration on synthetic fixtures (README [Antigravity CLI](../README.md#antigravity-cli-milestone-4),
-  ROADMAP T4.32 to
+  and a Git declaration on synthetic fixtures (README [Antigravity CLI](../README.md#antigravity-cli-milestone-4), ROADMAP T4.32 to
   T4.37); [#295](https://github.com/zemdregon/switchboard/pull/295) through
   [#373](https://github.com/zemdregon/switchboard/pull/373) extend synthetic parser, conformance and malicious replay
   only and do not validate the live CLI; the T4.38 live `adapters validate` pass followed on 2026-10-18 (CLI 1.4.2,
@@ -4613,15 +4614,17 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#315](https://github.com/zemdregon/switchboard/pull/315)), malicious-fixture leg (T4.46; category/exit matrix and
   12 partial streams, [#316](https://github.com/zemdregon/switchboard/pull/316); residual cells at exits 2 and 137 and
   guard-only Git writes, [#367](https://github.com/zemdregon/switchboard/pull/367)) and Git declaration
-  fixture tests on synthetic fixtures (README [Cursor CLI](../README.md#cursor-cli-milestone-4), ROADMAP T4.42 to
-  T4.47); live
-  smoke passed and the live malicious leg ran on 2026-10-19 (smoke `outcome=ok`, 11 held; malicious `outcome=failed`
-  with U-M2/U-M3 ESCAPED and U-M1 NOT_CHECKED on the pre-wrapper run), so T4.48 stays `Partial` pending the steward's
-  live rerun after merge; the escape fix ([ADR-0059](adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md), owner ruling
+  fixture tests on synthetic fixtures (README [Cursor CLI](../README.md#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
+  smoke passed and the live malicious leg closed on 2026-10-19 per owner decision 77 (smoke `outcome=ok`, 11 held; post-merge
+  malicious rerun w1703 inside the wrapper: U-M1/U-M2 `HELD`, U-M3 `NOT_CHECKED` as expected bypass
+  behaviour), so T4.48 is `Done`;
+  the escape fix ([ADR-0059](adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md), owner ruling
 2026-10-19 06:41 CDT) has landed on this branch, hermetically tested; the first live rerun inside the wrapper (w1700)
   ended with all three cells `NOT_CHECKED` (`FAILED TOOL_FAILURE` before any tool call — a harness fault in the
   operator channel's model pin, not a wrapper or model outcome). Under the owner ruling of 2026-10-19 08:12 CDT a check
   is `HELD` only when the stream's tool calls show every asked action attempted, and U-M2/U-M3 join U-M1 as `mustRun`;
+  the post-merge rerun (w1703) reached the tools and closed the row per the steward ruling
+  of 2026-10-19 09:50 CDT under owner decision 77;
 the 2026-10-19 `adapters validate cursor` run passed
   the probe (Cursor CLI 2026.10.16), auth, 11 static conformance checks and the smoke (owner decision 59), so the
   manifest admits `>=2026.10.16 <2026.11.0`. OpenCode has module, compile-matrix,
@@ -4671,8 +4674,8 @@ the 2026-10-19 `adapters validate cursor` run passed
   Deferred (T4.68). The Grok Build and Muse Code manifests still admit
   no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex, OpenCode,
   Kimi Code, Antigravity and Cursor already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
-  Delegated). Open items, by blocker: operator live legs (T4.28; T4.38 Done 2026-10-19; T4.48 legs ran 2026-10-19
-  but the row stays `Partial` pending an owner ruling or a re-run; T4.68 legs ran 2026-10-19, row closed
+  Delegated). Open items, by blocker: operator live legs (T4.28; T4.38 Done 2026-10-19; T4.48 legs ran 2026-10-19,
+  row Done 2026-10-19 closed by owner decision 77; T4.68 legs ran 2026-10-19, row closed
   Partial-by-ruling, gating Deferred; T4.12 is Deferred
   under decision 69 — it needed a Mac and was optional for criterion 2; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
@@ -4686,14 +4689,14 @@ the 2026-10-19 `adapters validate cursor` run passed
   (T4.29, T4.39, T4.49, T4.69 and T4.79 are `Done` except the post-T4.n8 update; T4.59 is `Done`);
   Muse Code (Should) has module, compile matrix, auth preflight,
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
-  [Muse Code CLI](../README.md#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access
-  (Q-27); T4.73
+  [Muse Code CLI](../README.md#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
   is `Done` against its Done-when under owner decision 65 (a), with record spellings, session-id field and `terminal`
   values Assumption until the T4.71 capture (carried by T4.78); T4.76 is `Done` against its Done-when under owner
   decision 65 (b), on Switchboard's ADR-0039 tool-call guard alone, with tool-record field names Assumption until
   T4.71; T4.79 is `Done` except the post-T4.78 update.
-  Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
-  Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
+  Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, including a
+  Kimi Code `privileged` scope without `bypass`, which is `Ineligible: PROFILE_UNSUPPORTED` ("Kimi has no permission
+  requests") since the owner-level ruling relayed 2026-10-19 08:45 CDT (ROADMAP T4.68; ADR-0049 item 3). See
   [ROADMAP §6.8](ROADMAP.md#68-m4-adapter-expansion-tasks).
 
 What works today: `doctor`, `runs list|show|cancel`, `approve`, `deny`, `gc`, `capacity`, `affinity list|reset`,
@@ -4705,3 +4708,5 @@ projects, twenty with skills enabled, twenty-three with `manage_projects`, plus 
 profile names exist; which of them a provider can run is listed in [Trust profiles](../README.md#trust-profiles) and by
 `list_capabilities`. Read
 [Known limitations](../README.md#known-limitations) before relying on it.
+
+## Single operator, your own accounts

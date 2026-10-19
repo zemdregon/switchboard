@@ -718,7 +718,7 @@ as history.
   range is stated in the T4.48 row, TDD §4.5.6, the README Cursor section
   and the manifest itself. It does not block PR #757.
 
-## 41. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
+## 42. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
 
 - [HLD §1.2](design/HLD.md#12-explicit-exclusions) still excludes "No network
   listener: MCP is stdio only; HTTP/SSE is deferred", while the M13 network
