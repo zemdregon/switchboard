@@ -598,19 +598,19 @@ describe("ledger migrations", () => {
     ).toThrow(/UNIQUE/u);
   });
 
-  it("0024 adds eval_result on a version 23 database; pass needs exit code 0 (T8.14, FR-OPS-06, LLD §20.13)", () => {
+  it("0025 adds eval_result on a version 24 database; pass needs exit code 0 (T8.14, FR-OPS-06, LLD §20.13)", () => {
     db = new Database(path.join(dir, LEDGER_FILE_NAME));
     db.pragma("foreign_keys = ON");
     const d = db;
-    const upTo23 = MIGRATIONS.filter((m) => m.version <= 23);
-    expect(migrate(d, undefined, upTo23)).toEqual(upTo23.map((m) => m.version));
+    const upTo24 = MIGRATIONS.filter((m) => m.version <= 24);
+    expect(migrate(d, undefined, upTo24)).toEqual(upTo24.map((m) => m.version));
     expect(
       migrate(
         d,
         undefined,
-        MIGRATIONS.filter((m) => m.version <= 24),
+        MIGRATIONS.filter((m) => m.version <= 25),
       ),
-    ).toEqual([24]);
+    ).toEqual([25]);
     const insert = d.prepare(
       `INSERT INTO eval_result (id, suite, task_id, provider, run_id, run_state, pass, test_exit_code, grade_error,
          wall_clock_ms, created_at) VALUES (?, 's', 't', 'fake', NULL, NULL, ?, ?, NULL, 5, '2026-10-19T00:00:00Z')`,

@@ -1,5 +1,5 @@
 /**
- * Migration 0024 (T8.14; FR-OPS-06, LLD §20.13 "Evaluation"): own-repository evaluation results.
+ * Migration 0025 (T8.14; FR-OPS-06, LLD §20.13 "Evaluation"): own-repository evaluation results.
  *
  * `eval_result`: one append-only row per graded suite task and provider. `pass` is 1 exactly when the hidden test
  * command exited 0 in the network-off grader container; `wall_clock_ms` is the replayed run's admission-to-terminal

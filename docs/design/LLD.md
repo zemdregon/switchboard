@@ -7464,7 +7464,7 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
     (`EVAL_GRADER_NETWORK_NOT_OFF`). Before and after grading it asserts the hidden tests are absent from the agent's
     worktree: no bundle file at the same relative path with the same content (`EVAL_TESTS_IN_WORKTREE`; content alone
     would flag a correct answer equal to an expected-output file). The container and the staging copy are removed.
-  - **`eval_result`** (migration 0024): `id` (`evl_*`), `suite`, `task_id`, `provider`, `run_id`, `run_state`,
+  - **`eval_result`** (migration 0025): `id` (`evl_*`), `suite`, `task_id`, `provider`, `run_id`, `run_state`,
     `pass` (1 exactly when the test command exited 0, Linus decision; a `CHECK` ties it to `test_exit_code = 0`),
     `test_exit_code`, `grade_error` (`EVAL_RUN_<state>`, `EVAL_RUN_NOT_ADMITTED` or a grader code), `wall_clock_ms`
     (submit to terminal), `usage_json` (the run's provider-reported usage metrics, `[]` when none), `created_at`.
