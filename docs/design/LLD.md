@@ -5352,7 +5352,8 @@ every field is always present, so a new top-level field is a schema change even 
 both numbers rather than adding an optional field to version 1. Version 1 stays buildable: `regenerateHandoffBundle`
 rebuilds a stored view with the version recorded in it (a version 1 view byte for byte, without `skills`), and the
 renderer reads all three versions (`version` must equal `builder_version`; version 2 must carry `skills` as a list of
-objects; version 3 additionally carries `brief`, which is likewise never rendered — see "Version 3" below). `skills` is not rendered: the receiving run gets its skills through its own delivery (§19.5 step 1, §19.6),
+objects; version 3 additionally carries `brief`, which is likewise never rendered — see "Version 3" below). `skills`
+is not rendered: the receiving run gets its skills through its own delivery (§19.5 step 1, §19.6),
 so the rendered prompt is the same for all three versions and `RENDERER_VERSION` stays `1`. `skills` is taken from the
 newest run's `skill_resolved` event (no `run_skill` read, no skill file; a malformed entry fails the build closed) and
 is dropped from the last after every other §15.4 drop step. Code: `src/continuity/bundle-schema.ts` (`BUNDLE_VERSIONS`,
