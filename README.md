@@ -2478,7 +2478,8 @@ Switchboard never edits and whose matching was not observed. Shell allowlist ent
 `Ineligible` (`PROFILE_UNSUPPORTED`, FR-GIT-01) ahead of every other check, including on an approved bypass scope.
 `commitChannel` is **`finalize-only`**: no tool is injected and ACP `mcpServers` stays empty until tool exposure is
 observed (descoped from T4.68 by owner ruling 2026-10-19, decision 74; Deferred
-[ROADMAP §8](docs/ROADMAP.md#8-deferred-and-excluded-work) row "Kimi ACP per-run MCP exposure"). To publish work, set `finalize_commit` on the project's primary context
+[ROADMAP §8](docs/ROADMAP.md#8-deferred-and-excluded-work) row "Kimi ACP per-run MCP exposure").
+To publish work, set `finalize_commit` on the project's primary context
 ([How commits reach Git](#how-commits-reach-git)). In an approved bypass run, Git-write denial rests on the ADR-0039
 tool-call guard, FR-GIT-03 and FR-GIT-06. Tests: `src/adapters/kimi/git-declaration.test.ts` ("kimi Git declaration
 (T4.67, FR-GIT-01, FR-GIT-02, FR-GIT-09)", [#464](https://github.com/zemdregon/switchboard/pull/464)), including one
