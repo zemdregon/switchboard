@@ -146,9 +146,10 @@ function isObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * Structural check of a version 1 or 2 bundle; throws {@link HandoffBundleError} (fail closed). Version 2's `skills`
+ * Structural check of a version 1, 2 or 3 bundle; throws {@link HandoffBundleError} (fail closed). Version 2's `skills`
  * (T16.10) is checked as a list of objects and not rendered: the receiving run gets its skills through its own delivery
- * (LLD §19.6, §19.7), so the rendered prompt is the same for both versions and {@link RENDERER_VERSION} is unchanged.
+ * (LLD §19.6, §19.7), so the rendered prompt is the same for every version and {@link RENDERER_VERSION} is unchanged.
+ * Version 3's `brief` (T5.14) is checked and not rendered either: it is a hash, and the brief's text is never in a bundle.
  */
 export function checkHandoffBundle(value: unknown): HandoffBundle {
   const bad = (what: string): never => {
@@ -164,6 +165,14 @@ export function checkHandoffBundle(value: unknown): HandoffBundle {
   }
   for (const f of bundleFieldsOf(value.version as BundleVersion)) if (!(f in value)) bad(`field ${f} is missing`);
   if (value.version !== 1 && !(Array.isArray(value.skills) && value.skills.every(isObject))) bad("skills");
+  // T5.14: version 3's `brief` is `null` or `{ run_id, sha256 }`; not rendered (a hash, not text).
+  if (
+    value.version === 3 &&
+    value.brief !== null &&
+    !(isObject(value.brief) && typeof value.brief.sha256 === "string")
+  ) {
+    bad("brief");
+  }
   for (const f of ARRAY_FIELDS) {
     const list = value[f];
     if (!Array.isArray(list)) return bad(`${f} is not a list`);
