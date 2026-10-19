@@ -2536,7 +2536,7 @@ work, not owner-approved; synthetic `stream-json` lines only; no `cursor-agent` 
 
 **Out of scope (carried by T4.48 under owner decision 65 (a)).** A recorded `stream-json` quota-stop shape
 (quota stops are captured as stderr tails in `~/operator-runs/limit-captures/cursor-*.txt`, newest 2026-10-18T16:23Z,
-and classified `QUOTA_EXHAUSTED` by the mapping owned by open PR #700, T6.15 / ADR-0058; the stream-parser path still
+and classified `QUOTA_EXHAUSTED` by the mapping owned by PR #700, T6.15 / ADR-0058; the stream-parser path still
 ends `TOOL_FAILURE`) and a recorded sandbox event shape (`--sandbox enabled` fails to start on this host, live check
 row 9, and no compiled cell emits it); any native backing-vendor field (live check row 102 observes none; TDD §4.5
 forbids inferring one, so the structured `backing_provider` support and the T4.6 fixture meet the Done-when).

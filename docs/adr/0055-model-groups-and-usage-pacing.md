@@ -11,16 +11,9 @@
   and limit capture for every provider). Delegated (agent, 2026-10-17, under [owner decision
   25](../ROADMAP.md#42-owner-decisions)) for everything else: the configuration shape, the request fields, the pacing
   arithmetic, the gate, the source labels and the defaults. Not owner-approved beyond the direction. Nothing here changes
-  what a bypass run may do. Item 11 is superseded in part by
-  [ADR-0058](0058-captured-limit-signatures.md) for captured distinctive signatures (owner decision 64, 2026-10-18).
-- Date: 2026-10-17
-- Decided by: zemdregon (the product direction, [owner decision 57](../ROADMAP.md#42-owner-decisions), 2026-10-16:
-  model groups across providers, pacing usage so that every subscription is used fully by the time its window resets,
-  and limit capture for every provider). Delegated (agent, 2026-10-17, under [owner decision
-  25](../ROADMAP.md#42-owner-decisions)) for everything else: the configuration shape, the request fields, the pacing
-  arithmetic, the gate, the source labels and the defaults. Not owner-approved beyond the direction. Nothing here changes
   what a bypass run may do: groups and pacing only choose or delay among candidates that already passed the hard filter,
-  and affinity still never moves a `privileged` meta-session to another provider.
+  and affinity still never moves a `privileged` meta-session to another provider. Item 11 is superseded in part by
+  [ADR-0058](0058-captured-limit-signatures.md) for captured distinctive signatures (owner decision 64, 2026-10-18).
 - Extends: [ADR-0007](0007-capacity-as-confidence-estimate.md) (tier-aware capacity as an estimate),
   [ADR-0008](0008-two-stage-routing.md) (two-stage routing), [ADR-0032](0032-provider-model-affinity.md) (affinity) and
   [ADR-0044](0044-deterministic-route-scoring-and-replayable-decisions.md) (score and decision record), without editing
