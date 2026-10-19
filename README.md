@@ -444,7 +444,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `outer_sandbox.required_profiles` | no | List of distinct non-privileged profile names (default empty, which changes nothing). A listed profile is refused with `ELIGIBILITY_NONE` unless bubblewrap and `prlimit` work on the host; because this build does not yet wrap the provider process, a listed profile is refused even when both work (`OUTER_SANDBOX_NOT_ENFORCED`). `doctor` reports the check. See [Trust profiles](#trust-profiles) and LLD section 8.4. |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`, `muse-code`. Only
-`claude-code`, `codex` and `kimi-code` pass the version gate on `main` today; the other ids name registered M4
+`claude-code`, `codex`, `opencode` and `kimi-code` pass the version gate on `main` today; the other ids name registered M4
 adapters whose manifests admit no version until `switchboard adapters validate` passes a live CLI (ROADMAP §6.8.2).
 `<id>` is the *config* id. The *provider* id used in
 `routing.provider_preference` of `delegate_task` is the adapter id: `claude`
@@ -2871,9 +2871,10 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
-- `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex and Kimi Code
-  manifests admit a version on `main` today. Grok Build, Antigravity, Cursor, OpenCode and the other M4 adapters
-  still need operator captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.58, T4.68 and §6.8.2).
+- `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex, OpenCode and Kimi Code
+  manifests admit a version on `main` today (OpenCode `>=2.0.23 <2.1.0` since the T4.58 live pass on 2026-10-18, owner
+  decisions 60 and 68). Grok Build, Antigravity, Cursor and the other M4 adapters
+  still need operator captures before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.68 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
   fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the
@@ -2921,7 +2922,8 @@ version gate (range `>=0.162.0 <0.163.0`); any other Codex version is refused as
 Antigravity (`agy`), OpenCode, Cursor, Kimi Code and Grok Build compile only an approved `privileged` cell, so for them
 the same task runs in that cell (Kimi Code: its ACP cell) and the script approves it through the operator `approve`
 CLI; the bypass-flag audit then requires exactly the cell's own flag. Until `adapters validate <provider>` writes a
-manifest range (only Kimi Code has one today), those providers stop at the version gate.
+manifest range (Kimi Code and OpenCode have one today: `>=2.1.1 <2.2.0` and `>=2.0.23 <2.1.0`), a provider without one
+stops at the version gate.
 
 ### Optional live malicious leg (T3.9)
 
