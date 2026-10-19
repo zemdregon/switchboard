@@ -363,11 +363,13 @@ function resetTree(): { repo: string; dataDir: string } {
 }
 
 function normalize(text: string): string {
-  // pid, pgid and start ticks differ per spawn, including inside escaped JSON payloads.
+  // pid, pgid and start ticks differ per spawn, including inside escaped JSON payloads. The chain hash (ADR-0064)
+  // covers those raw payloads, so it differs with them; every other column is still compared.
   return text
     .split(root)
     .join("<root>")
-    .replace(/(pid|pgid|proc_start_ticks)\\?":\s*-?\d+/g, '$1":0');
+    .replace(/(pid|pgid|proc_start_ticks)\\?":\s*-?\d+/g, '$1":0')
+    .replace(/"chain_hash":"[0-9a-f]{64}"/g, '"chain_hash":"<chain>"');
 }
 
 function ledgerDump(db: Database.Database): string {
