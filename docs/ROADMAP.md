@@ -894,7 +894,7 @@ amendment (structured-enough captured signatures, never generic words)."
 65\. M4 closure readings for the parser, CI malicious-leg, README and auth preflight rows (2026-10-18). **Relayed by
 the orchestrator (Linus, with owner-delegated standing authority; WORK QUEUE v8) as an owner direction; the wording
 below is a Delegated paraphrase of the relayed text, not checked against zemdregon's own words.** Entries 63 (reserved
-for T3.8b) and 64 (in an open pull request) are not on `main` yet; the gap is left on purpose and nothing is
+for T3.8b) and 64 (PR #700) are not on `main` yet; the gap is left on purpose and nothing is
 renumbered.
     *Delegated reading, not zemdregon's words.* It says when each kind of M4 row below is `Done` against its own
     Done-when. It flips no row by itself: each row changes in its own pull request, which checks the claim and cites
