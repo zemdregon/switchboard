@@ -7562,8 +7562,15 @@ presented session id is still refused; a non-JSON body is refused), the unchange
 
 ### 20.12 Property tests and coverage (NFR-MAINT-06, T8.11)
 
-A pinned `fast-check` dev dependency and generated-input tests for each parser NFR-MAINT-06 lists, run by the normal
-`npm test`; coverage through the vitest coverage provider, reported in CI without a threshold at first (Delegated).
+Built (Delegated, 2026-10-19): a pinned `fast-check` dev dependency (`4.10.2`, exact) and generated-input tests for
+each parser NFR-MAINT-06 lists (`src/adapters/bypass-audit.property.test.ts`,
+`src/adapters/git-write-detector.property.test.ts`, `src/git/sanitize.property.test.ts`,
+`src/artifacts/redact.property.test.ts`, `src/continuity/render.property.test.ts`,
+`src/ci/untrusted-block.property.test.ts`, `src/git/secret-scan.property.test.ts`), run by the normal `npm test`
+with a fixed seed and `numRuns: 100` per property; coverage through `@vitest/coverage-v8` `5.0.4` (matching `vitest
+5.0.4`), reported in CI without a threshold (Delegated, Linus decision WORK QUEUE v10): the Linux job runs the suite
+a second time with `--coverage` and uploads `coverage/` as the `coverage-report` artifact through the SHA-pinned
+`actions/upload-artifact`.
 [TDD §3.6](TDD.md#36-testing-strategy) records the strategy.
 
 ### 20.13 Tamper-evident ledger, provider telemetry, evaluation, brief and critic (T8.13, T8.15, T8.14, T5.14, T14.17)
