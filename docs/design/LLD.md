@@ -4890,8 +4890,9 @@ exists only once an adapter has an injected channel (T9.4b).
 Rules: `limit` and each `text` are bounded (`<chosen in T12.0>`), and the total response is bounded by the envelope
 limits of FR-MCP-04; `scope: "global"` or `"both"` requires the project to set `use_global` (else `INVALID_REQUEST`); no
 path outside the project's contexts is returned; the tool reads only the resolved project's store, plus the shared
-global store for `scope: "global"` or `"both"` (through the live origins map, `use_global` still required); retrieval failure is
-`status: "unavailable"` with a reason code, not a tool error (FR-RAG-08). Text in `results` is untrusted data: the tool
+global store for `scope: "global"` or `"both"` (through the live origins map, `use_global` still required);
+retrieval failure is `status: "unavailable"` with a reason code, not a tool error (FR-RAG-08). Text in `results`
+is untrusted data: the tool
 description says so, and a client must treat it as such. The call is recorded as a `rag_retrieval` row (§14.10).
 
 *As built (T12.9, 2026-10-16, Delegated, not owner-approved; fakes only):* the agent-callable form is the T12.6 handler
