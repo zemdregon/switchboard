@@ -19,7 +19,9 @@
  *   FR-GIT-06;
  * - the parser (T4.33) reads only the `stream-json` fields the 2026-10-14 live check recorded; soft denials fail the run
  *   and `SUCCESS` with no reported tokens is not a success (Q-86); a `denied_actions` or `error` value of an unrecorded
- *   shape, a second `result`, a changed conversation id and one that is not a safe token fail the run too; resume is not compiled (Q-86). The auth
+ *   shape, a second `result`, a changed conversation id and one that is not a safe token fail the run too; resume is
+ *   compiled as `--conversation <id>` in the same cell and fails closed on a different or missing returned id (owner
+ *   decision 67, Q-86). The auth
  *   preflight (T4.34) is `agy models`, keyed on the observed exit codes and stderr. The manifest range admits no version, so none of this runs before `adapters validate` passes a
  *   version;
  * - the limit mapping (T6.15, FR-CAP-11): `classifyFailure` reads the structured `AGY_ERROR: {...}` stderr line of an
@@ -59,6 +61,7 @@ import type {
   RunResult,
   SkillDelivery,
 } from "../types.js";
+import { isIneligible } from "../types.js";
 import {
   AGY_BINARY,
   AGY_ERROR_EXIT,
@@ -71,6 +74,7 @@ import {
   AUTH_STATUS_LINE_MAX,
   AUTH_STATUS_TIMEOUT_MS,
   BACKING_PROVIDER_KEY,
+  CONVERSATION_FLAG,
   DISABLE_AUTO_UPDATE_ENV,
   ERROR_AUTH_PREFIX,
   ERROR_MODEL_PREFIX,
@@ -171,6 +175,10 @@ const seenToolSteps = new WeakMap<ParseState, Map<number, Set<string>>>();
  * `conversation_id` was a UUID or empty ([LIVE] C4, C6, C9, C10).
  */
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+/** Runs whose resume already reported a different conversation id, so a later line does not report it again. */
+const resumeMismatch = new WeakSet<ParseState>();
+const RESUME_MISMATCH_MESSAGE = "resumed conversation id differs from the requested one";
+const RESUME_NO_ID_MESSAGE = "resume returned no conversation id";
 /** `result` lines already seen per run: a second one is a protocol anomaly, never a success (fail closed). */
 const seenResults = new WeakMap<ParseState, number>();
 /** Category of a stream anomaly (two results, two conversation ids); classified OUTPUT_PROTOCOL_ERROR. */
@@ -307,19 +315,22 @@ export class AntigravityAdapter implements ProviderAdapter {
   }
 
   /**
-   * FR-SES-03 (T4.33): not compiled (Q-86). `--conversation <id>` resumes a known id, but an unknown id exits 0 with
-   * `SUCCESS` in a new conversation and only a stderr warning ([LIVE] C9 run 5), so a resume that lost its history
-   * cannot be told apart from one that kept it in the stream. Fail closed until a check shows a structured signal.
+   * FR-SES-03 (T4.35, owner decision 67, Q-86): `--conversation <id>` ([LIVE] C9 runs 2 and 3: the same
+   * `conversation_id` comes back), compiled by the same matrix as a first run, so only the approved bypass cell
+   * compiles and no flag is added beyond its own. An unknown id exits 0 with `SUCCESS` in a new conversation (C9 run 5),
+   * so the requested id rides on the invocation and the parser fails a different or missing returned id closed.
+   * `-c`/`--continue` is never used. A binding of another provider, or an id that is not one safe token, never compiles.
    */
-  resumeArgs(binding: NativeBinding, _request: CompileRequest, _profile: ResolvedProfile): Invocation | Ineligible {
+  resumeArgs(binding: NativeBinding, request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible {
     if (binding.provider !== "antigravity") {
       return ineligible("CAPABILITY_MISSING", `binding is for ${binding.provider}`);
     }
-    return ineligible(
-      "CAPABILITY_MISSING",
-      "Antigravity resume is not compiled: an unknown --conversation id silently starts a new conversation with exit " +
-        "0 (2026-10-14 live check C9), so a lost history is not visible in the stream (Q-86)",
-    );
+    if (!SESSION_ID_RE.test(binding.nativeSessionId)) {
+      return ineligible("CAPABILITY_MISSING", "native session id is not a safe single argument");
+    }
+    const inv = this.#build(request, profile, [CONVERSATION_FLAG, binding.nativeSessionId]);
+    if (isIneligible(inv)) return inv;
+    return { ...inv, resumeNativeSessionId: binding.nativeSessionId };
   }
 
   /**
@@ -479,6 +490,14 @@ export class AntigravityAdapter implements ProviderAdapter {
         const model = str(rawModel);
         const id = str(ownProp(r, "conversation_id"));
         if (id !== undefined) out.push(...this.#bind(state, id, model, backingProvider));
+        // Owner decision 67: a resumed run must show the conversation it resumed; with no id nothing does.
+        if (
+          state.resumeNativeSessionId !== undefined &&
+          state.nativeSessionId === undefined &&
+          !resumeMismatch.has(state)
+        ) {
+          out.push({ kind: "provider_error", category: PROTOCOL_CATEGORY, message: RESUME_NO_ID_MESSAGE });
+        }
         const usage = obj(ownProp(r, "usage"));
         const metrics: Record<string, number | string | null> = {};
         for (const k of USAGE_KEYS) {
@@ -537,7 +556,9 @@ export class AntigravityAdapter implements ProviderAdapter {
   /**
    * The first non-empty id binds the session. A later, different id (a second `init` or a `result` for another
    * conversation) makes the binding ambiguous, so the run fails closed; the first id stays bound. An id that is not
-   * one safe token (a control character, a leading `-`, over 256 characters) binds nothing and fails the run.
+   * one safe token (a control character, a leading `-`, over 256 characters) binds nothing and fails the run. On a
+   * resume, a first id other than the requested one is a new conversation ([LIVE] C9 run 5): it fails the run and is
+   * never bound, so it cannot replace the stored binding (owner decision 67).
    */
   #bind(
     state: ParseState,
@@ -552,6 +573,12 @@ export class AntigravityAdapter implements ProviderAdapter {
     if (state.nativeSessionId !== undefined) {
       if (id === state.nativeSessionId) return [];
       return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: "conversation id changed mid-run" }];
+    }
+    const requested = state.resumeNativeSessionId;
+    if (requested !== undefined && id !== requested) {
+      if (resumeMismatch.has(state)) return [];
+      resumeMismatch.add(state);
+      return [{ kind: "provider_error", category: PROTOCOL_CATEGORY, message: RESUME_MISMATCH_MESSAGE }];
     }
     state.nativeSessionId = id;
     return [
