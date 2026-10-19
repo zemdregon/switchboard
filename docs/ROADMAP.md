@@ -1936,7 +1936,9 @@ C-G2 `HELD` at the outcome level (no `Bash` in `--tools`, so the deny-rule match
 bypass run ended `FAILED` before Claude Code started; the script printed `HELD` in error, and its approved scope sets
 network `off`, which TDD §4.1.1 makes `Ineligible` for a Claude `privileged` scope — an Assumption for the cause, the
 run's error code was not printed). No `ESCAPED`, so no cell or risk changes. The Codex half (X-G1, X-M2) is
-`NOT_CHECKED` until the 2026-10-22 quota reset. Remains for `Done`: run C-M3 once under the fixed scope and verdict mapping (PR #734: `CLAUDE_BYPASS_SCOPE` with network `on`, `approvedRunVerdict` maps approved-but-not-started to `NOT_CHECKED`); the Codex half. T3.9 owns the verdicts; the list
+`NOT_CHECKED` until the 2026-10-22 quota reset. Remains for `Done`: run C-M3 once under the fixed scope and verdict
+mapping (PR #734: `CLAUDE_BYPASS_SCOPE` with network `on`, `approvedRunVerdict` maps approved-but-not-started to
+`NOT_CHECKED`); the Codex half. T3.9 owns the verdicts; the list
 above still needs the live checks it names.
 
 ### 6.6 M11 Inner agent: tasks
