@@ -151,8 +151,9 @@ embedding backend configured the retrieval feature is inert and suite behaviour 
 
 **Runtime (implemented, T12.6, Done on fakes).** `search_project_context` (FR-RAG-06; ROADMAP §6.7):
 read-only, scoped to the client's projects, bounded result count and size (`src/mcp/search-context.test.ts`). `scope:
-"global"` and the global leg of `"both"` still answer `GLOBAL_NOT_AVAILABLE` until the global store is wired into the
-tool (ROADMAP T12.7).
+"global"` answers only from the built global store and the global leg of `"both"` merges with the project leg by
+score; either global scope needs `use_global` on the project, and a missing or unbuilt global store keeps
+`GLOBAL_NOT_AVAILABLE` (ROADMAP T12.7).
 
 **Design evidence (T12.5; on `main`).** FR-RAG-05, FR-RAG-07 and FR-RAG-08 (WF-14 admission context pack; BR-46) are
 specified on `main` in [LLD §14.11](../design/LLD.md#1411-admission-context-pack-t125), [SDD §4.1
@@ -186,8 +187,9 @@ A separate global SQLite store is built by
 `serve` after the projects from operator `sources` and contributing projects (`src/retrieval/global.ts`,
 `src/retrieval/global.test.ts`); admission merges global hits when `use_global` is set
 (`src/retrieval/admission.ts`); `index rebuild global`, `index clear global`, `index status global` and the `doctor`
-`rag_index_global` check are honoured (`src/cli/rag-index.ts`, `src/cli/rag-index.test.ts`). The tool's `global` and
-`both` scopes still answer `GLOBAL_NOT_AVAILABLE` (T12.6, `src/mcp/search-context.ts`).
+`rag_index_global` check are honoured (`src/cli/rag-index.ts`, `src/cli/rag-index.test.ts`). The tool's `global`
+and `both` scopes read the built global store through the live origins map (T12.6 follow-up,
+`src/mcp/search-context.ts`); a missing or unbuilt global store keeps `GLOBAL_NOT_AVAILABLE`.
 
 ## 4. Canonical run state machine
 

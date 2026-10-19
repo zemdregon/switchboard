@@ -328,9 +328,10 @@ agent (FR-INN-03, FR-INN-16). All requirements in this group first ship in M12.
 #### Implementation evidence (partial M12)
 
 Tasks T12.1–T12.7 on `main` verify FR-RAG-01–FR-RAG-05 and FR-RAG-07–FR-RAG-12 on fakes (T12.6 tool and T12.7
-global runtime built; the tool's `global`/`both` scopes still answer `GLOBAL_NOT_AVAILABLE`, ROADMAP T12.7). Per-task
+global runtime built, with the follow-up that the tool's `global`/`both` scopes read the built global store,
+ROADMAP T12.7). Per-task
 test lists, module paths and known gaps are in [TDD §3.13](../design/TDD.md#313-retrieval-index). FR-RAG-13 is
-T12.9 (Done on fakes); the remaining tool gap is the `global`/`both` scopes
+T12.9 (Done on fakes); a missing or unbuilt global store keeps the `global`/`both` scopes at
 (`GLOBAL_NOT_AVAILABLE`, ROADMAP T12.7). Business rules for sharing: [FRD
 BR-47](FRD.md#3-business-rules) (open design traceability in [PR #196](https://github.com/zemdregon/switchboard/pull/196)).
 
@@ -370,7 +371,8 @@ A separate global SQLite store is built by
 `src/retrieval/global.test.ts`); admission merges global hits when `use_global` is set
 (`src/retrieval/admission.ts`); `index rebuild global`, `index clear global`, `index status global` and the `doctor`
 `rag_index_global` check are honoured (`src/cli/rag-index.ts`, `src/cli/rag-index.test.ts`). The tool's `global` and
-`both` scopes still answer `GLOBAL_NOT_AVAILABLE` (T12.6, `src/mcp/search-context.ts`).
+`both` scopes read the built global store through the live origins map (T12.6 follow-up,
+`src/mcp/search-context.ts`); a missing or unbuilt global store keeps `GLOBAL_NOT_AVAILABLE`.
 
 | Task | Requirement | Primary tests | Primary modules |
 | --- | --- | --- | --- |

@@ -218,8 +218,9 @@ returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-searc
 `search_project_context` (FR-RAG-06, T12.6;
 `src/mcp/search-context.test.ts`) and global build, contribution copy, admission merge, `index rebuild global`,
 `index clear global`, `index status global` and the `doctor` global check (FR-RAG-09, FR-RAG-10, T12.7;
-`src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). Remaining gap: the tool's `global`/`both` scopes still
-answer `GLOBAL_NOT_AVAILABLE` (ROADMAP T12.7).
+`src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). Tool follow-up (Done on fakes): the tool's
+`global` and `both` scopes read the built global store through the live origins map (each hit labelled
+`origin_project` or `source`); a missing or unbuilt global store keeps `GLOBAL_NOT_AVAILABLE` (ROADMAP T12.7).
 
 ### 4.2 COMP-ADP M4 parser implementation evidence (Done against its Done-when)
 

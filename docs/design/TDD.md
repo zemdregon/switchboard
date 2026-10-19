@@ -1456,9 +1456,10 @@ returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-searc
   global` (the existing rebuild test), `index clear global` ("index clear global deletes the global store at once and
   records counts"), `index status global` ("index status global reports only the global store: off, absent and
   present"), and a `doctor` global subsection when enabled ("covers the global store: absent, present, stale, off and
-  missing", asserting the `rag_index_global` check in its present, absent, stale, off and missing states). Tool:
-  `global` and `both` still answer `GLOBAL_NOT_AVAILABLE` (remaining gap, ROADMAP T12.7); reading the built
-global store there is a follow-up.
+  missing", asserting the `rag_index_global` check in its present, absent, stale, off and missing states). Tool
+  follow-up (Done on fakes; `src/mcp/search-context.test.ts`): `global` answers only from the built global store,
+  `both` merges both legs by score within one `limit` with the project leg's `status`/`reason`; a missing or unbuilt
+global store keeps `GLOBAL_NOT_AVAILABLE`.
 
 ### 3.14 Network MCP transport (M13)
 

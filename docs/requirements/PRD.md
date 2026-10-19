@@ -118,9 +118,9 @@ returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-searc
 A separate global SQLite store is built by
 `serve` after the projects from operator `sources` and contributing projects, with admission search merge when
 `use_global` is set and `index rebuild global`, `index clear global`, `index status global` and the `doctor`
-`rag_index_global` check (`src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). Not implemented yet on
-`main`: reading the global store from `search_project_context` (T12.6 `global`/`both` still answer
-`GLOBAL_NOT_AVAILABLE`).
+`rag_index_global` check (`src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). `search_project_context`
+`global` and `both` scopes read the built global store through the live origins map (T12.6 tool follow-up, Done on
+fakes); a missing or unbuilt global store keeps `GLOBAL_NOT_AVAILABLE`.
 
 ### 3.1 Inner agent task catalogue
 
@@ -378,7 +378,7 @@ fakes, and T12.7 (Partial; global/both scope returns GLOBAL_NOT_AVAILABLE on mai
 sb/2026-10-18-fix-t127-search-global (f8c3fc5f)) delivers the alternate path with `use_global: true` and
 deployment-wide snippets at
 admission ([§3 implementation evidence](#implementation-evidence-partial-m12--cap-13)). Agent-callable search is T12.6
-(Done on fakes; its `global`/`both` scopes still answer `GLOBAL_NOT_AVAILABLE`).
+(Done on fakes; its `global`/`both` scopes read the built global store when the project sets `use_global`).
 
 ## 5. Product surface
 
