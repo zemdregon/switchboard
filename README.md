@@ -1723,8 +1723,9 @@ synthetic checks, not native captures of rate limiting, sandbox enforcement or `
 (the quota line shape follows the T6.11 capture key names, but the fixture is hand-written;
 [#272](https://github.com/zemdregon/switchboard/pull/272)). Tool parameter aliases remain **Assumptions** until
 operator captures confirm their native shapes. Later updates that supply or change a command or path reach the
-guard again; commands under unrecorded parameter keys remain unseen. Native resume, blocked outcomes and provider
-validation stay open under ROADMAP T4.33, T4.35, T4.36 and T4.38.
+guard again; commands under unrecorded parameter keys remain unseen. Native resume and blocked outcomes
+stay open under ROADMAP T4.33, T4.35 and T4.36; the live smoke and the live malicious leg stay open under
+T4.38 (the `adapters validate` leg passed live on 2026-10-18, CLI 1.4.2).
 
 Residual parser pins ([#344](https://github.com/zemdregon/switchboard/pull/344), "antigravity parser residual pins
 (T4.33, synthetic shapes)") record a second guard gap: tool parameters on a step whose `step_type` is not exactly
@@ -1829,8 +1830,10 @@ list (T4.35, T4.33 fixtures)";
 [#347](https://github.com/zemdregon/switchboard/pull/347), [#361](https://github.com/zemdregon/switchboard/pull/361),
 [#373](https://github.com/zemdregon/switchboard/pull/373)). None of these changed the parser or the compiled
 matrix. The conformance `resume` case stays partial until Q-86 and
-an operator resume capture (T4.35). No end-to-end run through Switchboard against a logged-in
-`agy` has been recorded yet (T4.38).
+an operator resume capture (T4.35). The only end-to-end run through Switchboard against a logged-in
+`agy` so far is the T4.38 live `adapters validate` smoke call on CLI 1.4.2 on 2026-10-18 (one
+structured-output call through `startAdapterRun` in the approved privileged bypass cell); the full live
+smoke and the live malicious leg stay operator-only (T4.38).
 
 ## Cursor CLI (milestone 4)
 
