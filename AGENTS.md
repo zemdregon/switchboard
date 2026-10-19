@@ -140,7 +140,8 @@ is good. Refer to the owner as `zemdregon`. The routine that has been used:
    ready and squash-merge. Stacked pull requests conflict in the roadmap after the first squash; merge `main` in again.
 4. Never run `scripts/live-smoke.mjs` or any provider CLI on the operator's logged-in accounts unless the task is an
    operator task. Hot files (ROADMAP §6.9.1) are edited by one task at a time.
-5. Work that needs a provider login, the macOS runner or an owner answer is listed in the roadmap (§6.9.2 for M5, the
+5. Work that needs a provider login, a Mac with native logins, or an owner answer is listed in the roadmap (§6.9.2 for
+   M5, the
    "Blocks Done" lists elsewhere, §7.3 for questions); do not guess it.
 
 ## Working rules

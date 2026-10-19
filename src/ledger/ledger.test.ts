@@ -19,6 +19,8 @@ const EXPECTED_TABLES = [
   "adapter_version",
   "approval",
   "artifact",
+  "ci_rerun",
+  "ci_run_cancel",
   "ci_trigger_event",
   "ci_trigger_ref_state",
   "control_plane_event",
@@ -550,6 +552,34 @@ describe("ledger migrations", () => {
     ).toThrow();
   });
 
+  it("0024 adds ci_rerun and ci_run_cancel on a version 23 database; one rerun per (ref, head SHA, job) (T15.6, FR-QUE-06)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const d = db;
+    const upTo23 = MIGRATIONS.filter((m) => m.version <= 23);
+    expect(migrate(d, undefined, upTo23)).toEqual(upTo23.map((m) => m.version));
+    expect(
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 24),
+      ),
+    ).toEqual([24]);
+    const rerun = d.prepare(
+      `INSERT INTO ci_rerun (project_id, publish_ref, head_sha, job_name, run_id, attempt, outcome, requested_at)
+       VALUES ('p', 'refs/heads/b', ?, 'linux', ?, 1, ?, '2026-10-19T00:00:00Z')`,
+    );
+    rerun.run("a".repeat(40), "1", "requested");
+    expect(() => rerun.run("a".repeat(40), "2", "requested")).toThrow(/UNIQUE|PRIMARY/u);
+    expect(() => rerun.run("b".repeat(40), "3", "done")).toThrow(/CHECK/u);
+    const cancel = d.prepare(
+      `INSERT INTO ci_run_cancel (id, project_id, publish_ref, head_sha, run_id, outcome, cancelled_at)
+       VALUES (?, 'p', 'refs/heads/b', ?, '9', 'cancelled', '2026-10-19T00:00:00Z')`,
+    );
+    cancel.run("crc_1", "a".repeat(40));
+    expect(() => cancel.run("crc_2", "a".repeat(40))).toThrow(/UNIQUE/u);
+  });
+
   it("0023 adds ci_trigger_event and ci_trigger_ref_state on a version 22 database (T15.5, FR-QUE-05, LLD §18.6)", () => {
     db = new Database(path.join(dir, LEDGER_FILE_NAME));
     db.pragma("foreign_keys = ON");
@@ -598,19 +628,19 @@ describe("ledger migrations", () => {
     ).toThrow(/UNIQUE/u);
   });
 
-  it("0024 adds eval_result on a version 23 database; pass needs exit code 0 (T8.14, FR-OPS-06, LLD §20.13)", () => {
+  it("0025 adds eval_result on a version 24 database; pass needs exit code 0 (T8.14, FR-OPS-06, LLD §20.13)", () => {
     db = new Database(path.join(dir, LEDGER_FILE_NAME));
     db.pragma("foreign_keys = ON");
     const d = db;
-    const upTo23 = MIGRATIONS.filter((m) => m.version <= 23);
-    expect(migrate(d, undefined, upTo23)).toEqual(upTo23.map((m) => m.version));
+    const upTo24 = MIGRATIONS.filter((m) => m.version <= 24);
+    expect(migrate(d, undefined, upTo24)).toEqual(upTo24.map((m) => m.version));
     expect(
       migrate(
         d,
         undefined,
-        MIGRATIONS.filter((m) => m.version <= 24),
+        MIGRATIONS.filter((m) => m.version <= 25),
       ),
-    ).toEqual([24]);
+    ).toEqual([25]);
     const insert = d.prepare(
       `INSERT INTO eval_result (id, suite, task_id, provider, run_id, run_state, pass, test_exit_code, grade_error,
          wall_clock_ms, created_at) VALUES (?, 's', 't', 'fake', NULL, NULL, ?, ?, NULL, 5, '2026-10-19T00:00:00Z')`,

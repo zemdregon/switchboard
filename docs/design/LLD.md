@@ -1697,7 +1697,7 @@ Extend `$defs` in §3.0:
 { "$defs": {
   "needs_attention_reason": { "enum": [
       "awaiting_approval", "parked_loop", "ci_fix_stuck", "failed_after_retry", "stalled", "budget_exhausted",
-      "skill_cleanup_failed" ] },
+      "skill_cleanup_failed", "secret_scan_blocked" ] },
   "needs_attention": { "type": "object", "required": ["active"], "properties": {
       "active": { "type": "boolean" },
       "reason": { "$ref": "#/$defs/needs_attention_reason" } } },  // required when active is true
@@ -1932,7 +1932,8 @@ request and daemon application), `src/ledger/control-plane.ts` (migration 0018 r
 
 #### 3.4.5 Needs-attention derivation (FR-CTL-03)
 
-Closed reason list (FR-CTL-03, LLD §3.4.1; seven values, `skill_cleanup_failed` added by T16.6):
+Closed reason list (FR-CTL-03, LLD §3.4.1; eight values, `skill_cleanup_failed` added by T16.6, `secret_scan_blocked`
+by T9.14):
 
 | Reason | Derived when (ledger facts only) |
 | --- | --- |
@@ -1943,11 +1944,14 @@ Closed reason list (FR-CTL-03, LLD §3.4.1; seven values, `skill_cleanup_failed`
 | `stalled` | Run non-terminal, `RUNNING` or `LEASED`, and no `run_event` for this run in the last *T* minutes (§3.4.6); run is **not** cancelled |
 | `budget_exhausted` | Project (or global) budget refusal is active for admission (§3.4.6) |
 | `skill_cleanup_failed` | The run's newest `skill_removed` event reports an entry with `removal: "failed"`, or is malformed (fail closed) (§19.8; T16.6), in any state |
+| `secret_scan_blocked` | The meta-session's newest decisive `git_push` event (any run, operator pushes included) is a `SECRET_SCAN_BLOCKED` refusal: an `ACCEPTED` push clears it, a refusal for another reason does not (§20.9; T9.14); a terminal run shows it only when it is the newest of its meta-session |
 
 Multiple reasons may apply; the envelope and digest expose the highest-priority reason only (order:
-`skill_cleanup_failed`, `budget_exhausted`, `parked_loop`, `ci_fix_stuck`, `awaiting_approval`, `stalled`,
-`failed_after_retry`; T16.6 put `skill_cleanup_failed` first, Delegated, because a skill file left in a worktree blocks
-publication until an operator or a later removal point clears it).
+`skill_cleanup_failed`, `secret_scan_blocked`, `budget_exhausted`, `parked_loop`, `ci_fix_stuck`, `awaiting_approval`,
+`stalled`, `failed_after_retry`; T16.6 put `skill_cleanup_failed` first, Delegated, because a skill file left in a
+worktree blocks publication until an operator or a later removal point clears it; T9.14 put `secret_scan_blocked`
+second, Delegated, for the same reason: publication stays refused until the operator allowlists the finding or pushes
+by hand).
 Priority is **Proposed** for stable UI; T14.2 may adjust with tests.
 
 **Implemented (T14.2, Delegated, not owner-approved).** `src/control/needs-attention.ts` derives the flag on read and
@@ -2207,8 +2211,9 @@ counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
   - `needs_attention` / `ci_fix_stuck`: the CI poller setting the stuck flag (the 0→1 transition only), via `onStuck`.
   - `budget_exhausted` (T14.4, unchanged): the budget refusal hook already announces it, so it is not announced again
     as `needs_attention`.
-  - `stalled` has no event-time hook (stall is derived on read only, `findStalledRuns` never acts) and is never
-    emitted; `run_terminal`, `project_paused` / `global_paused` and `queue_low` are unchanged.
+  - `stalled` and `secret_scan_blocked` have no event-time hook (both derived on read only: `findStalledRuns`
+    never acts, and a push refusal is a tool result read back from the meta-session's `git_push` events, §3.4.5;
+    T9.14) and are never emitted; `run_terminal`, `project_paused` / `global_paused` and `queue_low` are unchanged.
 
 #### 3.4.10 `tool_profile` (FR-CTL-11)
 
@@ -3062,8 +3067,9 @@ other than the fake compiles `acp-stdio`.
 ### 8.3 Process table per platform (M4, T4.9)
 
 *Implemented 2026-10-13 (Delegated agent work, not owner-approved; every choice below is Proposed). The macOS path was
-written and unit-tested on Linux against fixtures only; since 2026-10-14 it runs on a GitHub-hosted macOS runner
-(T4.10: `macos-26-arm64`, macOS 26.6.2, all tests that can run there pass). The operator's optional live check is
+written and unit-tested on Linux against fixtures only; from 2026-10-14 to 2026-10-19 it ran on a GitHub-hosted
+macOS runner (T4.10: `macos-26-arm64`, macOS 26.6.2, all tests that can run there passed; the job was then removed,
+TDD §3.8). The operator's optional live check is
 T4.12.* One macOS fact the CI leg found: `kill(-pgid, 0)` answers `EPERM`, not success, for a group whose members are
 all zombies, so `groupAlive` (`src/exec/supervisor.ts`) asks the table on `EPERM` as well as on success; `ESRCH` alone
 means the group is gone. The supervisor (§8) and reconciliation ask the
@@ -3484,8 +3490,9 @@ Served by the shim to the agent as MCP tools; every object has `additionalProper
 
 `push` takes no arguments on purpose, so an injected agent cannot choose a ref. Tool errors use short codes
 (`NOT_RUNNING`, `LEASE_LOST`, `PATH_OUTSIDE_WORKTREE`, `NOTHING_TO_COMMIT`, `MESSAGE_EMPTY_AFTER_SANITISING`,
-`PUSH_NOT_ALLOWED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_REJECTED`, `SIGNING_FAILED`, and, from M11, `MESSAGE_REQUIRED`)
-and are `git_tool_denied` or `git_push` events. They are returned to the agent and do not fail the run.
+`PUSH_NOT_ALLOWED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_REJECTED`, `SIGNING_FAILED`, from M11 `MESSAGE_REQUIRED`, and
+from T9.14 `SECRET_SCAN_BLOCKED`, §20.9) and are `git_tool_denied` or `git_push` events. They are returned to the agent
+and do not fail the run.
 
 **`message` and the inner agent (M11, FR-INN-10, Proposed).** `message` stays required in the published tool schema
 unless the `commit_message` task is enabled with `mode` other than `never`; the shim then serves the schema with no
@@ -4033,9 +4040,10 @@ callers `src/git/channel.ts` (agent tool) and `src/cli/git-push.ts` (operator co
   error give `ERROR` with `CREDENTIALS_UNAVAILABLE`, `REMOTE_UNREACHABLE`, `REMOTE_TRANSPORT_NOT_ALLOWED`, `TIMEOUT` or
   `GIT_FAILED`. Git's output is then discarded.
 - **Record.** `git_push` row plus `git_push` event `{push_id, outcome, reason, requested_by, remote, ref, head_sha,
-  commit_count, commits (newest first, at most 500), commits_truncated?, credential_reach?}`. Pushes of one
-  meta-session are serialised in the process. Agent tool codes: `PUSH_NOT_ALLOWED`, `NOTHING_TO_PUSH`,
-  `REMOTE_REJECTED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_UNREACHABLE`, `GIT_FAILED`.
+  commit_count, commits (newest first, at most 500), commits_truncated?, credential_reach?, secret_scan?}` (the last
+  from T9.14, §20.9: `{from, hit_count, allowed_count, binary_count, binary_paths}`, present once the scan ran).
+  Pushes of one meta-session are serialised in the process. Agent tool codes: `PUSH_NOT_ALLOWED`, `NOTHING_TO_PUSH`,
+  `REMOTE_REJECTED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_UNREACHABLE`, `GIT_FAILED`, `SECRET_SCAN_BLOCKED` (T9.14).
 - **BR-31** (`evaluateCredentialReach`, from the frozen snapshot, at channel open and at each call): `host` only (a
   `container` snapshot is refused until M10), frozen policy `branch`, no `bypassApproved` or scope `bypass` claim
   without a controller-verified approval, and shell `none` or `allowlist` with an empty list (a `privileged` run by its
@@ -6714,9 +6722,11 @@ sets `GH_TOKEN` or `GITHUB_TOKEN` for these calls ([ADR-0050](../adr/0050-ci-sta
 
 1. On each poll interval (§18.1, per-project `enabled`), for each published ref of the project, call `CiStatusPort` for
    the tip commit on that ref.
-2. When the latest relevant check or run has conclusion `failure`, `cancelled` or `timed_out`, and no `ci_trigger_event`
+2. When the latest relevant check or run has conclusion `failure`, and no `ci_trigger_event`
    row exists for `(project_id, external_id)`, insert the event row and enqueue one work item from `template_json` with
-   `source_kind = 'ci_trigger'`.
+   `source_kind = 'ci_trigger'`. *Amended by T15.6 (FR-QUE-06; before it this step also enqueued for
+   `cancelled` and `timed_out`):* `cancelled` and `timed_out` are `CI_INFRA` and
+   enqueue nothing ([§20.1](#201-ci-transient-handling-fr-que-06-t156)).
 3. Optional `untrusted_summary` (from an operator-forwarded notification) is stored length-capped; it is **not**
    passed to `delegate_task` objective unless the operator template explicitly references a controller substitution token
    `{{ci_untrusted_summary}}`, which is wrapped in the same `untrusted_text` label pattern as §3.4.1 and never parsed for
@@ -6736,11 +6746,13 @@ from a read-only `git config --get remote.<name>.url`, github.com only), `untrus
 Delegated deviations from the Proposed design above, each to avoid a migration while T15.2 owns the next number:
 
 1. **No `project_ci_trigger` table.** The per-project trigger is operator configuration, `ci_trigger.projects[]`
-   (`project`, `client`, `enabled`, `max_consecutive_fixes`, `template` with `objective`, `trust_profile` other than
+   (`project`, `client`, `enabled`, `max_consecutive_fixes`, `rerun_failed`, `cancel_stale_queued`,
+   `template` with `objective`, `trust_profile` other than
    `privileged`, `constraints`; `src/config/ci-trigger.ts`); `load.ts` refuses an unknown client, an unknown project
    or a client that does not list the project. The `client` is the `creator_client_id`. A chat client cannot enable
    a trigger in v1. T15.5 adds an optional top-level and per-project `max_consecutive_fixes` (Assumption default 2;
-   `DEFAULT_MAX_CONSECUTIVE_FIXES`).
+   `DEFAULT_MAX_CONSECUTIVE_FIXES`). T15.6 adds the per-project `rerun_failed` and `cancel_stale_queued` switches
+   (FR-QUE-06; both default `false`; §20.1).
 2. **No `ci_trigger_event` table (T15.3 as-built; superseded by T15.5 below).** At T15.3, dedup was the work item
    itself: `source_kind = 'ci_trigger'`, `source_id = ci:<external_id>`, idempotency key
    `ci_trigger:<project_id>:<external_id>`, checked per `(project_id, source_id)` and written in the one enqueue
@@ -7218,21 +7230,59 @@ provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and par
 ### 20.1 CI transient handling (FR-QUE-06, T15.6)
 
 - **Classification.** Each conclusion the CI trigger reads (§18.6) maps to one class: `success`; `failure`; or
-  `CI_INFRA` for `cancelled`, `timed_out`, and a `failure` whose jobs show a runner or infrastructure fault in the
-  allowlisted `gh` JSON (the exact field test is settled in T15.6 against the installed `gh`; until then only
-  `cancelled` and `timed_out` are `CI_INFRA`). `CI_INFRA` never increments `ci_trigger_ref_state.consecutive_fixes`.
+  `CI_INFRA` for `cancelled` and `timed_out` (settled in T15.6 against `gh` 2.102.0: no allowlisted field
+  reliably marks a runner fault inside a `failure`, so those stay code failures; see the as-built note below).
+  `CI_INFRA` never increments `ci_trigger_ref_state.consecutive_fixes`.
 - **Rerun once.** With `ci_trigger.projects[].rerun_failed: true` (default `false`), a `failure` or `CI_INFRA` run on
-  a published ref's current head gets one `gh run rerun <run-id> --failed`. A new ledger table (next free migration)
+  a published ref's current head gets one `gh run rerun <run-id> --failed`. A new ledger table (migration 0024)
   keyed by `(project_id, publish_ref, head_sha, job_name)` makes the rerun happen at most once per key. The fix-up item
   of FR-QUE-03 is enqueued only when the rerun concludes `failure`; a second red on the same key is never rerun again.
-- **Stale cancel.** With `ci_trigger.cancel_stale_queued: true` (default `false`), the poller lists runs on each
-  published ref, re-reads each candidate's `status` and `headSha` immediately before acting, and runs
+- **Stale cancel.** With `ci_trigger.projects[].cancel_stale_queued: true` (default `false`), the poller lists runs on
+  each published ref, re-reads each candidate's `status` and `headSha` immediately before acting, and runs
   `gh run cancel <run-id>` only for `status: queued` whose `headSha` is not the ref's current tip. An `in_progress` run
   is never cancelled; the small race between the re-read and the cancel is an accepted residual risk (Assumption).
 - **Allowlist.** [ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md) amendment 1 adds exactly these two write
   verbs, each behind its own project switch; every other `gh` verb stays refused (`src/ci/gh-argv.ts`).
 - **Events.** `ci_rerun_requested {publish_ref, head_sha, job_name, run_id}` and `ci_run_cancelled {publish_ref,
   head_sha, run_id}`; no `gh` free text is copied.
+
+**As built (T15.6, 2026-10-19, Delegated agent work, not owner-approved).** Settled against `gh` 2.102.0 on the
+operator host (`gh run view --help` lists the `attempt` and `jobs` fields, `gh run rerun --help` the `--failed` flag,
+`gh run list --help` the `--status queued` filter; `--help` only, no call to GitHub):
+
+1. **Classes.** `classifyConclusion` in `src/ci/port.ts`. No allowlisted `gh` JSON field reliably marks a runner fault
+   inside a `failure` (neither `--help` field list names a runner-fault field, and a run-level `startup_failure` also
+   follows an invalid workflow file, a code fault), so only `cancelled` and `timed_out` are `CI_INFRA` (Delegated,
+   fail closed: a doubtful fault stays a code failure). The classification applies whether or not a switch is on, as
+   FR-QUE-06 requires: with both switches off a `CI_INFRA` conclusion is recorded in `ci_trigger_event` with no work
+   item and leaves `ci_trigger_ref_state` untouched (it neither counts nor resets). This changes T15.3's behaviour,
+   which enqueued a fix-up for `cancelled` and `timed_out`; `success`, `failure` and the `gh` argv set are unchanged.
+2. **Switches.** Per project, `ci_trigger.projects[].rerun_failed` and `ci_trigger.projects[].cancel_stale_queued`
+   (FR-QUE-06 says "when the project enables"), both default `false` (`src/config/ci-trigger.ts`, `schema.ts`).
+3. **Argv.** Five templates join G1 to G3 in `src/ci/gh-argv.ts`, each audited exactly: G4
+   `run view <id> --repo <o>/<r> --json attempt,jobs`, G5 `run rerun <id> --failed --repo <o>/<r>`, G6
+   `run list --repo <o>/<r> --branch <b> --status queued --limit 20 --json databaseId,conclusion,headBranch,status,headSha`,
+   G7 `run view <id> --repo <o>/<r> --json databaseId,status,headSha` and G8 `run cancel <id> --repo <o>/<r>` (never
+   `--force`). G4 and G5 run only with `rerun_failed`, G6 to G8 only with `cancel_stale_queued`. The job members read
+   from G4 are `name`, `status` and `conclusion` (**Assumption**: `--help` lists `jobs` but not its members); a job name
+   is kept only when it has 1 to 200 characters and no control character, else the read is `PARSE_FAILED`.
+4. **Migration 0024** (`src/ledger/migrations/0024_ci_transient.ts`). `ci_rerun` (primary key `(project_id,
+   publish_ref, head_sha, job_name)`, with `run_id`, `attempt`, `outcome` `requested` or `gh_failed`, `requested_at`)
+   is the `ci_rerun_requested` event; `ci_run_cancel` (`UNIQUE (project_id, run_id)`, with `publish_ref`, `head_sha`,
+   `outcome` `cancelled` or `gh_failed`, `cancelled_at`) is the `ci_run_cancelled` event. Rows are written **before**
+   the `gh` write, so a crash can never cause a second rerun or cancel; a failed `gh` write spends the key.
+5. **Rerun rule** (`rerunOnce` in `src/ci/trigger.ts`). A rerun happens only when the run has at least one completed
+   job concluding `failure`, `cancelled` or `timed_out` (the rerun allowlist) and **none** of those jobs was rerun on
+   this head before, because `--failed` reruns every failed job. A rerun keeps the run id and raises its attempt, so the
+   trigger waits (no rerun, no fix-up) while the run still shows the attempt the rerun was requested from, for at most
+   `RERUN_VISIBLE_MS` (10 minutes, Assumption), then treats the key as spent. Otherwise the conclusion is handled as
+   without the switch: a `failure` admits one fix-up under the FR-QUE-05 cap, a `CI_INFRA` is recorded only.
+6. **Stale cancel rule** (`cancelStaleQueued`). Only a run listed as `queued` on the ref's branch whose head is a SHA
+   Switchboard earlier pushed to the same ref (an `ACCEPTED` `git_push` row other than the tip) is a candidate; a run
+   on the tip or on a commit Switchboard never pushed is never cancelled, which keeps the action inside "branches the
+   project published". The G7 re-read must still say `queued` on the same head.
+
+Tests: `src/ci/ci-transient.test.ts` (fake `CiStatusPort`, fake `CiActionsPort` and a fake `GhRunner`; no real `gh`).
 
 ### 20.2 Host load hold (FR-CAP-12, T3.24)
 
@@ -7382,13 +7432,54 @@ the creating client's ceiling (§18.4).
 - **Scanner.** Deterministic and in-process: the rule set of the artifact secret redactor
   ([ADR-0042](../adr/0042-objective-redaction-at-admission.md)) plus high-signal token formats, each rule with a stable
   id; no entropy-only rule by default (false positives), Assumption. No external scanner binary.
-- **Scope.** Added lines of `git diff --no-ext-diff --no-textconv -U0 <from>..<head>`, where `<from>` is the remote
-  ref's current tip, or the base checkpoint for a new ref. Binary files are not scanned and are listed in the event.
+- **Scope.** Added lines of the outgoing diff (`git diff -U0 --inter-hunk-context=0 --text --no-renames --no-color
+  --no-relative --src-prefix=a/ --dst-prefix=b/ --end-of-options <from> <head>` through the hardened helper, which adds
+  `--no-textconv --no-ext-diff` and neutralises every driver), where `<from>` is the remote-tracking tip when the
+  ledger holds an ACCEPTED push of exactly that SHA and it is an ancestor of the head, else the base checkpoint (after
+  a push by hand the next controller push scans everything since the base again). Every file is diffed as text, so
+  a `.gitattributes` line cannot hide added lines; paths Git counts as binary are still scanned and are listed in
+  the event.
 - **Outcome.** A hit refuses the push with `SECRET_SCAN_BLOCKED`, appends `secret_scan_hit {stage: "push", rule_id,
-  path, line}` (never the value) and flags `secret_scan_blocked` until a clean push of that ref or an operator
-  acknowledgement through the CLI. The commit tool appends the same event with `stage: "commit"` and does not refuse.
+  path, line}` (never the value) and flags `secret_scan_blocked` until a clean push of that ref (an operator
+  acknowledgement through the CLI is Proposed, not built). The commit tool appends the same event with `stage:
+  "commit"` and does not refuse (Proposed, not built by T9.14: the commit tool has no content scan).
 - **No override in-band.** The only allowlist is operator configuration (`git.secret_scan.allow`, rule id and path
   glob); no MCP field, privileged scope or bypass flag changes the result. The operator can always push by hand.
+
+**Implemented (T9.14, 2026-10-19, Delegated agent work, not owner-approved beyond owner decision 77).** The push side
+is built; the commit-time warning (`stage: "commit"`) and the operator acknowledgement through the CLI are not (the row
+stays `Partial` for them).
+
+- **Scanner.** `src/git/secret-scan.ts`. The rule set is exactly the artifact redactor's (`SECRET_RULES` and
+  `PREFIXED_RULES` in `src/artifacts/redact.ts`, which gained stable ids; no second pattern set): `pem_private_key`,
+  `aws_access_key_id`, `github_token`, `github_fine_grained_pat`, `sk_api_key`, `slack_token`, `jwt`,
+  `switchboard_tool_token`, `switchboard_oauth_token`, `bearer_authorization`, `credential_assignment`. No entropy
+  rule. Each added line is tested against every rule; a report lists at most 100 hits and 100 binary paths with exact
+  counts.
+- **Scope and range.** `git diff -U0 --text --no-renames --no-color --no-relative --src-prefix=a/ --dst-prefix=b/
+  <from> <head>` through the hardened helper (which adds `--no-textconv --no-ext-diff` and neutralises every driver),
+  after every other push check and before any remote write. `<from>` is the remote-tracking ref
+  `refs/remotes/<remote>/<branch_prefix><sess>` when the ledger holds an ACCEPTED `git_push` of exactly that SHA to
+  that ref (the ref guard's own rule for a tracking-ref change) and it is an ancestor of the head (Git updates it on
+  every accepted push; no network read happens before the push itself, Delegated), else the base checkpoint (a new
+  ref, a tracking ref written by anything but a controller push, or one that cannot explain the head: the whole
+  verified history, a superset; so after a push by hand the next controller push scans everything since the base
+  again, and a false positive published by hand needs an allowlist entry). `--text` means a `.gitattributes` line
+  marking a path `binary` or `-diff` cannot hide added lines; the paths Git counts as binary are still listed in the
+  event (`numstat`). `--no-renames` makes the scan a function of the two trees alone, so a file moved into the
+  outgoing diff is scanned whole. A Git failure or an oversized diff is `GIT_FAILED` (fail closed), never a clean scan.
+- **Outcome.** As above: `REFUSED_POLICY` / `SECRET_SCAN_BLOCKED` in every profile (an exempt approved bypass run is
+  refused with its `credential_reach: "bypass_exempt"` still recorded), tool code `SECRET_SCAN_BLOCKED`, at most 50
+  `secret_scan_hit` events `{stage: "push", rule_id, path, line, ref}` on the run the push is recorded against, then
+  the `git_push` event with `secret_scan {from, hit_count, allowed_count, binary_count, binary_paths}`. The push tool
+  takes no input and `PushRequest` has no field the scan reads. `needs_attention` / `secret_scan_blocked` is derived
+  on read from the meta-session's `git_push` events (§3.4.5, `src/control/needs-attention.ts`).
+- **Allowlist.** `git.secret_scan.allow[]` (at most 64 entries of `{rule_id, path}`): a hit of that rule at a
+  repository-relative path the glob matches exactly (`fixtures/**` for a tree; a bare directory name is not a prefix)
+  is counted in `allowed_count` and does not refuse. An unknown rule id or an empty glob stops startup naming the
+  entry. Tests: `src/git/secret-scan.test.ts`, the "pre-push secret scan" block of `src/git/push.test.ts`, the
+  `secret_scan_blocked` block of `src/control/needs-attention.test.ts`, `git.secret_scan.allow` in
+  `src/config/config.test.ts`.
 
 ### 20.10 Repository-configuration preflight (FR-POL-11, T3.25)
 
@@ -7464,7 +7555,7 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
     (`EVAL_GRADER_NETWORK_NOT_OFF`). Before and after grading it asserts the hidden tests are absent from the agent's
     worktree: no bundle file at the same relative path with the same content (`EVAL_TESTS_IN_WORKTREE`; content alone
     would flag a correct answer equal to an expected-output file). The container and the staging copy are removed.
-  - **`eval_result`** (migration 0024): `id` (`evl_*`), `suite`, `task_id`, `provider`, `run_id`, `run_state`,
+  - **`eval_result`** (migration 0025): `id` (`evl_*`), `suite`, `task_id`, `provider`, `run_id`, `run_state`,
     `pass` (1 exactly when the test command exited 0, Linus decision; a `CHECK` ties it to `test_exit_code = 0`),
     `test_exit_code`, `grade_error` (`EVAL_RUN_<state>`, `EVAL_RUN_NOT_ADMITTED` or a grader code), `wall_clock_ms`
     (submit to terminal), `usage_json` (the run's provider-reported usage metrics, `[]` when none), `created_at`.
