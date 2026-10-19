@@ -8,6 +8,10 @@
  * T15.5 (FR-QUE-05): `ci_trigger.max_consecutive_fixes` per publish ref (Assumption default 2); further failures
  * on that ref are recorded in `ci_trigger_event` with no work item, and the project is flagged needs-attention
  * with `ci_fix_stuck` (FR-CTL-03).
+ *
+ * T15.6 (FR-QUE-06, LLD §20.1, ADR-0050 amendment 1): two per-project switches, both off by default, each enabling one
+ * `gh` write verb: `rerun_failed` (`gh run rerun --failed`, once per ref, head SHA and job) and `cancel_stale_queued`
+ * (`gh run cancel` of queued runs on superseded heads of the project's published refs).
  */
 import type { TrustProfile } from "./schema.js";
 
@@ -28,6 +32,8 @@ export interface CiTriggerConfigInput {
     client: string;
     enabled?: boolean;
     max_consecutive_fixes?: number;
+    rerun_failed?: boolean;
+    cancel_stale_queued?: boolean;
     template: { objective: string; trust_profile: CiTemplateProfile; constraints?: string[] };
   }[];
 }
@@ -38,6 +44,10 @@ export interface CiTriggerProjectSettings {
   readonly creatorClientId: string;
   readonly enabled: boolean;
   readonly maxConsecutiveFixes: number;
+  /** T15.6: rerun the failed jobs of a failed or `CI_INFRA` run once before admitting a fix-up (default false). */
+  readonly rerunFailed?: boolean;
+  /** T15.6: cancel queued (never in-progress) runs on superseded heads of published refs (default false). */
+  readonly cancelStaleQueued?: boolean;
   readonly template: {
     readonly objective: string;
     readonly trustProfile: CiTemplateProfile;
@@ -92,6 +102,8 @@ export function resolveCiTrigger(input: CiTriggerConfigInput | undefined): CiTri
       creatorClientId: p.client,
       enabled: p.enabled !== false,
       maxConsecutiveFixes: p.max_consecutive_fixes ?? defaultMaxFixes,
+      rerunFailed: p.rerun_failed === true,
+      cancelStaleQueued: p.cancel_stale_queued === true,
       template: {
         objective: p.template.objective,
         trustProfile: p.template.trust_profile,

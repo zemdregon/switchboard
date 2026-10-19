@@ -659,7 +659,7 @@ as history.
 ## 38. CI Linux job timeout 10 -> 20 minutes (PR #751, no doc impact, checked 2026-10-19)
 
 - PR #751 changes only `timeout-minutes: 10` to `20` for the Linux job in
-  `.github/workflows/ci.yml` (the macOS job already uses 20).
+  `.github/workflows/ci.yml` (the macOS job also used 20 before its removal in PR #761).
 - No document states a CI job timeout value: [TDD §3.8](design/TDD.md#38-ci-pipeline)
   describes the pipeline jobs without timeouts, and greps for `timeout-minutes`,
   `10 minutes` and `20 minutes` across `docs/`, `README.md`, `CONTRIBUTING.md`
@@ -797,3 +797,34 @@ as history.
 - Left unchanged: §9.2 is a dated (2026-10-19) sequencing snapshot, and rewriting it would falsify the record
   (cf. item 23 above for the §6.5 intro precedent); the live status lives in each task row and the milestone
   rows, which agree. It does not block PR #770.
+
+## 45. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
+
+- PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
+  owner's macOS merge waiver" / "under the owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux
+  job".
+- No [§4.2 Owner decisions](ROADMAP.md#42-owner-decisions) entry (§4.2 runs to decision 77) records such a waiver,
+  and the §5 document table says owner decisions are "Listed in §4.2 only".
+- Left unchanged: writing a §4.2 entry would mean restating zemdregon's words and minting decision context this
+  gate cannot verify and must not invent (cf. items 18 and 39 for the same precedent). Recording that entry is
+  the roadmap owner's call. It does not block PR #761: the operative fact — CI is Linux-only
+  (`.github/workflows/ci.yml` holds one job, `Typecheck, lint, test, docs check (Linux)`) — is verified against
+  the code, and the merge-gate reading agrees with ADR-0060, which already recorded the macOS leg as dropped from
+  gating, and with the AGENTS.md "seven checks" merge routine, which lists the Linux job only.
+- Resolution (doc-align gate on the PR #761 branch): TDD §2 and §3.8 reworded to cite the ruling recorded in
+  ADR-0060 ("the macOS leg was dropped from gating by a ruling") instead of a dated owner waiver, so no §4.2
+  entry is needed and no owner approval is implied. Resolved, not outstanding.
+
+## 46. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
+
+- TDD §5 (implementation strategy, M4 row) listed "macOS CI leg (NFR-PORT-02)" in the present tense as the
+  technical approach; past-tensed to "ran 2026-10-14, removed 2026-10-19 when CI went Linux-only, §3.8",
+  matching the T4.10 owner row in ROADMAP §6.8 (ROADMAP owns status; TDD §5 gives the approach only).
+- AGENTS.md verify-and-merge routine step 5 still said "the macOS runner"; no macOS runner exists in
+  `.github/workflows/ci.yml` any more. Reworded to "a Mac with native logins", matching the T4.12 row
+  ("reopen when a Mac with native logins is available"). Step 3 already lists the Linux job only, so the
+  "seven checks" count is unchanged and verified.
+- Checked and left unchanged: SRS NFR-PORT-02 still reads Verify `T (CI)` — the macOS code-path unit tests
+  (`src/exec/proc-info.ts`, `src/reconcile/process.test.ts` over injected macOS tables) still run in Linux
+  CI, so the verification method still holds; narrowing it is the SRS owner's call. SDD NFR-PORT-02 row
+  still points at TDD §2, which still documents the CI history.

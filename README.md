@@ -167,7 +167,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
-  decisions 76 and 77: T15.6 to T15.8 are Planned and T15.9 is Done; the M15 scope below stays Done on fakes
+  decisions 76 and 77: T15.6 is Done on fakes (2026-10-19, Delegated agent work, not owner-approved), T15.7
+  and T15.8 are Planned and T15.9 is Done; the M15 scope below stays Done on fakes
   (2026-10-18, Delegated
   agent work,
   not owner-approved; the `serve` low-water wiring below is a separate open fix)). The durable per-project work queue
@@ -180,6 +181,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   ceiling. Switchboard reads no GitHub token. Consecutive fix-up items per published ref are capped (T15.5:
   `ci_trigger.max_consecutive_fixes`, Assumption default 2): further failures are recorded without a work item and the
   project is flagged needs-attention (`ci_fix_stuck`) until CI passes or the operator resets the counter.
+  Transient CI faults are handled (T15.6: `cancelled`/`timed_out` are recorded as `CI_INFRA` with no fix-up and never
+  count toward the cap; per-project `rerun_failed` and `cancel_stale_queued` switches, both off by default, enable one
+  `gh run rerun --failed` per (ref, head, job) and cancel of queued runs on superseded heads).
   A project may set a queue low-water mark (T15.4: `projects.<id>.queue.low_water`, off by default): when the
   admissible count (`READY` items, or `PENDING` items whose dependencies can still be met) drops below the mark, one
   `queue_low` sink event fires, re-armed only when the count rises back to the mark. The detector is covered on fakes
@@ -204,7 +208,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
-  client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
+  client and a macOS CI leg (T4.10; ran 2026-10-14, removed 2026-10-19 when CI went Linux-only) are done; Grok Build,
+  Antigravity, Cursor and OpenCode each have a module, compile matrix
   and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (T4.23, `Done` against its
   Done-when on synthetic fixtures under owner decision 65; every Done-when case has a supervisor-replayed JSONL fixture
   on `main` ([#260](https://github.com/zemdregon/switchboard/pull/260)); native shapes are T4.28's work),
@@ -385,7 +390,7 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 ## Requirements
 
 - Linux. Other operating systems are not supported yet. macOS process handling (process tree and PID-reuse guard
-  through `ps`) runs in a macOS CI leg (typecheck, lint, tests and docs check on a GitHub-hosted runner), and no trust
+  through `ps`) passed a macOS CI leg (T4.10; the leg was removed on 2026-10-19 and CI is Linux only), and no trust
   profile is eligible on macOS.
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
