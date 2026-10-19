@@ -685,6 +685,7 @@ Details: [docs/operations/version-canary.md](docs/operations/version-canary.md).
 tasks from `<data_dir>/eval/<suite>.json` as normal runs, grades each in a network-off container with hidden tests the
 agent never sees and records pass, wall-clock time and usage in `eval_result`. It is opt-in, skipped in CI, and a real
 provider needs `--live-budget <file>`. Details: [docs/operations/evaluation.md](docs/operations/evaluation.md).
+Tests: `src/eval/eval.test.ts`, `src/cli/eval.test.ts`.
 
 **CI version-bump test (T8.6).** `src/adapters/version-bump-preflight.test.ts` (suite
 `version bump through preflight cache invalidation (T8.6)`) simulates a binary identity change, invalidates the

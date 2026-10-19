@@ -7545,7 +7545,7 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
   operator guide [docs/operations/evaluation.md](../operations/evaluation.md).
 
   - **Command.** `switchboard eval run <suite> --provider <id> [--live-budget <file>] [--json]` and
-    `switchboard eval results <suite>`. With `CI` set (other than `false` or `0`) `eval run` reports
+    `switchboard eval results <suite>`. With `CI` set to anything but empty, `false` or `0`, `eval run` reports
     `EVAL_SKIPPED_IN_CI`, exits 0 and opens nothing. It takes the data-directory lock for the whole suite (refused
     while `serve` runs, as `gc --apply`).
   - **Live budget** (Linus decision, WORK QUEUE v10, Delegated). Every provider but the test fake needs

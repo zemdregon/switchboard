@@ -44,8 +44,9 @@ Write `<data_dir>/eval/<suite>.json`. The suite name is a plain file name (lette
   task's `base_ref`.
 - `trust_profile` (optional) defaults to `edit-untrusted`. `privileged` is refused, and the profile may not exceed the
   project's `max_trust_profile`.
-- `hidden_tests` is a directory under `<data_dir>/eval/`, for example `<data_dir>/eval/bundles/fix-123/`. It must not
-  be inside a project context. Symbolic links that lead outside `<data_dir>/eval/` are refused.
+- `hidden_tests` is a directory under `<data_dir>/eval/`, for example `<data_dir>/eval/bundles/fix-123/`. It must
+  not overlap a project context in either direction (neither inside a context nor containing one). Symbolic links
+  that lead outside `<data_dir>/eval/` are refused.
 - The test command runs in the grader image with the agent's output (without `.git`) as the working directory
   `/eval/work`, which is writable, and the bundle read-only at `/eval/tests`. A task may set its own `test_command`. A
   task **passes only when the command exits 0**.
@@ -80,7 +81,7 @@ Each task writes one `eval_result` row. `--json` prints the same fields:
 | --- | --- |
 | `pass` | The hidden test command exited 0 |
 | `test_exit_code` | The command's exit code; null when it was not run or did not complete |
-| `grade_error` | Why the task was not graded or failed before the test: `EVAL_RUN_FAILED`, `EVAL_RUN_CANCELLED`, `EVAL_RUN_NOT_ADMITTED`, `EVAL_GRADER_UNAVAILABLE`, `EVAL_GRADER_NOT_ROOTLESS`, `EVAL_GRADER_IMAGE_NOT_PRESENT`, `EVAL_GRADER_IMAGE_AMBIGUOUS`, `EVAL_GRADER_NETWORK_NOT_OFF`, `EVAL_GRADER_FAILED` or `EVAL_TESTS_IN_WORKTREE` |
+| `grade_error` | Why the task was not graded or failed before the test: `EVAL_RUN_<state>` for a run that ended below `SUCCEEDED` (`FAILED`, `CANCELLED`), `EVAL_RUN_NOT_ADMITTED`, `EVAL_GRADER_UNAVAILABLE`, `EVAL_GRADER_NOT_ROOTLESS`, `EVAL_GRADER_IMAGE_NOT_PRESENT`, `EVAL_GRADER_IMAGE_AMBIGUOUS`, `EVAL_GRADER_NETWORK_NOT_OFF`, `EVAL_GRADER_FAILED` or `EVAL_TESTS_IN_WORKTREE` |
 | `wall_clock_ms` | From submission to the run's terminal state |
 | `usage_json` | The run's provider-reported usage metrics (`[]` when the provider reported none) |
 | `run_id`, `run_state` | The normal run the task was replayed as. Inspect it with `switchboard runs show` |
