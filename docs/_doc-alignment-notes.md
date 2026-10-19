@@ -340,7 +340,36 @@ as history.
   status lives in the T3.8 row and the M3 row, which agree. It does not
   block PR #719.
 
-## 24. TDD §4.7 heading still says "blocked by B-1" (pre-existing, not from PR #713)
+## 24. T6.15 free-text quota mappings vs FR-ADP-04, ADR-0055 item 11 and Q-100 (from PR #700, RESOLVED)
+
+- PR #700 (`sb/2026-10-18-fix-t615-cursor-kimi-limit-signals`) maps two stderr
+  signals to `QUOTA_EXHAUSTED` in `classifyFailure` by phrase matching on one
+  stderr-tail line: Cursor's out-of-usage line (`ActionRequiredError` plus `out
+  of usage`, `cursorQuotaClassification` in `src/adapters/cursor/adapter.ts`)
+  and Kimi Code's 5-hour usage-limit line (`403` plus `usage limit`,
+  `kimiQuotaClassification` in `src/adapters/kimi/adapter.ts`, checked before
+  the auth mapping because the CLI labels the stop `provider.auth_error`).
+- T6.11's own evidence (ROADMAP T6.15's sibling row) classifies both signals as
+  free text with no structured field — Cursor "no (class name only)", Kimi
+  "kind and status are inside free text" ([limit captures
+  2026-10-17](research/limit-captures-2026-10-17.md)) — and names only
+  Antigravity's `AGY_ERROR.status`/`error_code` as the T6.15 candidates.
+- That collided with three standing rules: [SRS
+  FR-ADP-04](requirements/SRS.md) (Must: no inferring status by
+  pattern-matching free text), [ADR-0055](adr/0055-model-groups-and-usage-pacing.md)
+  item 11 (accepted: mapping only from structured output; a free-text-only
+  signal stays unclassified until a decision says otherwise, Q-100), and the
+  Q-100 delegated default itself (fail closed: only structured signals mapped),
+  plus T6.15's own Done-when ("a free-text-only signal stays unmapped") and its
+  2026-10-17 evidence ("Free-text-only signals stay unmapped (Claude Code,
+  Codex, Cursor CLI, Kimi Code)"). The PR cited only Delegated authority.
+- **Resolved 2026-10-18 by owner decision 64** (ROADMAP §4.2 entry 64): the two stderr signatures count as
+  structured-enough captured distinctive signatures ([ADR-0058](adr/0058-captured-limit-signatures.md), which
+  supersedes ADR-0055 item 11 in part), with the [FR-ADP-04](requirements/SRS.md) and
+  [FR-CAP-11](requirements/SRS.md) one-exception amendments and the Q-100 answer. SDD FR-CAP-11 and LLD §16.9 now
+  point at ADR-0058 instead of here; this note stands as the resolved history. PR #700 is unblocked on this item.
+
+## 25. TDD §4.7 heading still says "blocked by B-1" (pre-existing, not from PR #713)
 
 - [TDD §4.7](design/TDD.md#47-kimi-code-m4-blocked-by-b-1) is headed
   "Kimi Code (M4, blocked by B-1)", while its body says B-1 is cleared
@@ -351,7 +380,7 @@ as history.
   documents cite; renaming it would break those links and
   `scripts/check-docs.mjs`. It does not block PR #713.
 
-## 25. T4.43 waiting-list claim withdrawn: no contradiction found (checked on this branch for PR #713)
+## 26. T4.43 waiting-list claim withdrawn: no contradiction found (checked on this branch for PR #713)
 
 - A draft of this note claimed the T4.43 (Cursor parser) row records
   `Done against its Done-when` under owner decision 65 (a) while §6.8.2
@@ -367,7 +396,7 @@ as history.
   is endorsed or disturbed (cf. item 8 above for the precedent). It does
   not block PR #713.
 
-## 26. Kimi manifest `notes` still says `-p`/`--prompt` are unaudited (pre-existing, not from PR #713)
+## 27. Kimi manifest `notes` still says `-p`/`--prompt` are unaudited (pre-existing, not from PR #713)
 
 - `src/adapters/manifests/kimi.json` `notes` says "`-p` and `--prompt`
   are not declared to the audit ... the compile gate alone keeps
@@ -384,7 +413,7 @@ as history.
   should sync the `notes` sentence (mechanical; no owner decision
   needed). It does not block PR #713.
 
-## 27. README Status waiting-list still names T4.53/T4.56 (pre-existing, other lanes, not from PR #713)
+## 28. README Status waiting-list still names T4.53/T4.56 (pre-existing, other lanes, not from PR #713)
 
 - The README Status bullet lists T4.53 and T4.56 among the "rows waiting
   on uncaptured live shapes", while ROADMAP §6.8.2 item 2 and the M4 row
@@ -396,7 +425,7 @@ as history.
 - Left unchanged: re-wording another lane's waiting list would endorse
   its Done claims (cf. items 8 and 24 above). It does not block PR #713.
 
-## 28. ADR-0049 item 1 compile spelling vs as-built `=` form (pre-existing, not from PR #713)
+## 29. ADR-0049 item 1 compile spelling vs as-built `=` form (pre-existing, not from PR #713)
 
 - [ADR-0049](adr/0049-kimi-code-transport-and-bypass-class.md) item 1
   (Accepted 2026-10-15) says the approved bypass compile is exactly
@@ -416,7 +445,7 @@ as history.
   spelling difference changes no bypass behaviour). It does not block
   PR #713.
 
-## 29. Kimi adapter code comments still label `tool_calls` fields an Assumption (pre-existing, not from PR #713)
+## 30. Kimi adapter code comments still label `tool_calls` fields an Assumption (pre-existing, not from PR #713)
 
 - `src/adapters/kimi/protocol.ts` (header comment on the `stream-json`
   records: "their field names below are an **Assumption** ... until
