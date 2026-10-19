@@ -86,10 +86,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#558](https://github.com/zemdregon/switchboard/pull/558)), export-time allowlist enforcement (T8.4,
   [#549](https://github.com/zemdregon/switchboard/pull/549)), the operator version canary (T8.5) and a CI test that
   excludes routing after a synthetic binary version bump until `adapters validate` records the version (T8.6) are done
-  on fakes. Own-repository evaluation (T8.14) is also `Done` on fakes and the per-run provider OTLP
-  receiver (T8.15, `telemetry.provider_otlp`, off by default) is also done on fakes. M8 acceptance closure
-  (T8.7) is `Done`; M8 stays `Partial` until the operator records a dry run of the scheduled version
-  canary on a real CLI upgrade. See
+  on fakes. Own-repository evaluation (T8.14) is also `Done` on fakes, and the per-run provider OTLP receiver
+  (T8.15, `telemetry.provider_otlp`, off by default) is also done on fakes. M8 acceptance closure (T8.7) is
+  `Done`; M8 stays `Partial` until the operator records a dry run of the scheduled version canary on a real CLI
+  upgrade. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
