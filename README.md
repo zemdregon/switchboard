@@ -1177,7 +1177,7 @@ subsections below give the full behaviour; `switchboard --help` prints the same 
 | Command | Purpose | Key options | Details |
 | --- | --- | --- | --- |
 | `serve --client <id>` | Run the MCP server on stdin/stdout for one configured MCP client (logs go to stderr) | `--client` (required), `--config` | [Run as an MCP server](#run-as-an-mcp-server) |
-| `doctor` | Check Node, Git, config, data directory, ledger, retention and disk, then probe each adapter | `--json`, `--config` | [Check the setup with `doctor`](#check-the-setup-with-doctor) |
+| `doctor` | Check Node, Git, config, data directory, ledger, retention, disk and host load, then probe each adapter | `--json`, `--config` | [Check the setup with `doctor`](#check-the-setup-with-doctor) |
 | `runs list`, `runs show <id>`, `runs cancel <id>` | List runs newest first, show one run and its events, request cancellation | `--state`, `--limit`, `--json` | [Operator commands](#operator-commands) |
 | `capacity [--provider <id>]` | Per-provider capacity projection: the same data as the `get_capacity` MCP tool (read-only) | `--provider`, `--json` | [Capacity, retries and failover](#capacity-retries-and-failover) |
 | `affinity list`, `affinity reset <project_key>` | Show each project's provider affinity; make the next routing step choose afresh | `--json` | [Routing and affinity](#routing-and-affinity) |
