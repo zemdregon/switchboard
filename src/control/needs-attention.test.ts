@@ -289,6 +289,7 @@ describe("needs_attention: no flag, priority and fail-closed defaults", () => {
     const later = { now: new Date(T0 + 60 * 60_000) };
     expect(NEEDS_ATTENTION_PRIORITY).toEqual([
       "skill_cleanup_failed",
+      "secret_scan_blocked",
       "budget_exhausted",
       "parked_loop",
       "ci_fix_stuck",
@@ -321,6 +322,68 @@ describe("needs_attention: no flag, priority and fail-closed defaults", () => {
       ciFixStuck: false,
     };
     expect(matchingReasons({ ...failed, pendingApproval: false }, later)).toEqual(["failed_after_retry"]);
+    // T9.14: a blocked publication outranks everything but a skill file left in the worktree.
+    expect(deriveNeedsAttention({ ...all, secretScanBlocked: true }, later)).toEqual({
+      active: true,
+      reason: "secret_scan_blocked",
+    });
+    expect(deriveNeedsAttention({ ...all, secretScanBlocked: true, skillCleanupFailed: true }, later)).toEqual({
+      active: true,
+      reason: "skill_cleanup_failed",
+    });
+  });
+
+  describe("secret_scan_blocked (T9.14, FR-GIT-11, LLD §20.9)", () => {
+    const pushEvent = (runId: string, outcome: "ACCEPTED" | "REFUSED_POLICY", reason: string) => {
+      clock += 1000;
+      ledger.recordGitPush({
+        runId,
+        eventRunId: runId,
+        projectId: "web",
+        contextId: "main",
+        remote: "origin",
+        ref: "refs/heads/sb/x",
+        headSha: "a".repeat(40),
+        outcome,
+        detail: reason,
+        requestedBy: "agent_tool",
+        eventPayload: { outcome, reason },
+      });
+    };
+
+    it("holds after a SECRET_SCAN_BLOCKED push until an accepted push of the meta-session; other refusals do not clear it", () => {
+      const s = session();
+      const r = run(s, "RUNNING");
+      expect(attention(r)).toEqual({ active: false });
+      pushEvent(r.id, "REFUSED_POLICY", "SECRET_SCAN_BLOCKED");
+      expect(readNeedsAttentionFacts(ledger, record(r.id)).secretScanBlocked).toBe(true);
+      expect(attention(r)).toEqual({ active: true, reason: "secret_scan_blocked" });
+      pushEvent(r.id, "REFUSED_POLICY", "POLICY_NONE");
+      expect(attention(r)).toEqual({ active: true, reason: "secret_scan_blocked" });
+      pushEvent(r.id, "ACCEPTED", "ACCEPTED");
+      expect(attention(r)).toEqual({ active: false });
+    });
+
+    it("an operator push recorded on another run of the meta-session counts; a terminal run shows it only when newest", () => {
+      const s = session();
+      const first = run(s, "RUNNING");
+      const second = run(s, "RUNNING");
+      pushEvent(first.id, "REFUSED_POLICY", "SECRET_SCAN_BLOCKED");
+      expect(attention(second)).toEqual({ active: true, reason: "secret_scan_blocked" });
+      expect(attention(first)).toEqual({ active: true, reason: "secret_scan_blocked" });
+      const done = run(session(), "FAILED");
+      pushEvent(done.id, "REFUSED_POLICY", "SECRET_SCAN_BLOCKED");
+      expect(attention(done)).toEqual({ active: true, reason: "secret_scan_blocked" }); // newest of its meta-session
+      const olderDone = run(s, "FAILED");
+      run(s, "QUEUED");
+      expect(attention(olderDone)).toEqual({ active: false });
+    });
+
+    it("a different meta-session's block does not flag this run", () => {
+      const other = run(session(), "RUNNING");
+      pushEvent(other.id, "REFUSED_POLICY", "SECRET_SCAN_BLOCKED");
+      expect(attention(run(session(), "RUNNING"))).toEqual({ active: false });
+    });
   });
 
   it("an unevaluable stall clock does not flag stalled", () => {

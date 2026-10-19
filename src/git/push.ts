@@ -30,6 +30,18 @@
  * redirect or weaken the transport ({@link UNSAFE_REPO_CONFIG_PATTERN}); the configured push URLs must use an allowed
  * transport and carry no credentials. The controller never reads, prints or stores a credential: it never asks for
  * one, keeps no Git output, and holds the push URL only in memory to classify it.
+ *
+ * Pre-push secret scan (T9.14; FR-GIT-11, FR-CTL-03; ADR-0061; LLD §20.9). After every other check and before the
+ * push, the added lines of the outgoing diff are scanned in-process (`src/git/secret-scan.ts`). The range starts at
+ * the remote-tracking ref of the target (`refs/remotes/<remote>/<branch>`, which Git updates on every accepted push)
+ * when the ledger recorded an ACCEPTED push of exactly that SHA and it is an ancestor of the head, else at the
+ * meta-session's base checkpoint (a new ref, a tracking ref written by anything but a controller push, or one that
+ * cannot explain the head: then the whole verified history is scanned, a superset). A hit refuses with
+ * `SECRET_SCAN_BLOCKED` in EVERY profile, an exempt approved bypass run included: nothing in {@link PushRequest} or the
+ * frozen policy can change that, only the operator allowlist ({@link GitPusherOptions.secretScanAllow}) or a push by
+ * hand. Each hit is one `secret_scan_hit` event (rule id, path, line; never the value) and the `git_push` event carries
+ * the scan summary (`secret_scan`). Delegated choice: the tracking ref is the controller's best local knowledge of the
+ * remote tip; no network read happens before the push itself.
  */
 import { spawn } from "node:child_process";
 import { realpath } from "node:fs/promises";
@@ -43,6 +55,14 @@ import { nativeSkillPresent } from "../workspace/native-skills.js";
 import type { CredentialReach } from "./credential-reach.js";
 import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish-ref.js";
 import { isBranchPrefix, isRemoteName } from "./push-names.js";
+import {
+  compileSecretScanAllow,
+  SECRET_SCAN_HIT_EVENT,
+  type SecretScanAllow,
+  type SecretScanAllowEntry,
+  type SecretScanReport,
+  scanOutgoingDiff,
+} from "./secret-scan.js";
 
 export { isBranchPrefix, isRemoteName } from "./push-names.js";
 
@@ -66,6 +86,7 @@ export type PushReason =
   | "REPO_CONFIG_UNSAFE"
   | "REMOTE_URL_CREDENTIALS"
   | "REMOTE_TRANSPORT_NOT_ALLOWED"
+  | "SECRET_SCAN_BLOCKED"
   | "NON_FAST_FORWARD"
   | "REMOTE_HOOK_DECLINED"
   | "REMOTE_REJECTED"
@@ -74,10 +95,14 @@ export type PushReason =
   | "TIMEOUT"
   | "GIT_FAILED";
 
-/** Error codes returned to the agent (LLD §12.1 plus `NOTHING_TO_PUSH`, `REMOTE_UNREACHABLE`, `GIT_FAILED`). */
+/**
+ * Error codes returned to the agent (LLD §12.1 plus `NOTHING_TO_PUSH`, `REMOTE_UNREACHABLE`, `GIT_FAILED`, and
+ * `SECRET_SCAN_BLOCKED` from T9.14).
+ */
 export type PushToolCode =
   | "PUSH_NOT_ALLOWED"
   | "NOTHING_TO_PUSH"
+  | "SECRET_SCAN_BLOCKED"
   | "REMOTE_REJECTED"
   | "CREDENTIALS_UNAVAILABLE"
   | "REMOTE_UNREACHABLE"
@@ -127,6 +152,11 @@ export interface GitPusherOptions {
   readonly sourceEnv?: Readonly<Record<string, string | undefined>>;
   /** Wall-clock bound of one `git push` (default {@link DEFAULT_PUSH_TIMEOUT_MS}). */
   readonly timeoutMs?: number;
+  /**
+   * Operator allowlist of the pre-push secret scan (`git.secret_scan.allow`, T9.14): a hit of `rule_id` at a path the
+   * glob matches does not refuse. The only in-band way past the scan; an unknown rule id throws at construction.
+   */
+  readonly secretScanAllow?: readonly SecretScanAllowEntry[];
   readonly ids?: IdGenerator;
   readonly now?: () => Date;
 }
@@ -167,6 +197,8 @@ export const DEFAULT_PUSH_TIMEOUT_MS = 90_000;
 export const MAX_PUSH_COMMITS = 10_000;
 /** Most commit SHAs listed in one `git_push` event (the count is always recorded). */
 export const MAX_EVENT_COMMITS = 500;
+/** Most `secret_scan_hit` events appended for one refused push (the exact count is in the `git_push` event). */
+export const MAX_SECRET_SCAN_HIT_EVENTS = 50;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
 /**
@@ -310,6 +342,8 @@ interface Attempt {
   headSha: string;
   commits: string[];
   reachReason?: string;
+  /** T9.14: the pre-push secret scan, once it ran (`from` is the start of the scanned range). */
+  secretScan?: { from: string; report: SecretScanReport };
 }
 
 class Refusal extends Error {
@@ -322,10 +356,12 @@ export class GitPusher {
   private readonly ledger: Ledger;
   private readonly now: () => Date;
   private readonly locks = new Map<string, Promise<unknown>>();
+  private readonly secretScanAllow: SecretScanAllow;
 
   constructor(private readonly options: GitPusherOptions) {
     this.now = options.now ?? (() => new Date());
     this.ledger = createLedger(options.db, { ids: options.ids ?? defaultIds, now: this.now });
+    this.secretScanAllow = compileSecretScanAllow(options.secretScanAllow ?? []);
   }
 
   /** Push a meta-session's publish ref (LLD §12.6). Pushes of one meta-session run one at a time in this process. */
@@ -423,6 +459,13 @@ export class GitPusher {
       if (cls === "transport") throw new Refusal("REMOTE_TRANSPORT_NOT_ALLOWED");
     }
 
+    // 2b. T9.14 (FR-GIT-11, ADR-0061, LLD §20.9): the outgoing diff is scanned last, in every profile, before any
+    // remote write. A Git failure here (including an oversized diff) propagates as GIT_FAILED: never a clean scan.
+    const from = await this.scanStart(repo, att.remote, att.ref, head, base);
+    const report = await scanOutgoingDiff(repo, from, head, this.secretScanAllow);
+    att.secretScan = { from, report };
+    if (report.hitCount > 0) throw new Refusal("SECRET_SCAN_BLOCKED");
+
     // 3. The push, with the operator's own configuration (ADR-0028).
     const run = await runGitPush(
       repo,
@@ -431,6 +474,22 @@ export class GitPusher {
       this.options.timeoutMs ?? DEFAULT_PUSH_TIMEOUT_MS,
     );
     return classifyPush(run, att.ref);
+  }
+
+  /**
+   * Start of the scanned range (LLD §20.9): the remote-tracking ref of the target when the ledger holds an ACCEPTED
+   * `git_push` of exactly that SHA to that ref (the same rule the ref guard applies to a tracking-ref change) and it
+   * is an ancestor of the head; else the base checkpoint. A tracking ref anything else wrote (an agent with a shell, a
+   * fetch after a push by hand) is not trusted to shorten the range: the whole verified history is scanned instead.
+   */
+  private async scanStart(repo: string, remote: string, ref: string, head: string, base: string): Promise<string> {
+    const tracking = `refs/remotes/${remote}/${ref.slice("refs/heads/".length)}`;
+    const tip = await resolveCommit(repo, tracking);
+    if (tip === undefined || tip === base) return base;
+    if (!this.ledger.hasAcceptedPush(remote, ref, tip)) return base;
+    if (tip === head) return head; // nothing outgoing: Git reports up to date
+    const anc = await git(["merge-base", "--is-ancestor", tip, head], { cwd: repo, okCodes: [1] });
+    return anc.code === 0 ? tip : base;
   }
 
   /** Every commit from the base to the head must be a commit this controller published for this meta-session. */
@@ -499,6 +558,17 @@ export class GitPusher {
   ): PushResult {
     const pushed = outcome === "ACCEPTED";
     const commits = pushed || outcome === "REJECTED_REMOTE" || outcome === "ERROR" ? att.commits : [];
+    const scan = att.secretScan;
+    if (scan !== undefined) {
+      // One event per finding (LLD §20.9), before the `git_push` record that refuses: rule id, path, line only.
+      for (const hit of scan.report.hits.slice(0, MAX_SECRET_SCAN_HIT_EVENTS)) {
+        this.ledger.appendRunEvent({
+          runId: eventRunId,
+          type: SECRET_SCAN_HIT_EVENT,
+          payload: { stage: "push", rule_id: hit.rule_id, path: hit.path, line: hit.line, ref: att.ref },
+        });
+      }
+    }
     const { row } = this.ledger.recordGitPush({
       runId: req.requestedBy === "agent_tool" ? (req.runId ?? null) : null,
       eventRunId,
@@ -521,6 +591,17 @@ export class GitPusher {
         commits: commits.slice(0, MAX_EVENT_COMMITS),
         ...(commits.length > MAX_EVENT_COMMITS ? { commits_truncated: true } : {}),
         ...(att.reachReason !== undefined ? { credential_reach: att.reachReason } : {}),
+        ...(scan !== undefined
+          ? {
+              secret_scan: {
+                from: scan.from,
+                hit_count: scan.report.hitCount,
+                allowed_count: scan.report.allowedCount,
+                binary_count: scan.report.binaryCount,
+                binary_paths: scan.report.binaryPaths,
+              },
+            }
+          : {}),
       },
     });
     const toolCode = toolCodeFor(outcome, reason);
@@ -541,6 +622,7 @@ export class GitPusher {
 
 function toolCodeFor(outcome: GitPushRow["outcome"], reason: PushReason): PushToolCode | undefined {
   if (outcome === "ACCEPTED") return undefined;
+  if (reason === "SECRET_SCAN_BLOCKED") return "SECRET_SCAN_BLOCKED";
   if (outcome === "REFUSED_POLICY") return reason === "NOTHING_TO_PUSH" ? "NOTHING_TO_PUSH" : "PUSH_NOT_ALLOWED";
   if (outcome === "REJECTED_REMOTE") return "REMOTE_REJECTED";
   if (reason === "CREDENTIALS_UNAVAILABLE") return "CREDENTIALS_UNAVAILABLE";

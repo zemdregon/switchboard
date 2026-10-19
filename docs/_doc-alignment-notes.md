@@ -115,6 +115,12 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   COMP-RTE `FR-QUE-01..02`. Left unchanged for the same reason: re-attribution is the HLD owner's call, the SDD
   covers FR-CTL-14, and `node scripts/check-docs.mjs` passes. It does not block PR #759.
 
+  **Update 2026-10-19 (doc-align gate for PR #764, T9.14):** this PR widens the same gap by one more ID. Its SDD
+  row maps FR-GIT-11 to COMP-GIT, COMP-POL and COMP-LED while the HLD COMP-GIT row still reads `FR-GIT-01..09`
+  (which already excluded FR-GIT-10, pre-existing). Left unchanged for the same reason: re-attribution is the
+  HLD owner's call, the SDD covers FR-GIT-11, and `node scripts/check-docs.mjs` passes. It does not block
+  PR #764.
+
 ## 10. M7 wave-B planning notes vs Done rows (pre-existing, not from PR #645)
 
 - The §6.12 sequencing notes still say "T7.8 is blocked on T7.12 (its row)", that T7.9 and T7.12 "wait for
@@ -717,6 +723,28 @@ as history.
   range change in `src/**`, which this gate cannot touch). The current
   range is stated in the T4.48 row, TDD §4.5.6, the README Cursor section
   and the manifest itself. It does not block PR #757.
+
+## 41. ADR-0061 Consequences still says binary secrets "are not caught" (from PR #764, blocks)
+
+- [ADR-0061](adr/0061-pre-push-secret-scan-blocks-every-run.md) Consequences says "A secret in a binary file or in
+  an encoding the rules do not match is not caught; binary files are listed in the event."
+- The code T9.14 builds diffs every file as text: `outgoingDiffArgs` in `src/git/secret-scan.ts` passes `--text`,
+  the hardened helper adds `--no-textconv --no-ext-diff` and neutralises every driver
+  (`src/workspace/git.ts`), and `scanDiffText` tests the added lines of every file against every rule; paths Git
+  counts as binary are still scanned and are separately listed from `numstat`. The HLD threat row and
+  [LLD §20.9](design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061) "Implemented" on this branch agree:
+  binary-counted files "are still scanned and are listed in the event".
+- Before this PR the documents were consistent (the ADR's Proposed mechanism and the HLD row both said binary
+  files are not scanned); the implementation's Delegated `--text` choice introduced the contradiction, and this
+  branch updates HLD and LLD but not the ADR. The encoding half of the sentence is still true; the binary half
+  is contradicted by the code.
+- Left unchanged: ADR-0061 carries Accepted status for the direction, and AGENTS.md forbids editing an accepted
+  ADR's decision (supersede with a new ADR instead). Rewording the consequence, or accepting the Delegated
+  `--text` behaviour as the mechanism in a superseding note, is the design owner's call. The error direction is
+  safe (the documents understate the protection), but the code contradicts a decision record and this PR
+  introduces it, so per the gate rule it blocks PR #764 until the owner resolves it.
+- Resolved 2026-10-19 by Linus ruling (DOC-CONFLICT #764): ADR-0061 Amendment 2026-10-19 added; code kept
+  (--text scans binaries).
 
 ## 41. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
 

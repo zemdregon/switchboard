@@ -669,6 +669,7 @@ async function runDaemon(
         db,
         resolveContext: pushContextResolver(config.projects),
         sourceEnv: io.env,
+        secretScanAllow: config.secretScanAllow,
         ids,
         ...(now ? { now } : {}),
       }),
