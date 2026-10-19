@@ -1054,13 +1054,10 @@ question; decision 66 has none new (Q-26 unchanged); decision 67 has none new (i
 synthetic-only resume evidence is the T4.35 limit); decision 68's is R-71 (a text-only reply cut short at exit 0 is
 accepted; not blocking), and it narrows Q-85; decision 70's is that three candidate locations stay `NOT_CHECKED`, so
 their cells stay `prompt_prefix` (it opens no new question); decision 71's is that Codex's Linux sandbox did not start
-in the
-container (no sandboxed write succeeded, so T5.12 cells 3 and 4 and the pair's P-7 failed; §6.9.2 item 1), and it opens
-no new question (all Delegated, not blocking). Decision 74's residual is that two builds of one release with different
-commit hashes now count as the same version (the ruling's intent; the observed string stays in the evidence), and it
-opens no new question.
-container (no sandboxed write succeeded, so T5.12 cells 3 and 4 and the pair's P-7 failed; §6.9.2 item 1), and it opens
-no new question (all Delegated, not blocking).
+in the container (no sandboxed write succeeded, so T5.12 cells 3 and 4 and the pair's P-7 failed; §6.9.2 item 1), and it
+opens no new question (all Delegated, not blocking). Decision 74's residual is that two builds of one release with
+different commit hashes now count as the same version (the ruling's intent; the observed string stays in the evidence),
+and it opens no new question.
 
 ### 4.3 Stated intent (confirmed constraints)
 
@@ -1305,7 +1302,7 @@ results.
    Troubleshooting step gives both adapters `[ok]` and exit 0
    ([live checks 2026-10-17](research/live-checks-2026-10-17-claude-codex.md) §1). It first failed: the version canary
    (T8.5) compared `codex-cli 0.162.0` to the manifest's `0.162.0` as strings and marked an in-range Codex
-   `ADAPTER_VERSION_UNVERIFIED` on any new data directory. It now compares parsed versions. *Was:* verified only for the
+   `ADAPTER_VERSION_UNVERIFIED` on any new data directory. It now compares release cores (`versionCanaryCore` in `src/adapters/version-canary.ts`, T4.80, decision 74). *Was:* verified only for the
    no-provider case (both providers `[warn]`, exit 0).
 4. FR-GIT-01 (Claude Code, Codex) and the M2 criterion "no compiled invocation leaves a Git write operation (commit,
    ref change, push) permitted" are shown by argv inspection only (T2.2 row). Claude Code: every invocation carries

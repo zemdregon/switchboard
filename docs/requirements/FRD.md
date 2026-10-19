@@ -704,7 +704,8 @@ sequenceDiagram
 - **As built (M8, T8.5 and T8.6, 2026-10-16, Delegated):** detection has two layers. The preflight cache invalidates on
   a binary identity change (BR-20, NFR-PERF-02), and a version canary compares the probed version with the last
   recorded value in `version-canary.json` under the data directory (or the manifest's `validated_cli_version` when no
-  row exists); a change makes the adapter `ADAPTER_VERSION_UNVERIFIED` in `doctor`, in `serve` routing and in the
+  row exists) by release core (T4.80, decision 74: one trailing `-<7 to 40 hex>` or `+<anything>` suffix is stripped; any
+  other suffix or core difference fails closed); a core change makes the adapter `ADAPTER_VERSION_UNVERIFIED` in `doctor`, in `serve` routing and in the
   operator-scheduled `switchboard adapters version-canary` command
   ([docs/operations/version-canary.md](../operations/version-canary.md)). A successful `adapters validate` writes the
   manifest and records the validated version in that file; it does not insert an `adapter_version` ledger row, so the
