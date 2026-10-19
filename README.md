@@ -271,7 +271,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   12 partial streams, [#316](https://github.com/zemdregon/switchboard/pull/316); residual cells at exits 2 and 137 and
   guard-only Git writes, [#367](https://github.com/zemdregon/switchboard/pull/367)) and Git declaration
   fixture tests on synthetic fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
-  smoke, live malicious leg and `adapters validate` remain operator work (T4.48). OpenCode has module, compile-matrix,
+  smoke and the live malicious leg remain operator work (T4.48): the 2026-10-19 `adapters validate cursor` run passed
+  the probe (Cursor CLI 2026.10.16), auth, 11 static conformance checks and the smoke (owner decision 59), so the
+  manifest admits `>=2026.10.16 <2026.11.0`. OpenCode has module, compile-matrix,
   probe, registry entry, parser (Done against its Done-when under owner decision 65 (a): T4.53; native limit and
   tool-input shapes still open after T4.58 (ran 2026-10-19 without capturing them; see T4.56);
   supervisor-replayed JSONL fixtures,
@@ -314,9 +316,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   on synthetic fixtures except the T4.64 probe's two live `validate` runs (auth `OK`) and the
   T4.68 live `adapters validate` pass on 2026-10-18 (CLI 2.1.1, manifest range `>=2.1.1 <2.2.0`) (README
   [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke and the live malicious leg
-  remain operator work (T4.68). The Grok Build, Cursor and Muse Code manifests still admit
+  remain operator work (T4.68). The Grok Build and Muse Code manifests still admit
   no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex, OpenCode,
-  Kimi Code and Antigravity already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
+  Kimi Code, Antigravity and Cursor already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
   Delegated). Open items, by blocker: operator live legs (T4.28, T4.48, T4.68; T4.38 Done 2026-10-19; T4.12 is Deferred
   under decision 69 — it needed a Mac and was optional for criterion 2; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
@@ -368,8 +370,9 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
 - For real work, at least one provider CLI installed and logged in natively: Claude Code, Codex, Grok Build,
-  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex, OpenCode, Kimi Code and Antigravity
-  admit a version today; the other manifests admit no version until `switchboard adapters validate` passes a live CLI (see
+  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex, OpenCode, Kimi Code, Antigravity
+  and Cursor admit a version today; the other manifests admit no version until `switchboard adapters validate`
+  passes a live CLI (see
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks)). `doctor` does not require any particular one.
 
 ## Install from source
@@ -1907,10 +1910,10 @@ its native login) and never passes `CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN` (creden
 environment, ADR-0003), `CURSOR_CONFIG_DIR` or `XDG_CONFIG_HOME` (which would alter or rewrite configuration files);
 these are refused by the dialect.
 
-The compliance manifest range admits no version until an operator runs `switchboard adapters validate cursor` and
-commits the manifest diff (ROADMAP T4.48). On 2026-10-18 `adapters validate cursor` reached the smoke step
-(probe and auth `OK`, 11 static conformance checks) and failed there because the account was out of usage (ROADMAP
-T4.48); the manifest still admits no version. Until then `doctor` reports `ADAPTER_VERSION_UNVERIFIED` for Cursor.
+The compliance manifest range (`src/adapters/manifests/cursor.json`) admits `>=2026.10.16 <2026.11.0` since
+`switchboard adapters validate cursor` passed on CLI 2026.10.16 on 2026-10-19 (ROADMAP T4.48, owner decision 59;
+[TDD §4.5.6](docs/design/TDD.md#456-t448-live-validation-2026-10-19)). Other versions still report
+`ADAPTER_VERSION_UNVERIFIED` in `doctor`. The live smoke and the live malicious leg of T4.48 remain operator-only.
 
 ### Login
 
@@ -2124,7 +2127,9 @@ and refuses credentials and config env variables (`CURSOR_API_KEY`, `CURSOR_AUTH
 forms of compiled `--print`/`--trust`/`--force`;
 [#309](https://github.com/zemdregon/switchboard/pull/309),
 [#315](https://github.com/zemdregon/switchboard/pull/315)). No end-to-end run through Switchboard against a logged-in
-`cursor-agent` has been recorded yet (T4.48).
+`cursor-agent` has been recorded yet except the T4.48 live `adapters validate` smoke call on CLI 2026.10.16 on
+2026-10-19 (one structured-output smoke call in the approved privileged bypass cell under owner decision 59); the
+full live smoke and the live malicious leg stay operator-only (T4.48).
 
 ## OpenCode CLI (milestone 4)
 
@@ -2953,8 +2958,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP
   Q-61 is open).
 - `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex, OpenCode, Kimi
-  Code and Antigravity manifests admit a version on `main` today (OpenCode `>=2.0.23 <2.1.0` since the T4.58 live pass
-  on 2026-10-18, owner decisions 60 and 68). Grok Build, Cursor and the other M4 adapters still need operator captures
+  Code, Antigravity and Cursor manifests admit a version on `main` today (OpenCode `>=2.0.23 <2.1.0` since the
+  T4.58 live pass on 2026-10-18, owner decisions 60 and 68; Cursor `>=2026.10.16 <2026.11.0` since the T4.48 live pass
+  on 2026-10-19, owner decision 59). Grok Build and the other M4 adapters still need operator captures
   before their manifests admit a version (ROADMAP T4.28, T4.48, T4.68 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
