@@ -104,6 +104,11 @@ export interface ResolvedProject {
    * T15.4 (FR-QUE-04, LLD §18.8): present only when the project sets `queue`. Absent means no low-water mark is configured.
    */
   readonly queue?: ProjectQueueConfig;
+  /**
+   * T5.14 (FR-SES-07, LLD §20.13): the canonical path of `brief_file`, checked by `loadConfig`; absent means no brief.
+   * Read again at admission (`freezeBrief`), never cached from load.
+   */
+  readonly briefFile?: string;
 }
 
 /** T15.4 (FR-QUE-04, LLD §18.8): project work queue settings. */
@@ -239,7 +244,11 @@ function isPrimaryContext(p: ProjectConfig, c: ContextConfig): boolean {
   return p.contexts.length === 1 ? c.primary !== false : c.primary === true;
 }
 
-export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
+/** `briefFiles`: T5.14, each project's canonical `brief_file` as `loadConfig` checked it. */
+export function resolveProjects(
+  cfg: SwitchboardConfig,
+  briefFiles: ReadonlyMap<string, string> = new Map(),
+): ResolvedProject[] {
   return (cfg.projects ?? []).map((p) => {
     const env = p.environment ?? { kind: "host" as const };
     return {
@@ -303,6 +312,7 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
             },
           }
         : {}),
+      ...(briefFiles.has(p.id) ? { briefFile: briefFiles.get(p.id) as string } : {}),
     };
   });
 }

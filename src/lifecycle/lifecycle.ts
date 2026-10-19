@@ -847,6 +847,8 @@ export interface ContextPackOutcome {
   readonly text: string | null;
   /** Counts, codes, ids and durations only (FR-RAG-12, LLD §14.10); never retrieved text or the query. */
   readonly event: Readonly<Record<string, unknown>>;
+  /** T5.14 (FR-SES-07): the run's frozen project brief cannot be delivered; the run fails closed with this detail. */
+  readonly refuse?: string;
 }
 
 /** `run_event` type of the retrieval at dispatch (LLD §14.10). Never a failure code; never changes run state. */
@@ -1982,7 +1984,11 @@ export class RunLifecycle {
       req.resume_native_session_id === undefined &&
       req.project_id !== undefined
     ) {
-      pack = await this.contextPack(this.opts.contextPack, runId, req.project_id, req.objective, ws);
+      const got = await this.contextPack(this.opts.contextPack, runId, req.project_id, req.objective, ws);
+      if (typeof got === "object" && got !== null) {
+        return this.fail(runId, "TOOL_FAILURE", got.refuse, { reason: "PROJECT_BRIEF_UNAVAILABLE" });
+      }
+      pack = got;
       if (exec.cancelRequested) return this.cancelEarly(runId);
     }
     const compileBase = {
@@ -2898,7 +2904,7 @@ export class RunLifecycle {
     projectId: string,
     objective: string,
     ws: PreparedWorkspace,
-  ): Promise<string | null> {
+  ): Promise<string | null | { readonly refuse: string }> {
     const ctrl = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<"late">((resolve) => {
@@ -2924,6 +2930,7 @@ export class RunLifecycle {
         ctrl.abort();
         payload = { outcome: "unavailable", reason: "TIMEOUT" };
       } else {
+        if (r.refuse !== undefined) return { refuse: r.refuse };
         text = typeof r.text === "string" && r.text.length > 0 ? r.text : null;
         payload = r.event;
       }

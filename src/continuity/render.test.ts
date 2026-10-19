@@ -224,7 +224,10 @@ describe("renderHandoffPrompt (T5.5, LLD §15.5)", () => {
     };
     const cases: (() => unknown)[] = [
       () => parseHandoffBundle("not json"),
-      () => parseHandoffBundle(JSON.stringify({ ...syntheticBundle(), version: 3, builder_version: 3 })),
+      () => parseHandoffBundle(JSON.stringify({ ...syntheticBundle(), version: 4, builder_version: 4 })),
+      // T5.14: version 3 needs `brief`, `null` or an object with a hash.
+      () => parseHandoffBundle(JSON.stringify({ ...syntheticBundle(), brief: undefined })),
+      () => parseHandoffBundle(JSON.stringify({ ...syntheticBundle(), brief: "brief text" })),
       // T16.10: `version` and `builder_version` move together; version 2 needs `skills`, a list of objects.
       () => parseHandoffBundle(JSON.stringify({ ...syntheticBundle(), version: 1 })),
       () => parseHandoffBundle(JSON.stringify({ ...syntheticBundle(), skills: undefined })),

@@ -153,6 +153,7 @@ import {
   statfsDiskProbe,
   WorkspaceManager,
 } from "../workspace/index.js";
+import { briefContextPack } from "./brief-pack.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
 import { ragBackendFor, ragProjects, type ServeRag, startServeRag, toBuildProject } from "./rag-index.js";
@@ -991,10 +992,15 @@ async function runDaemon(
     // T3.22 (FR-EXE-09): host-wide verification slots; absent unless a `limits.verification_*` key is set.
     ...(config.verificationLimits ? { verificationLimits: config.verificationLimits } : {}),
     // T12.5 (FR-RAG-05, FR-RAG-08): retrieval at dispatch; no pack when retrieval is inert or fails.
-    contextPack: {
+    // T5.14 (FR-SES-07, LLD §20.13): the project brief frozen at admission goes first, inside the same budget.
+    contextPack: briefContextPack({
       timeoutMs: config.rag.retrieval.admissionTimeoutMs,
-      prepare: async (request) => rag?.prepareContextPack(request),
-    },
+      maxContextTokens: config.rag.retrieval.maxContextTokens,
+      allowedRoots: config.allowedRoots,
+      policySnapshot: (runId) => ledger.getRunRecord(runId)?.policy_snapshot_json,
+      project: (projectId) => config.projects.find((p) => p.id === projectId),
+      retrieve: async (request, reservedTokens) => rag?.prepareContextPack(request, reservedTokens),
+    }),
     // T11.11 (FR-INN-12, Q-82): record-only route features from the configured inner agent and the
     // project/context privacy resolver. Heuristic fallback when the agent is off, the task is disabled,
     // a privacy gate denies, or the call fails. Never ranks; lifecycle never imports the service.

@@ -124,6 +124,11 @@ export interface ProjectSnapshot {
    * (and `true`) only when the context enables signing; absent means unsigned (also on snapshots written before T9.10).
    */
   readonly sign?: true;
+  /**
+   * T5.14 (FR-SES-07, LLD §20.13): the SHA-256 of the project brief read at admission, so an edit after admission does
+   * not change the run. Absent when the project has no `brief_file` (also on snapshots written before T5.14). Never the text.
+   */
+  readonly brief_sha256?: string;
 }
 
 /**

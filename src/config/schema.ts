@@ -430,6 +430,11 @@ export interface ProjectConfig {
     /** T14.16 (FR-CTL-14, LLD §20.5): `stalled_progress` window in hours; absent means off. */
     stall_hours?: number;
   };
+  /**
+   * T5.14 (FR-SES-07, LLD §20.13): the operator's project brief, a file outside every allowed root and context, at most
+   * 4 KiB. Configuration file only (not a dynamic project definition, Delegated). Absent means no brief.
+   */
+  brief_file?: string;
 }
 
 /** One `projects[].dependency_seeds[]` entry (LLD §5.1). Paths are relative to the primary context. */
@@ -753,10 +758,19 @@ function clientSkillListSchema(): {
   };
 }
 
-/** A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13) and `skills` (T16.3). */
+/**
+ * A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13), `skills` (T16.3)
+ * and `brief_file` (T5.14).
+ */
 const configProjectSchema = {
   ...projectSchema,
-  properties: { ...projectSchema.properties, dependency_seeds: dependencySeedsSchema, skills: projectSkillsSchema() },
+  properties: {
+    ...projectSchema.properties,
+    dependency_seeds: dependencySeedsSchema,
+    skills: projectSkillsSchema(),
+    // T5.14: a path; the file rules (outside the roots, at most 4 KiB, UTF-8) are `loadConfig`'s.
+    brief_file: { type: "string", minLength: 1, maxLength: 4096 },
+  },
 } as const;
 
 /** Defaults (Proposed): 30 days (NFR-DATA-01), GC pass every 24 hours. */
