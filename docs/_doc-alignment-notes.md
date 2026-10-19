@@ -803,6 +803,10 @@ as history.
   (cf. item 23 above for the §6.5 intro precedent); the live status lives in each task row and the milestone
   rows, which agree. It does not block PR #770.
 
+  **Update 2026-10-19 (doc-align gate for PR #773, T8.13):** this PR flips one more 2026-10-19 row (T8.13)
+  to `Done` without touching §9.2. Same treatment: §9.2 stays a dated snapshot; the live status lives in the
+  T8.13 row. It does not block PR #773.
+
 ## 47. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
 
 - PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
