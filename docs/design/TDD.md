@@ -327,9 +327,10 @@ Every run of the first four providers is an approved bypass run, because that is
 them, and they open a risk but do not set the exit code. On 2026-10-19 both HELD (canary tokens in no surface) — a
 single-run outcome, better than expected, not a shown control, so the expected-escape marking stands.
 Until `adapters validate <id>` writes a manifest range, every check stops at the
-version gate as `NOT_CHECKED`; only the Kimi Code, OpenCode and Cursor manifests admit a version today
+version gate as `NOT_CHECKED`; only the Kimi Code, OpenCode, Cursor and Antigravity manifests admit a version today
 (`>=2.1.1 <2.2.0` since the T4.68 live pass, `>=2.0.23 <2.1.0` since the T4.58 live pass on 2026-10-18 under owner
-decisions 60 and 68, `>=2026.10.16 <2026.11.0` since the T4.48 `adapters validate` pass on 2026-10-19).
+decisions 60 and 68, `>=2026.10.16 <2026.11.0` since the T4.48 `adapters validate` pass on 2026-10-19,
+`>=1.4.2 <1.5.0` since the T4.38 live pass on 2026-10-18 under owner decision 60).
 The live runs are the operator rows
 T4.28, T4.38, T4.48, T4.58 and T4.68. Tests are hermetic: `test/live-smoke.test.ts` and `test/live-malicious.test.ts`
 compile every cell in the real adapter class with a fake executable path (`test/live-cells.ts`) and check the run caps,
@@ -2606,8 +2607,9 @@ structured-output smoke call ok, all in the approved privileged bypass cell (own
 `inspect-untrusted` is Ineligible by design). The manifest now admits `>=2026.10.16 <2026.11.0`
 (`validated_cli_version 2026.10.16`, `validated_on 2026-10-19`; the same-minor-series range follows the Q-12
 convention, an Assumption, not a provider statement). Model pin for the live legs: `cursor_model=auto`
-([ROADMAP §4.2 decision 73](../ROADMAP.md#42-owner-decisions)). The live smoke and live malicious legs and their
-verdicts are recorded here when the operator runs them.
+([ROADMAP §4.2 decision 73](../ROADMAP.md#42-owner-decisions)). The live smoke (`outcome=ok`, 11 held) and the live
+malicious leg (`outcome=failed`: U-M1 NOT_CHECKED, U-M2/U-M3 ESCAPED) ran on 2026-10-19; the verdicts are recorded
+in [ROADMAP T4.48](../ROADMAP.md#68-m4-adapter-expansion-tasks).
 
 ### 4.6 OpenCode (M4)
 

@@ -617,3 +617,30 @@ as history.
 - Left unchanged: the T4.68 citation belongs to the Kimi lane (cf. items
   8, 24, 29 and 32 above for the precedent of not re-wording another
   lane's list). It does not block PR #745.
+
+## 37. `cursor.json` notes and adapter headers still read "admits no version" (PR #747, out of scope)
+
+- PR #747 updates `src/adapters/manifests/cursor.json` to
+  `validated_cli_version` `2026.10.16`, range `>=2026.10.16 <2026.11.0`,
+  with dated `Evidence (adapters validate, 2026-10-19)` and live-leg
+  sentences appended to `notes`.
+- The same `notes` string still opens with the T4.42 sentence "The range admits
+  no version (ADR-0009, ROADMAP 6.8 conventions): the adapter fails the version
+  gate with ADAPTER_VERSION_UNVERIFIED until `switchboard adapters validate
+  cursor` passes a version, so nothing here is a claim that any Cursor CLI
+  version is validated." That condition is now satisfied, so the sentence is
+  stale against the range in the same file.
+- Left unchanged: the manifest is `src/**`, and this gate edits documentation
+  only (`*.md`, `docs/**`). Refreshing that sentence needs a one-line manifest
+  edit by the PR author (or a code-touching follow-up), not an owner decision.
+  It does not block PR #747 (the range fields and the evidence lines, which are
+  what the gate and the version check read, are correct).
+- Same staleness, same scope: the header comments in
+  `src/adapters/cursor/adapter.ts` ("The manifest range admits no
+  version, so none of this runs before `adapters validate` passes a version")
+  and `src/adapters/cursor/protocol.ts` ("The manifest range admits no
+  version, so none of this runs until `adapters validate` passes a version")
+  were true under the old `<0.0.0` range and are overtaken by the new
+  `>=2026.10.16 <2026.11.0` range the same way. They need a code-touching
+  follow-up, not an owner decision, and do not block PR #747 (cf. items 15,
+  25 and 33 for the identical Kimi, Antigravity and OpenCode shape).
