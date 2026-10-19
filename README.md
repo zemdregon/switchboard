@@ -133,9 +133,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   run) and [#407](https://github.com/zemdregon/switchboard/pull/407) (`get_run` byte-identical over Streamable HTTP
   and from a second session; a `shares_subscription_with` value that is no provider config id refused at `doctor`
   and `inner test`). See [ROADMAP §6.6](docs/ROADMAP.md#66-m11-inner-agent-tasks).
-- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.6 are done on fakes and T12.7 is `Partial`
-  (2026-10-19, owner ruling: global/both scope returns GLOBAL_NOT_AVAILABLE on main; fix in #728 /
-  sb/2026-10-18-fix-t127-search-global (f8c3fc5f)): the spike, `rag`
+- **Milestone 12 (retrieval index) is `Partial`.** Tasks T12.0 to T12.7 are done on fakes
+  (T12.7 `Done` again 2026-10-19 once the tool's `global`/`both` scopes read the built global store): the spike, `rag`
   configuration and per-project store, the scanner through chunker, the embedding port (fake and `http` backends
   behind the locality gates), incremental background indexing in `serve`, `switchboard index status|rebuild|clear`
   and a `doctor` section, an untrusted context pack at admission that never changes the stored request or the

@@ -170,8 +170,9 @@ specified in [LLD §14.11](LLD.md#1411-admission-context-pack-t125),
 [SDD §4.1 (T12.5)](SDD.md#41-comp-rag-implementation-evidence-m12-t121t123), and built by T12.5 on fakes (differences
 from the design are listed at the end of LLD §14.11). The sequence is in [§6.6](#66-retrieval-for-a-run-wf-14-m12-proposed).
 Operator `index` commands and `doctor` retrieval reporting are built by T12.4; MCP `search_project_context`
-is built by T12.6 (Done on fakes) and the deployment-wide index is built by T12.7 (Partial since 2026-10-19,
-owner ruling: the tool's `global`/`both` scopes still answer `GLOBAL_NOT_AVAILABLE`; ROADMAP §6.7); their contracts
+is built by T12.6 (Done on fakes) and the deployment-wide index is built by T12.7 (Done on fakes; the tool's
+`global`/`both` scopes read the built global store, and a missing or unbuilt one answers
+`GLOBAL_NOT_AVAILABLE`; ROADMAP §6.7); their contracts
 are cited from LLD §14 where applicable.
 
 #### T12.1 — configuration and per-project store

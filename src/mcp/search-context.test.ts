@@ -699,4 +699,48 @@ describe("search_project_context on the MCP server (T12.6, FR-RAG-06)", () => {
       body: { status: "unavailable", reason: "TIMEOUT", index_revision: 1, results: [] },
     });
   });
+
+  it("serves scope global and both from a built global store, and GLOBAL_NOT_AVAILABLE once it is gone (T12.7)", async () => {
+    const repoA = newRepo("proj-a", { "alpha.ts": "export function zebraAlphaMarker() { return 1; }\n" });
+    const repoB = newRepo("proj-b", { "bravo.ts": "export function bravoMarker() { return 3; }\n" });
+    await build(target("alpha", repoA, { contribute_to_global: true }), GLOBAL_SETTINGS);
+    await build(target("bravo", repoB, { use_global: true }), GLOBAL_SETTINGS);
+    const built = [bproj("alpha", repoA, { contribute_to_global: true }), bproj("bravo", repoB, { use_global: true })];
+    await buildGlobal(built);
+    const s = await connect({
+      clientId: "orch",
+      projects: [
+        project("alpha", repoA, { contribute_to_global: true }),
+        project("bravo", repoB, { use_global: true }),
+      ],
+      clients: { orch: ["bravo"] },
+      search: globalDeps(built),
+    });
+
+    const global = await s.call({ project: "bravo", query: "zebraAlphaMarker", scope: "global", limit: 2 });
+    expect(global.isError).toBe(false);
+    expect(global.body).toMatchObject({ status: "ok", index_revision: expect.any(Number) });
+    expect(global.body.reason).toBeUndefined();
+    expect(global.body.results.length).toBeGreaterThan(0);
+    for (const h of global.body.results) expect(h).toMatchObject({ origin_project: "alpha", untrusted: true });
+    expect(global.body.results[0].text).toContain("zebraAlphaMarker");
+
+    const both = await s.call({ project: "bravo", query: "bravoMarker zebraAlphaMarker", scope: "both", limit: 4 });
+    expect(both.isError).toBe(false);
+    expect(both.body).toMatchObject({ status: "ok", index_revision: expect.any(Number) });
+    expect(both.body.reason).toBeUndefined();
+    expect(both.body.results.some((h: Json) => h.origin_project === "alpha")).toBe(true);
+    expect(both.body.results.some((h: Json) => h.origin_project === undefined && h.path === "bravo.ts")).toBe(true);
+
+    // Fail closed: without the global store the global leg is GLOBAL_NOT_AVAILABLE, never an empty success.
+    rmSync(ragStoreDir(dataDir, { kind: "global" }), { recursive: true, force: true });
+    expect((await s.call({ project: "bravo", query: "zebraAlphaMarker", scope: "global" })).body).toEqual({
+      status: "unavailable",
+      reason: "GLOBAL_NOT_AVAILABLE",
+      results: [],
+    });
+    const gone = await s.call({ project: "bravo", query: "bravoMarker", scope: "both" });
+    expect(gone.body).toMatchObject({ status: "ok", reason: "GLOBAL_NOT_AVAILABLE" });
+    expect(gone.body.results.every((h: Json) => h.origin_project === undefined)).toBe(true);
+  });
 });

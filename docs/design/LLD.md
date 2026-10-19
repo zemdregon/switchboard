@@ -5166,8 +5166,8 @@ transaction, and the lifecycle reaches it only through a structurally typed port
 `unavailable` / `TIMEOUT`, and a pack that freshness or the budget empties is `empty` (`NO_HITS`, `NOTHING_SELECTED`)
 rather than `skipped` / `empty_after_freshness`; the import-boundary test also forbids lifecycle dispatch and adapter
 `compile` modules; the hostile-pack behavioural test and the `rag.retrieve` span are not built. Global-index merge at
-admission is built by T12.7 (Partial; ROADMAP T12.7); `search_project_context` `global` / `both` against the built
-store still answers `GLOBAL_NOT_AVAILABLE` (remaining gap, ROADMAP T12.7)
+admission is built by T12.7 (ROADMAP T12.7); `search_project_context` `global` / `both` read the built global
+store, and a missing or unbuilt one answers `GLOBAL_NOT_AVAILABLE`
 ([§14.9.1](#1491-design-status-and-evidence-t127-2026-10-14), [TDD §3.13.9](TDD.md#3139-t127-global-index-and-sharing-2026-10-14)).
 
 ## 15. Continuity and the handoff bundle (M5)

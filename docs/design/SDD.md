@@ -212,9 +212,8 @@ in [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14); auth
 structurally typed port. Differences from the design (retrieval at dispatch rather than inside the admission
 transaction; no hostile-pack behavioural test and no `rag.retrieve` span) are listed in the LLD §14.11 as-built note.
 
-**Runtime (implemented, T12.6 Done on fakes, T12.7 Partial; ROADMAP §6.7).**
-T12.7 is Partial (2026-10-19, owner ruling): global/both scope
-returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f).
+**Runtime (implemented, T12.6 Done on fakes, T12.7 Done on fakes; ROADMAP §6.7).**
+The `global`/`both` scopes read the built global store; a missing or unbuilt one answers `GLOBAL_NOT_AVAILABLE`.
 `search_project_context` (FR-RAG-06, T12.6;
 `src/mcp/search-context.test.ts`) and global build, contribution copy, admission merge, `index rebuild global`,
 `index clear global`, `index status global` and the `doctor` global check (FR-RAG-09, FR-RAG-10, T12.7;
