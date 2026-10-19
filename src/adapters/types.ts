@@ -222,6 +222,11 @@ export interface Invocation {
   maxLineBytes: number;
   /** Present exactly when `transport` is `acp-stdio` (LLD §2 "ACP plan", ADR-0036). Pure data; audited before spawn. */
   acp?: AcpPlan;
+  /**
+   * T4.35 (owner decision 67): the native id a `subprocess-jsonl` resume asked for. `startAdapterRun` copies it to
+   * {@link ParseState.resumeNativeSessionId} so the parser can fail closed when the provider answers in another session.
+   */
+  resumeNativeSessionId?: string;
 }
 
 /**
@@ -305,6 +310,8 @@ export interface ParseState {
   lines: number;
   unknownEvents: number;
   nativeSessionId?: string;
+  /** The id this run was compiled to resume ({@link Invocation.resumeNativeSessionId}); absent on a first run. */
+  resumeNativeSessionId?: string;
   /** Claude Code only (C-10): `tool_use_id`s already reported from a `system/permission_denied` event, so the `result` event's `permission_denials` entry for the same call is not reported twice. */
   claudeDeniedToolUseIds?: Set<string>;
   /** ACP only (T4.8): scratch state of the shared `session/update` mapper (`src/exec/acp/events.ts`). */

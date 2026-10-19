@@ -249,8 +249,8 @@ operator live capture (T4.38).
 
 **Evidence (Done against its Done-when under owner decision 65 (a); synthetic lines in the shapes of the T4.31 live
 check).** FR-ADP-04, FR-CAP-01 (envelope
-run-total usage recorded `provider_reported` once), FR-SES-03 (resume not compiled: `resumeArgs` is `Ineligible` for
-every profile and binding).
+run-total usage recorded `provider_reported` once), FR-SES-03 (resume `--conversation <id>` with a fail-closed id
+check: `resumeArgs` compiles only where `compile` does, T4.35, owner decision 67).
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("antigravity parser and result (T4.33)", "antigravity
   parser hardening (T4.33, synthetic shapes)", "antigravity cases with no recorded native shape (T4.33, synthetic
@@ -266,15 +266,17 @@ every profile and binding).
   a denial, denial over envelope error and non-zero exit, guard over all). Sourcing: [TDD
   §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433).
 
-**Gaps (carried by T4.38 under owner decision 65 (a); this subsection is Done).** Resume is not compiled (Q-86).
-Rate-limit and sandbox-violation shapes were not
-observed in the live check, so those failures end `TOOL_FAILURE` rather than dedicated taxonomy codes. The stderr
+**Gaps (carried by T4.38 under owner decision 65 (a); this subsection is Done).** Resume now compiles with a fail-closed
+`conversation_id` check (T4.35, owner decision 67; was not compiled, Q-86). Rate-limit and sandbox-violation
+shapes were not observed in the live check, so those failures end `TOOL_FAILURE` rather than dedicated taxonomy
+codes. The stderr
 `AGY_ERROR` shape has since been observed for real (seven quota stops at exit 3, T6.11
 [limit captures](../research/limit-captures-2026-10-17.md)) and mapped in `classifyFailure` to `QUOTA_EXHAUSTED` (T6.15,
 [ROADMAP T6.15](../ROADMAP.md#611-m6-capacity-and-resilience-tasks)); the `extractResult` path still ends `TOOL_FAILURE`
 because the adapter contract gives it no stderr (pinned in `src/adapters/antigravity/limit-signals.test.ts`). Tool-step
 parameter key names (`command`, path fields) are Assumptions where the capture
-did not record them. Operator extension of T4.31 is still needed for resume with a known conversation id, rate limits
+did not record them. Operator extension of T4.31 is still needed for a live resume run with a known
+conversation id (synthetic resume is T4.35, owner decision 67), rate limits
 and full tool-parameter shapes.
 
 #### T4.34 — auth preflight (placeholder)
