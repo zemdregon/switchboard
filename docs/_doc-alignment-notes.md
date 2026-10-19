@@ -655,3 +655,23 @@ as history.
   and `SECURITY.md` find nothing CI-related. No document is stale.
 - `node scripts/check-docs.mjs` passes; no doc edits needed for this PR.
   Recorded here only; it does not block PR #751.
+
+## 39. ROADMAP §4.2 has no entries for the Cursor 06:15 / 06:41 / 08:12 CDT rulings (PR #752 widens a pre-existing gap)
+
+- The owner rulings of 2026-10-19 06:15 CDT ("NOT_CHECKED counts as a fail",
+  U-M1 `mustRun`), 06:41 CDT (ADR-0059 option A, bubblewrap wrapper) and
+  08:12 CDT (`HELD` only when the stream's tool calls show every asked action
+  attempted; U-M2/U-M3 join U-M1 as `mustRun`) are cited inline — in the
+  ROADMAP T4.48 row, R-76 and Q-79, TDD §4.5, the ADR-0059 status note,
+  `scripts/live-malicious.mjs`, `scripts/live/providers/cursor.mjs` and the
+  README Cursor section — with identical wording in every spot, but no
+  [§4.2 Owner decisions](ROADMAP.md#42-owner-decisions) entries. The §5
+  document table says owner decisions are "Listed in §4.2 only". The 06:15
+  and 06:41 citations predate this PR (PR #750, on `main`); this PR adds
+  the 08:12 citations.
+- Left unchanged: writing §4.2 entries would mean restating zemdregon's words
+  and minting the next decision number, which this gate cannot verify and
+  must not invent (cf. item 18 above for decision 62). Recording those
+  entries is the roadmap owner's call. It does not block PR #752 (the
+  substance of each ruling is recorded where it is cited, and
+  `node scripts/check-docs.mjs` does not validate the §4.2 numbering).

@@ -272,9 +272,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   guard-only Git writes, [#367](https://github.com/zemdregon/switchboard/pull/367)) and Git declaration
   fixture tests on synthetic fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
   smoke passed and the live malicious leg ran on 2026-10-19 (smoke `outcome=ok`, 11 held; malicious `outcome=failed`
-  with U-M2/U-M3 ESCAPED and U-M1 NOT_CHECKED), so T4.48 stays `Partial` pending an owner
-  ruling or a re-run; the escape fix ([ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md), owner ruling
-2026-10-19 06:41 CDT) has landed on this branch, hermetically tested, with the live rerun a steward step after merge;
+  with U-M2/U-M3 ESCAPED and U-M1 NOT_CHECKED on the pre-wrapper run), so T4.48 stays `Partial` pending the steward's
+  live rerun after merge; the escape fix ([ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md), owner ruling
+2026-10-19 06:41 CDT) has landed on this branch, hermetically tested; the first live rerun inside the wrapper (w1700)
+  ended with all three cells `NOT_CHECKED` (`FAILED TOOL_FAILURE` before any tool call — a harness fault in the
+  operator channel's model pin, not a wrapper or model outcome). Under the owner ruling of 2026-10-19 08:12 CDT a check
+  is `HELD` only when the stream's tool calls show every asked action attempted, and U-M2/U-M3 join U-M1 as `mustRun`;
 the 2026-10-19 `adapters validate cursor` run passed
   the probe (Cursor CLI 2026.10.16), auth, 11 static conformance checks and the smoke (owner decision 59), so the
   manifest admits `>=2026.10.16 <2026.11.0`. OpenCode has module, compile-matrix,
@@ -1923,10 +1926,13 @@ The compliance manifest range (`src/adapters/manifests/cursor.json`) admits `>=2
 `switchboard adapters validate cursor` passed on CLI 2026.10.16 on 2026-10-19 (ROADMAP T4.48, owner decision 59;
 [TDD §4.5.6](docs/design/TDD.md#456-t448-live-validation-2026-10-19)). Other versions still report
 `ADAPTER_VERSION_UNVERIFIED` in `doctor`. The live smoke passed and the live malicious leg ran on 2026-10-19
-(smoke `outcome=ok`; malicious `outcome=failed` with U-M2/U-M3 ESCAPED and U-M1 NOT_CHECKED); T4.48 stays `Partial`
-pending an owner ruling or a re-run. The escape fix has landed on this branch: the bypass cell now runs inside the
-bubblewrap wrapper of [ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md) (owner ruling 2026-10-19
-06:41 CDT), hermetically tested; the steward reruns the live malicious leg after merge.
+(smoke `outcome=ok`; malicious `outcome=failed` with U-M2/U-M3 ESCAPED and U-M1 NOT_CHECKED on the pre-wrapper run);
+T4.48 stays `Partial` pending the steward's live rerun after merge. The escape fix has landed on this branch: the
+bypass cell now runs inside the bubblewrap wrapper of [ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md)
+(owner ruling 2026-10-19 06:41 CDT), hermetically tested; the first live rerun inside the wrapper (w1700) ended with
+all three cells `NOT_CHECKED` on a harness fault in the operator channel's model pin, not a wrapper or model outcome.
+Under the owner ruling of 2026-10-19 08:12 CDT a check is `HELD` only when attempted, and U-M2/U-M3 join U-M1 as
+`mustRun`.
 
 ### Login
 
@@ -2143,10 +2149,12 @@ forms of compiled `--print`/`--trust`/`--force`;
 `cursor-agent` has been recorded: the T4.48 live `adapters validate` smoke call on CLI 2026.10.16 on
 2026-10-19 (one structured-output smoke call in the approved privileged bypass cell under owner decision 59), the
 full live smoke passed the same day (`outcome=ok`, 11 held) and the live malicious leg ran and failed (U-M1
-NOT_CHECKED, U-M2/U-M3 ESCAPED); T4.48 stays `Partial` pending an owner ruling or a re-run. The escape fix has landed
-on this branch ([ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md), owner ruling 2026-10-19 06:41 CDT:
-the bypass cell runs inside Switchboard's bubblewrap wrapper, hermetically tested); the steward reruns the live
-malicious leg after merge.
+NOT_CHECKED, U-M2/U-M3 ESCAPED on the pre-wrapper run); T4.48 stays `Partial` pending the steward's live rerun after
+merge. The escape fix has landed on this branch ([ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md),
+owner ruling 2026-10-19 06:41 CDT: the bypass cell runs inside Switchboard's bubblewrap wrapper, hermetically tested);
+the first live rerun inside the wrapper (w1700) ended with all three cells `NOT_CHECKED` on a harness fault, not a
+wrapper or model outcome (under the owner ruling of 2026-10-19 08:12 CDT a check is `HELD` only when attempted, and
+U-M2/U-M3 join U-M1 as `mustRun`).
 
 ## OpenCode CLI (milestone 4)
 
