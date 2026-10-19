@@ -1145,36 +1145,131 @@ describe("antigravity parser hardening (T4.33, synthetic shapes)", () => {
     expect(state.lines).toBe(0);
   });
 
-  it("resume stays Ineligible for every profile and binding id, never throws and never emits --conversation", () => {
-    const approved = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
-    const profiles: ResolvedProfile[] = [...PROFILES.map(profileOf), approved, privilegedProfile(BYPASS_SCOPE)];
-    for (const profile of profiles) {
-      for (const nativeSessionId of [CID, "", "--dangerously-skip-permissions", "-c", "../x", "a b"]) {
-        const label = `${profile.name}:${nativeSessionId}`;
-        const r = adapter().resumeArgs(
-          { provider: "antigravity", nativeSessionId },
-          request({ bypassApproved: profile.bypassApproved }),
-          profile,
-        );
-        expect(r, label).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
-        expect("ineligible" in r && r.detail.length > 0, label).toBe(true);
+  it("resume compiles only where compile does: the approved bypass cell, as the compile argv plus --conversation <id>", () => {
+    // T4.35 (owner decision 67, Q-86; [LIVE] C9 run 2: `--conversation <id>` keeps the conversation_id).
+    let count = 0;
+    for (const scope of scopeShapes()) {
+      const profile = privilegedProfile(scope);
+      for (const approved of [false, true]) {
+        const label = JSON.stringify({ scope, approved });
+        const req = request({ bypassApproved: approved });
+        const p = { ...profile, bypassApproved: approved };
+        const first = adapter().compile(req, p);
+        const r = adapter().resumeArgs({ provider: "antigravity", nativeSessionId: CID }, req, p);
+        if (isIneligible(first)) {
+          expect(r, label).toEqual(first);
+          continue;
+        }
+        count += 1;
+        if (isIneligible(r)) throw new Error(`${label}: ${r.detail}`);
+        // Argv audit: exactly the first-run argv plus the two words; no bypass flag beyond the cell's own.
+        expect(r.argv, label).toEqual([...first.argv, "--conversation", CID]);
+        expect(r.policyFlags, label).toEqual(first.policyFlags);
+        expect(auditInvocation(r), label).toEqual(auditInvocation(first));
+        expect(auditInvocation(r, { profile, bypassApproved: true }), label).toEqual([]);
+        expect(
+          r.argv.filter((a) => bypassClassFlags().includes(a)),
+          label,
+        ).toEqual(["--dangerously-skip-permissions"]);
+        expect(r.resumeNativeSessionId, label).toBe(CID);
+        expect(first.resumeNativeSessionId, label).toBeUndefined();
+      }
+    }
+    expect(count).toBe(1);
+    for (const name of PROFILES) {
+      for (const bypassApproved of [false, true]) {
+        const r = adapter().resumeArgs({ provider: "antigravity", nativeSessionId: CID }, request({ bypassApproved }), {
+          ...profileOf(name),
+          bypassApproved,
+        });
+        expect(r, name).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
       }
     }
     expect(compiled().argv.some((a) => a.startsWith("--conversation") || a.startsWith("-conversation"))).toBe(false);
   });
 
-  it("resume is not compiled (Q-86): an unknown --conversation id silently starts a new conversation", () => {
+  it("resume never compiles a foreign binding or an id that is not one safe token, and never uses -c", () => {
     const profile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
-    expect(
-      adapter().resumeArgs(
-        { provider: "antigravity", nativeSessionId: CID },
-        request({ bypassApproved: true }),
-        profile,
-      ),
-    ).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING", detail: expect.stringContaining("Q-86") });
     expect(
       adapter().resumeArgs({ provider: "codex", nativeSessionId: CID }, request({ bypassApproved: true }), profile),
     ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: "binding is for codex" });
+    for (const nativeSessionId of ["", "--dangerously-skip-permissions", "-c", "../x", "a b", "a".repeat(257)]) {
+      expect(
+        adapter().resumeArgs({ provider: "antigravity", nativeSessionId }, request({ bypassApproved: true }), profile),
+        nativeSessionId,
+      ).toMatchObject({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: "native session id is not a safe single argument",
+      });
+    }
+    const r = adapter().resumeArgs(
+      { provider: "antigravity", nativeSessionId: CID },
+      request({ bypassApproved: true }),
+      profile,
+    );
+    if (isIneligible(r)) throw new Error(r.detail);
+    expect(r.argv.some((a) => a === "-c" || a === "--continue")).toBe(false);
+  });
+
+  it("a resumed run fails closed when the returned conversation_id differs or is missing (owner decision 67, C9 run 5)", () => {
+    const a = adapter();
+    const parse = (lines: string[], resumeNativeSessionId?: string) => {
+      const state: ParseState = {
+        lines: 0,
+        unknownEvents: 0,
+        ...(resumeNativeSessionId ? { resumeNativeSessionId } : {}),
+      };
+      const events = lines.flatMap((l) => a.parseEvent(l, state));
+      const exit: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+      return { state, events, result: a.extractResult(events, exit) };
+    };
+    const usage = { input_tokens: 2, output_tokens: 1, total_tokens: 3 };
+    const init = (id: string) => JSON.stringify({ event: "init", conversation_id: id, init: { cwd: "/work/tree" } });
+    const result = (id?: string) =>
+      JSON.stringify({
+        event: "result",
+        result: { ...(id === undefined ? {} : { conversation_id: id }), status: "SUCCESS", response: "ok", usage },
+      });
+    const OTHER = "0b6c2d1e-0000-4000-8000-000000000099";
+    // Same id: resumed (C9 runs 2 and 3).
+    expect(parse([init(CID), result(CID)], CID).result).toMatchObject({ ok: true, nativeSessionId: CID });
+    // A different id: a new conversation (C9 run 5). The new id is never bound, so it cannot replace the binding.
+    const changed = parse([init(OTHER), result(OTHER)], CID);
+    expect(changed.events.filter((e) => e.kind === "session_bound")).toEqual([]);
+    expect(changed.events.filter((e) => e.kind === "provider_error")).toEqual([
+      {
+        kind: "provider_error",
+        category: "protocol",
+        message: "resumed conversation id differs from the requested one",
+      },
+    ]);
+    expect(changed.result).toEqual({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: resumed conversation id differs from the requested one",
+      unknownEventCount: 0,
+      summary: "ok",
+    });
+    // A result-only stream for another conversation fails the same way.
+    expect(parse([result(OTHER)], CID).result).toMatchObject({
+      ok: false,
+      failureCode: "OUTPUT_PROTOCOL_ERROR",
+      failureDetail: "protocol: resumed conversation id differs from the requested one",
+    });
+    // No id at all (empty or absent): nothing shows the conversation was resumed.
+    for (const lines of [[result()], [init(""), result("")], [init(""), result()]]) {
+      const r = parse(lines, CID);
+      expect(r.state.nativeSessionId).toBeUndefined();
+      expect(r.result).toMatchObject({
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "protocol: resume returned no conversation id",
+      });
+    }
+    // Without a requested id (a first run) the same streams keep their earlier verdicts.
+    expect(parse([init(OTHER), result(OTHER)]).result).toMatchObject({ ok: true, nativeSessionId: OTHER });
+    expect(parse([result()]).result).toMatchObject({ ok: true });
   });
 });
 
@@ -2278,13 +2373,12 @@ describe("antigravity parser fallbacks and exact matching (T4.33, synthetic shap
     const customReq = request({ workspace: { cwd: "/custom/workspace/dir", writable: true }, bypassApproved: true });
     const id = "0b6c2d1e-0000-4000-8000-000000000042";
 
-    // Antigravity bindings return Ineligible (Q-86)
+    // Antigravity bindings compile in the approved bypass cell, with the id after --conversation (owner decision 67)
     const res = a.resumeArgs({ provider: "antigravity", nativeSessionId: id }, customReq, approved);
-    expect(res).toMatchObject({
-      ineligible: true,
-      reason: "CAPABILITY_MISSING",
-      detail: expect.stringContaining("Q-86"),
-    });
+    if (isIneligible(res)) throw new Error(res.detail);
+    expect(res.argv.slice(-2)).toEqual(["--conversation", id]);
+    expect(res.cwd).toBe("/custom/workspace/dir");
+    expect(res.resumeNativeSessionId).toBe(id);
 
     // Foreign provider bindings rejected
     for (const provider of ["claude", "codex", "grok", "cursor", "opencode", "kimi", "muse", "fake", "other"]) {
@@ -2301,7 +2395,7 @@ describe("antigravity parser fallbacks and exact matching (T4.33, synthetic shap
     for (const name of PROFILES) {
       expect(a.resumeArgs({ provider: "antigravity", nativeSessionId: id }, customReq, profileOf(name))).toMatchObject({
         ineligible: true,
-        reason: "CAPABILITY_MISSING",
+        reason: "PROFILE_UNSUPPORTED",
       });
     }
 
@@ -2318,8 +2412,8 @@ describe("antigravity parser fallbacks and exact matching (T4.33, synthetic shap
 /**
  * T4.35 (FR-ADP-11): the shared conformance suite over synthetic recorded fixtures (`./fixtures/*.jsonl`, in the
  * `stream-json` shapes of the 2026-10-14 live check), replayed by `replay.mjs --provider antigravity` in place of the
- * binary, so it passes with no `agy` installed. The prompt reaches the replay as the `--prompt=` argv word. The
- * `resume` case fails closed while `resumeArgs` is Ineligible (Q-86), so it is asserted apart from the suite.
+ * binary, so it passes with no `agy` installed. The prompt reaches the replay as the `--prompt=` argv word. Resume
+ * compiles `--conversation <id>` (owner decision 67, T4.35), so every FR-ADP-11 kind runs in the suite.
  */
 describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.35)", () => {
   const caseOf = (kind: ConformanceCase["kind"]): ConformanceCase => {
@@ -2354,11 +2448,12 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
       return { ...edit(inv), policyFlags: [] };
     });
 
-  it("names every FR-ADP-11 kind and passes the suite for every kind except resume", async () => {
+  it("names every FR-ADP-11 kind and passes the suite for every kind, resume included (owner decision 67)", async () => {
     const cases = antigravityConformanceCases(makeCwd);
     expect(missingRequiredKinds(cases)).toEqual([]);
+    expect(ANTIGRAVITY_RUNNABLE_KINDS).toContain("resume");
     const runnable = cases.filter((c) => ANTIGRAVITY_RUNNABLE_KINDS.includes(c.kind));
-    expect(new Set(runnable.map((c) => c.kind))).toEqual(new Set(ANTIGRAVITY_RUNNABLE_KINDS));
+    expect(runnable).toHaveLength(cases.length);
     const report = await runConformanceSuite(runnable);
     const failing = report.cases.flatMap((c) =>
       c.checks.filter((k) => !k.ok).map((k) => `${c.kind}: ${k.name} ${k.detail ?? ""}`),
@@ -2367,76 +2462,61 @@ describe("antigravity conformance suite (synthetic recorded fixtures, FR-ADP-11,
     expect(report.ok).toBe(true);
   });
 
-  it("resume fails closed: the case does not compile while resumeArgs is Ineligible (Q-86)", async () => {
+  it("resume with the same conversation_id succeeds through resumeArgs and keeps the id (C9 run 2)", async () => {
     const report = await runConformanceCase(caseOf("resume"));
-    expect(report.ok).toBe(false);
-    expect(report.result).toBeUndefined();
-    // T16.7: the skill delivery checks run whether or not the cell compiles; "compiles" is the only failure.
-    expect(report.checks.filter((k) => !k.ok)).toEqual([
-      { name: "compiles", ok: false, detail: "ineligible: CAPABILITY_MISSING" },
-    ]);
-    expect(report.checks.map((k) => k.name)).toEqual([
-      "skill delivery declaration is pure and ignores the skills",
-      "native skill delivery carries a T16.8 evidence id",
-      "skills never change the compiled argv",
-      "compiles",
-    ]);
-  });
-
-  it("the resume fixture and dialect keep the --conversation id, ready for when Q-86 allows a compile", async () => {
-    const { binding: _binding, ...c } = caseOf("resume");
-    const withId = withCompile(c.adapter as AntigravityAdapter, (r, p) => {
-      const inv = c.adapter.compile(r, p);
-      return "ineligible" in inv ? inv : { ...inv, argv: [...inv.argv, "--conversation", RESUMED_SESSION_ID] };
-    });
-    const report = await runConformanceCase({ ...c, adapter: withId });
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
     expect(report.result).toMatchObject({ ok: true, nativeSessionId: RESUMED_SESSION_ID });
-    // Without the id the replay refuses the resume fixture (requireResume), so it cannot pass as a fresh run.
+    // Without --conversation the replay refuses the resume fixture (requireResume), so it cannot pass as a fresh run.
+    const { binding: _binding, ...c } = caseOf("resume");
     const fresh = await runConformanceCase(c);
     expect(fresh.result).toMatchObject({ ok: false, failureDetail: "exit code 64" });
   });
 
-  it("an unknown --conversation id that starts a new conversation (live check C9 run 5) fails the resume case's id check", async () => {
-    // The adapter alone reads this shape as a success (SUCCESS with tokens at exit 0; the only sign is on stderr), so
-    // the suite's id check is what stops it: resume stays Ineligible until a capture shows how a resume is marked.
-    const { binding: _binding, ...c } = caseOf("resume");
-    const unknown = replayAdapter("resume_unknown_id");
-    const withId = withCompile(unknown, (r, p) => {
-      const inv = unknown.compile(r, p);
-      return "ineligible" in inv ? inv : { ...inv, argv: [...inv.argv, "--conversation", RESUMED_SESSION_ID] };
+  it("resume to a different conversation_id (C9 run 5: an unknown id starts a new one) fails closed", async () => {
+    const c = caseOf("resume");
+    const report = await runConformanceCase({
+      ...c,
+      adapter: replayAdapter("resume_unknown_id"),
+      expect: {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "protocol: resumed conversation id differs from the requested one",
+        nativeSessionId: null,
+      },
     });
-    const report = await runConformanceCase({ ...c, adapter: withId });
-    expect(report.ok).toBe(false);
-    expect(report.checks.filter((k) => !k.ok).map((k) => k.name)).toEqual(["native session id"]);
-    expect(report.result).toMatchObject({ ok: true, nativeSessionId: "0b6c2d1e-0000-4000-8000-000000000099" });
-    // Without the id the replay refuses this fixture too, so it is never a fresh-run success by accident.
-    const fresh = await runConformanceCase({ ...c, adapter: unknown });
-    expect(fresh.result).toMatchObject({ ok: false, failureDetail: "exit code 64" });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("resume with no conversation_id in the stream fails closed", async () => {
+    const c = caseOf("resume");
+    const report = await runConformanceCase({
+      ...c,
+      adapter: replayAdapter("resume_missing_id"),
+      expect: {
+        ok: false,
+        failureCode: "OUTPUT_PROTOCOL_ERROR",
+        failureDetail: "protocol: resume returned no conversation id",
+        nativeSessionId: null,
+      },
+    });
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.ok).toBe(true);
   });
 
   it("a resumed C10 zero-token SUCCESS (resume_failure) is TOOL_FAILURE and keeps the --conversation id", async () => {
-    // resumeArgs stays Ineligible (Q-86), so the dialect is given the id the same way as the success resume fixture.
-    const { binding: _binding, ...c } = caseOf("resume");
-    const failed = replayAdapter("resume_failure");
-    const withId = withCompile(failed, (r, p) => {
-      const inv = failed.compile(r, p);
-      return "ineligible" in inv ? inv : { ...inv, argv: [...inv.argv, "--conversation", RESUMED_SESSION_ID] };
-    });
+    const c = caseOf("resume");
     const report = await runConformanceCase({
       ...c,
-      adapter: withId,
-      expect: { ok: false, failureCode: "TOOL_FAILURE", nativeSessionId: RESUMED_SESSION_ID },
+      adapter: replayAdapter("resume_failure"),
+      expect: {
+        ok: false,
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "SUCCESS with no reported tokens",
+        nativeSessionId: RESUMED_SESSION_ID,
+      },
     });
     expect(report.checks.filter((k) => !k.ok)).toEqual([]);
-    expect(report.result).toMatchObject({
-      ok: false,
-      failureCode: "TOOL_FAILURE",
-      failureDetail: "SUCCESS with no reported tokens",
-      nativeSessionId: RESUMED_SESSION_ID,
-    });
-    const fresh = await runConformanceCase({ ...c, adapter: failed });
-    expect(fresh.result).toMatchObject({ ok: false, failureDetail: "exit code 64" });
   });
 
   it("the case list replays the exit 3 and unrecorded usage shapes, both cancellation paths, and not the sandbox gap", () => {
@@ -3863,8 +3943,8 @@ describe("antigravity parser residual pins (T4.33, synthetic shapes)", () => {
   });
 
   it("pins: a SUCCESS envelope with tokens and no conversation id anywhere succeeds with no nativeSessionId", () => {
-    // Resume is not compiled (Q-86), so an unbound success loses nothing a continuation could use; a recorded success
-    // always carried a UUID ([LIVE] C4), so this shape is synthetic.
+    // A first run that binds no id leaves nothing to resume (a resumed run with no id fails closed, owner decision 67);
+    // a recorded success always carried a UUID ([LIVE] C4), so this shape is synthetic.
     for (const id of [undefined, "", 7, null, { id: CID }]) {
       const r = run([RESULT({ conversation_id: id })]);
       expect(r.state.nativeSessionId, JSON.stringify(id)).toBeUndefined();

@@ -1,0 +1,3 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.35, owner decision 67), in the stream-json shapes of the 2026-10-14 live check C4 with every conversation_id empty or absent. Every recorded run carried one (C4, C9), so this shape was not observed: a resumed run whose stream names no conversation shows nothing that it resumed, so it fails closed.","exit":0,"requireResume":true}}
+{"event":"init","conversation_id":"","init":{"cwd":"/work/tree","tools":["run_command"],"permission_mode":"always-proceed"}}
+{"event":"result","result":{"status":"SUCCESS","response":"ok","duration_seconds":4,"num_turns":1,"usage":{"input_tokens":20,"output_tokens":3,"thinking_tokens":1,"cache_read_tokens":0,"total_tokens":24}}}
