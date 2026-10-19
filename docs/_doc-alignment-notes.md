@@ -417,3 +417,10 @@ as history.
   follow-up), not an owner decision. It does not block PR #726 (the range
   fields and the evidence line, which are what the gate and the version check
   read, are correct).
+- Same shape, same scope: `src/inner/cli-backend.ts` ("`src/adapters/
+  manifests/opencode.json` admits no version (`<0.0.0`)") and
+  `src/inner/index.ts` ("The shipped OpenCode manifest admits no version")
+  still describe the pre-T4.58 range; both are `src/**`, so they are listed
+  here rather than fixed. The owner document for that range is the manifest
+  itself (range fields correct); the docs (`HLD.md` CLI-backend gate line,
+  ROADMAP T4.52 with an "at the time" qualifier) now state the current range.
