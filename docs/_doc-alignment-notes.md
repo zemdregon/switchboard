@@ -820,7 +820,38 @@ as history.
   ADR-0060 ("the macOS leg was dropped from gating by a ruling") instead of a dated owner waiver, so no §4.2
   entry is needed and no owner approval is implied. Resolved, not outstanding.
 
-## 48. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
+## 48. T5.14 "fresh project runs only" misstatement and bundle-version-3 staleness (from PR #767, fixed in this gate)
+
+- The T5.14 row as merged on this branch said, under "Not covered", that
+  "the brief text goes with fresh project runs only (a handoff run's bundle
+  carries the hash ...)". The code admits every project run — fresh and
+  handoff successor alike — through the same snapshot builder with
+  `admitBrief` (`resolveProject` in `src/mcp/server.ts` and in
+  `src/queue/admission.ts`; `continueTask` re-resolves the meta-session's
+  project under the same checks as a new request and submits the successor
+  with that snapshot), and the lifecycle-wide `briefContextPack` port
+  (`src/cli/brief-pack.ts`, wired in `src/cli/serve.ts`) prepends the block
+  to any run whose snapshot carries `brief_sha256`. So a handoff successor
+  on a briefed project freezes its own hash at its admission and gets the
+  block too; only the bundle carries the hash alone, and a native resume
+  reuses the session that already had it. SRS FR-SES-07 ("each run's
+  context") already said this; the row contradicted it.
+- Fixed in this gate (docs only, no owner decision needed — code is the
+  source of truth for what is implemented): the T5.14 "Not covered" note
+  and LLD §20.13 "As built" now say every admitted run; the LLD §15.1
+  "Version 2" paragraph ("renderer reads both versions", "same for both
+  versions") now reads all three; the ADR index row for ADR-0038
+  ("versions 1–2") now names version 3; SRS FR-SES-07 "by version hash" now
+  reads "by SHA-256 hash" to match `brief: { run_id, sha256 }`.
+- Also fixed here (mechanical): the tail of this file carried duplicate numbers from earlier merges (two items
+  numbered 41, then two numbered 42 after the merge on this branch); the items from the second 41 onward are
+  renumbered sequentially, so this entry is item 48. Only §24 is linked from other
+  documents, so no link breaks.
+- It does not block PR #767 (the task's own evidence — `src/projects/brief.test.ts`,
+  `src/cli/brief-pack.test.ts`, `src/continuity/bundle.test.ts` "project
+  brief as a hash" — is cited in-row and matches the named tests).
+
+## 49. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
 
 - TDD §5 (implementation strategy, M4 row) listed "macOS CI leg (NFR-PORT-02)" in the present tense as the
   technical approach; past-tensed to "ran 2026-10-14, removed 2026-10-19 when CI went Linux-only, §3.8",
@@ -834,7 +865,7 @@ as history.
   CI, so the verification method still holds; narrowing it is the SRS owner's call. SDD NFR-PORT-02 row
   still points at TDD §2, which still documents the CI history.
 
-## 49. HLD COMP-TEL row still cites `FR-TEL-01..03` (from PR #769, not blocking)
+## 50. HLD COMP-TEL row still cites `FR-TEL-01..03` (from PR #769, not blocking)
 
 - [HLD §2](design/HLD.md) COMP-TEL cites `FR-TEL-01..03`, while [SDD](design/SDD.md) (updated by this PR) maps
   FR-TEL-06 to COMP-TEL, COMP-ADP and COMP-RTE. FR-TEL-05/FR-TEL-06 postdate the HLD row (both added 2026-10-19
@@ -846,9 +877,9 @@ as history.
   otherwise makes its "no listener" parenthetical read as global. It does not block PR #769 (the T8.15 status,
   evidence and as-built behaviour are cited in the ROADMAP T8.15 row, the M8 row, LLD §20.13, the SDD FR-TEL-06
   row, the SRS FR-TEL-06 note, TDD §3.1, the README telemetry section and config table, and ADR-0063
-  (renumbered from 0062 in this pass; see item 50).
+  (renumbered from 0062 in this pass; see item 51).
 
-## 50. Duplicate ADR number 0062 fixed by renumbering the new ADR to 0063 (PR #769, fixed, not blocking)
+## 51. Duplicate ADR number 0062 fixed by renumbering the new ADR to 0063 (PR #769, fixed, not blocking)
 
 - This branch added `docs/adr/0062-per-run-provider-otlp-metrics-receiver.md` (commit `d98dc74`) while
   `origin/main` already carried `docs/adr/0062-mcp-sdk-v2-dual-era-http.md` (T13.10, PR #771), so the ADR

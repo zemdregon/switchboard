@@ -1,10 +1,13 @@
 /**
- * Handoff bundle, schema version 2 (T5.4, T16.10; LLD §15.1 to §15.4, ADR-0038 items 1, 2, 5.5 and 7, ADR-0056 item 14;
+ * Handoff bundle, schema version 3 (T5.4, T16.10, T5.14; LLD §15.1 to §15.4, ADR-0038 items 1, 2, 5.5 and 7, ADR-0056 item 14;
  * FR-SES-04, FR-SES-05, FR-SKL-03). Types, constants and the one failure type. PURE: no I/O and no imports.
  *
  * Version 2 adds `skills` (the previous run's pinned skills as controller facts: name, version, hash; never text) and is
  * otherwise version 1. Version 1 stays buildable and readable (ADR-0038 "Regenerability"; FR-SES-05): a view stored as
  * version 1 regenerates byte-identically as version 1 ({@link BundleVersion}).
+ *
+ * Version 3 (T5.14, FR-SES-07) adds `brief`: the previous run's frozen project-brief hash, or `null`; never its text.
+ * Version 2 stays buildable and readable the same way.
  *
  * Every field is always present; an empty list or `null` means "none". Text classes (LLD §15.1): `controller` (ids,
  * codes, counts, SHAs, timestamps, decision templates), `orchestrator` (goal, constraints, instructions, verification
@@ -14,10 +17,10 @@
 
 export const BUNDLE_SCHEMA = "switchboard.handoff_bundle";
 /** The version a new bundle is built with; `version` and `builder_version` move together. */
-export const BUNDLE_VERSION = 2;
-export const BUILDER_VERSION = 2;
+export const BUNDLE_VERSION = 3;
+export const BUILDER_VERSION = 3;
 /** Every version this builder can build and the renderer can read. */
-export const BUNDLE_VERSIONS = [1, 2] as const;
+export const BUNDLE_VERSIONS = [1, 2, 3] as const;
 export type BundleVersion = (typeof BUNDLE_VERSIONS)[number];
 
 /** The three configurable bounds (ADR-0038 item 5.5; every default is an **Assumption**, no measurement exists). */
@@ -171,6 +174,15 @@ export interface BundleSkill {
   readonly sha256: string;
 }
 
+/**
+ * The project brief of the previous run (T5.14, FR-SES-07, LLD §20.13): its SHA-256 as frozen at that run's admission.
+ * The brief's text is never in the bundle.
+ */
+export interface BundleBrief {
+  readonly run_id: string;
+  readonly sha256: string;
+}
+
 /** One cut or drop (LLD §15.4). `dropped` counts items, code points or bytes, as `reason` says. */
 export interface BundleTruncation {
   readonly field: string;
@@ -201,6 +213,8 @@ export interface HandoffBundle {
   readonly reported: readonly BundleReported[];
   /** Version 2 only (always present there, empty for a previous run without skills); absent in version 1. */
   readonly skills?: readonly BundleSkill[];
+  /** Version 3 only (always present there, `null` when the previous run had no brief); absent before. */
+  readonly brief?: BundleBrief | null;
   readonly truncation: readonly BundleTruncation[];
 }
 
@@ -242,11 +256,14 @@ export const BUNDLE_FIELDS_V1 = [
 ] as const;
 
 /** Every top-level field of version 2 (LLD §15.1): version 1 plus `skills`. */
-export const BUNDLE_FIELDS = [...BUNDLE_FIELDS_V1, "skills"] as const;
+export const BUNDLE_FIELDS_V2 = [...BUNDLE_FIELDS_V1, "skills"] as const;
+
+/** Every top-level field of version 3 (LLD §15.1, T5.14): version 2 plus `brief`. */
+export const BUNDLE_FIELDS = [...BUNDLE_FIELDS_V2, "brief"] as const;
 
 /** The top-level fields of `version`. */
 export const bundleFieldsOf = (version: BundleVersion): readonly string[] =>
-  version === 1 ? BUNDLE_FIELDS_V1 : BUNDLE_FIELDS;
+  version === 1 ? BUNDLE_FIELDS_V1 : version === 2 ? BUNDLE_FIELDS_V2 : BUNDLE_FIELDS;
 
 export const HANDOFF_BUNDLE_UNAVAILABLE = "HANDOFF_BUNDLE_UNAVAILABLE";
 /** ADR-0038 item 7: one fixed message; the cause stays in `cause` for the operator log, never in the envelope. */

@@ -34,7 +34,7 @@ import {
   verificationCommandsProblem,
 } from "../lifecycle/index.js";
 import { invalid, ToolError } from "../mcp/errors.js";
-import { createProjectTools } from "../mcp/project-tools.js";
+import { admitBrief, createProjectTools } from "../mcp/project-tools.js";
 import type { ModelCapability, ModelRegistry } from "../models/registry.js";
 import { type ProjectSnapshot, parsePrivilegedScope } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
@@ -236,6 +236,7 @@ export async function admitWorkItemRequest(
               ...(context.finalizeCommit ? { finalize_commit: true as const } : {}),
               ...(context.sign ? { sign: true as const } : {}),
             }),
+        ...admitBrief(project, deps.config.allowedRoots),
       },
     };
   };

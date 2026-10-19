@@ -29,6 +29,7 @@ import type { ProjectConfig, ResolvedMcpClient, ResolvedProject, TrustProfile } 
 import { effectiveMaxProfile, PROJECT_ID_PATTERN } from "../config/index.js";
 import {
   approvalReasons,
+  BriefError,
   checkClientLimits,
   checkFilesystem,
   checkRagSharing,
@@ -36,8 +37,10 @@ import {
   checkStructure,
   type DynamicProjectState,
   type DynamicProjectStore,
+  freezeBrief,
   MAX_LIVE_PROJECTS_PER_CLIENT,
   MAX_REVISIONS_PER_PROJECT,
+  PROJECT_BRIEF_UNAVAILABLE,
   ProjectRuleError,
   ProjectStoreError,
   toResolved,
@@ -456,4 +459,28 @@ function schemaError(errors: readonly ErrorObject[]): ToolError {
     errors: list,
     ...(first ? { field: first.path } : {}),
   });
+}
+
+/**
+ * T5.14 (FR-SES-07, LLD §20.13; Linus decisions (a) and (b), WORK QUEUE v10): the project brief at admission. Reads the
+ * file, keeps its text in this process by hash and returns the hash for the frozen project snapshot; nothing for a
+ * project without `brief_file`. A brief that cannot be read or breaks a rule refuses the run (`TOOL_FAILURE`, not
+ * retryable, `PROJECT_BRIEF_UNAVAILABLE`); the message names the rule, never the path or the text.
+ */
+export function admitBrief(
+  project: Pick<ResolvedProject, "id" | "briefFile" | "contexts">,
+  allowedRoots: readonly string[],
+): { brief_sha256?: string } {
+  if (project.briefFile === undefined) return {};
+  try {
+    return {
+      brief_sha256: freezeBrief(project.briefFile, [...allowedRoots, ...project.contexts.map((c) => c.path)]).sha256,
+    };
+  } catch (err) {
+    if (!(err instanceof BriefError)) throw err;
+    throw new ToolError("TOOL_FAILURE", `project ${project.id}: its brief_file ${err.message}`, {
+      project: project.id,
+      reason: PROJECT_BRIEF_UNAVAILABLE,
+    });
+  }
 }
