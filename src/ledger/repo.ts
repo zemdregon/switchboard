@@ -228,7 +228,8 @@ export type ArtifactKind =
   | "handoff_view"
   | "pr_draft" // T11.8, migration 0009
   | "handoff_condense" // T11.10, migration 0016
-  | "seed_log"; // T9.13, migration 0022
+  | "seed_log" // T9.13, migration 0022
+  | "docs_alignment"; // T8.10, migration 0025
 
 export interface NewArtifactRow {
   /** Pre-allocated with {@link Ledger.newArtifactId} when a row written first must name it (T5.5, LLD §15.2). */
@@ -576,6 +577,33 @@ export interface GitCommitRow {
   message_source: "agent" | "inner";
   /** T11.4: the `inner_call` row of the accepted draft; NULL for an agent message. */
   inner_call_id: string | null;
+}
+
+/**
+ * One `verification_result` row (T8.10; FR-EXE-10, LLD §20.6, migration 0025). Append-only. `head_sha` is the commit
+ * the stage verified, recorded only when the worktree's tree equalled that commit's tree; `tree_sha` is the worktree's
+ * tree. Keyed by `(publish_ref, head_sha)`.
+ */
+export interface VerificationResultRow {
+  id: string;
+  run_id: string;
+  meta_session_id: string;
+  publish_ref: string;
+  head_sha: string | null;
+  tree_sha: string | null;
+  outcome: "passed" | "failed" | "cancelled" | "timeout";
+  artifact_id: string | null;
+  created_at: string;
+}
+
+export interface NewVerificationResult {
+  runId: string;
+  metaSessionId: string;
+  publishRef: string;
+  headSha: string | null;
+  treeSha: string | null;
+  outcome: VerificationResultRow["outcome"];
+  artifactId: string | null;
 }
 
 /** Everything `recordGitCommit` needs. `id`, `tool_event_id` and `created_at` are assigned by the ledger. */
@@ -957,6 +985,16 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   listGitCommits(runId: string): GitCommitRow[];
   /** Provenance rows for one commit SHA, oldest first (the same commit may be recorded by more than one run). */
   findGitCommitsBySha(commitSha: string): GitCommitRow[];
+
+  // ---- T8.10 additions (head-pinned verification, LLD §20.6) ------------------------------------------------------
+  /** Insert one `verification_result` row (migration 0025). */
+  recordVerificationResult(input: NewVerificationResult): VerificationResultRow;
+  /** The run's newest `verification_result` row, if any. */
+  latestVerificationResult(runId: string): VerificationResultRow | undefined;
+  /** `verification_result` rows recorded at one `(publish_ref, head_sha)`, oldest first. */
+  listVerificationResultsAt(publishRef: string, headSha: string): VerificationResultRow[];
+  /** The newest `git_commit` SHA recorded for a publish ref: the ledger's view of its head (LLD §20.6). */
+  latestPublishedHead(publishRef: string): string | undefined;
 
   // ---- T9.5 additions (ref snapshots, LLD §12.5) -----------------------------------------------------------------
   /** Provenance rows of every run of a meta-session, oldest first. */
@@ -2076,6 +2114,45 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       return db
         .prepare("SELECT * FROM git_commit WHERE commit_sha = ? ORDER BY created_at, id")
         .all(commitSha) as GitCommitRow[];
+    },
+
+    recordVerificationResult(input) {
+      const id = ids.id("vrs");
+      db.prepare(
+        `INSERT INTO verification_result (id, run_id, meta_session_id, publish_ref, head_sha, tree_sha, outcome,
+           artifact_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id,
+        input.runId,
+        input.metaSessionId,
+        input.publishRef,
+        input.headSha,
+        input.treeSha,
+        input.outcome,
+        input.artifactId,
+        ts(),
+      );
+      return db.prepare("SELECT * FROM verification_result WHERE id = ?").get(id) as VerificationResultRow;
+    },
+
+    latestVerificationResult(runId) {
+      return db
+        .prepare("SELECT * FROM verification_result WHERE run_id = ? ORDER BY created_at DESC, id DESC LIMIT 1")
+        .get(runId) as VerificationResultRow | undefined;
+    },
+
+    listVerificationResultsAt(publishRef, headSha) {
+      return db
+        .prepare("SELECT * FROM verification_result WHERE publish_ref = ? AND head_sha = ? ORDER BY created_at, id")
+        .all(publishRef, headSha) as VerificationResultRow[];
+    },
+
+    latestPublishedHead(publishRef) {
+      const row = db
+        .prepare("SELECT commit_sha FROM git_commit WHERE publish_ref = ? ORDER BY created_at DESC, id DESC LIMIT 1")
+        .get(publishRef) as { commit_sha: string } | undefined;
+      return row?.commit_sha;
     },
 
     listGitCommitsForMetaSession(metaSessionId) {

@@ -18,6 +18,7 @@ import { lstatSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { trackHeldLock } from "./held.js";
 
 /** Proposed (Delegated): how often a waiting run retries the slots. */
 export const SLOT_POLL_MS = 100;
@@ -125,10 +126,12 @@ async function bindSlot(address: string, abstract: boolean): Promise<Server | "b
 
 function lease(index: number, server: Server, address: string, abstract: boolean): SlotLease {
   let released: Promise<void> | undefined;
+  const untrack = trackHeldLock({ kind: "verification_slot", index });
   return {
     index,
     release: () => {
       released ??= new Promise<void>((resolve) => {
+        untrack();
         // Unlink before close so a waiter never sees a refused, about-to-vanish file it would remove.
         if (!abstract) {
           try {

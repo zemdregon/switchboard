@@ -1,5 +1,6 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import path from "node:path";
+import { trackHeldLock } from "./held.js";
 
 export class LockError extends Error {
   override readonly name = "LockError";
@@ -50,9 +51,11 @@ export function acquireDataDirLock(dataDir: string, pid: number = process.pid): 
         closeSync(fd);
       }
       let released = false;
+      const untrack = trackHeldLock({ kind: "data_dir", lockPath });
       const release = (): void => {
         if (released) return;
         released = true;
+        untrack();
         process.off("exit", release);
         if (readPid(lockPath) === pid) {
           try {
@@ -107,6 +110,7 @@ export function inspectDataDirLock(dataDir: string): LockStatus {
   return { state: "stale", pid, lockPath };
 }
 
+export { type HeldLock, heldLocks } from "./held.js";
 export {
   type AcquireSlotOptions,
   acquireSlot,
