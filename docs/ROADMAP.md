@@ -3060,7 +3060,7 @@ list. `Done` also needs:
    Owner decisions 59 and 60 (2026-10-18) allow the fallback for Grok Build, Cursor and Kimi Code (decision 59) and
    for OpenCode and Antigravity (decision 60): the one smoke call in the adapter's only compiled cell, built as queued
    follow-up W1 of T4.4 and extended to OpenCode and Antigravity in the same change.
-2. **Rows waiting on uncaptured live shapes:** T4.35, T4.63, T4.64 and T4.66
+2. **Rows waiting on uncaptured live shapes:** T4.63, T4.64 and T4.66
    stay `Partial` until scrubbed captures replace their synthetic lines. *Update 2026-10-18 (Delegated, owner
    decision 65):* this capture list stays as the T4.n8 work list, but it no longer holds the parser, CI malicious-leg,
    README and auth preflight rows of decision 65 (a) to (d): each is `Done` against its Done-when once its own pull
@@ -3068,7 +3068,10 @@ list. `Done` also needs:
    `Done` on that reading (their native tool-call, rate-limit, denial, sandbox and refusal shapes are T4.28's work),
    T4.33 and T4.36 are `Done` (their remaining native shapes are carried by T4.38), and so is T4.43 (its remaining
    native shapes are carried by T4.48, item 1). T4.53 and T4.56 are `Done` on that
-   reading (their remaining native shapes are carried by T4.58, item 1). Residual risk: native shapes for Grok
+   reading (their remaining native shapes are carried by T4.58, item 1). *Update 2026-10-19 (Delegated, owner
+   decision 67):* T4.35 is `Done` on that same reading (synthetic resume evidence including the fail-closed
+   conversation-id check; the live resume run and its remaining native shapes are carried by T4.38, item 1).
+   Residual risk: native shapes for Grok
    Build, Antigravity, Cursor, OpenCode and Kimi Code remain synthetic until their T4.n8 runs.
 3. **README rows, final after their T4.n8:** T4.69; T4.29, T4.39, T4.49, T4.59 and T4.79 are `Done except the post-T4.n8
    update` (owner decision 65 (c)).

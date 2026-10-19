@@ -274,7 +274,8 @@ codes. The stderr
 [ROADMAP T6.15](../ROADMAP.md#611-m6-capacity-and-resilience-tasks)); the `extractResult` path still ends `TOOL_FAILURE`
 because the adapter contract gives it no stderr (pinned in `src/adapters/antigravity/limit-signals.test.ts`). Tool-step
 parameter key names (`command`, path fields) are Assumptions where the capture
-did not record them. Operator extension of T4.31 is still needed for resume with a known conversation id, rate limits
+did not record them. Operator extension of T4.31 is still needed for a live resume run with a known
+conversation id (synthetic resume is T4.35, owner decision 67), rate limits
 and full tool-parameter shapes.
 
 #### T4.34 — auth preflight (placeholder)
