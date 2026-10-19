@@ -3148,7 +3148,8 @@ list. `Done` also needs:
    Residual risk: native shapes for Grok
    Build, Antigravity, Cursor, OpenCode and Kimi Code remain synthetic until their T4.n8 runs.
 3. **README rows, final after their T4.n8:** T4.29, T4.39, T4.49, T4.69 and T4.79 are `Done except the
-   post-T4.n8 update` (owner decision 65 (c), entry 65 in §4.2 for T4.69); T4.59 is `Done` (post-T4.58 update done in the T4.58 PR #741).
+   post-T4.n8 update` (owner decision 65 (c), entry 65 in §4.2 for T4.69); T4.59 is `Done`
+   (post-T4.58 update done in the T4.58 PR #741).
 4. **B-1 (Kimi Code): cleared 2026-10-15 (Delegated)** by T4.60 and T4.61
    ([ADR-0049](adr/0049-kimi-code-transport-and-bypass-class.md)). Kimi Code's live validation (T4.68) is the
    remaining operator step; M4 stays `Partial` until it passes. *2026-10-16:* T4.68 is `Partial` (the `stream-json`

@@ -291,7 +291,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   fixtures (README [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to T4.57); live smoke and the live
   malicious leg ran on 2026-10-19 (T4.58 Done): the 2026-10-18 `adapters validate opencode` run passed the probe
   (`opencode v2.0.23`), auth, 11 static conformance checks and the smoke (owner decisions 60 and 68; one model call),
-  so the manifest admits `>=2.0.23 <2.1.0`, and the 2026-10-19 smoke (11 HELD, O-G1 NOT_CHECKED, edit through recognised calls) and
+  so the manifest admits `>=2.0.23 <2.1.0`, and the 2026-10-19 smoke
+  (11 HELD, O-G1 NOT_CHECKED, edit through recognised calls) and
   malicious leg (O-M1/O-M2/O-M3 HELD, no check ESCAPED) are recorded in
   [`docs/research/live-checks-2026-10-19-opencode.md`](docs/research/live-checks-2026-10-19-opencode.md).
   T4.52, T4.54, T4.55 and T4.57 are Done against their
