@@ -2,10 +2,16 @@
 
 Switchboard records each enabled provider's installed CLI version under the data directory (`version-canary.json`).
 A scheduled check compares the probed version to the last recorded value (or to the manifest's `validated_cli_version`
-when no row exists yet). The comparison is by parsed version (`sameVersion` in `src/adapters/version-canary.ts`): a
-raw probe line such as `codex-cli 0.162.0` matches a bare `validated_cli_version` of `0.162.0`, and only a change in
-the parsed `x.y.z`, prerelease flag and build metadata counts as a bump; when either side does not parse, the raw
-strings must match exactly. When the version changes, the adapter is
+when no row exists yet). The comparison is by release core (`sameVersion` and `versionCanaryCore` in
+`src/adapters/version-canary.ts`, T4.80, [ROADMAP §4.2 decision 75](../ROADMAP.md#42-owner-decisions)): the first
+`x.y.z` token of each string, after stripping one trailing suffix that is exactly `-<7 to 40 hex digits>` (Cursor's
+commit hash, as in `2026.10.16-e3cb207`) or `+<anything>`. A raw probe line such as `codex-cli 0.162.0` matches a bare
+`validated_cli_version` of `0.162.0`, and `2026.10.16-e3cb207` matches `2026.10.16`. A change in `x.y.z`, or any other
+attached suffix (`-beta`, `-rc1`, unknown text) on either side, counts as a bump and fails closed; identical strings
+always match. The command's JSON output records the full observed and baseline strings next to their cores
+(`canary_evidence`: `observed_raw`, `observed_core`, `baseline_raw`, `baseline_core`; `null` when the
+canary did not run for that adapter: skipped `fake`/disabled adapter, or a failed or errored probe).
+When the version changes, the adapter is
 treated as `ADAPTER_VERSION_UNVERIFIED` until you run
 `switchboard adapters validate <provider>` successfully. The controller does not auto-validate or route the new version.
 

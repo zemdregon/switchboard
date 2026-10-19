@@ -11,7 +11,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { VersionGateResult } from "./manifest/gate.js";
-import { parseVersion } from "./manifest/semver.js";
 
 export const VERSION_CANARY_FILENAME = "version-canary.json";
 
@@ -35,6 +34,18 @@ export interface VersionCanaryEvaluation {
    * Routing paths should not write; `doctor` and `adapters version-canary` may.
    */
   readonly recordVersion: string | null;
+  /**
+   * What the canary compared (decision 75): the full observed string next to its normalised core, and the baseline
+   * likewise, so captured evidence shows the exact installed build. Cores are null when absent or unrecognised.
+   */
+  readonly evidence: VersionCanaryEvidence;
+}
+
+export interface VersionCanaryEvidence {
+  readonly observed_raw: string | null;
+  readonly observed_core: string | null;
+  readonly baseline_raw: string | null;
+  readonly baseline_core: string | null;
 }
 
 export function versionCanaryPath(dataDir: string): string {
@@ -89,23 +100,31 @@ export function versionCanaryBaseline(
 }
 
 /**
+ * The release core the canary compares (T4.80, ROADMAP §4.2 decision 75): the first `x.y.z` token of a version string,
+ * after stripping one trailing build suffix that is exactly `-<7 to 40 hex digits>` (Cursor's commit hash) or
+ * `+<anything>` (semver build metadata). Text after whitespace is not part of the token, so raw probe lines such as
+ * `codex-cli 0.162.0` and `2.1.294 (Claude Code)` keep working. Any other attached suffix (`-beta`, `-rc1`, `.4`,
+ * unknown text) yields null: the caller fails closed.
+ */
+export function versionCanaryCore(version: string): string | null {
+  const m = /(\d+)\.(\d+)\.(\d+)(\S*)/.exec(version);
+  if (!m) return null;
+  const [, major, minor, patch, suffix] = m;
+  if (suffix !== "" && !/^-[0-9a-fA-F]{7,40}$/.test(suffix ?? "") && !/^\+.+$/.test(suffix ?? "")) return null;
+  return `${Number(major)}.${Number(minor)}.${Number(patch)}`;
+}
+
+/**
  * Whether two version strings name the same release. The probe reports the CLI's raw version line (Codex prints
- * `codex-cli 0.162.0`) while a manifest's `validated_cli_version` is the bare `0.162.0`, so the strings are compared by
- * their parsed `x.y.z`, prerelease flag and build metadata (Cursor's commit hash); when either side does not parse, by
- * exact string.
+ * `codex-cli 0.162.0`, Cursor `2026.10.16-e3cb207`) while a manifest's `validated_cli_version` is the bare
+ * major.minor.patch, so the strings are compared by `versionCanaryCore`; identical strings always match, and when
+ * either side has no core (no version, or an unrecognised suffix) they do not.
  */
 export function sameVersion(a: string, b: string): boolean {
   if (a === b) return true;
-  const va = parseVersion(a);
-  const vb = parseVersion(b);
-  if (va === null || vb === null) return false;
-  return (
-    va.major === vb.major &&
-    va.minor === vb.minor &&
-    va.patch === vb.patch &&
-    va.prerelease === vb.prerelease &&
-    va.build === vb.build
-  );
+  const ca = versionCanaryCore(a);
+  const cb = versionCanaryCore(b);
+  return ca !== null && cb !== null && ca === cb;
 }
 
 /**
@@ -118,28 +137,36 @@ export function evaluateVersionCanary(
   store: VersionCanaryStore,
 ): VersionCanaryEvaluation {
   const observed = gate.evidence.observedVersion;
-  if (!gate.eligible || observed === null) {
-    return { gate, bump: false, recordVersion: null };
-  }
   const baseline = versionCanaryBaseline(store, adapterId, gate.evidence.validatedCliVersion);
+  const evidence: VersionCanaryEvidence = {
+    observed_raw: observed,
+    observed_core: observed === null ? null : versionCanaryCore(observed),
+    baseline_raw: baseline,
+    baseline_core: baseline === null ? null : versionCanaryCore(baseline),
+  };
+  if (!gate.eligible || observed === null) {
+    return { gate, bump: false, recordVersion: null, evidence };
+  }
   if (baseline === null) {
-    return { gate, bump: false, recordVersion: observed };
+    return { gate, bump: false, recordVersion: observed, evidence };
   }
   if (sameVersion(observed, baseline)) {
     const haveRow = store.adapters[adapterId] !== undefined;
-    return { gate, bump: false, recordVersion: haveRow ? null : observed };
+    return { gate, bump: false, recordVersion: haveRow ? null : observed, evidence };
   }
   return {
     gate: {
       eligible: false,
       code: "ADAPTER_VERSION_UNVERIFIED",
       detail:
-        `installed ${adapterId} version ${observed} changed since last recorded ${baseline} ` +
+        `installed ${adapterId} version ${observed} (core ${evidence.observed_core ?? "unrecognised"}) changed since ` +
+        `last recorded ${baseline} (core ${evidence.baseline_core ?? "unrecognised"}) ` +
         `(version canary); run switchboard adapters validate ${adapterId}`,
       evidence: gate.evidence,
     },
     bump: true,
     recordVersion: null,
+    evidence,
   };
 }
 

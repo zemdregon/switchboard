@@ -10,7 +10,8 @@ import {
   providerEntry,
   readVersionCanaryStore,
   recordAdapterVersion,
-  type VersionGateResult,
+  type VersionCanaryEvaluation,
+  type VersionCanaryEvidence,
 } from "../adapters/index.js";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type { ProviderId } from "../adapters/types.js";
@@ -28,6 +29,8 @@ export interface VersionCanaryAdapterReport {
   readonly version_bump: boolean;
   readonly code: string | null;
   readonly detail: string | null;
+  /** Full observed and baseline strings with their compared cores (decision 75); null when the canary did not run. */
+  readonly canary_evidence: VersionCanaryEvidence | null;
 }
 
 export interface VersionCanaryReport {
@@ -41,7 +44,7 @@ function applyCanaryGate(
   id: ProviderId,
   binaryVersion: string | null,
   store: ReturnType<typeof readVersionCanaryStore>,
-): { gate: VersionGateResult; bump: boolean; recordVersion: string | null } {
+): VersionCanaryEvaluation {
   const manifestGate = registry.gate(id, binaryVersion);
   return evaluateVersionCanary(manifestGate, id, store);
 }
@@ -73,6 +76,7 @@ export async function runAdaptersVersionCanary(io: CliIo, argv: readonly string[
         version_bump: false,
         code: null,
         detail: kind === "fake" ? "test adapter skipped" : "disabled in config",
+        canary_evidence: null,
       });
       continue;
     }
@@ -90,6 +94,7 @@ export async function runAdaptersVersionCanary(io: CliIo, argv: readonly string[
           version_bump: false,
           code: null,
           detail: "probe failed; version canary not evaluated",
+          canary_evidence: null,
         });
         continue;
       }
@@ -102,11 +107,12 @@ export async function runAdaptersVersionCanary(io: CliIo, argv: readonly string[
         version_bump: false,
         code: null,
         detail: (err as Error).message,
+        canary_evidence: null,
       });
       continue;
     }
 
-    const { gate, bump, recordVersion } = applyCanaryGate(registry, a.id, binaryVersion, store);
+    const { gate, bump, recordVersion, evidence } = applyCanaryGate(registry, a.id, binaryVersion, store);
     if (dataDir !== undefined && recordVersion !== null) {
       recordAdapterVersion(dataDir, a.id, recordVersion, io.now ?? (() => new Date()));
     }
@@ -120,6 +126,7 @@ export async function runAdaptersVersionCanary(io: CliIo, argv: readonly string[
         version_bump: bump,
         code: gate.eligible ? null : gate.code,
         detail: gate.eligible ? null : gate.detail,
+        canary_evidence: evidence,
       });
       if (bump && !gate.eligible) {
         io.stderr.write(`[version-canary] ${a.id}: ${gate.code}: ${gate.detail}\n`);
@@ -134,6 +141,7 @@ export async function runAdaptersVersionCanary(io: CliIo, argv: readonly string[
       version_bump: false,
       code: null,
       detail: null,
+      canary_evidence: evidence,
     });
   }
 
