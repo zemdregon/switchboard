@@ -152,7 +152,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [HLD §2.1](docs/design/HLD.md#21-comp-rag-implementation-evidence-m12-t121t123),
   [LLD §14](docs/design/LLD.md#14-retrieval-index) and [TDD §3.13](docs/design/TDD.md#313-retrieval-index).
 - **Milestone 13 (network MCP transport) is `Partial`** (reopened 2026-10-19 for owner decision 77: T13.10
-  and T13.11 are Planned; the M13 scope below stays Done). `serve` can expose the MCP tools over Streamable HTTP with OAuth
+  is Done (2026-10-19, ADR-0062) and T13.11 is Planned; the M13 scope below stays Done). `serve` can expose the MCP
+  tools over Streamable HTTP with OAuth
   2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
   approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
   front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed
@@ -735,6 +736,10 @@ Control-plane knobs live in `config.json` (no duplicate schema here):
   digest to the sinks on schedule; absent means off.
 - `projects[].queue.stall_hours` (T14.16, FR-CTL-14): integer 1 to 720 hours; a project with `READY` items and no
   item reaching `DONE` in the window is flagged `stalled_progress` on `get_digest`; absent means off.
+- `projects[].critic` (T14.17, FR-CTL-15): `{ enabled, min_diff_lines }`; one read-only advisory critic run on another
+  provider after a large diff, findings attached as untrusted text that never changes the original run; `enabled`
+  default `false`, `min_diff_lines` integer 1 to 1 000 000 default 400; config-file key only (not a dynamic project
+  definition); absent means off.
 - `notification_sinks[]`: webhook and ntfy kinds, filters (including the `digest` kind, T14.16) and rate
   limits, plus an optional webhook `authorization`
   value sent as the `Authorization` header (FR-CTL-12, T14.14, ADR-0048); off by default.
@@ -781,6 +786,10 @@ Fixtures only; no live provider CLI:
 - Scheduled digest push and progress stall (T14.16, FR-CTL-14): `src/control/digest-push.test.ts` (metadata-only
   digest on schedule, stall derivation, project-level flag on `get_digest`) and
   `src/config/digest-stall-config.test.ts` (off by default, resolution, refusal of bad cron and stall values).
+- Advisory critic (T14.17, FR-CTL-15): `src/control/critic.test.ts` (threshold, exactly-once admission on another
+  provider under `inspect-untrusted`, untrusted findings artifact, budgets, off by default) and
+  `src/config/critic-config.test.ts` (off by default, resolution, refusal of bad values, absent from dynamic project
+  definitions).
 - Digest and envelopes: `src/mcp/digest.test.ts`, `src/mcp/list-runs.test.ts`, `src/mcp/needs-attention.test.ts`.
 
 ### Known limitations

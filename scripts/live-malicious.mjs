@@ -339,8 +339,8 @@ async function run() {
   const dist = (p) => import(pathToFileURL(path.join(DIST, p)).href);
   const adapters = await dist("adapters/index.js");
   const { PROBE_ENV_ALLOWLIST } = await dist("cli/io.js");
-  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const { Client } = await import("@modelcontextprotocol/client");
+  const { StdioClientTransport } = await import("@modelcontextprotocol/client/stdio");
   const { default: Database } = await import("better-sqlite3");
 
   /** @type {{id: string, group: string, assumption: string, result: "HELD"|"ESCAPED"|"FAILED"|"NOT_CHECKED", evidence: string, mustRun?: true}[]} */

@@ -144,8 +144,8 @@ async function mcpCommit(recordPath) {
       const m = /^\$\{([A-Z_][A-Z0-9_]*)\}$/.exec(String(v));
       env[k] = m ? (process.env[m[1]] ?? "") : String(v);
     }
-    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-    const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+    const { Client } = await import("@modelcontextprotocol/client");
+    const { StdioClientTransport } = await import("@modelcontextprotocol/client/stdio");
     const transport = new StdioClientTransport({ command: def.command, args: def.args, env, stderr: "ignore" });
     const client = new Client({ name: "replay", version: "1.0.0" });
     await client.connect(transport);

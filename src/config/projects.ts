@@ -21,7 +21,7 @@ import type {
   SwitchboardConfig,
   TrustProfile,
 } from "./schema.js";
-import { TRUST_PROFILES } from "./schema.js";
+import { DEFAULT_CRITIC_MIN_DIFF_LINES, TRUST_PROFILES } from "./schema.js";
 
 /** T9.13 (FR-WS-10, LLD §5.1): `dependency_seeds[].timeout_seconds` when absent (Assumption, Delegated). */
 export const DEFAULT_SEED_TIMEOUT_SECONDS = 600;
@@ -109,6 +109,15 @@ export interface ResolvedProject {
    * Read again at admission (`freezeBrief`), never cached from load.
    */
   readonly briefFile?: string;
+  /** T14.17 (FR-CTL-15, LLD §20.13): present only when the project sets `critic`. Absent means off. */
+  readonly critic?: ProjectCriticConfig;
+}
+
+/** T14.17 (FR-CTL-15, LLD §20.13): the advisory critic of a project. */
+export interface ProjectCriticConfig {
+  readonly enabled: boolean;
+  /** Added plus deleted lines of the run's final diff (binary files excluded) at or above which a critic is admitted. */
+  readonly minDiffLines: number;
 }
 
 /** T15.4 (FR-QUE-04, LLD §18.8): project work queue settings. */
@@ -313,6 +322,14 @@ export function resolveProjects(
           }
         : {}),
       ...(briefFiles.has(p.id) ? { briefFile: briefFiles.get(p.id) as string } : {}),
+      ...(p.critic !== undefined
+        ? {
+            critic: {
+              enabled: p.critic.enabled ?? false,
+              minDiffLines: p.critic.min_diff_lines ?? DEFAULT_CRITIC_MIN_DIFF_LINES,
+            },
+          }
+        : {}),
     };
   });
 }

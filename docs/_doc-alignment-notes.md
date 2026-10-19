@@ -121,6 +121,11 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   HLD owner's call, the SDD covers FR-GIT-11, and `node scripts/check-docs.mjs` passes. It does not block
   PR #764.
 
+  **Update 2026-10-19 (doc-align gate for PR #766, T14.17):** this PR widens the same gap by one more ID. Its SDD
+  row maps FR-CTL-15 to COMP-RTE and COMP-MCP while the HLD rows still cite COMP-MCP `FR-CTL-01..11` and
+  COMP-RTE `FR-QUE-01..02`. Left unchanged for the same reason: re-attribution is the HLD owner's call, the SDD
+  covers FR-CTL-15, and `node scripts/check-docs.mjs` passes. It does not block PR #766.
+
 ## 10. M7 wave-B planning notes vs Done rows (pre-existing, not from PR #645)
 
 - The §6.12 sequencing notes still say "T7.8 is blocked on T7.12 (its row)", that T7.9 and T7.12 "wait for

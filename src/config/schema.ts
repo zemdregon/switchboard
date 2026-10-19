@@ -243,6 +243,10 @@ export interface RoutingConfigInput {
 export const MAX_ROUTING_WEIGHT = 100;
 /** T14.16: largest `projects[].queue.stall_hours` (30 days; Assumption, Delegated). */
 export const MAX_STALL_HOURS = 720;
+/** T14.17 (FR-CTL-15, LLD §20.13): default `projects[].critic.min_diff_lines` (Assumption 400, LLD §20.13). */
+export const DEFAULT_CRITIC_MIN_DIFF_LINES = 400;
+/** T14.17: largest `projects[].critic.min_diff_lines` (a sanity bound with no source; Assumption, Delegated). */
+export const MAX_CRITIC_MIN_DIFF_LINES = 1_000_000;
 
 /** `control_plane` as written in the config file (LLD §3.4.6); `budgets` (T14.4) and `loop_breaker` (T14.5) so far. */
 export interface ControlPlaneConfigInput {
@@ -435,6 +439,14 @@ export interface ProjectConfig {
    * 4 KiB. Configuration file only (not a dynamic project definition, Delegated). Absent means no brief.
    */
   brief_file?: string;
+  /**
+   * T14.17 (FR-CTL-15, LLD §20.13): one read-only advisory critic run on another provider after a large diff. Off by
+   * default. Configuration file only (not a dynamic project definition; Delegated): it admits runs on its own.
+   */
+  critic?: {
+    enabled?: boolean;
+    min_diff_lines?: number;
+  };
 }
 
 /** One `projects[].dependency_seeds[]` entry (LLD §5.1). Paths are relative to the primary context. */
@@ -758,9 +770,19 @@ function clientSkillListSchema(): {
   };
 }
 
+/** `projects[].critic` (T14.17; FR-CTL-15, LLD §20.13). */
+const projectCriticSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enabled: { type: "boolean" },
+    min_diff_lines: { type: "integer", minimum: 1, maximum: MAX_CRITIC_MIN_DIFF_LINES },
+  },
+} as const;
+
 /**
- * A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13), `skills` (T16.3)
- * and `brief_file` (T5.14).
+ * A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13), `skills`
+ * (T16.3), `critic` (T14.17) and `brief_file` (T5.14).
  */
 const configProjectSchema = {
   ...projectSchema,
@@ -768,6 +790,7 @@ const configProjectSchema = {
     ...projectSchema.properties,
     dependency_seeds: dependencySeedsSchema,
     skills: projectSkillsSchema(),
+    critic: projectCriticSchema,
     // T5.14: a path; the file rules (outside the roots, at most 4 KiB, UTF-8) are `loadConfig`'s.
     brief_file: { type: "string", minLength: 1, maxLength: 4096 },
   },
