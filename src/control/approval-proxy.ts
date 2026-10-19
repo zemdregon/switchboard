@@ -409,7 +409,7 @@ export const APPROVAL_PROXY_INPUTS: Record<ApprovalProxyToolName, Record<string,
     required: ["approval_id", "approval_digest", "decision"],
     properties: {
       approval_id: { type: "string", minLength: 1, maxLength: 64 },
-      approval_digest: { type: "string", pattern: "^[0-9a-f]{64}$" },
+      approval_digest: { type: "string", pattern: "^[0-9a-f]{64}$", maxLength: 64 },
       decision: { enum: ["approve", "deny"] },
     },
   },

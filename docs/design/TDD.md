@@ -153,6 +153,11 @@ repositories) and `src/cli/projects-dynamic.test.ts` (`projects list|show|approv
 - **Path canonicalization.** Workspace paths are resolved with `realpath` (symlinks followed) and checked as
   path-prefix-with-separator against configured allowed roots before any side effect; re-checked immediately before
   worktree creation to narrow time-of-check/time-of-use gaps (FR-POL-10, NFR-SEC-05).
+- **MCP input bounds (Y8, Delegated).** Every string, array and object in the published MCP input schemas carries an
+  explicit bound (`maxLength`, `maxItems`, closed objects; FR-MCP-03, FR-MCP-09, NFR-SEC-05), because the stdio
+  transport has no request-size cap and an unbounded input there is limited only by memory.
+  `src/mcp/schema-bounds.test.ts` walks every input schema and fails on any unbounded node, so a new tool or field
+  cannot silently reopen the surface; behaviour tests show an over-long value is refused with `INVALID_REQUEST`.
 - **No bypass flags and no global provider config.** A final argv audit in `COMP-EXE` rejects bypass flags unless the
   run is `privileged` with an approval whose scope sets `bypass` and whose scope hash matches the run's policy snapshot
   (FR-POL-03, [LLD §3.1](LLD.md#31-privileged-scope-m3), [ADR-0017](../adr/0017-approved-privileged-scope-bypass.md);

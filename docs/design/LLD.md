@@ -903,6 +903,16 @@ Schemas are published JSON Schema (draft 2020-12; version choice Proposed) valid
 (FR-MCP-09). Shown abbreviated; all objects have `additionalProperties: false`. Tools are async-first: `delegate_task`
 returns immediately unless `wait_seconds` is given ([ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md), FR-MCP-03).
 
+**Input bounds.** Every input string and array in the published tool schemas carries an explicit bound (FR-MCP-03,
+FR-MCP-09, NFR-SEC-05): ids and names carry the length their format already implies (`run_`/`art_`/`evt_`/`que_`
+ids 30 characters, `sess_` ids 31, project ids 41, provider/model-group/role 32, skill names 48, skill refs 55,
+model ids 128); paths allow 4096 characters; free text keeps its stated limit (objectives and instructions 32768).
+Every input array carries `maxItems`, every input object is closed, and MCP-supplied project definitions get the
+same treatment through `boundedSchema` (strings 4096, pattern-bounded ids their pattern length, arrays 32). The
+bounds matter on stdio, which has no request-size cap (the HTTP transport caps bodies at 256 KiB): without them an
+unbounded input there is limited only by memory. `src/mcp/schema-bounds.test.ts` walks every published input
+schema and fails on any unbounded node, so a new tool or field cannot silently reopen the surface.
+
 ### 3.0 Shared types
 
 ```jsonc
