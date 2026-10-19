@@ -598,7 +598,7 @@ controller artifacts and Git plumbing at a recorded `as_of`, rendered by one pro
 provider-reported and repository text in labelled untrusted blocks, and stored as the `handoff_view` artifact
 ([ADR-0038](../adr/0038-handoff-bundle-and-continuity.md), [LLD §15](LLD.md#15-continuity-and-the-handoff-bundle-m5)).
 A same-provider resume (WF-2) instead reuses the worktree path that created the native session, unless the
-adapter declares `resumeCwd: 'independent'` (today only Claude Code, from the T5.12 cell 2 capture), in which case
+adapter declares `resumeCwd: 'independent'` (today Claude Code and Codex, from their T5.12 cell 2 captures), in which case
 the resume gets a fresh worktree path ([LLD §15.6](LLD.md#156-working-directory-of-a-native-resume)).
 
 ### 6.3 Telemetry flow

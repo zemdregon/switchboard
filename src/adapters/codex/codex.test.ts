@@ -11,6 +11,7 @@ import { auditInvocation, BYPASS_FLAGS, findBypassFlags } from "../audit.js";
 import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
 import { replayLauncher } from "../fixtures/replay.js";
+import { providerEntry } from "../providers.js";
 import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner, startAdapterRun } from "../run.js";
 import {
@@ -186,6 +187,25 @@ describe("compile: argv and policy (FR-POL-02/03/04/08)", () => {
 
   it("resume appends `resume <id>` with the explicit id (never --last)", () => {
     const inv = must(adapter().resumeArgs({ provider: "codex", nativeSessionId: "abc-123" }, request(), EDIT_PROFILE));
+    expect(inv.argv.slice(-2)).toEqual(["resume", "abc-123"]);
+    expect(sandboxOf(inv)).toBe("workspace-write");
+  });
+
+  it("declares resumeCwd as independent and matches the registry entry (T5.12, live cell 2)", () => {
+    expect(adapter().resumeCwd).toBe("independent");
+    expect(providerEntry("codex")?.resumeCwd).toBe("independent");
+  });
+
+  it("resume from a second worktree compiles for Codex in that directory (T5.12 cell 2; resumeCwd independent)", () => {
+    const secondWorktree = "/path/to/second/worktree";
+    const inv = must(
+      adapter().resumeArgs(
+        { provider: "codex", nativeSessionId: "abc-123" },
+        request({ workspace: { cwd: secondWorktree, writable: true } }),
+        EDIT_PROFILE,
+      ),
+    );
+    expect(inv.cwd).toBe(secondWorktree);
     expect(inv.argv.slice(-2)).toEqual(["resume", "abc-123"]);
     expect(sandboxOf(inv)).toBe("workspace-write");
   });
