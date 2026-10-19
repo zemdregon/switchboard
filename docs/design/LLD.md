@@ -4821,7 +4821,8 @@ per store the mode, revision, `complete`, files, chunks, text and disk bytes, `b
 periodic build), the last build outcome and pending requests, plus the backend kind, model, locality and gate; `--json`
 gives the same keys. `rebuild` and `clear` write `rag_request` rows (ADR-0046); `clear` applies itself under the lock
 when no daemon runs. The word `global` names the global store, so a project whose id is `global` is reached only by the
-no-argument form; `rebuild global` is refused until T12.7. `doctor` adds a `retrieval` section only when
+no-argument form; `rebuild global`, `clear global` and `status global` are honoured since T12.7 (global targets
+are refused while the global index is off). `doctor` adds a `retrieval` section only when
 `rag.embedding` is configured: backend and gate, `probe` (not attempted when the gate refuses a remote endpoint) and one
 check per store, at most warnings.
 
