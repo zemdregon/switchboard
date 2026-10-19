@@ -435,6 +435,11 @@ export interface ProjectConfig {
     stall_hours?: number;
   };
   /**
+   * T5.14 (FR-SES-07, LLD §20.13): the operator's project brief, a file outside every allowed root and context, at most
+   * 4 KiB. Configuration file only (not a dynamic project definition, Delegated). Absent means no brief.
+   */
+  brief_file?: string;
+  /**
    * T14.17 (FR-CTL-15, LLD §20.13): one read-only advisory critic run on another provider after a large diff. Off by
    * default. Configuration file only (not a dynamic project definition; Delegated): it admits runs on its own.
    */
@@ -777,7 +782,7 @@ const projectCriticSchema = {
 
 /**
  * A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13), `skills`
- * (T16.3) and `critic` (T14.17).
+ * (T16.3), `critic` (T14.17) and `brief_file` (T5.14).
  */
 const configProjectSchema = {
   ...projectSchema,
@@ -786,6 +791,8 @@ const configProjectSchema = {
     dependency_seeds: dependencySeedsSchema,
     skills: projectSkillsSchema(),
     critic: projectCriticSchema,
+    // T5.14: a path; the file rules (outside the roots, at most 4 KiB, UTF-8) are `loadConfig`'s.
+    brief_file: { type: "string", minLength: 1, maxLength: 4096 },
   },
 } as const;
 

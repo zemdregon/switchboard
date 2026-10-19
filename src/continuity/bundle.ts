@@ -17,17 +17,21 @@
  * a continuation follows, LLD §19.5 step 1), taken from that run's controller-written `skill_resolved` event within its
  * watermark: name, version and hash only. Skill text is never a source: the builder reads no skill file and no
  * `run_skill` column beyond what that event carries. Version 1 is still built for a stored version 1 view.
+ *
+ * T5.14 (FR-SES-07, LLD §20.13): version 3 adds `brief`, the project-brief hash the newest run's admission froze into its
+ * project snapshot (`policy_snapshot_json`), or `null`. The brief's file and text are never read. Version 2 is still
+ * built for a stored version 2 view; `brief` is never dropped (two short strings).
  */
 import { createHash } from "node:crypto";
 import { canonicalJson } from "../lifecycle/request.js";
 import {
   type AsOf,
-  BUILDER_VERSION,
   BUNDLE_LIMITS,
   BUNDLE_SCHEMA,
   BUNDLE_VERSION,
   BUNDLE_VERSIONS,
   type BundleBounds,
+  type BundleBrief,
   type BundleChangedFile,
   type BundleDecision,
   type BundleDiagnosticCommand,
@@ -183,7 +187,8 @@ type Mutable = {
 
 /**
  * The pure assembler. Throws {@link HandoffBundleError} only for inconsistent sources, a redactor failure or no fit.
- * `version` is {@link BUNDLE_VERSION} for a new bundle; 1 rebuilds a stored version 1 view (no `skills`).
+ * `version` is {@link BUNDLE_VERSION} for a new bundle; 1 or 2 rebuilds a stored view of that version (version 1 has no
+ * `skills`, versions 1 and 2 no `brief`).
  */
 export function assembleHandoffBundle(
   sources: BundleSources,
@@ -459,11 +464,13 @@ export function assembleHandoffBundle(
   const resolved = previous === undefined ? undefined : eventPayloads(previous, SKILL_RESOLVED).at(-1);
   const pinned = resolved === undefined ? [] : skillsOf(resolved, (previous as SourceRun).record.id);
   const skills = first(pinned, BUNDLE_LIMITS.skills, "skills");
+  // brief (controller fact, version 3): the hash the newest run's admission froze into its project snapshot.
+  const brief = previous === undefined ? null : briefOf(previous);
 
   const bundle: Mutable = {
     schema: BUNDLE_SCHEMA,
     version,
-    builder_version: version === 1 ? 1 : BUILDER_VERSION,
+    builder_version: version,
     as_of: asOf,
     bounds,
     goal,
@@ -480,6 +487,7 @@ export function assembleHandoffBundle(
     diff_excerpts: diffExcerpts,
     reported,
     ...(version === 1 ? {} : { skills }),
+    ...(version === 3 ? { brief } : {}),
     truncation,
   };
   return fitToBudget(bundle, bounds, redactor);
@@ -506,6 +514,21 @@ function skillsOf(payload: Record<string, unknown>, runId: string): BundleSkill[
     }
     return { run_id: runId, name: e.name, version: e.version as number, sha256: e.sha256 };
   });
+}
+
+/**
+ * T5.14: the run's frozen `project.brief_sha256` as a bundle fact, or `null` for a run without one. A snapshot that is
+ * not JSON, or a hash that is not 64 lower-case hex digits, is an inconsistent record (fail closed).
+ */
+function briefOf(run: SourceRun): BundleBrief | null {
+  const snapshot = parseJson(run.record.policy_snapshot_json);
+  if (!isRecord(snapshot)) throw new HandoffBundleError(`run ${run.record.id}: policy snapshot is malformed`);
+  const sha = isRecord(snapshot.project) ? snapshot.project.brief_sha256 : undefined;
+  if (sha === undefined) return null;
+  if (typeof sha !== "string" || !SHA256_RE.test(sha)) {
+    throw new HandoffBundleError(`run ${run.record.id}: brief_sha256 is malformed`);
+  }
+  return { run_id: run.record.id, sha256: sha };
 }
 
 function serialise(bundle: Mutable, redactor: BundleRedactor): Buffer {
@@ -606,7 +629,7 @@ export async function buildHandoffBundle(
 
 /**
  * Regenerate a stored view (FR-SES-05): rebuild from the `as_of`, `bounds` and version recorded in its bytes, with that
- * version's builder (version 1 or 2). The result is byte-identical to the stored view when the records are intact.
+ * version's builder (version 1, 2 or 3). The result is byte-identical to the stored view when the records are intact.
  */
 export async function regenerateHandoffBundle(deps: BuildDeps, storedView: Buffer): Promise<BuiltBundle> {
   const parsed = parseJson(storedView.toString("utf8"));
