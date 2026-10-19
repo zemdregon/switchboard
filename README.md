@@ -446,8 +446,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`, `muse-code`. Only
 `claude-code`, `codex`, `kimi-code` and `antigravity` pass the version gate on `main` today; the other ids name
 registered M4 adapters whose manifests admit no version until `switchboard adapters validate` passes a live CLI
-(ROADMAP §6.8.2).
-`<id>` is the *config* id. The *provider* id used in
+(ROADMAP §6.8.2). `<id>` is the *config* id. The *provider* id used in
 `routing.provider_preference` of `delegate_task` is the adapter id: `claude`
 for Claude Code (config id `claude-code`), `codex` for Codex. `max_trust_profile` accepts any of the five profile
 names, but see [Trust profiles](#trust-profiles).

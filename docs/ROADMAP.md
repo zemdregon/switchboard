@@ -3031,8 +3031,8 @@ fake agent, FR-ADP-05, FR-ADP-10, FR-ADP-11 on fixtures, NFR-PORT-02 on the macO
 list. `Done` also needs:
 
 1. **The operator, live legs:** T4.28 (Grok Build), T4.38 (Antigravity), T4.48 (Cursor), T4.58 (OpenCode) and T4.68
-   (Kimi Code): live smoke, live malicious leg and `adapters validate` (for Antigravity the `adapters validate` leg
-   passed live on 2026-10-18: CLI 1.4.2, range `>=1.4.2 <1.5.0`; for Kimi Code the `adapters validate` leg
+   (Kimi Code): live smoke, live malicious leg and `adapters validate` (for Antigravity the `adapters validate`
+   leg passed live on 2026-10-18: CLI 1.4.2, range `>=1.4.2 <1.5.0`; for Kimi Code the `adapters validate` leg
    passed live on 2026-10-18: CLI 2.1.1, range `>=2.1.1 <2.2.0`; live smoke and live malicious leg stay operator-only).
    NFR-SEC-03's "no escape" for these adapters and
    the criterion "`adapters validate` accepts a new CLI version only after its live checks pass" need real CLIs.
