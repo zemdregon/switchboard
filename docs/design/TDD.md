@@ -2164,7 +2164,7 @@ Windows not supported yet (NFR-PORT-03; [P, S] say Windows uses an older permiss
 | Repository config (`GEMINI.md`, `AGENTS.md`, `.agents/*`, hooks, MCP) | Ineligible: `PROFILE_UNSUPPORTED`. No documented flag disables them; only `--disable-slash-commands` (slash and skill expansion) [CL v1.1.9]. Workspace trust in headless: **Observed (1.3.4, [LC] C11): none**, a repository `.agents/mcp_config.json` server and `.agents/hooks.json` hook ran with no prompt, and `GEMINI.md` and `AGENTS.md` were read (Q-63) | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` | Could compile (bypass only): files load as the agent finds them (as observed without the flag, [LC] C11); the bypass variant deliberately not run (operator rule; still unrun after T4.38 Done 2026-10-19), T4.38 operator remainder |
 | Native sandbox | Ineligible: `PROFILE_UNSUPPORTED` (`--sandbox` per run [S]; credential confinement unproven, FR-POL-06: Unverified: T4.31 (`--sandbox` accepted, confinement not exercised, [LC] C7b) / T4.38, still untested after T4.38 Done 2026-10-19) | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` until `toolPermission` is settable per run; then Could compile with `--sandbox` | Ineligible: `PROFILE_UNSUPPORTED` | Bypass with `--sandbox` as well: Unverified: T4.31 (C8 deliberately not run, operator rule; still unrun after T4.38 Done 2026-10-19) |
 | Approval behaviour | Ineligible: `PROFILE_UNSUPPORTED`. Headless soft-denies and exits 0 [H] | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` | Ineligible: `PROFILE_UNSUPPORTED` | Could compile (bypass only): no prompts; `init.permission_mode` must read `always-proceed` or the run is a mismatch (Proposed check) |
-| Bypass flag availability | Never emitted (FR-POL-03) | Never emitted | Never emitted | Never emitted; a `bypassApproved` is Ineligible (FR-POL-03) | Could compile: `--dangerously-skip-permissions` only in an approved bypass scope (ADR-0017). Compiles on a `host` project although Git-write denial is `none-documented` (owner decision 46, Q-58). Whether deny rules survive the flag: Unverified: T4.31 (C8 deliberately not run, operator rule; T4.38) |
+| Bypass flag availability | Never emitted (FR-POL-03) | Never emitted | Never emitted | Never emitted; a `bypassApproved` is Ineligible (FR-POL-03) | Could compile: `--dangerously-skip-permissions` only in an approved bypass scope (ADR-0017). Compiles on a `host` project although Git-write denial is `none-documented` (owner decision 46, Q-58). Whether deny rules survive the flag: Unverified: T4.31 (C8 deliberately not run, operator rule; T4.38 operator remainder, still unrun after T4.38 Done 2026-10-19) |
 
 **Bypass-class flags and values (Proposed list for the argv audit, T4.1).** Documented: `--dangerously-skip-permissions`
 [H, MO, R2 L27, L117]. `toolPermission` value `always-proceed` is bypass-class by effect (it never prompts [R]),
@@ -2363,7 +2363,9 @@ obligations as `grok Git declaration (T4.27)`, `cursor Git declaration (T4.47)` 
   Git is `Ineligible` `PROFILE_UNSUPPORTED` citing FR-GIT-01 on every profile, including an approved bypass scope
   (owner decision 46 does not waive this refusal).
 - **Argv.** FR-GIT-01 argv test: the objective stays in the single `--prompt=` argv word; no `git`/`gh` in argv, policy
-  flags or child environment; initial compile and `resumeArgs` replay (**Assumption:** the `=` form is accepted; T4.38).
+  flags or child environment; initial compile and `resumeArgs` replay (**Assumption:** the `=` form is accepted —
+  the T4.38 live smoke ran the compiled `--prompt=<prompt>` cell successfully on 1.4.2, but the marking in
+  `src/adapters/antigravity/adapter.ts` stands until cleared in source).
 - **Finalize-only (FR-GIT-09).** A replayed successful edit run in a project with `finalize_commit` on the primary
   context receives exactly one controller commit at FINALIZING (T9.7, BR-30), with the same sanitiser path as other
   finalize-only adapters.
@@ -2371,15 +2373,16 @@ obligations as `grok Git declaration (T4.27)`, `cursor Git declaration (T4.47)` 
   FR-GIT-09)"`): declaration and `commitChannel` pinned; `list_capabilities` `git_write_control`; argv and allowlist
   cases above; finalize-only lifecycle leg.
 
-**Out of scope for T4.37 (other tasks).** Operator live Git-write and bypass cells (T4.38), README final status after
+**Out of scope for T4.37 (other tasks).** Operator live Git-write and bypass cells (T4.38 operator remainder:
+A-M1/A-G1 NOT_CHECKED live — no Git-write attempt, no retry; bypass cells ran 2026-10-19), README final status after
 live validate (T4.39), and tool-step parameter keys for the Switchboard tool-call guard (T4.33 is Done against its
-Done-when under owner decision 65 (a); remaining native shapes carried by T4.38).
+Done-when under owner decision 65 (a); remaining native shapes carried by the T4.38 operator remainder).
 
 #### 4.4.7 Antigravity parser implementation evidence (M4, T4.33)
 
 Live-check context: [§4.4.5](#445-note-2026-10-14-contradictions-found-by-the-t431-live-checks-delegated-cells-above-not-edited).
 Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.33`, Done against its Done-when
-under owner decision 65 (a); remaining native shapes carried by T4.38).
+under owner decision 65 (a); remaining native shapes carried by the T4.38 operator remainder).
 Adapter contract and taxonomy: [LLD §2](LLD.md#2-adapter-contract), [LLD §4](LLD.md#4-failure-taxonomy). Requirements:
 FR-ADP-04, FR-CAP-01 (`provider_reported` once), FR-SES-03 (resume `--conversation <id>` with a fail-closed id
 check, T4.35, owner decision 67; was not compiled, Q-86). HLD: [§2.2

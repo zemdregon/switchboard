@@ -325,7 +325,7 @@ Pre-release. The package is private and is not published to any registry; you bu
    rows waiting on uncaptured live shapes
   (T4.35, T4.51, T4.53, T4.56; owner decision 65 sets when parser, CI
   malicious-leg and README rows are `Done` against their Done-when; T4.33 and T4.36 are `Done`
-  under decision 65 (a) and (b), remaining native shapes carried by T4.38); README rows final
+  under decision 65 (a) and (b), remaining native shapes carried by the T4.38 operator remainder); README rows final
   after their live legs
   (T4.29, T4.39, T4.49, T4.69 and T4.79 are `Done` except the post-T4.n8 update; T4.59 is `Done`);
   Muse Code (Should) has module, compile matrix, auth preflight,
@@ -1841,8 +1841,9 @@ changed conversation ids, `SUCCESS` envelopes with zero, missing, negative or no
 null `denied_actions` and partial streams cut before, inside and after the hostile step
 ([#368](https://github.com/zemdregon/switchboard/pull/368)). In an approved bypass run the guard still enforces Git
 writes only: the same hostile call without a Git write still ends `ok` (pinned), as does a Git write on a step that
-is not a `tool` step (above); live blocked outcomes and FR-POL-04
-need operator work (ROADMAP T4.38).
+is not a `tool` step (above); live blocked outcomes and FR-POL-04 were not established live
+(T4.38 operator remainder: A-M1 NOT_CHECKED — the model declined the commit, no retry; A-M2
+ESCAPED, risk R-72).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server (no headless MCP-definition
 flag is documented). In the only compiled scope, repository `.agents/mcp_config.json`, `.agents/hooks.json`, `GEMINI.md`
@@ -2954,7 +2955,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - `adapters validate` is implemented for every registered provider, but only the Claude Code, Codex, OpenCode, Kimi
   Code and Antigravity manifests admit a version on `main` today (OpenCode `>=2.0.23 <2.1.0` since the T4.58 live pass
   on 2026-10-18, owner decisions 60 and 68). Grok Build, Cursor and the other M4 adapters still need operator captures
-  before their manifests admit a version (ROADMAP T4.28, T4.38, T4.48, T4.68 and §6.8.2).
+  before their manifests admit a version (ROADMAP T4.28, T4.48, T4.68 and §6.8.2).
 - Routing (milestone 7) evaluates `minimum_capability` against operator-declared model capabilities in the model
   registry instead of refusing it (ROADMAP §6.12 T7.8, `src/routing/minimum-capability.test.ts`); undeclared models
   fail closed with `CAPABILITY_MISSING` (mapping to `ELIGIBILITY_NONE`), and admitted providers compile with the
