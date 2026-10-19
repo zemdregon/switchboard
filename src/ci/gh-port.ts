@@ -9,15 +9,27 @@ import {
   branchOfPublishRef,
   ghCheckRunsArgv,
   ghEnv,
+  ghRunCancelArgv,
+  ghRunHeadArgv,
+  ghRunJobsArgv,
   ghRunListArgv,
+  ghRunListQueuedArgv,
+  ghRunRerunFailedArgv,
   ghRunViewArgv,
   isFullLowerSha,
   parseCheckRuns,
+  parseQueuedRuns,
+  parseRunHead,
+  parseRunJobs,
   parseRunList,
   parseRunView,
 } from "./gh-argv.js";
 import {
+  type CiActionsPort,
   type CiConclusion,
+  type CiQueuedRun,
+  type CiRunJob,
+  type CiRunQuery,
   CiStatusError,
   type CiStatusObservation,
   type CiStatusPort,
@@ -88,7 +100,7 @@ export interface GhCiStatusPortOptions {
   readonly useCheckRunsFallback?: boolean;
 }
 
-export class GhCiStatusPort implements CiStatusPort {
+export class GhCiStatusPort implements CiStatusPort, CiActionsPort {
   private readonly binary: string;
   private readonly runner: GhRunner;
   private readonly sourceEnv: Readonly<Record<string, string | undefined>>;
@@ -131,6 +143,36 @@ export class GhCiStatusPort implements CiStatusPort {
       publishRef: q.publishRef,
       headSha: sha,
     };
+  }
+
+  async runJobs(q: CiRunQuery): Promise<{ attempt: number; jobs: readonly CiRunJob[] }> {
+    return this.parse(await this.run(ghRunJobsArgv(q.owner, q.repo, q.runId)), parseRunJobs);
+  }
+
+  async rerunFailed(q: CiRunQuery): Promise<void> {
+    await this.run(ghRunRerunFailedArgv(q.owner, q.repo, q.runId));
+  }
+
+  async queuedRuns(q: { owner: string; repo: string; publishRef: string }): Promise<readonly CiQueuedRun[]> {
+    const branch = branchOfPublishRef(q.publishRef);
+    if (branch === undefined) throw new CiStatusError("PARSE_FAILED", "invalid published ref");
+    const runs = this.parse(await this.run(ghRunListQueuedArgv(q.owner, q.repo, branch)), parseQueuedRuns);
+    return runs.map((r) => ({
+      runId: r.databaseId,
+      status: r.status,
+      headSha: (r.headSha ?? "").toLowerCase(),
+      headBranch: r.headBranch ?? "",
+    }));
+  }
+
+  async runHead(q: CiRunQuery): Promise<{ status: string; headSha: string }> {
+    const head = this.parse(await this.run(ghRunHeadArgv(q.owner, q.repo, q.runId)), parseRunHead);
+    if (head.databaseId !== q.runId) throw new CiStatusError("PARSE_FAILED", "run id changed");
+    return { status: head.status, headSha: head.headSha.toLowerCase() };
+  }
+
+  async cancelRun(q: CiRunQuery): Promise<void> {
+    await this.run(ghRunCancelArgv(q.owner, q.repo, q.runId));
   }
 
   private async run(argv: string[]): Promise<string> {

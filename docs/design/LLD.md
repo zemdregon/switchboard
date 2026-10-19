@@ -3067,8 +3067,9 @@ other than the fake compiles `acp-stdio`.
 ### 8.3 Process table per platform (M4, T4.9)
 
 *Implemented 2026-10-13 (Delegated agent work, not owner-approved; every choice below is Proposed). The macOS path was
-written and unit-tested on Linux against fixtures only; since 2026-10-14 it runs on a GitHub-hosted macOS runner
-(T4.10: `macos-26-arm64`, macOS 26.6.2, all tests that can run there pass). The operator's optional live check is
+written and unit-tested on Linux against fixtures only; from 2026-10-14 to 2026-10-19 it ran on a GitHub-hosted
+macOS runner (T4.10: `macos-26-arm64`, macOS 26.6.2, all tests that can run there passed; the job was then removed,
+TDD §3.8). The operator's optional live check is
 T4.12.* One macOS fact the CI leg found: `kill(-pgid, 0)` answers `EPERM`, not success, for a group whose members are
 all zombies, so `groupAlive` (`src/exec/supervisor.ts`) asks the table on `EPERM` as well as on success; `ESRCH` alone
 means the group is gone. The supervisor (§8) and reconciliation ask the
@@ -6733,9 +6734,11 @@ sets `GH_TOKEN` or `GITHUB_TOKEN` for these calls ([ADR-0050](../adr/0050-ci-sta
 
 1. On each poll interval (§18.1, per-project `enabled`), for each published ref of the project, call `CiStatusPort` for
    the tip commit on that ref.
-2. When the latest relevant check or run has conclusion `failure`, `cancelled` or `timed_out`, and no `ci_trigger_event`
+2. When the latest relevant check or run has conclusion `failure`, and no `ci_trigger_event`
    row exists for `(project_id, external_id)`, insert the event row and enqueue one work item from `template_json` with
-   `source_kind = 'ci_trigger'`.
+   `source_kind = 'ci_trigger'`. *Amended by T15.6 (FR-QUE-06; before it this step also enqueued for
+   `cancelled` and `timed_out`):* `cancelled` and `timed_out` are `CI_INFRA` and
+   enqueue nothing ([§20.1](#201-ci-transient-handling-fr-que-06-t156)).
 3. Optional `untrusted_summary` (from an operator-forwarded notification) is stored length-capped; it is **not**
    passed to `delegate_task` objective unless the operator template explicitly references a controller substitution token
    `{{ci_untrusted_summary}}`, which is wrapped in the same `untrusted_text` label pattern as §3.4.1 and never parsed for
@@ -6755,11 +6758,13 @@ from a read-only `git config --get remote.<name>.url`, github.com only), `untrus
 Delegated deviations from the Proposed design above, each to avoid a migration while T15.2 owns the next number:
 
 1. **No `project_ci_trigger` table.** The per-project trigger is operator configuration, `ci_trigger.projects[]`
-   (`project`, `client`, `enabled`, `max_consecutive_fixes`, `template` with `objective`, `trust_profile` other than
+   (`project`, `client`, `enabled`, `max_consecutive_fixes`, `rerun_failed`, `cancel_stale_queued`,
+   `template` with `objective`, `trust_profile` other than
    `privileged`, `constraints`; `src/config/ci-trigger.ts`); `load.ts` refuses an unknown client, an unknown project
    or a client that does not list the project. The `client` is the `creator_client_id`. A chat client cannot enable
    a trigger in v1. T15.5 adds an optional top-level and per-project `max_consecutive_fixes` (Assumption default 2;
-   `DEFAULT_MAX_CONSECUTIVE_FIXES`).
+   `DEFAULT_MAX_CONSECUTIVE_FIXES`). T15.6 adds the per-project `rerun_failed` and `cancel_stale_queued` switches
+   (FR-QUE-06; both default `false`; §20.1).
 2. **No `ci_trigger_event` table (T15.3 as-built; superseded by T15.5 below).** At T15.3, dedup was the work item
    itself: `source_kind = 'ci_trigger'`, `source_id = ci:<external_id>`, idempotency key
    `ci_trigger:<project_id>:<external_id>`, checked per `(project_id, source_id)` and written in the one enqueue
@@ -7237,21 +7242,59 @@ provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and par
 ### 20.1 CI transient handling (FR-QUE-06, T15.6)
 
 - **Classification.** Each conclusion the CI trigger reads (§18.6) maps to one class: `success`; `failure`; or
-  `CI_INFRA` for `cancelled`, `timed_out`, and a `failure` whose jobs show a runner or infrastructure fault in the
-  allowlisted `gh` JSON (the exact field test is settled in T15.6 against the installed `gh`; until then only
-  `cancelled` and `timed_out` are `CI_INFRA`). `CI_INFRA` never increments `ci_trigger_ref_state.consecutive_fixes`.
+  `CI_INFRA` for `cancelled` and `timed_out` (settled in T15.6 against `gh` 2.102.0: no allowlisted field
+  reliably marks a runner fault inside a `failure`, so those stay code failures; see the as-built note below).
+  `CI_INFRA` never increments `ci_trigger_ref_state.consecutive_fixes`.
 - **Rerun once.** With `ci_trigger.projects[].rerun_failed: true` (default `false`), a `failure` or `CI_INFRA` run on
-  a published ref's current head gets one `gh run rerun <run-id> --failed`. A new ledger table (next free migration)
+  a published ref's current head gets one `gh run rerun <run-id> --failed`. A new ledger table (migration 0024)
   keyed by `(project_id, publish_ref, head_sha, job_name)` makes the rerun happen at most once per key. The fix-up item
   of FR-QUE-03 is enqueued only when the rerun concludes `failure`; a second red on the same key is never rerun again.
-- **Stale cancel.** With `ci_trigger.cancel_stale_queued: true` (default `false`), the poller lists runs on each
-  published ref, re-reads each candidate's `status` and `headSha` immediately before acting, and runs
+- **Stale cancel.** With `ci_trigger.projects[].cancel_stale_queued: true` (default `false`), the poller lists runs on
+  each published ref, re-reads each candidate's `status` and `headSha` immediately before acting, and runs
   `gh run cancel <run-id>` only for `status: queued` whose `headSha` is not the ref's current tip. An `in_progress` run
   is never cancelled; the small race between the re-read and the cancel is an accepted residual risk (Assumption).
 - **Allowlist.** [ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md) amendment 1 adds exactly these two write
   verbs, each behind its own project switch; every other `gh` verb stays refused (`src/ci/gh-argv.ts`).
 - **Events.** `ci_rerun_requested {publish_ref, head_sha, job_name, run_id}` and `ci_run_cancelled {publish_ref,
   head_sha, run_id}`; no `gh` free text is copied.
+
+**As built (T15.6, 2026-10-19, Delegated agent work, not owner-approved).** Settled against `gh` 2.102.0 on the
+operator host (`gh run view --help` lists the `attempt` and `jobs` fields, `gh run rerun --help` the `--failed` flag,
+`gh run list --help` the `--status queued` filter; `--help` only, no call to GitHub):
+
+1. **Classes.** `classifyConclusion` in `src/ci/port.ts`. No allowlisted `gh` JSON field reliably marks a runner fault
+   inside a `failure` (neither `--help` field list names a runner-fault field, and a run-level `startup_failure` also
+   follows an invalid workflow file, a code fault), so only `cancelled` and `timed_out` are `CI_INFRA` (Delegated,
+   fail closed: a doubtful fault stays a code failure). The classification applies whether or not a switch is on, as
+   FR-QUE-06 requires: with both switches off a `CI_INFRA` conclusion is recorded in `ci_trigger_event` with no work
+   item and leaves `ci_trigger_ref_state` untouched (it neither counts nor resets). This changes T15.3's behaviour,
+   which enqueued a fix-up for `cancelled` and `timed_out`; `success`, `failure` and the `gh` argv set are unchanged.
+2. **Switches.** Per project, `ci_trigger.projects[].rerun_failed` and `ci_trigger.projects[].cancel_stale_queued`
+   (FR-QUE-06 says "when the project enables"), both default `false` (`src/config/ci-trigger.ts`, `schema.ts`).
+3. **Argv.** Five templates join G1 to G3 in `src/ci/gh-argv.ts`, each audited exactly: G4
+   `run view <id> --repo <o>/<r> --json attempt,jobs`, G5 `run rerun <id> --failed --repo <o>/<r>`, G6
+   `run list --repo <o>/<r> --branch <b> --status queued --limit 20 --json databaseId,conclusion,headBranch,status,headSha`,
+   G7 `run view <id> --repo <o>/<r> --json databaseId,status,headSha` and G8 `run cancel <id> --repo <o>/<r>` (never
+   `--force`). G4 and G5 run only with `rerun_failed`, G6 to G8 only with `cancel_stale_queued`. The job members read
+   from G4 are `name`, `status` and `conclusion` (**Assumption**: `--help` lists `jobs` but not its members); a job name
+   is kept only when it has 1 to 200 characters and no control character, else the read is `PARSE_FAILED`.
+4. **Migration 0024** (`src/ledger/migrations/0024_ci_transient.ts`). `ci_rerun` (primary key `(project_id,
+   publish_ref, head_sha, job_name)`, with `run_id`, `attempt`, `outcome` `requested` or `gh_failed`, `requested_at`)
+   is the `ci_rerun_requested` event; `ci_run_cancel` (`UNIQUE (project_id, run_id)`, with `publish_ref`, `head_sha`,
+   `outcome` `cancelled` or `gh_failed`, `cancelled_at`) is the `ci_run_cancelled` event. Rows are written **before**
+   the `gh` write, so a crash can never cause a second rerun or cancel; a failed `gh` write spends the key.
+5. **Rerun rule** (`rerunOnce` in `src/ci/trigger.ts`). A rerun happens only when the run has at least one completed
+   job concluding `failure`, `cancelled` or `timed_out` (the rerun allowlist) and **none** of those jobs was rerun on
+   this head before, because `--failed` reruns every failed job. A rerun keeps the run id and raises its attempt, so the
+   trigger waits (no rerun, no fix-up) while the run still shows the attempt the rerun was requested from, for at most
+   `RERUN_VISIBLE_MS` (10 minutes, Assumption), then treats the key as spent. Otherwise the conclusion is handled as
+   without the switch: a `failure` admits one fix-up under the FR-QUE-05 cap, a `CI_INFRA` is recorded only.
+6. **Stale cancel rule** (`cancelStaleQueued`). Only a run listed as `queued` on the ref's branch whose head is a SHA
+   Switchboard earlier pushed to the same ref (an `ACCEPTED` `git_push` row other than the tip) is a candidate; a run
+   on the tip or on a commit Switchboard never pushed is never cancelled, which keeps the action inside "branches the
+   project published". The G7 re-read must still say `queued` on the same head.
+
+Tests: `src/ci/ci-transient.test.ts` (fake `CiStatusPort`, fake `CiActionsPort` and a fake `GhRunner`; no real `gh`).
 
 ### 20.2 Host load hold (FR-CAP-12, T3.24)
 

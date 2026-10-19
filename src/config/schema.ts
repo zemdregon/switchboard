@@ -797,6 +797,9 @@ const ciTriggerSchema = {
           client: { type: "string", minLength: 1 },
           enabled: { type: "boolean" },
           max_consecutive_fixes: { type: "integer", minimum: 1 },
+          // T15.6 (FR-QUE-06, ADR-0050 amendment 1): each switch enables one `gh` write verb; both off by default.
+          rerun_failed: { type: "boolean" },
+          cancel_stale_queued: { type: "boolean" },
           template: {
             type: "object",
             additionalProperties: false,

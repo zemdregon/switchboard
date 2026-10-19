@@ -1155,17 +1155,23 @@ async function runDaemon(
     });
   // T15.3 (FR-QUE-03, LLD §18.7 step 2, ADR-0050): CI is polled through the operator's `gh` before the queue dequeue
   // (step 3), so a fix-up item can be admitted on the same tick. Off unless `ci_trigger.enabled`; no `gh` call otherwise.
+  // T15.6 (FR-QUE-06, ADR-0050 amendment 1): the same port is the write side, used only for a project whose
+  // `rerun_failed` or `cancel_stale_queued` switch is on.
   const ciTrigger = config.ciTrigger;
-  const ciPoller = ciTrigger.enabled
+  const ciPort = ciTrigger.enabled
+    ? new GhCiStatusPort({
+        binary: ciTrigger.ghBinary,
+        sourceEnv: io.env,
+        useCheckRunsFallback: ciTrigger.useCheckRunsFallback,
+      })
+    : undefined;
+  const ciPoller = ciPort
     ? new CiTriggerPoller(
         {
           db,
           ledger,
-          port: new GhCiStatusPort({
-            binary: ciTrigger.ghBinary,
-            sourceEnv: io.env,
-            useCheckRunsFallback: ciTrigger.useCheckRunsFallback,
-          }),
+          port: ciPort,
+          actions: ciPort,
           settings: ciTrigger,
           resolveRemote: async (projectId, remote) => {
             const project = config.projects.find((p) => p.id === projectId);
