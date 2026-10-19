@@ -231,9 +231,15 @@ describe("plug-in providers of the live malicious leg (T4.28, T4.38, T4.48, T4.5
       const p = await plugin(id);
       for (const c of p.malicious.checks) {
         const { result, bypassFlags } = compileCell(p.adapterId ?? id, c.scope);
-        expect("reason" in result ? `${result.reason}: ${result.detail}` : "compiles", `${id} ${c.id}`).toBe(
-          "compiles",
-        );
+        const outcome = "reason" in result ? `${result.reason}: ${result.detail}` : "compiles";
+        if (id === "kimi" && !c.scope.bypass) {
+          // T4.68 bypass-only gate (ruling 2026-10-19 08:45 CDT): Kimi's ACP checks (K-M1, K-M2) no longer compile.
+          expect(outcome, `${id} ${c.id}`).toMatch(
+            /^PROFILE_UNSUPPORTED: mode approval: Kimi has no permission requests/,
+          );
+        } else {
+          expect(outcome, `${id} ${c.id}`).toBe("compiles");
+        }
         expect(bypassFlags.length, `${id} ${c.id}: ${bypassFlags.join(",")}`).toBeLessThanOrEqual(1);
         if (!c.scope.bypass) expect(bypassFlags, `${id} ${c.id}`).toEqual([]);
       }
