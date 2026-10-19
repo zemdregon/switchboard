@@ -276,3 +276,31 @@ as history.
   in `src/git/push.ts` and `src/cli/git-push.ts`); only the "yet" and the
   open-Q-46 parenthetical are overtaken, and the Q-46 row now records the answer.
 - It does not block PR #697.
+
+## 20. Decision 62 relayed text vs the implemented abandon trigger (from PR #712, T9.11 split)
+
+- [Decision 62](ROADMAP.md#42-owner-decisions) (relayed 2026-10-18) answers
+  Q-55 with abandon-only removal: the worktree is removed when the
+  meta-session reaches `CLOSED` or the operator runs an explicit existing
+  command, and the branch and diff artifact are kept until retention GC.
+- The code has no `CLOSED` meta-session state (`CHECK (status IN
+  ('ACTIVE','ARCHIVED'))` in `src/ledger/migrations/0001_initial.ts`) and
+  no explicit abandon command; the only write to `ARCHIVED` is `beginGc`
+  in `src/ledger/repo.ts`. Retention GC (`src/workspace/gc.ts`) removes
+  the worktree, the `switchboard/<sess>/` branches and the artifact files
+  in one unit, so the branch is not kept beyond the worktree.
+- PR #712 records this honestly as Delegated ruling 1 under decision 62
+  (split notes in the T9.11 row and status block, E7, Q-55, [FRD
+  §4.4](requirements/FRD.md#44-worktree-disposition-per-terminal-state),
+  [LLD §5](design/LLD.md#5-workspace-and-lease-algorithm) and the SRS
+  FR-WS-09 note): "abandoned" reads as `ARCHIVED` by retention GC only,
+  pinned by two running tests in
+  `src/lifecycle/concurrent-worktrees.test.ts`, with the merge test still
+  skipped. FR-WS-09 itself stays Proposed, not accepted, and T9.11 stays
+  Partial.
+- Left unchanged: the decision-62, Q-55-answer and Q-55-question wordings
+  are relayed owner history and are kept verbatim with the split notes
+  carrying the current reading. Fully reconciling them (amending FR-WS-09
+  to the abandon-only form and accepting it) is the SRS owner's call and
+  is the queued amendment follow-up that closes E7's FR-WS-09 part. It
+  does not block PR #712 (no code change; docs agree with the code).
