@@ -741,7 +741,7 @@ synthetic and replay fixtures only; no `agy` in CI).
   FR-GIT-09)`): declarations, `list_capabilities`, argv and allowlist guards, finalize-only lifecycle leg.
 
 **Not covered by this evidence (their own tasks):** auth preflight beyond the `UNKNOWN` placeholder (T4.34), conformance
-suite (T4.35), malicious-fixture leg (T4.36), operator live smoke and `adapters validate` (T4.38).
+suite (T4.35), malicious-fixture leg (T4.36), operator live smoke and live malicious leg (T4.38; the `adapters validate` leg passed live on 2026-10-18 with no new Git evidence).
 
 ### 2.0.1 Cursor adapter implementation evidence (M4 T4.42, T4.43)
 
