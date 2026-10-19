@@ -306,7 +306,9 @@ fake plug-in `scripts/live/providers/fake.mjs` (`fixture: true`: selectable, not
 scripts stop right after admission and hand it the compile request, which it records) and an injected clock: the run
 past the cap is refused with exit 75 and a `denied` record and the fake is never reached, a run inside the gap and an
 unknown purpose are refused, the fake receives the file's model whatever `SWITCHBOARD_LIVE_MODEL` asked for,
-unconfigured messages are byte-identical to `main`, and no workflow or npm script sets the variable.
+unconfigured messages are byte-identical to `main`, a live-malicious invocation past its provider cap is refused with
+exit 75 and a `denied` record before `dist/` or any CLI (temp budget file, no provider installed), and no workflow or
+npm script sets the variable.
 
 Principles: tests pass with no provider CLI installed or logged in; secret-pattern scan over all test outputs
 (NFR-SEC-01); coverage targets are not set until M1 measurement (no number proposed).
@@ -1011,7 +1013,8 @@ been used anywhere in the suite.
 - *Secret-planted test*: `src/inner/pipeline.test.ts`, `src/inner/http-backend.test.ts` and each task test above; the
   scan covers the captured request, `inner_call` rows, run events and captured log lines. There are no `inner.call`
   spans to scan (below).
-- *Import-boundary test*: `src/inner/import-boundary.test.ts`, deliberately not transitive (the file states the gap). The
+- *Import-boundary test*: `src/inner/import-boundary.test.ts`: direct imports plus a transitive `export … from` re-export
+  walk (ordinary imports stay legitimately transitive; the header states the remaining runtime-only boundary). The
   "second test" exists as the byte-identical-records assertions in `src/inner/log-summary.test.ts` and
   `src/inner/handoff-condense.test.ts` and the unchanged-commit assertions in `src/git/commit-message.test.ts`.
 - *Privacy gates and locality*: table-driven over the seven rows in `src/inner/pipeline.test.ts` and against the fake
