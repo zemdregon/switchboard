@@ -204,6 +204,7 @@ import {
 } from "../policy/index.js";
 import { workspaceReachesProviderState } from "../policy/provider-state.js";
 import { effectiveRepoConfig, repoAgentConfigRefusal } from "../policy/repo-agent-config.js";
+import { scanRepoConfig } from "../policy/repo-config-preflight.js";
 import {
   buildRouteDecision,
   type ClassifierInput,
@@ -475,6 +476,13 @@ export interface StoredHandoff {
   from_provider: string;
   reason: HandoffReason;
 }
+
+/**
+ * `run_event` type of T3.25 (FR-POL-11, LLD §20.10): an approved bypass run whose working directory holds agent-readable
+ * configuration (`count`, `kinds`, `truncated`; the paths are in `policy_snapshot_json.repo_config_seen`). A warning
+ * only: the run proceeds (owner decisions 26 and 77).
+ */
+export const REPO_CONFIG_WARNING_EVENT = "repo_config_warning";
 
 /** `run_event` type recording the dispatch-time approval verdict of a `privileged` run (`approval_id`, `bypass_approved`). */
 export const PRIVILEGED_DISPATCH_EVENT = "privileged_dispatch";
@@ -1975,6 +1983,26 @@ export class RunLifecycle {
     }
 
     const cwd = ws.mode === "worktree" ? ws.worktreePath : ws.path;
+    // T3.25 (FR-POL-11, LLD §20.10): the agent-readable configuration in the working directory, path and kind only,
+    // recorded in the policy snapshot for every run. An approved bypass run (the same verdict as the argv audit gate)
+    // gets one warning event and proceeds; the untrusted profiles keep the FR-POL-04 refusal below, unchanged.
+    const repoConfigSeen = scanRepoConfig(cwd);
+    const warnBypass =
+      repoConfigSeen.entries.length > 0 && profile.bypassApproved && bypassApprovedFor(this.ledger, run0);
+    this.ledger.recordRepoConfigSeen(
+      runId,
+      repoConfigSeen,
+      warnBypass
+        ? {
+            type: REPO_CONFIG_WARNING_EVENT,
+            payload: {
+              count: repoConfigSeen.entries.length,
+              kinds: [...new Set(repoConfigSeen.entries.map((e) => e.kind))].sort(),
+              truncated: repoConfigSeen.truncated,
+            },
+          }
+        : undefined,
+    );
     // T12.5 (FR-RAG-05, FR-RAG-08, LLD §14.6): a fresh project run may get a context pack, appended to the compiled
     // prompt only; `request_json` keeps the request text unchanged. Any retrieval failure means no pack, never a failure.
     let pack: string | null = null;

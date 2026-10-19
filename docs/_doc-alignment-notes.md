@@ -783,7 +783,44 @@ as history.
   narrowing the SRS guarantee to "from an allowed client" is the SRS
   owner's call. It does not block PR #760.
 
-## 43. T5.14 "fresh project runs only" misstatement and bundle-version-3 staleness (from PR #767, fixed in this gate)
+## 43. HLD component rows cite pre-#638 requirement ranges, now also excluding FR-POL-11 (pre-existing, not from PR #770)
+
+- [HLD §2](design/HLD.md) COMP-POL cites `FR-POL-01..10` and COMP-WS cites `FR-WS-01..07, FR-POL-10, FR-GIT-08`,
+  while [SRS](requirements/SRS.md) also carries FR-POL-11 (added 2026-10-19 for owner decision 77) and the
+  [SDD](design/SDD.md) maps it to COMP-POL, COMP-WS. The HLD ranges already excluded newer IDs before this PR
+  (cf. item 9 above for the same class); PR #770 only flips the SDD/ROADMAP status of T3.25 to Done and touches
+  neither the SRS requirement nor the HLD rows.
+- Left unchanged: re-attribution is the HLD owner's call, the SDD covers FR-POL-11, and
+  `node scripts/check-docs.mjs` passes. It does not block PR #770.
+
+## 44. ROADMAP §9.2 sequencing note still reads "are `Planned`" (pre-existing, not from PR #770)
+
+- [ROADMAP §9.2](ROADMAP.md#92-harness-and-discovery-rows-2026-10-19) says "The rows added on 2026-10-19 are
+  `Planned`", while T3.24, T15.9, T9.14 and now T3.25 (this PR) record Done. The sentence was already overtaken
+  on `origin/main` before this branch (by the T3.24, T15.9 and T9.14 merges); this PR only adds one more Done
+  row to the same list without touching §9.2.
+- Left unchanged: §9.2 is a dated (2026-10-19) sequencing snapshot, and rewriting it would falsify the record
+  (cf. item 23 above for the §6.5 intro precedent); the live status lives in each task row and the milestone
+  rows, which agree. It does not block PR #770.
+
+## 45. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
+
+- PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
+  owner's macOS merge waiver" / "under the owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux
+  job".
+- No [§4.2 Owner decisions](ROADMAP.md#42-owner-decisions) entry (§4.2 runs to decision 77) records such a waiver,
+  and the §5 document table says owner decisions are "Listed in §4.2 only".
+- Left unchanged: writing a §4.2 entry would mean restating zemdregon's words and minting decision context this
+  gate cannot verify and must not invent (cf. items 18 and 39 for the same precedent). Recording that entry is
+  the roadmap owner's call. It does not block PR #761: the operative fact — CI is Linux-only
+  (`.github/workflows/ci.yml` holds one job, `Typecheck, lint, test, docs check (Linux)`) — is verified against
+  the code, and the merge-gate reading agrees with ADR-0060, which already recorded the macOS leg as dropped from
+  gating, and with the AGENTS.md "seven checks" merge routine, which lists the Linux job only.
+- Resolution (doc-align gate on the PR #761 branch): TDD §2 and §3.8 reworded to cite the ruling recorded in
+  ADR-0060 ("the macOS leg was dropped from gating by a ruling") instead of a dated owner waiver, so no §4.2
+  entry is needed and no owner approval is implied. Resolved, not outstanding.
+
+## 46. T5.14 "fresh project runs only" misstatement and bundle-version-3 staleness (from PR #767, fixed in this gate)
 
 - The T5.14 row as merged on this branch said, under "Not covered", that
   "the brief text goes with fresh project runs only (a handoff run's bundle
@@ -807,30 +844,13 @@ as history.
   ("versions 1–2") now names version 3; SRS FR-SES-07 "by version hash" now
   reads "by SHA-256 hash" to match `brief: { run_id, sha256 }`.
 - Also fixed here (mechanical): the second of the two items numbered 41
-  is now item 42, so this entry is item 43. Only §24 is linked from other
+  is now item 42, so this entry is item 46. Only §24 is linked from other
   documents, so no link breaks.
 - It does not block PR #767 (the task's own evidence — `src/projects/brief.test.ts`,
   `src/cli/brief-pack.test.ts`, `src/continuity/bundle.test.ts` "project
   brief as a hash" — is cited in-row and matches the named tests).
 
-## 44. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
-
-- PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
-  owner's macOS merge waiver" / "under the owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux
-  job".
-- No [§4.2 Owner decisions](ROADMAP.md#42-owner-decisions) entry (§4.2 runs to decision 77) records such a waiver,
-  and the §5 document table says owner decisions are "Listed in §4.2 only".
-- Left unchanged: writing a §4.2 entry would mean restating zemdregon's words and minting decision context this
-  gate cannot verify and must not invent (cf. items 18 and 39 for the same precedent). Recording that entry is
-  the roadmap owner's call. It does not block PR #761: the operative fact — CI is Linux-only
-  (`.github/workflows/ci.yml` holds one job, `Typecheck, lint, test, docs check (Linux)`) — is verified against
-  the code, and the merge-gate reading agrees with ADR-0060, which already recorded the macOS leg as dropped from
-  gating, and with the AGENTS.md "seven checks" merge routine, which lists the Linux job only.
-- Resolution (doc-align gate on the PR #761 branch): TDD §2 and §3.8 reworded to cite the ruling recorded in
-  ADR-0060 ("the macOS leg was dropped from gating by a ruling") instead of a dated owner waiver, so no §4.2
-  entry is needed and no owner approval is implied. Resolved, not outstanding.
-
-## 45. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
+## 47. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
 
 - TDD §5 (implementation strategy, M4 row) listed "macOS CI leg (NFR-PORT-02)" in the present tense as the
   technical approach; past-tensed to "ran 2026-10-14, removed 2026-10-19 when CI went Linux-only, §3.8",
