@@ -777,3 +777,23 @@ as history.
   only adds the as-built note and marks T3.24 Done. Left unchanged:
   narrowing the SRS guarantee to "from an allowed client" is the SRS
   owner's call. It does not block PR #760.
+
+## 43. HLD component rows cite pre-#638 requirement ranges, now also excluding FR-POL-11 (pre-existing, not from PR #770)
+
+- [HLD §2](design/HLD.md) COMP-POL cites `FR-POL-01..10` and COMP-WS cites `FR-WS-01..07, FR-POL-10, FR-GIT-08`,
+  while [SRS](requirements/SRS.md) also carries FR-POL-11 (added 2026-10-19 for owner decision 77) and the
+  [SDD](design/SDD.md) maps it to COMP-POL, COMP-WS. The HLD ranges already excluded newer IDs before this PR
+  (cf. item 9 above for the same class); PR #770 only flips the SDD/ROADMAP status of T3.25 to Done and touches
+  neither the SRS requirement nor the HLD rows.
+- Left unchanged: re-attribution is the HLD owner's call, the SDD covers FR-POL-11, and
+  `node scripts/check-docs.mjs` passes. It does not block PR #770.
+
+## 44. ROADMAP §9.2 sequencing note still reads "are `Planned`" (pre-existing, not from PR #770)
+
+- [ROADMAP §9.2](ROADMAP.md#92-harness-and-discovery-rows-2026-10-19) says "The rows added on 2026-10-19 are
+  `Planned`", while T3.24, T15.9, T9.14 and now T3.25 (this PR) record Done. The sentence was already overtaken
+  on `origin/main` before this branch (by the T3.24, T15.9 and T9.14 merges); this PR only adds one more Done
+  row to the same list without touching §9.2.
+- Left unchanged: §9.2 is a dated (2026-10-19) sequencing snapshot, and rewriting it would falsify the record
+  (cf. item 23 above for the §6.5 intro precedent); the live status lives in each task row and the milestone
+  rows, which agree. It does not block PR #770.
