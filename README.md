@@ -2408,7 +2408,8 @@ one scrubbed 2.1.1 capture (`src/adapters/kimi/fixtures/captured_success.jsonl`,
 `OUTPUT_PROTOCOL_ERROR` and a non-zero exit `TOOL_FAILURE`. A 5-hour usage-limit stop has since been captured
 as a stderr tail (T6.11 limit captures `kimi-20261015T103850Z.txt`: exit 1, `provider.auth_error: 403 … 5-hour usage
 limit`) and maps to `QUOTA_EXHAUSTED` in `classifyFailure` from the stderr tail (PR #700, T6.15, ADR-0058); the
-`stream-json` shape of a usage-limit stop is still unrecorded, so the stream-parser path still ends `TOOL_FAILURE`. A second hint, a changed or unsafe session id, an
+`stream-json` shape of a usage-limit stop is still unrecorded, so the stream-parser path still ends `TOOL_FAILURE`.
+A second hint, a changed or unsafe session id, an
 `assistant` or `tool` record after the hint, and a tool call whose name or arguments cannot be read all end
 `OUTPUT_PROTOCOL_ERROR`. ACP messages use the shared mapping, with `-32000` as `AUTH_REQUIRED`. The `tool_calls`
 item and `tool` record fields are **Observed** since the T4.68 follow-up-2 `live-run.sh` capture (CLI 2.1.1;
