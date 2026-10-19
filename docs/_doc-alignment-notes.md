@@ -342,6 +342,7 @@ as history.
 
 
 ## 24. T6.15 free-text quota mappings vs FR-ADP-04, ADR-0055 item 11 and Q-100 (from PR #700, RESOLVED)
+
 - PR #700 (`sb/2026-10-18-fix-t615-cursor-kimi-limit-signals`) maps two stderr
   signals to `QUOTA_EXHAUSTED` in `classifyFailure` by phrase matching on one
   stderr-tail line: Cursor's out-of-usage line (`ActionRequiredError` plus `out
