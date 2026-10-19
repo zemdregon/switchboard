@@ -951,8 +951,8 @@ C9 shows an unknown id silently starts a new conversation."
 
 <!-- markdownlint-disable-next-line MD029 -->
 69\. T4.12 deferred until a Mac with native logins is available (2026-10-19). **Relayed by the orchestrator (Linus,
-owner-delegated standing authority), not owner-approved.** Entries 64 and 68 sit in open pull requests
-(63, 66 and 67 have since merged to main);
+owner-delegated standing authority), not owner-approved.** Entry 68 sits in an open pull request
+(63, 64, 66, 67 and 70 have since merged to main);
 the gap is left on purpose and nothing is renumbered. Relayed ruling: "T4.12: mark Deferred (optional, needs a Mac),
 with a section 4.2 decision and section 8 row."
     *Delegated reading, not zemdregon's words.* T4.12 (live smoke and live malicious leg for Claude Code and Codex on

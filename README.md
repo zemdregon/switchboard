@@ -309,9 +309,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
   Antigravity reach the smoke step in the adapter's only compiled cell instead (T4.4));
    rows waiting on uncaptured live shapes
-  (T4.35, T4.51, T4.53, T4.56, T4.63, T4.64, T4.66; owner decision 65 sets when parser, CI
-  malicious-leg and README rows are `Done` against their Done-when; T4.33 and T4.36 are `Done`
-  under decision 65 (a) and (b), remaining native shapes carried by T4.38); README rows final
+  (T4.35, T4.63, T4.64, T4.66; owner decision 65 sets when parser, CI
+  malicious-leg and README rows are `Done` against their Done-when; T4.33, T4.36, T4.53 and T4.56 are `Done`
+  under decision 65 (a) and (b), remaining native shapes carried by T4.38 and T4.58; T4.51 is `Done` with live
+  evidence); README rows final
   after their live legs
   (T4.69; T4.29, T4.39, T4.49, T4.59 and T4.79 are `Done` except the post-T4.n8 update); Muse Code (Should) has module,
   compile matrix, auth preflight,
