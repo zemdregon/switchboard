@@ -481,9 +481,9 @@ registry table, `BUILTIN_PROVIDERS` in `src/adapters/providers.ts`; `ProviderId`
 | `claude-code` | `claude` | Adapter | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` ([TDD §4.1.1](TDD.md#411-claude-code-native-controls-per-profile-and-platform-t30), `claude --help` 2.1.296) | Value `--permission-mode bypassPermissions` (same source); active |
 | `codex` | `codex` | Adapter | `--yolo`, `--full-auto` ([R2] L28, L125, L126) | None |
 | `grok-build` | `grok` | Module `src/adapters/grok/` (T4.22; manifest range admits no version) | None (its long bypass flags are shared `BYPASS_FLAGS`) | Values `--permission-mode bypassPermissions`; `--allow` and `--allowed-tools` with `*` or `**` (catch-all, Proposed) ([TDD §4.3.1](TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420)); active since T4.22 |
-| `antigravity` | `antigravity` | Module `src/adapters/antigravity/` (T4.32; manifest range admits no version) | `-dangerously-skip-permissions` (the two-dash form is shared), `--remote-control`, `-remote-control`, `--gemini_dir`, `-gemini_dir`, `--add-dir`, `-add-dir` ([TDD §4.4](TDD.md#44-antigravity-agy-m4), the T4.31 live check, [ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md); Proposed) | None ([TDD §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430): `always-proceed` is a settings value) |
+| `antigravity` | `antigravity` | Module `src/adapters/antigravity/` (T4.32; manifest range `>=1.4.2 <1.5.0` since the live `adapters validate` pass on 2026-10-18, T4.38) | `-dangerously-skip-permissions` (the two-dash form is shared), `--remote-control`, `-remote-control`, `--gemini_dir`, `-gemini_dir`, `--add-dir`, `-add-dir` ([TDD §4.4](TDD.md#44-antigravity-agy-m4), the T4.31 live check, [ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md); Proposed) | None ([TDD §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430): `always-proceed` is a settings value) |
 | `cursor` | `cursor` | Module `src/adapters/cursor/` (T4.42; manifest range admits no version) | `--auto-review`, `--worktree`, `--worktree-base`, `--skip-worktree-setup`, `--workspace`, `--add-dir`, `--plugin-dir`, `--api-key`, `--auth-token`, `--header`, `--endpoint` (`--force`, `--yolo`, `--approve-mcps` are shared; [TDD §4.5](TDD.md#45-cursor-cli-m4) and the T4.41 `--help`, Proposed) | Short `-f`, `-w`, `-H`, `-e`; value `--sandbox disabled` ([TDD §4.5](TDD.md#45-cursor-cli-m4), Proposed); active since T4.42 |
-| `opencode` | `opencode` | Module `src/adapters/opencode/` (T4.52; manifest range admits no version) | `--auto` ([TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450), Proposed; never emitted, Q-83) | None (the inline `allow` permission is carried in the environment, which the adapter never sets, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
+| `opencode` | `opencode` | Module `src/adapters/opencode/` (T4.52; manifest range `>=2.0.23 <2.1.0` since the live `adapters validate` pass on 2026-10-18, T4.58) | `--auto` ([TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450), Proposed; never emitted, Q-83) | None (the inline `allow` permission is carried in the environment, which the adapter never sets, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
 | `kimi-code` | `kimi` | Module `src/adapters/kimi/` (T4.62; manifest range `>=2.1.1 <2.2.0` since the live `adapters validate` pass on 2026-10-18, T4.68) | `--auto`, `--plan` (`--yolo` is shared; [ADR-0049](../adr/0049-kimi-code-transport-and-bypass-class.md), [TDD §4.7](TDD.md#47-kimi-code-m4-blocked-by-b-1)). `-p`/`--prompt` are bypass-class (ADR-0049) but not declared: the audit is shared and Claude Code `-p` and Antigravity `--prompt` are ordinary flags (Q-95); the compile gate alone emits `--prompt` | Short `-y`; ACP modes `auto`, `yolo` and the `mode` option with those values (ADR-0049 item 2); active since T4.62 |
 | `muse-code` | `muse` | Module `src/adapters/muse/` (T4.72; manifest range admits no version) | `--disable-approval`, `--disable-sandbox`, `--trust-workspace` (`--yolo` is shared; [TDD §4.8](TDD.md#48-muse-code-m4), Proposed) | Values `--approval-mode never`, `--sandbox-network unrestricted` and the deprecated alias `--sandbox-network enabled` (deliberate over-refusal; [TDD §4.8](TDD.md#48-muse-code-m4), Proposed); active since T4.72 |
 | none | `fake` | Test-only adapter (`serve` registers it only behind the test-only switch) | None | None |
@@ -681,7 +681,8 @@ fixtures only; no `agy` in CI).
 
 **As built (T4.32).** Module `src/adapters/antigravity/` (`adapter.ts`, `protocol.ts`; spellings cite TDD §4.4 or the
 T4.31 live check, with `--prompt=` marked Assumption where unobserved). Manifest `src/adapters/manifests/antigravity.json`
-(range `<0.0.0` until `adapters validate` passes a live CLI). One registry entry with `create` and bypass-class flags in
+(range `<0.0.0` at the time; `>=1.4.2 <1.5.0` since the live `adapters validate` pass on 2026-10-18, T4.38).
+One registry entry with `create` and bypass-class flags in
 `src/adapters/providers.ts` ([ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md)). Transport
 `subprocess-jsonl` with `outputFormat` `jsonl`. Every non-`privileged` profile and every `privileged` scope without an
 approved bypass is `Ineligible: PROFILE_UNSUPPORTED` because `toolPermission` is a settings value, not per run
@@ -749,8 +750,9 @@ synthetic and replay fixtures only; no `agy` in CI).
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02,
   FR-GIT-09)`): declarations, `list_capabilities`, argv and allowlist guards, finalize-only lifecycle leg.
 
-**Not covered by this evidence (their own tasks):** auth preflight beyond the `UNKNOWN` placeholder (T4.34), conformance
-suite (T4.35), malicious-fixture leg (T4.36), operator live smoke and `adapters validate` (T4.38).
+**Not covered by this evidence (their own tasks):** auth preflight beyond the `UNKNOWN` placeholder (T4.34),
+conformance suite (T4.35), malicious-fixture leg (T4.36), operator live smoke and live malicious leg
+(T4.38; the `adapters validate` leg passed live on 2026-10-18 with no new Git evidence).
 
 ### 2.0.1 Cursor adapter implementation evidence (M4 T4.42, T4.43)
 
@@ -794,7 +796,8 @@ Compile matrix and transport: [TDD §4.6](TDD.md#46-opencode-m4). Task status: [
 fixtures only; no `opencode` in CI).
 
 **As built (T4.52).** Module `src/adapters/opencode/`; manifest `src/adapters/manifests/opencode.json` (range
-`<0.0.0`). Transport `subprocess-jsonl` with `run --format json --standalone -- <prompt>`. Every non-`privileged`
+`>=2.0.23 <2.1.0` since the live `adapters validate` pass on 2026-10-18, T4.58). Transport `subprocess-jsonl` with
+`run --format json --standalone -- <prompt>`. Every non-`privileged`
 profile is `Ineligible: PROFILE_UNSUPPORTED` (Q-64); the sole compiled shape is the Q-83 bypass cell without `--auto`.
 
 - **Tests:** `src/adapters/opencode/opencode.test.ts` (`opencode compile matrix (T4.52)`, `opencode bypass-class
@@ -802,8 +805,9 @@ profile is `Ineligible: PROFILE_UNSUPPORTED` (Q-64); the sole compiled shape is 
   gate (T4.52)`).
 
 **As built (T4.53, Done against its Done-when under owner decision 65 (a)).** `parseEvent`, `extractResult`,
-`classifyFailure` and `resumeArgs` in `adapter.ts`;
-`--format json` fields in `protocol.ts`. Success needs a `step_finish` with `reason` `stop` (Q-85). Hardening
+`classifyFailure` and `resumeArgs` in `adapter.ts`; `--format json` fields in `protocol.ts`. Success needs a
+`step_finish` with `reason` `stop` (Q-85), or a text-only reply with no tool event and no `step_finish`
+(owner decision 68, Q-85 narrowed). Hardening
 ([#229](https://github.com/zemdregon/switchboard/pull/229)): finite non-negative usage only; unknown `type` clipped to
 64 characters; changed `sessionID` ends `OUTPUT_PROTOCOL_ERROR`; non-object roots and unstructured errors fail closed.
 Nested tests `cases with no recorded native shape (live check rows 7, 11, 14c)` pin row 11 (out-of-worktree denial not
@@ -815,8 +819,8 @@ detected at exit 0), row 14c (rate limit `TOOL_FAILURE`) and omitted tool input 
   T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 **Not covered here:** conformance (T4.55 Done), malicious leg (T4.56 Done against its Done-when under
-owner decision 65 (b)), Git declaration (T4.57 Done), operator
-live validate (T4.58).
+owner decision 65 (b)), Git declaration (T4.57 Done), operator live smoke and live malicious leg (T4.58; the
+`adapters validate` cell passed live on 2026-10-18).
 
 ### 2.1 Model registry (M4, T4.5)
 
@@ -4888,7 +4892,8 @@ exists only once an adapter has an injected channel (T9.4b).
             "snippet_id": { "type": "string" }, "path": { "type": "string" },   // relative to the context root, never absolute
             "start_line": { "type": "integer" }, "end_line": { "type": "integer" },
             "score": { "type": "number" }, "file_sha256": { "type": "string" },
-            "origin_project": { "type": "string" },                              // global results only
+            "origin_project": { "type": "string" },                              // global results from a project only
+            "source": { "type": "string" },                                     // global results from an operator source only
             "untrusted": { "const": true },
             "text": { "type": "string" } } } } } } }
 ```
@@ -4898,6 +4903,21 @@ limits of FR-MCP-04; `scope: "global"` or `"both"` requires the project to set `
 path outside the project's contexts is returned; the tool never reads another project's store; retrieval failure is
 `status: "unavailable"` with a reason code, not a tool error (FR-RAG-08). Text in `results` is untrusted data: the tool
 description says so, and a client must treat it as such. The call is recorded as a `rag_retrieval` row (§14.10).
+
+*As built (T12.7, 2026-10-19, Delegated, not owner-approved):* `scope: "global"` reads only the global store and
+`"both"` merges project and global hits by score (then path, then start line) under one `limit` and the same byte
+bounds (`src/mcp/search-context.ts`, wired in `src/cli/serve.ts`; output schema in `src/mcp/schemas.ts`; tests
+`src/mcp/search-context.test.ts`, describes "searchProjectContext over the global store (T12.7, FR-RAG-09, FR-RAG-10)"
+and "search_project_context scope global on the MCP server (T12.7)"). A global row is served only when its origin is in
+the live origins built from current configuration (`globalOrigins`, `src/retrieval/global.ts`, as at admission), the
+row's `origin_project` matches and the origin is not the reading project. Each global hit carries `origin_project` or
+`source`, and its `context_id` is the global-store id (`project:<id>/<context>` or `source:<label>`). It is
+freshness-checked against the origin's directory. Failure is closed: without wired origins, with unresolvable origins or
+with a missing or never-built global store, `global` answers `unavailable` with `GLOBAL_NOT_AVAILABLE` (the query is
+not embedded); for `both` the project results stand and the global failure code (`GLOBAL_NOT_AVAILABLE`,
+`REBUILD_PENDING`, `STORE_UNREADABLE`, `DIMENSION_MISMATCH`) is the `reason`. For `global`, `status` and
+`index_revision` describe the global store; for `both`, the project store. A stale or incomplete global store still
+serves freshness-checked hits here, whereas admission skips it.
 
 *As built (T12.9, 2026-10-16, Delegated, not owner-approved; fakes only):* the agent-callable form is the T12.6 handler
 (`searchProjectContext`) behind the per-run tool channel (§12.2,
@@ -4914,8 +4934,9 @@ channel form has no `project` argument: its input
 is exactly `query` (1..2000 characters), optional `limit` (1..32) and `scope`; any other key, including `project` or a
 path, is `INVALID_ARGUMENTS` before the handler runs, and the handler always gets the project id bound when the channel
 opened. Token, rate limit, run state and binding checks are those of `commit`. Bounds, scope rules
-(`GLOBAL_NOT_AVAILABLE`), freshness and `unavailable` with `NOT_BUILT` for a project without an index are the T12.6
-ones; `MAX_SEARCH_LIMIT`, `MAX_RESULT_TEXT_BYTES`, `MAX_SEARCH_TEXT_BYTES` and `MAX_QUERY_LENGTH` are defined once in
+(including the global scopes of T12.7), freshness and `unavailable` with `NOT_BUILT` for a project without an index are
+the T12.6 ones; `MAX_SEARCH_LIMIT`, `MAX_RESULT_TEXT_BYTES`, `MAX_SEARCH_TEXT_BYTES` and `MAX_QUERY_LENGTH` are defined
+once in
 `src/git/tool-protocol.ts` and re-exported by `src/mcp/search-context.ts`. Delegated differences: a `scope` the
 project may not use is `INVALID_ARGUMENTS`; a project no longer configured is `PROJECT_UNAVAILABLE`; the `rag_record`
 row carries the run id; the shim's response bound rose from 64 KiB to 512 KiB and the controller drops trailing results
@@ -5002,22 +5023,24 @@ sets `use_global` ([§14.7](#147-tool-contract-search_project_context)). Operato
 `index clear global`, and a `doctor` global subsection when `rag.global.enabled` (honoured on `main` since T12.7,
 [§14.5](#145-incremental-build)).
 
-**As built on `main` (T12.7, Partial since 2026-10-19, owner ruling; ROADMAP T12.7).** The `rag.global` block,
-per-project sharing flags, and `PERMISSION_BLOCKED` when a dynamic project definition sets or widens sharing are
+**As built on `main` (T12.7, Done 2026-10-19, Delegated agent work, not owner-approved; ROADMAP T12.7).** The
+`rag.global` block, per-project sharing flags, and `PERMISSION_BLOCKED` when a dynamic project definition sets or widens
+sharing are
 implemented (`src/config/rag.ts`, `src/projects/rules.ts`; tests `src/config/rag.test.ts`,
 `src/mcp/project-tools.test.ts`). The global file path and `rag_meta` / `rag_file.origin_project` columns exist in
 the store schema (`src/retrieval/store.ts`; tests `src/retrieval/store.test.ts`). The global build and contribution
 copy (`src/retrieval/global.ts`), the admission merge for `use_global` projects (`src/retrieval/admission.ts`), the
 `serve` build wiring and `index rebuild global`, `index clear global`, `index status global` and the `doctor` global
 check (`src/cli/rag-index.ts`) are on `main`, pinned by `src/retrieval/global.test.ts` and `src/cli/rag-index.test.ts`
-("global index (T12.7)"). **Remaining gap:** `search_project_context` scopes `global` / `both` still answer
-`GLOBAL_NOT_AVAILABLE` (`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`); reading the built global
-store there is a follow-up (fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f)).
+("global index (T12.7)"). `search_project_context` scopes `global` / `both` read the built global store
+([§14.7](#147-tool-contract-search_project_context) as-built; `src/mcp/search-context.ts`,
+`src/mcp/search-context.test.ts`). It was `Partial` earlier on 2026-10-19 (owner ruling) while those scopes answered
+only `GLOBAL_NOT_AVAILABLE`.
 
-**Runtime gaps on `origin/main` (evidence paths, no unmerged behaviour).** Only the tool gap above: admission merges
-the global store for `use_global` projects ([§14.8](#148-freshness-and-fallback) as-built) and the global CLI targets
-are honoured ([§14.5](#145-incremental-build)); T12.6 returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the
-built global store is wired into the tool (`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`).
+**Runtime gaps on `origin/main` (evidence paths, no unmerged behaviour).** None for T12.7: admission merges the global
+store for `use_global` projects ([§14.8](#148-freshness-and-fallback) as-built), the global CLI targets are honoured
+([§14.5](#145-incremental-build)) and the tool serves `global` / `both` from the built global store, answering
+`GLOBAL_NOT_AVAILABLE` only when it is unavailable.
 
 **Tests (fake embedder only, no network; landed with the T12.7 runtime).** As in [TDD §3.13.9](TDD.md#3139-t127-global-index-and-sharing-2026-10-14):
 two-project isolation with planted markers; operator `sources` labelled; contribution copy respects redaction,
@@ -5165,8 +5188,8 @@ transaction, and the lifecycle reaches it only through a structurally typed port
 `unavailable` / `TIMEOUT`, and a pack that freshness or the budget empties is `empty` (`NO_HITS`, `NOTHING_SELECTED`)
 rather than `skipped` / `empty_after_freshness`; the import-boundary test also forbids lifecycle dispatch and adapter
 `compile` modules; the hostile-pack behavioural test and the `rag.retrieve` span are not built. Global-index merge at
-admission is built by T12.7 (Partial; ROADMAP T12.7); `search_project_context` `global` / `both` against the built
-store still answers `GLOBAL_NOT_AVAILABLE` (remaining gap, ROADMAP T12.7)
+admission is built by T12.7 (Done; ROADMAP T12.7); `search_project_context` `global` / `both` read the built
+store (§14.7 as-built, ROADMAP T12.7)
 ([§14.9.1](#1491-design-status-and-evidence-t127-2026-10-14), [TDD §3.13.9](TDD.md#3139-t127-global-index-and-sharing-2026-10-14)).
 
 ## 15. Continuity and the handoff bundle (M5)

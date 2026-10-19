@@ -368,3 +368,59 @@ as history.
   supersedes ADR-0055 item 11 in part), with the [FR-ADP-04](requirements/SRS.md) and
   [FR-CAP-11](requirements/SRS.md) one-exception amendments and the Q-100 answer. SDD FR-CAP-11 and LLD §16.9 now
   point at ADR-0058 instead of here; this note stands as the resolved history. PR #700 is unblocked on this item.
+
+## 25. `antigravity.json` manifest notes still read "admits no version" (from the T4.38 re-implementation, out of gate scope)
+
+- The T4.38 re-implementation updates `src/adapters/manifests/antigravity.json` to
+  `validated_cli_version` `1.4.2`, range `>=1.4.2 <1.5.0`, with a dated
+  `Evidence (adapters validate, 2026-10-18)` line appended to `notes`.
+- The same `notes` string still opens with the T4.32 sentence "The range admits
+  no version (ADR-0009, ROADMAP 6.8 conventions): the adapter fails the version
+  gate with ADAPTER_VERSION_UNVERIFIED until `switchboard adapters validate
+  antigravity` passes a version, so nothing here is a claim that any agy version
+  is validated." That condition is now satisfied, so the sentence is
+  stale against the range in the same file.
+- Left unchanged: the manifest is `src/**`, and this gate edits documentation
+  only (`*.md`, `docs/**`). Refreshing that sentence needs a one-line manifest
+  edit by the PR author (or a code-touching follow-up), not an owner decision.
+  It does not block the T4.38 re-implementation (the range fields and the evidence line, which are
+  what the gate and the version check read, are correct).
+- Same staleness, same scope: the header comments in
+  `src/adapters/antigravity/adapter.ts` ("The manifest range admits no
+  version, so none of this runs before `adapters validate` passes a version")
+  and `src/adapters/antigravity/protocol.ts` ("The manifest range admits no
+  version, so none of this runs until `adapters validate` passes a version")
+  were true under the old `<0.0.0` range and are overtaken by the new
+  `>=1.4.2 <1.5.0` range the same way. They need a code-touching follow-up,
+  not an owner decision, and do not block the T4.38 re-implementation. (Kimi has the identical
+  shape since PR #694: `kimi.json` admits `>=2.1.1 <2.2.0` while
+  `src/adapters/kimi/adapter.ts` and `src/adapters/kimi/protocol.ts` still
+  say the range admits no version; see item 15.)
+
+## 26. `opencode.json` notes and `adapter.ts` header still read "admits no version" (PR #726, out of scope)
+
+- PR #726 updates `src/adapters/manifests/opencode.json` to
+  `validated_cli_version` `2.0.23`, range `>=2.0.23 <2.1.0`, with a dated
+  `Evidence (adapters validate, 2026-10-18)` line appended to `notes`.
+- The same `notes` string still opens with the T4.52 sentence "The range admits
+  no version (ADR-0009, ROADMAP 6.8 conventions): the adapter fails the version
+  gate with ADAPTER_VERSION_UNVERIFIED until `switchboard adapters validate
+  opencode` passes a version, so nothing here is a claim that any OpenCode
+  version is validated." That condition is now satisfied, so the sentence is
+  stale against the range in the same file. The `src/adapters/opencode/adapter.ts`
+  and `src/adapters/opencode/protocol.ts` header comments (each saying the
+  manifest range admits no version, so none of this runs before `adapters
+  validate` passes a version) are stale the same way.
+- Left unchanged: the manifest and the adapter are `src/**`, and this gate
+  edits documentation only (`*.md`, `docs/**`). Refreshing those sentences
+  needs a one-line `src/**` edit by the PR author (or a code-touching
+  follow-up), not an owner decision. It does not block PR #726 (the range
+  fields and the evidence line, which are what the gate and the version check
+  read, are correct).
+- Same shape, same scope: `src/inner/cli-backend.ts` ("`src/adapters/
+  manifests/opencode.json` admits no version (`<0.0.0`)") and
+  `src/inner/index.ts` ("The shipped OpenCode manifest admits no version")
+  still describe the pre-T4.58 range; both are `src/**`, so they are listed
+  here rather than fixed. The owner document for that range is the manifest
+  itself (range fields correct); the docs (`HLD.md` CLI-backend gate line,
+  ROADMAP T4.52 with an "at the time" qualifier) now state the current range.
