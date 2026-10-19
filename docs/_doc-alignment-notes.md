@@ -547,6 +547,19 @@ as history.
   here rather than fixed. The owner document for that range is the manifest
   itself (range fields correct); the docs (`HLD.md` CLI-backend gate line,
   ROADMAP T4.52 with an "at the time" qualifier) now state the current range.
+- Still open after PR #741 (checked on this branch; pre-existing, not from
+  this PR, which only appended the live-smoke evidence line): the same
+  manifest `notes` lists the never-emitted flags as `--continue`, `--fork`,
+  `--server`, `--share`, `--model`, `--agent`, `--file`, while the adapter
+  header (`src/adapters/opencode/adapter.ts`), the case file
+  (`test/malicious/adapters/opencode.case.ts` `neverEnabledFlags`) and the
+  README trust-profile table all list `--continue`, `--fork`, `--server`,
+  `--attach`, `--share`, `--dir`, `--model` (plus generic bypass flags in
+  the case file). The code-side list is what the compile test pins and the
+  leg checks, so the manifest's `--agent`/`--file` pair is stale against it.
+  Same scope as above: `src/**`, listed here rather than fixed; it does not
+  block PR #741 (the range fields and evidence lines the gate reads are
+  correct).
 
 ## 34. `claude.json` notes keep the pre-validation range prose (pre-existing, not from PR #729)
 
