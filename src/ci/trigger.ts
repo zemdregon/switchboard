@@ -9,6 +9,13 @@
  * idempotency key `ci_trigger:<project>:<external_id>`, written in the one enqueue transaction, so a restart can neither
  * lose nor repeat an enqueue (no separate event row to reconcile). An optional operator-forwarded summary is untrusted
  * (`untrusted.ts`): it cannot cause, block or shape admission, and reaches the objective only through its template token.
+ *
+ * T15.6 (FR-QUE-06, LLD §20.1, ADR-0050 amendment 1): `cancelled` and `timed_out` are `CI_INFRA`
+ * ({@link classifyConclusion}); a `CI_INFRA` conclusion is recorded in `ci_trigger_event` without a work item and never
+ * touches the FR-QUE-05 counter. With a project's `rerun_failed` switch, a failed or `CI_INFRA` run first gets one
+ * `gh run rerun --failed`, at most once per (ref, head SHA, job) (`ci_rerun`, migration 0024), and a fix-up is admitted
+ * only when the rerun fails again. With `cancel_stale_queued`, queued runs on heads Switchboard published earlier on the
+ * same ref are cancelled (`ci_run_cancel`); an in-progress run, or a run on a head Switchboard never pushed, never is.
  */
 import type Database from "better-sqlite3";
 import {
@@ -20,14 +27,29 @@ import { ciFixControlFacts, isCiFixStuck } from "../control/needs-attention.js";
 import { isAdmissionPaused } from "../control/pause.js";
 import { defaultIds } from "../ids/index.js";
 import type { Ledger } from "../ledger/index.js";
-import { isDatabaseId } from "./gh-argv.js";
-import { CiStatusError, type CiStatusErrorReason, type CiStatusPort, FAILING_CONCLUSIONS } from "./port.js";
-import { listPublishedRefs } from "./published-refs.js";
+import { branchOfPublishRef, isDatabaseId, isFullLowerSha } from "./gh-argv.js";
+import {
+  type CiActionsPort,
+  CiStatusError,
+  type CiStatusErrorReason,
+  type CiStatusObservation,
+  type CiStatusPort,
+  classifyConclusion,
+  FAILING_CONCLUSIONS,
+  RERUNNABLE_JOB_CONCLUSIONS,
+} from "./port.js";
+import { listPublishedRefs, type PublishedRef } from "./published-refs.js";
 import { renderCiObjective, untrustedExternalText } from "./untrusted.js";
 
 export { ciFixControlFacts, isCiFixStuck };
 
 export const CI_SOURCE_PREFIX = "ci:";
+/**
+ * How long a requested rerun may stay invisible (the run still shows the attempt it was requested from as completed)
+ * before the trigger stops waiting for it and treats the key as spent (Assumption: `gh` shows the new attempt within
+ * seconds; the bound only keeps a rerun lost to a crash from parking the ref forever).
+ */
+export const RERUN_VISIBLE_MS = 10 * 60 * 1000;
 
 export const DISABLED_CI_TRIGGER: CiTriggerSettings = {
   enabled: false,
@@ -51,6 +73,8 @@ export interface CiTriggerDeps {
   readonly db: Database.Database;
   readonly ledger: Ledger;
   readonly port: CiStatusPort;
+  /** T15.6 write side; used only for a project whose `rerun_failed` or `cancel_stale_queued` switch is on. */
+  readonly actions?: CiActionsPort;
   readonly settings: CiTriggerSettings;
   /** `owner/repo` of a project's remote (read-only local `git`), or undefined when it is not a github.com remote. */
   readonly resolveRemote: (projectId: string, remote: string) => Promise<{ owner: string; repo: string } | undefined>;
@@ -63,6 +87,8 @@ export interface CiTriggerDeps {
    * `ci_fix_stuck`). Serve announces it as `needs_attention`. Must not throw; best effort (ADR-0048 item 6).
    */
   readonly onStuck?: (info: { projectId: string; publishRef: string }) => void;
+  /** Clock for ledger timestamps and the {@link RERUN_VISIBLE_MS} bound (tests inject it). */
+  readonly nowMs?: () => number;
 }
 
 export interface CiTriggerPollResult {
@@ -72,6 +98,12 @@ export interface CiTriggerPollResult {
   recordedOnly: { projectId: string; publishRef: string; externalId: string }[];
   duplicates: number;
   errors: CiTriggerError[];
+  /** T15.6: `CI_INFRA` conclusions recorded without a work item. */
+  infra: { projectId: string; publishRef: string; externalId: string }[];
+  /** T15.6: `gh run rerun --failed` requests (`ci_rerun_requested`). */
+  reruns: { projectId: string; publishRef: string; headSha: string; runId: string; jobNames: string[] }[];
+  /** T15.6: queued runs on superseded heads that were cancelled (`ci_run_cancelled`). */
+  cancelled: { projectId: string; publishRef: string; headSha: string; runId: string }[];
 }
 
 export interface CiTriggerRefState {
@@ -149,8 +181,18 @@ export function resetCiFixCounter(
 
 /** One poll over every enabled project (LLD §18.7 step 2). Never throws for a single project or ref. */
 export async function pollCiTriggers(deps: CiTriggerDeps): Promise<CiTriggerPollResult> {
-  const result: CiTriggerPollResult = { polled: 0, enqueued: [], recordedOnly: [], duplicates: 0, errors: [] };
+  const result: CiTriggerPollResult = {
+    polled: 0,
+    enqueued: [],
+    recordedOnly: [],
+    duplicates: 0,
+    errors: [],
+    infra: [],
+    reruns: [],
+    cancelled: [],
+  };
   const { settings, ledger, db } = deps;
+  const nowMs = deps.nowMs ?? Date.now;
   if (!settings.enabled || settings.pollIntervalSeconds === 0) return result;
   const maxItems = deps.maxItemsPerProject ?? 500;
   for (const trigger of settings.projects) {
@@ -166,6 +208,9 @@ export async function pollCiTriggers(deps: CiTriggerDeps): Promise<CiTriggerPoll
       if (gh === undefined) {
         fail("REMOTE_UNRESOLVED");
         continue;
+      }
+      if (trigger.cancelStaleQueued === true && deps.actions !== undefined) {
+        await cancelStaleQueued({ db, actions: deps.actions, gh, projectId, ref, nowMs, fail, result });
       }
       let obs: Awaited<ReturnType<CiStatusPort["latestForPublishedRef"]>>;
       try {
@@ -201,6 +246,21 @@ export async function pollCiTriggers(deps: CiTriggerDeps): Promise<CiTriggerPoll
         continue;
       }
 
+      if (trigger.rerunFailed === true && deps.actions !== undefined) {
+        const step = await rerunOnce({ db, actions: deps.actions, gh, projectId, ref, obs, nowMs, fail });
+        if (step.kind === "rerun") {
+          result.reruns.push({
+            projectId,
+            publishRef: ref.publishRef,
+            headSha: ref.headSha,
+            runId: obs.externalId,
+            jobNames: step.jobNames,
+          });
+          continue;
+        }
+        if (step.kind === "wait") continue;
+      }
+
       const refState = db
         .prepare("SELECT consecutive_fixes, stuck FROM ci_trigger_ref_state WHERE project_id = ? AND publish_ref = ?")
         .get(projectId, ref.publishRef) as { consecutive_fixes: number; stuck: number } | undefined;
@@ -209,8 +269,19 @@ export async function pollCiTriggers(deps: CiTriggerDeps): Promise<CiTriggerPoll
 
       const raw = deps.untrustedSummary?.({ projectId, publishRef: ref.publishRef, externalId: obs.externalId });
       const summary = raw === undefined || raw === "" ? undefined : untrustedExternalText(raw);
-      const nowIso = new Date().toISOString();
+      const nowIso = new Date(nowMs()).toISOString();
       const eventId = `cte_${defaultIds.ulid()}`;
+
+      if (classifyConclusion(obs.conclusion) === "CI_INFRA") {
+        // FR-QUE-06: a transient host fault is recorded, admits nothing and never counts toward the FR-QUE-05 cap.
+        db.prepare(
+          `INSERT INTO ci_trigger_event (
+             id, project_id, publish_ref, external_id, conclusion, untrusted_summary, observed_at, work_item_id
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+        ).run(eventId, projectId, ref.publishRef, obs.externalId, obs.conclusion, summary?.text ?? null, nowIso);
+        result.infra.push({ projectId, publishRef: ref.publishRef, externalId: obs.externalId });
+        continue;
+      }
 
       if (currentFixes >= maxFixes) {
         const tx = db.transaction(() => {
@@ -308,6 +379,155 @@ export async function pollCiTriggers(deps: CiTriggerDeps): Promise<CiTriggerPoll
     }
   }
   return result;
+}
+
+type FailFn = (reason: CiTriggerErrorReason) => void;
+const reasonOf = (err: unknown): CiStatusErrorReason => (err instanceof CiStatusError ? err.reason : "GH_FAILED");
+
+/**
+ * LLD §20.1 "Rerun once". `rerun`: the failed jobs were just rerun (no fix-up). `wait`: a rerun this trigger requested is
+ * not visible yet, or the jobs could not be read (retried next poll). `proceed`: no rerun applies (no rerunnable failed
+ * job, a failed job was already rerun on this head, or the `gh` rerun itself failed), so the conclusion is handled as
+ * without the switch. The `ci_rerun` rows are written before `gh` runs, so a rerun can never repeat.
+ */
+async function rerunOnce(a: {
+  db: Database.Database;
+  actions: CiActionsPort;
+  gh: { owner: string; repo: string };
+  projectId: string;
+  ref: PublishedRef;
+  obs: CiStatusObservation;
+  nowMs: () => number;
+  fail: FailFn;
+}): Promise<{ kind: "rerun"; jobNames: string[] } | { kind: "wait" } | { kind: "proceed" }> {
+  const { db, projectId, ref, obs } = a;
+  const runQ = { ...a.gh, runId: obs.externalId };
+  let run: Awaited<ReturnType<CiActionsPort["runJobs"]>>;
+  try {
+    run = await a.actions.runJobs(runQ);
+  } catch (err) {
+    a.fail(reasonOf(err));
+    return { kind: "wait" };
+  }
+  const rows = db
+    .prepare(
+      `SELECT job_name, run_id, attempt, outcome, requested_at FROM ci_rerun
+       WHERE project_id = ? AND publish_ref = ? AND head_sha = ?`,
+    )
+    .all(projectId, ref.publishRef, ref.headSha) as {
+    job_name: string;
+    run_id: string;
+    attempt: number;
+    outcome: string;
+    requested_at: string;
+  }[];
+  const now = a.nowMs();
+  const pending = rows.some(
+    (r) =>
+      r.run_id === obs.externalId &&
+      r.outcome === "requested" &&
+      run.attempt <= r.attempt &&
+      now - Date.parse(r.requested_at) < RERUN_VISIBLE_MS,
+  );
+  if (pending) return { kind: "wait" };
+  const failed = [
+    ...new Set(
+      run.jobs
+        .filter((j) => j.status === "completed" && RERUNNABLE_JOB_CONCLUSIONS.has(j.conclusion))
+        .map((j) => j.name),
+    ),
+  ].sort();
+  const spent = new Set(rows.map((r) => r.job_name));
+  // `--failed` reruns every failed job, so one already-rerun job on this head refuses the whole rerun (fail closed).
+  if (failed.length === 0 || failed.some((name) => spent.has(name))) return { kind: "proceed" };
+  const at = new Date(now).toISOString();
+  const insert = db.prepare(
+    `INSERT INTO ci_rerun (project_id, publish_ref, head_sha, job_name, run_id, attempt, outcome, requested_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'requested', ?)`,
+  );
+  db.transaction(() => {
+    for (const name of failed)
+      insert.run(projectId, ref.publishRef, ref.headSha, name, obs.externalId, run.attempt, at);
+  })();
+  try {
+    await a.actions.rerunFailed(runQ);
+  } catch (err) {
+    db.prepare(
+      `UPDATE ci_rerun SET outcome = 'gh_failed'
+       WHERE project_id = ? AND publish_ref = ? AND head_sha = ? AND run_id = ? AND requested_at = ?`,
+    ).run(projectId, ref.publishRef, ref.headSha, obs.externalId, at);
+    a.fail(reasonOf(err));
+    return { kind: "proceed" };
+  }
+  return { kind: "rerun", jobNames: failed };
+}
+
+/**
+ * LLD §20.1 "Stale cancel": cancel runs that are `queued` on this branch for a head Switchboard published earlier on the
+ * same ref (not the current tip). Each candidate is re-read just before the cancel; an `in_progress` run, a run on the
+ * current tip and a run on a head Switchboard never pushed are never cancelled. Errors are recorded, never thrown.
+ */
+async function cancelStaleQueued(a: {
+  db: Database.Database;
+  actions: CiActionsPort;
+  gh: { owner: string; repo: string };
+  projectId: string;
+  ref: PublishedRef;
+  nowMs: () => number;
+  fail: FailFn;
+  result: CiTriggerPollResult;
+}): Promise<void> {
+  const { db, projectId, ref } = a;
+  const branch = branchOfPublishRef(ref.publishRef);
+  if (branch === undefined) return;
+  const superseded = new Set(
+    (
+      db
+        .prepare(
+          `SELECT DISTINCT lower(head_sha) AS sha FROM git_push
+           WHERE project_id = ? AND remote = ? AND ref = ? AND outcome = 'ACCEPTED'`,
+        )
+        .all(projectId, ref.remote, ref.publishRef) as { sha: string }[]
+    )
+      .map((r) => r.sha)
+      .filter((sha) => sha !== ref.headSha && isFullLowerSha(sha)),
+  );
+  if (superseded.size === 0) return;
+  let queued: Awaited<ReturnType<CiActionsPort["queuedRuns"]>>;
+  try {
+    queued = await a.actions.queuedRuns({ ...a.gh, publishRef: ref.publishRef });
+  } catch (err) {
+    a.fail(reasonOf(err));
+    return;
+  }
+  const done = db.prepare("SELECT 1 FROM ci_run_cancel WHERE project_id = ? AND run_id = ?");
+  for (const run of queued) {
+    if (!isDatabaseId(run.runId) || run.headBranch !== branch || run.status !== "queued") continue;
+    if (!superseded.has(run.headSha) || done.get(projectId, run.runId) !== undefined) continue;
+    const runQ = { ...a.gh, runId: run.runId };
+    let head: Awaited<ReturnType<CiActionsPort["runHead"]>>;
+    try {
+      head = await a.actions.runHead(runQ);
+    } catch (err) {
+      a.fail(reasonOf(err));
+      continue;
+    }
+    // The residual race between this re-read and the cancel is accepted (LLD §20.1, Assumption).
+    if (head.status !== "queued" || head.headSha !== run.headSha) continue;
+    const id = `crc_${defaultIds.ulid()}`;
+    db.prepare(
+      `INSERT INTO ci_run_cancel (id, project_id, publish_ref, head_sha, run_id, outcome, cancelled_at)
+       VALUES (?, ?, ?, ?, ?, 'cancelled', ?)`,
+    ).run(id, projectId, ref.publishRef, run.headSha, run.runId, new Date(a.nowMs()).toISOString());
+    try {
+      await a.actions.cancelRun(runQ);
+    } catch (err) {
+      db.prepare("UPDATE ci_run_cancel SET outcome = 'gh_failed' WHERE id = ?").run(id);
+      a.fail(reasonOf(err));
+      continue;
+    }
+    a.result.cancelled.push({ projectId, publishRef: ref.publishRef, headSha: run.headSha, runId: run.runId });
+  }
 }
 
 /** Paces {@link pollCiTriggers} to `poll_interval_seconds` on the `serve` scheduler tick; one poll at a time. */
