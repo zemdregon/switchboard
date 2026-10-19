@@ -339,3 +339,20 @@ as history.
   dated snapshot, and rewriting it would falsify the record; the live
   status lives in the T3.8 row and the M3 row, which agree. It does not
   block PR #719.
+
+## 24. `claude.json` notes keep the pre-validation range prose (pre-existing, not from PR #729)
+
+- `src/adapters/manifests/claude.json` carries `validated_version_range`
+  `>=2.1.294 <2.2.0` (rewritten by the T4.11 operator run on 2026-10-14, with
+  a dated `Evidence (adapters validate, 2026-10-14)` line in `notes`), but
+  the same `notes` string still opens with the 2026-10-12 sentence
+  "Assumption: the range >=2.1.296 <2.2.0 (same minor series) is a Proposed
+  conservative bound, not a provider statement". That bound is stale against
+  the range field in the same file (2.1.294 is below the 2.1.296 floor it
+  names, and is the validated version).
+- Left unchanged: the manifest is `src/**`, and this gate edits documentation
+  only (`*.md`, `docs/**`). Refreshing that sentence needs a one-line manifest
+  edit by the PR author (or a code-touching follow-up), not an owner decision.
+  It does not block PR #729 (the range field and the evidence lines, which are
+  what the gate and the version check read, are correct; the T3.9 sentences PR
+  #729 appends to `notes` describe the 2026-10-18 run accurately).
