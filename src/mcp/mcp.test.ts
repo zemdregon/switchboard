@@ -204,7 +204,13 @@ interface Setup {
   passCodex?: boolean;
   /** Host platform injected into eligibility (T3.7); default linux. */
   platform?: string;
-  clients?: { id: string; max: TrustProfile; approval?: "required" | "not_required"; projects?: string[] }[];
+  clients?: {
+    id: string;
+    max: TrustProfile;
+    approval?: "required" | "not_required";
+    projects?: string[];
+    profile?: "orchestrator" | "console";
+  }[];
   /** Configured projects (T9.2); the array is shared with the server so a test can change it between calls. */
   projects?: ResolvedProject[];
   lifecycle?: Partial<RunLifecycleOptions>;
@@ -280,6 +286,7 @@ async function setup(s: Setup): Promise<void> {
           maxTrustProfile: c.max,
           ...(c.approval ? { privilegedApproval: c.approval } : {}),
           ...(c.projects ? { projects: c.projects } : {}),
+          ...(c.profile ? { toolProfile: c.profile } : {}),
         },
       ]),
     ),
@@ -1000,8 +1007,8 @@ describe("MCP over the HTTP transport (T13.4; FR-MCP-14, Q-77)", () => {
     });
     const http = 2;
     const { tools } = await httpClient(http).listTools();
-    // T15.1: the work-queue tools are not offered over HTTP (a work item records no subject).
-    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    // T15.9: the work-queue tools are offered over HTTP to an orchestrator client (reader has the default profile).
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
     const up = await call("delegate_task", delegateArgs({ trust_profile: "edit-untrusted" }), http);
     expect(up.body.error).toMatchObject({
       code: "PERMISSION_BLOCKED",
@@ -1021,6 +1028,73 @@ describe("MCP over the HTTP transport (T13.4; FR-MCP-14, Q-77)", () => {
       trust_profile: "inspect-untrusted",
     });
     await pollTerminal(ok.body.run_id, http);
+  });
+
+  it("an orchestrator client lists and calls the work-queue tools; a console client does not see them (T15.9)", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: [
+        { id: "orch", max: "edit-untrusted", projects: ["web-app"] },
+        { id: "desk", max: "edit-untrusted", projects: ["web-app"], profile: "console" },
+        { id: "peer", max: "edit-untrusted", projects: ["web-app"] },
+      ],
+      projects: [project()],
+      http: { map: { [A]: "orch", [B]: "desk" }, tokens: [{ oauthClientId: A }, { oauthClientId: B }] },
+    });
+    // Stdio servers come first (orch 0, desk 1, peer 2); the HTTP tokens append orch 3 and desk 4.
+    const orch = 3;
+    const desk = 4;
+    const peer = 2;
+    const REQUEST = { objective: "Fix the parser crash", trust_profile: "edit-untrusted" };
+
+    // The orchestrator client lists the three tools over Streamable HTTP.
+    const { tools } = await httpClient(orch).listTools();
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
+
+    // The console client neither lists them nor calls them by name (answered like an unknown tool).
+    const deskTools = await httpClient(desk).listTools();
+    for (const name of WORK_QUEUE_TOOL_NAMES) {
+      expect(deskTools.tools.map((t) => t.name)).not.toContain(name);
+      const r = await call(name, {}, desk);
+      expect(r.isError).toBe(true);
+      expect(r.body.error.code).toBe("INVALID_REQUEST");
+    }
+
+    // Enqueue over HTTP admits under the mapped client's own ceiling.
+    const enq = await call("enqueue_work", { project_id: "web-app", request: REQUEST }, orch);
+    expect(enq.isError).toBe(false);
+    expect(enq.body).toMatchObject({ project_id: "web-app", state: "READY", trust_profile: "edit-untrusted" });
+    expect(ledger.getWorkItem(enq.body.work_item_id)).toMatchObject({ creator_client_id: "orch" });
+    const above = await call(
+      "enqueue_work",
+      { project_id: "web-app", request: { ...REQUEST, trust_profile: "trusted-development" } },
+      orch,
+    );
+    expect(above.body.error).toMatchObject({
+      code: "PERMISSION_BLOCKED",
+      details: { client_max_profile: "edit-untrusted" },
+    });
+
+    // Another client's items are neither listed nor cancellable (peer enqueues over stdio).
+    const peerEnq = await call("enqueue_work", { project_id: "web-app", request: REQUEST }, peer);
+    expect(peerEnq.isError).toBe(false);
+    const mine = await call("list_work", {}, orch);
+    expect(mine.isError).toBe(false);
+    expect(mine.body.items.map((i: Json) => i.work_item_id)).toEqual([enq.body.work_item_id]);
+    // No existence oracle: cancelling a foreign item fails exactly like cancelling an unknown id.
+    const ghost = await call("cancel_work", { work_item_id: "que_00000000000000000000000000" }, orch);
+    expect(ghost.isError).toBe(true);
+    const foreign = await call("cancel_work", { work_item_id: peerEnq.body.work_item_id }, orch);
+    expect(foreign.isError).toBe(true);
+    expect(foreign.body.error.code).toBe(ghost.body.error.code);
+    expect(String(foreign.body.error.message).replace(peerEnq.body.work_item_id, "ID")).toBe(
+      String(ghost.body.error.message).replace("que_00000000000000000000000000", "ID"),
+    );
+
+    // The owner cancels its own item over HTTP.
+    const cancelled = await call("cancel_work", { work_item_id: enq.body.work_item_id }, orch);
+    expect(cancelled.isError).toBe(false);
+    expect(cancelled.body).toMatchObject({ work_item_id: enq.body.work_item_id, state: "CANCELLED" });
   });
 
   it("a privileged request over HTTP waits for the operator; no tool can approve it", async () => {
@@ -1246,8 +1320,8 @@ describe("MCP over the HTTP transport (T13.4; FR-MCP-14, Q-77)", () => {
     });
     await client.connect(transport as Transport);
     const { tools } = await client.listTools();
-    // T15.1: the work-queue tools are not offered over HTTP (a work item records no subject).
-    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES]);
+    // T15.9: the work-queue tools are offered over HTTP to an orchestrator client (reader has the default profile).
+    expect(tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
     servers.push({ mcp: { close: async () => {} } as unknown as SwitchboardMcpServer, client });
     const index = servers.length - 1;
     const d = await call("delegate_task", delegateArgs({ trust_profile: "inspect-untrusted" }), index);

@@ -7312,10 +7312,16 @@ provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and par
 
 ### 20.8 Work queue over HTTP (FR-QUE-08, T15.9)
 
-The network transport lists `enqueue_work`, `list_work` and `cancel_work` for a client whose `tool_profile` is
-`orchestrator`, with the same scope check as `delegate_task` over HTTP (FR-MCP-14). The stdio-only filter beside
-`WORK_QUEUE_TOOL_NAMES` in `src/mcp/schemas.ts` is removed; admission stays under the creating client's ceiling
-(§18.4).
+Built (T15.9 Done): the network transport lists `enqueue_work`, `list_work` and `cancel_work` for a client whose
+`tool_profile` is `orchestrator`, under the same scope check as `delegate_task` over HTTP (FR-MCP-14: bearer token
+with the `mcp` scope, an approved and mapped OAuth client). The stdio-only filter (`workQueueOffered` in
+`src/mcp/server.ts`, beside `WORK_QUEUE_TOOL_NAMES` in `src/mcp/schemas.ts`) is now profile-gated instead of
+transport-gated: an `orchestrator` client is offered the tools over either transport, while a `console` client sees
+and calls none of them over either transport (answered exactly like an unknown tool, FR-CTL-11). Ownership is by the
+authenticated client id (the mapped MCP client over HTTP): `list_work` returns only the caller's own items and
+`cancel_work` of another client's item fails exactly like an unknown id, so ids are not an existence oracle; an item
+with no recorded owner is operator-owned and therefore invisible and uncancellable over HTTP. Admission stays under
+the creating client's ceiling (§18.4).
 
 ### 20.9 Pre-push secret scan (FR-GIT-11, T9.14, ADR-0061)
 
