@@ -3014,7 +3014,7 @@ list. `Done` also needs:
    native shapes are carried by T4.48, item 1). T4.53 and T4.56 are `Done` on that
    reading (their remaining native shapes are carried by T4.58, item 1). Residual risk: native shapes for Grok
    Build, Antigravity, Cursor, OpenCode and Kimi Code remain synthetic until their T4.n8 runs.
-3. **README rows, final after their T4.n8:** T4.69; T4.29, T4.39, T4.49 and T4.59 are `Done except the post-T4.n8
+3. **README rows, final after their T4.n8:** T4.69; T4.29, T4.39, T4.49, T4.59 and T4.79 are `Done except the post-T4.n8
    update` (owner decision 65 (c)).
 4. **B-1 (Kimi Code): cleared 2026-10-15 (Delegated)** by T4.60 and T4.61
    ([ADR-0049](adr/0049-kimi-code-transport-and-bypass-class.md)). Kimi Code's live validation (T4.68) is the
