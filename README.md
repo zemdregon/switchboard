@@ -19,8 +19,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   `switchboard serve` ([`docs/research/live-checks-2026-10-14-claude-codex.md`](docs/research/live-checks-2026-10-14-claude-codex.md)):
   Claude Code 2.1.294 **14 HELD, 0 FAILED, 2 NOT_CHECKED** (C-12, C-G2); Codex 0.162.0 after `adapters validate codex`
   **10 HELD, 0 FAILED, 3 NOT_CHECKED** (X-4, X-9, X-G1). Earlier checks on another host are in
-  [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on those residual
-  operator cells; `doctor` with both providers installed and logged in passed on 2026-10-17
+  [`docs/research/live-checks-2026-10-13.md`](docs/research/live-checks-2026-10-13.md). `Done` waits on the remaining residual
+  operator cells (C-G2 and X-G1 deliberate attempts ran 2026-10-19 through the T3.9 leg, both `HELD`; see below); `doctor` with both providers installed and logged in passed on 2026-10-17
   ([`docs/research/live-checks-2026-10-17-claude-codex.md`](docs/research/live-checks-2026-10-17-claude-codex.md)). The
   §6.2 "Blocks Done" narrative matches the 2026-10-14 live smoke on main
   ([PR #570](https://github.com/zemdregon/switchboard/pull/570)). See
@@ -2912,7 +2912,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   (C-1 to C-11 and G-1) on 2.1.296 and the Codex flags (X-1 to X-3) on 0.162.1. Claude error strings (C-12), the
   live-smoke Git-write attempt (C-G2) and Codex through Switchboard (X-5 to X-9) are still unverified, and another CLI
   version may differ. See `docs/research/live-checks-2026-10-13.md`. (The T3.9 malicious leg held its C-G2 at the
-  outcome level on 2026-10-18; see ROADMAP T3.9.)
+  outcome level on 2026-10-18 and again on 2026-10-19; see ROADMAP T3.9.)
 - Linux only. Single operator only. No hosted or multi-user mode.
 - Only Claude Code and Codex; profiles beyond `inspect-untrusted` and `edit-untrusted` only where the adapter can
   compile them (see `list_capabilities`); a `privileged` `continue_task` only on the same provider (ROADMAP

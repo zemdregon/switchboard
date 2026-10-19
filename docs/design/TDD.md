@@ -849,7 +849,7 @@ the table above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.5](LLD.
   using the stored snapshot. No test escapes the worktree (CF-1 to CF-3 hold on the fake provider, T3.8b, TDD §3.6.2);
   reads of credentials and network use are not enforced on the fake by design (CF-5, CF-6) and stay with the live leg
   (T3.9).
-- **Still open.** The same attempts through Claude Code and Codex (live checks C-G2 and X-G1), per-worktree refs, Git
+- **Still open.** The same attempts through Claude Code and Codex have run (T3.9, 2026-10-19: C-G2 and X-G1 `HELD` with no violation for the guard to detect, so detection on a live run is still unshown), per-worktree refs, Git
   versions other than 2.43.0, and whether a push should be refused after a violation (Q-44).
 
 *T9.6 build notes (2026-10-13; Delegated; [ADR-0028](../adr/0028-controller-push-and-credential-reach.md); the
