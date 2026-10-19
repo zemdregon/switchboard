@@ -7206,7 +7206,7 @@ provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and par
   `CI_INFRA` for `cancelled`, `timed_out`, and a `failure` whose jobs show a runner or infrastructure fault in the
   allowlisted `gh` JSON (the exact field test is settled in T15.6 against the installed `gh`; until then only
   `cancelled` and `timed_out` are `CI_INFRA`). `CI_INFRA` never increments `ci_trigger_ref_state.consecutive_fixes`.
-- **Rerun once.** With `projects.<id>.ci_trigger.rerun_failed: true` (default `false`), a `failure` or `CI_INFRA` run on
+- **Rerun once.** With `ci_trigger.projects[].rerun_failed: true` (default `false`), a `failure` or `CI_INFRA` run on
   a published ref's current head gets one `gh run rerun <run-id> --failed`. A new ledger table (next free migration)
   keyed by `(project_id, publish_ref, head_sha, job_name)` makes the rerun happen at most once per key. The fix-up item
   of FR-QUE-03 is enqueued only when the rerun concludes `failure`; a second red on the same key is never rerun again.
@@ -7293,7 +7293,7 @@ provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and par
 
 ### 20.7 Opt-in merge policy and ref events (FR-SUB-01, FR-SUB-02, T15.8, ADR-0060)
 
-- **Configuration.** `projects.<id>.merge_policy`: `enabled` (default `false`), `method` (`squash` default, `merge`,
+- **Configuration.** `projects[].merge_policy`: `enabled` (default `false`), `method` (`squash` default, `merge`,
   `rebase`), `required_reports` (skill reports that must say `aligned` at the head, default none). An orchestrator that
   turns it on waits for operator approval (FR-PRJ-10).
 - **Gate, evaluated by the controller from `gh` JSON only.** The pull request is open, not a draft, on a ref this

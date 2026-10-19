@@ -151,7 +151,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [PRD CAP-13](docs/requirements/PRD.md#implementation-evidence-partial-m12--cap-13),
   [HLD §2.1](docs/design/HLD.md#21-comp-rag-implementation-evidence-m12-t121t123),
   [LLD §14](docs/design/LLD.md#14-retrieval-index) and [TDD §3.13](docs/design/TDD.md#313-retrieval-index).
-- **Milestone 13 (network MCP transport) is done.** `serve` can expose the MCP tools over Streamable HTTP with OAuth
+- **Milestone 13 (network MCP transport) is `Partial`** (reopened 2026-10-19 for owner decision 77: T13.10
+  and T13.11 are Planned; the M13 scope below stays Done). `serve` can expose the MCP tools over Streamable HTTP with OAuth
   2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
   approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
   front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed
@@ -165,8 +166,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#559](https://github.com/zemdregon/switchboard/pull/559)). ADR-0047 and ADR-0048 remain Proposed. See
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
-- **Milestone 15 (project queue, schedules and CI triggers) is `Done` on fakes** (2026-10-18, Delegated agent work,
-  not owner-approved; the `serve` low-water wiring below is a separate open fix). The durable per-project work queue
+- **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
+  decisions 76 and 77: T15.6 to T15.9 are Planned; the M15 scope below stays Done on fakes (2026-10-18, Delegated
+  agent work,
+  not owner-approved; the `serve` low-water wiring below is a separate open fix)). The durable per-project work queue
   (T15.1, [#527](https://github.com/zemdregon/switchboard/pull/527)) and the CI-failure trigger (T15.3,
   [#563](https://github.com/zemdregon/switchboard/pull/563)) are done on fakes. The trigger is off by default
   (`ci_trigger` in the configuration); `serve` reads CI status through the operator's logged-in `gh` CLI, polls only
