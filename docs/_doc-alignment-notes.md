@@ -316,3 +316,12 @@ as history.
 - Left unchanged: restating the as-built preflight in the HLD is the design owner's call, and the gap predates
   PR #709 (which touches only T4.33, T4.36 and T4.39). It does not block PR #709 (T4.33's own evidence is the
   T4.33 status block and the suites cited there).
+
+## 22. T4.23 row keeps stale "Status stays" notes (pre-existing, not from PR #709)
+
+- The [T4.23 row](ROADMAP.md#68-m4-adapter-expansion-tasks) header records `Done against its Done-when`
+  (2026-10-18, owner decision 65 (a)), but its historical residual-pass notes still say `Status stays`
+  (11 occurrences, same pattern PR #709 fixes for T4.33 in T4.33).
+- Left unchanged: re-tensing another lane's history belongs to that lane's follow-up, and the gap predates
+  PR #709 (which touches only T4.33, T4.36 and T4.39). It does not block PR #709 (no code change; the T4.23
+  header and its Done-when evidence agree).
