@@ -249,7 +249,7 @@ export function stderrLogger(io: CliIo): Logger {
 
 /** Provider enablement from config (`providers.<config id>.enabled`, default on); the fake follows the test switch. */
 /** T4.5 (FR-ADP-05, LLD §2.1): the model registry from `providers.<id>.models`, keyed by adapter id. */
-function modelRegistry(config: ResolvedConfig): ModelRegistry {
+export function modelRegistry(config: ResolvedConfig): ModelRegistry {
   const byAdapter = new Map<string, ModelConfig>();
   for (const [configId, models] of config.providerModels) {
     const adapterId = adapterIdForConfigId(configId);
@@ -258,7 +258,7 @@ function modelRegistry(config: ResolvedConfig): ModelRegistry {
   return new ModelRegistry(byAdapter);
 }
 
-function enablement(config: ResolvedConfig, fake: FakeSwitch): (id: ProviderId) => boolean {
+export function enablement(config: ResolvedConfig, fake: FakeSwitch): (id: ProviderId) => boolean {
   return (id) => {
     if (id === "fake") return fake.enabled;
     const configId = configIdForAdapterId(id);
@@ -288,7 +288,7 @@ export function buildRegistry(fake: FakeSwitch, opts: { claudeGitChannel?: boole
 }
 
 /** Version gate: manifest gate plus the T8.5 version canary (read-only store), except the test fake when enabled. */
-function gateFor(registry: AdapterRegistry, fake: FakeSwitch, dataDir: string) {
+export function gateFor(registry: AdapterRegistry, fake: FakeSwitch, dataDir: string) {
   const store = readVersionCanaryStore(dataDir);
   return (id: ProviderId, version: string | null, dir?: string): VersionGateResult => {
     if (id === "fake" && fake.enabled) {

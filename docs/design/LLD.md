@@ -7409,7 +7409,7 @@ Tests: `src/ci/ci-transient.test.ts` (fake `CiStatusPort`, fake `CiActionsPort` 
    error gives no SHA (fail closed) and never fails the run. The pin is read in VERIFYING before the first command,
    after native skill files are removed (§19.8).
 2. **Report and ledger.** The `test_report` body gains `head_sha` (null when the trees differ) and `tree_sha`.
-   Migration 0025 adds `verification_result` (`id` `vrs_*`, `run_id`, `meta_session_id`, `publish_ref`, `head_sha`,
+   Migration 0026 adds `verification_result` (`id` `vrs_*`, `run_id`, `meta_session_id`, `publish_ref`, `head_sha`,
    `tree_sha`, `outcome`, `artifact_id`, `created_at`; index on `(publish_ref, head_sha)`), one row per stage whose
    report was stored, and widens `artifact.kind` with `docs_alignment` (the table rebuild of migrations 0016 and 0022).
 3. **Read.** The run envelope gains `verification: {verified_at_sha, tree_sha, stale}` from the run's newest
@@ -7592,6 +7592,54 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
 - **Evaluation (FR-OPS-06).** `switchboard eval run <suite>`: a suite file in the data directory, each task replayed as
   a normal run, graded in a network-off container through the ADR-0052 driver with the tests outside the agent's
   worktree; results in a new `eval_result` table.
+
+  *As built (T8.14, 2026-10-19, Delegated agent work, not owner-approved).* `src/eval/` and `src/cli/eval.ts`;
+  operator guide [docs/operations/evaluation.md](../operations/evaluation.md).
+
+  - **Command.** `switchboard eval run <suite> --provider <id> [--live-budget <file>] [--json]` and
+    `switchboard eval results <suite>`. With `CI` set to anything but empty, `false` or `0`, `eval run` reports
+    `EVAL_SKIPPED_IN_CI`, exits 0 and opens nothing. It takes the data-directory lock for the whole suite (refused
+    while `serve` runs, as `gc --apply`).
+  - **Live budget** (Linus decision, WORK QUEUE v10, Delegated). Every provider but the test fake needs
+    `--live-budget <file>`, a JSON object `{"provider": "<id>", "max_runs": <integer > 0>}` naming the same provider;
+    anything else is `EVAL_LIVE_BUDGET_REQUIRED`, and a suite with more tasks than `max_runs` is
+    `EVAL_LIVE_BUDGET_EXCEEDED`. Both are checked before the lock is taken, so no run is admitted.
+  - **Suite file.** `<data_dir>/eval/<suite>.json` (the name matches `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`):
+
+    ```json
+    {
+      "schema_version": 1,
+      "project": "web",
+      "trust_profile": "edit-untrusted",
+      "grader": { "image_digest": "sha256:<64 hex>", "timeout_seconds": 600, "test_command": ["npm", "test"] },
+      "tasks": [
+        { "id": "fix-123", "base_ref": "v1.4.0", "objective": "...", "hidden_tests": "bundles/fix-123",
+          "test_command": ["node", "/eval/tests/run.mjs"] }
+      ]
+    }
+    ```
+
+    `project` names a configured project; `trust_profile` defaults to `edit-untrusted` and may not be `privileged`
+    or exceed the project's ceiling; `hidden_tests` is a directory resolved (through `realpath`) inside
+    `<data_dir>/eval/` and not overlapping any project context; a task's `test_command` overrides the grader's. At
+    most 200 tasks; unknown keys are refused.
+  - **Replay.** Each task is submitted as a new run through `RunLifecycle.submit` (client id `switchboard-eval`,
+    priority `batch`) under the project's snapshot with `base_ref` replaced by the task's, without commit identity or
+    push (`writable: false`, push `none`), one at a time; the runner waits for the terminal state. The lifecycle is
+    unchanged.
+  - **Grader.** Only after a `SUCCEEDED` run: the worktree (without `.git`) and the bundle are copied into a
+    staging directory under `<data_dir>/eval/grading/`; the container runs through the ADR-0052 port and Docker
+    driver: rootless runtime required, the digest resolved among local images (never pulled), two mounts only (the
+    staged output writable at `/eval/work`, the staged bundle read-only at `/eval/tests`), no forwarded environment,
+    no login volume, `--network none`. The runner refuses an argv without `--network none`
+    (`EVAL_GRADER_NETWORK_NOT_OFF`). Before and after grading it asserts the hidden tests are absent from the agent's
+    worktree: no bundle file at the same relative path with the same content (`EVAL_TESTS_IN_WORKTREE`; content alone
+    would flag a correct answer equal to an expected-output file). The container and the staging copy are removed.
+  - **`eval_result`** (migration 0025): `id` (`evl_*`), `suite`, `task_id`, `provider`, `run_id`, `run_state`,
+    `pass` (1 exactly when the test command exited 0, Linus decision; a `CHECK` ties it to `test_exit_code = 0`),
+    `test_exit_code`, `grade_error` (`EVAL_RUN_<state>`, `EVAL_RUN_NOT_ADMITTED` or a grader code), `wall_clock_ms`
+    (submit to terminal), `usage_json` (the run's provider-reported usage metrics, `[]` when none), `created_at`.
+    Test output is not stored.
 - **Brief (FR-SES-07).** `projects.<id>.brief_file`, a path outside the repository, at most 4 KiB, delivered as a
   labelled block before retrieved context and counted in its budget; the handoff bundle lists its SHA-256.
 - **Critic (FR-CTL-15).** `projects.<id>.critic`: `enabled` (default `false`), `min_diff_lines` (Assumption 400), always

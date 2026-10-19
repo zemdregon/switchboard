@@ -1,5 +1,5 @@
 /**
- * Migration 0025 (T8.10; FR-EXE-10, FR-SKL-11, LLD §20.6): head-pinned verification evidence.
+ * Migration 0026 (T8.10; FR-EXE-10, FR-SKL-11, LLD §20.6): head-pinned verification evidence.
  *
  * `verification_result`: one row per finished verification stage (FR-EXE-08) that stored its `test_report`. It records
  * the run's publish ref, the commit the controller read before the stage (`head_sha`, NULL when the worktree's tree

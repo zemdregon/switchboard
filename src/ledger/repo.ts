@@ -229,7 +229,7 @@ export type ArtifactKind =
   | "pr_draft" // T11.8, migration 0009
   | "handoff_condense" // T11.10, migration 0016
   | "seed_log" // T9.13, migration 0022
-  | "docs_alignment"; // T8.10, migration 0025
+  | "docs_alignment"; // T8.10, migration 0026
 
 export interface NewArtifactRow {
   /** Pre-allocated with {@link Ledger.newArtifactId} when a row written first must name it (T5.5, LLD §15.2). */
@@ -580,7 +580,7 @@ export interface GitCommitRow {
 }
 
 /**
- * One `verification_result` row (T8.10; FR-EXE-10, LLD §20.6, migration 0025). Append-only. `head_sha` is the commit
+ * One `verification_result` row (T8.10; FR-EXE-10, LLD §20.6, migration 0026). Append-only. `head_sha` is the commit
  * the stage verified, recorded only when the worktree's tree equalled that commit's tree; `tree_sha` is the worktree's
  * tree. Keyed by `(publish_ref, head_sha)`.
  */
@@ -987,7 +987,7 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   findGitCommitsBySha(commitSha: string): GitCommitRow[];
 
   // ---- T8.10 additions (head-pinned verification, LLD §20.6) ------------------------------------------------------
-  /** Insert one `verification_result` row (migration 0025). */
+  /** Insert one `verification_result` row (migration 0026). */
   recordVerificationResult(input: NewVerificationResult): VerificationResultRow;
   /** The run's newest `verification_result` row, if any. */
   latestVerificationResult(runId: string): VerificationResultRow | undefined;
