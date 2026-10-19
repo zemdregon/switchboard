@@ -43,9 +43,10 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 5 (continuity) is `Partial`.** `continue_task` resumes the provider's native session or hands off to
   another provider from a bundle built from Switchboard's own records, and `get_artifacts` and `runs show` show the
   handoff. It is tested on two fake providers, including a check that the controller opens no provider state directory.
-  It is not `Done`: no run of a real Claude Code and Codex pair has been made (the opt-in `npm run test:live:pair`
-  script exists and has not been run), and resume for the providers of milestone 4 is not built. See
-  [ROADMAP §6.9](docs/ROADMAP.md#69-m5-continuity-tasks).
+  The live resume checks and one live Claude Code to Codex pair ran on 2026-10-19 (ROADMAP T5.12, with Codex in the
+  operator's container login). It is not `Done`: that pair failed one check (the Codex handoff run succeeded, but its
+  file write did not land, most likely because Codex's sandbox cannot start in that container), and resume for the
+  providers of milestone 4 is not built. See [ROADMAP §6.9](docs/ROADMAP.md#69-m5-continuity-tasks).
 - **Milestone 6 (capacity and resilience) is `Done` on fake providers** (2026-10-18, Delegated agent work, not
   owner-approved; acceptance in `src/mcp/m6-acceptance.test.ts`). `get_capacity` and `switchboard capacity` show per-provider
   estimates with their sources, a circuit breaker holds a failing provider back, retryable failures are retried
@@ -893,11 +894,11 @@ Tool schemas are published through MCP `tools/list`.
 `continue_task` takes a meta-session that has no active run and a new instruction, and does one of two things:
 
 - **Resume.** The session's provider is eligible and has a native session: Switchboard resumes that native session
-  (Claude Code `--resume <session id>`, Codex `exec resume <session id>`; the Codex form is an assumption until the
-  operator's live run) in the worktree path of the run that created
+  (Claude Code `--resume <session id>`; Codex `exec <flags> resume <session id>` with the instruction on stdin, the
+  form observed on codex-cli 0.162.0) in the worktree path of the run that created
   it, on a new run branch at the session's head checkpoint — unless the adapter declares `resumeCwd: 'independent'`
-  from a recorded capture (today only Claude Code, from T5.12 cell 2), in which case the resume gets a fresh worktree
-  path. For a bound resume, if that directory is gone or is not clean, the continuation
+  from a recorded capture (today Claude Code and Codex, from T5.12 cell 2), in which case the resume gets a fresh
+  worktree path. For a bound resume, if that directory is gone or is not clean, the continuation
   becomes a handoff on the same provider instead of resuming somewhere else.
 - **Handoff.** You name another provider in `routing.provider_preference`, the session has no native session to resume,
   its directory is unusable, or its provider is no longer eligible. Switchboard builds a bundle, stores it as the run's
@@ -2919,8 +2920,9 @@ With both Claude Code and Codex installed and logged in natively, `SWITCHBOARD_L
 delegates one edit to one provider and continues the session on the other through `continue_task`, in a throwaway
 repository, for each direction (`SWITCHBOARD_LIVE_PAIR=claude:codex` runs one). It is opt-in and skipped otherwise, passes
 no bypass flag, prints no prompt or transcript, and records statuses, bindings (without native session ids) and the
-bundle hash. A provider that is not installed or not logged in makes its checks `NOT_CHECKED`. It has not been run
-against real providers yet (ROADMAP T5.12 is the operator task).
+bundle hash. A provider that is not installed or not logged in makes its checks `NOT_CHECKED`. It was run once against
+real providers on 2026-10-19 (`claude:codex`, Codex in the operator's container login; ROADMAP T5.12): 7 checks held
+and P-7 failed, because the file the Codex run was asked to write did not land.
 
 ### Live-test budget guard
 

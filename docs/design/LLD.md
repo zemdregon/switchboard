@@ -5466,8 +5466,9 @@ Tests: `src/continuity/render.test.ts`, `src/continuity/render-lifecycle.test.ts
 
 Adapter declaration (static data on the adapter, like `gitWriteControl`, T5.7): `resumeCwd: 'bound' | 'independent' |
 'unverified'`. Values from [TDD §4.10](TDD.md#410-native-resume-inventory-t50): Claude Code `independent` (T5.12 cell 2
-live evidence, 2026-10-17, 2.1.294; declared 2026-10-18); Antigravity and Muse Code `bound` (sourced); Codex,
-Grok Build, Cursor, OpenCode and Kimi Code `unverified`; the fakes set either for tests. `unverified` is handled as
+live evidence, 2026-10-17, 2.1.294; declared 2026-10-18) and Codex `independent` (T5.12 cell 2 live evidence,
+2026-10-19, codex-cli 0.162.0); Antigravity and Muse Code `bound` (sourced); Grok Build, Cursor, OpenCode and Kimi
+Code `unverified`; the fakes set either for tests. `unverified` is handled as
 `bound` (NFR-SEC-06).
 
 For a resume (`resumeCwd` not `independent`):
@@ -5490,8 +5491,8 @@ provider's M4 operator item, for the validated version range), a resume uses a f
 
 *As built (T5.7, 2026-10-14, Delegated, not owner-approved).* `ProviderAdapter.resumeCwd` is required static data
 (`src/adapters/types.ts`); the lifecycle treats every value but `independent`, including a missing one, as `bound`
-(`resumeMayChangeDirectory`). Codex declares `unverified` and Claude Code declares `independent` (2026-10-18, from
-the T5.12 cell 2 live evidence); the fake `bound` by default (an option makes
+(`resumeMayChangeDirectory`). Claude Code (2026-10-18) and Codex (2026-10-19) declare `independent`, from
+their T5.12 cell 2 live evidence; the fake `bound` by default (an option makes
 the test variants). The provider table (`src/adapters/providers.ts`) also names TDD §4.10's value for every provider,
 reserved ones included (Antigravity `bound`; Grok Build, Cursor, OpenCode, Kimi Code `unverified`; Muse Code `bound`,
 T4.72), and a registry test requires each adapter to declare its entry's value. The origin lookup and the

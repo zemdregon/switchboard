@@ -183,7 +183,7 @@ describe("resumeCwd declarations (T5.7; ADR-0038 item 6.3, TDD §4.10)", () => {
   it("the table names TDD §4.10's value for every built-in provider", () => {
     expect(Object.fromEntries(BUILTIN_PROVIDERS.map((e) => [e.id, e.resumeCwd]))).toEqual({
       claude: "independent",
-      codex: "unverified",
+      codex: "independent",
       grok: "unverified",
       antigravity: "bound",
       cursor: "unverified",
@@ -199,7 +199,7 @@ describe("resumeCwd declarations (T5.7; ADR-0038 item 6.3, TDD §4.10)", () => {
       if (entry.create === undefined) continue;
       const adapter = entry.create({});
       expect(adapter.resumeCwd, entry.id).toBe(entry.resumeCwd);
-      expect(resumeMayChangeDirectory(adapter), entry.id).toBe(entry.id === "claude");
+      expect(resumeMayChangeDirectory(adapter), entry.id).toBe(entry.id === "claude" || entry.id === "codex");
     }
     expect(resumeMayChangeDirectory({ resumeCwd: "independent" })).toBe(true);
     for (const v of ["bound", "unverified", undefined, "Independent", null]) {
@@ -207,13 +207,13 @@ describe("resumeCwd declarations (T5.7; ADR-0038 item 6.3, TDD §4.10)", () => {
     }
   });
 
-  it("Claude declares independent allowing resume to change directory, while Codex stays unverified (T5.12)", () => {
+  it("Claude and Codex declare independent from their T5.12 cell 2 captures, so a resume may change directory", () => {
     const claude = providerEntry("claude");
     const codex = providerEntry("codex");
     expect(claude?.resumeCwd).toBe("independent");
-    expect(codex?.resumeCwd).toBe("unverified");
+    expect(codex?.resumeCwd).toBe("independent");
     expect(resumeMayChangeDirectory({ resumeCwd: claude?.resumeCwd })).toBe(true);
-    expect(resumeMayChangeDirectory({ resumeCwd: codex?.resumeCwd })).toBe(false);
+    expect(resumeMayChangeDirectory({ resumeCwd: codex?.resumeCwd })).toBe(true);
   });
 });
 
