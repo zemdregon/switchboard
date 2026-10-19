@@ -1,3 +1,5 @@
+import type Database from "better-sqlite3";
+import { backfillChains } from "../chain.js";
 import { sql as sql0001 } from "./0001_initial.js";
 import { sql as sql0002 } from "./0002_project_id.js";
 import { sql as sql0003 } from "./0003_git_commit.js";
@@ -22,6 +24,7 @@ import { sql as sql0021 } from "./0021_skill_store.js";
 import { sql as sql0022 } from "./0022_dependency_seed.js";
 import { sql as sql0023 } from "./0023_ci_fix_cap.js";
 import { sql as sql0024 } from "./0024_ci_transient.js";
+import { postSql as postSql0025, sql as sql0025 } from "./0025_ledger_chain.js";
 
 export interface Migration {
   readonly version: number;
@@ -29,6 +32,13 @@ export interface Migration {
   readonly sql: string;
   /** Run with `PRAGMA foreign_keys = OFF` and a `foreign_key_check` before commit (a rebuild of a referenced table). */
   readonly foreignKeysOff?: boolean;
+  /**
+   * Data step run after `sql` in the same transaction (migration 25's chain backfill). Its code is as immutable as the
+   * SQL once released; it is not part of the checksum.
+   */
+  readonly backfill?: (db: Database.Database) => void;
+  /** SQL run after `backfill` in the same transaction (recreating guards `sql` dropped); part of the checksum. */
+  readonly postSql?: string;
 }
 
 /** Ordered, forward-only. Never edit or remove a released entry (ADR-0005); append a new one. */
@@ -57,4 +67,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 22, name: "dependency_seed", sql: sql0022, foreignKeysOff: true },
   { version: 23, name: "ci_fix_cap", sql: sql0023 },
   { version: 24, name: "ci_transient", sql: sql0024 },
+  { version: 25, name: "ledger_chain", sql: sql0025, backfill: backfillChains, postSql: postSql0025 },
 ];

@@ -7503,8 +7503,18 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
 
 ### 20.13 Tamper-evident ledger, provider telemetry, evaluation, brief and critic (T8.13, T8.15, T8.14, T5.14, T14.17)
 
-- **Chain (FR-TEL-05).** An ADR (persistence format) first. Proposed: a `chain_hash` column, SHA-256 over the previous
-  row's hash and the row's canonical JSON, backfilled in id order by the migration; `doctor` verifies.
+- **Chain (FR-TEL-05).** Implemented (T8.13, 2026-10-19, Delegated; [ADR-0064](../adr/0064-hash-chained-ledger-rows.md)
+  owns the format). Migration 25 adds `chain_seq` (gapless position, unique) and `chain_hash` to `run_event` and
+  `approval`: two independent chains. `chain_hash` = hex SHA-256 of the previous row's hash followed by the row's
+  canonical JSON (the ADR's fixed column list, sorted keys, no whitespace, values as stored); genesis is 64 zeros.
+  Every `run_event` row is linked on insert through `insertChainedRunEvent` (`src/ledger/chain.ts`), the only
+  production writer; an approval row is linked when it is decided, in the decision's transaction, and a `PENDING` row
+  carries no link. The migration backfills existing rows in insertion (`rowid`) order, which is id order except
+  within one millisecond, with the update guards dropped and recreated in the same transaction (the runner's
+  `backfill` and `postSql` steps; `postSql` is in the checksum). `doctor`'s `ledger_chain` check opens the ledger
+  read-only and reports each chain's length and head hash, or `fail` naming the table and the first broken row's id.
+  It detects edits made without the chain code; it does not detect a recomputed chain or a truncated tail
+  (ADR-0064).
 - **Provider OTLP (FR-TEL-06).** An ADR (new local listener, per-provider environment additions) first. Proposed: one
   listener per run on `127.0.0.1:0`, metrics only, attribute allowlist, the provider's documented OTLP variables named
   in its manifest after they are checked against the provider's documentation.

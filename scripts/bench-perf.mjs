@@ -62,9 +62,9 @@ const timed = async (key, fn) => {
     marks[key] += performance.now() - t;
   }
 };
-const adapter = {
-  id: inner.id,
-  transports: inner.transports,
+// The wrapper inherits every other adapter member (git capabilities, parsing, ...) from the fake, so the benchmark keeps
+// working as the adapter interface grows.
+const adapter = Object.assign(Object.create(inner), {
   probe: (r) => {
     marks.probeCalls += 1;
     return timed("probeMs", () => inner.probe(r));
@@ -74,14 +74,11 @@ const adapter = {
     marks.compile = performance.now(); // last step before the provider process is spawned
     return inner.compile(req, p);
   },
-  resumeArgs: (b, req, p) => inner.resumeArgs(b, req, p),
-  parseEvent: (i, s) => inner.parseEvent(i, s),
   extractResult: (e, x) => {
     marks.exit = performance.now(); // called as soon as the process exit has been observed
     return inner.extractResult(e, x);
   },
-  classifyFailure: (e) => inner.classifyFailure(e),
-};
+});
 
 const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "sb-bench-")));
 const repo = path.join(root, "repo");
@@ -197,6 +194,16 @@ for (let i = 0; i < N; i += 1) {
   capsMs.push(performance.now() - t);
 }
 
+// T8.13 (ADR-0064): one `run_event` append through the ledger, the path that computes the hash-chain link. Ten times
+// as many samples as runs, each its own IMMEDIATE transaction with a synchronous commit (synchronous = FULL).
+const appendMs = [];
+for (let i = 0; i < WARMUP * 10; i += 1) ledger.appendRunEvent({ runId: lastRun, type: "bench", payload: { i } });
+for (let i = 0; i < N * 10; i += 1) {
+  const t = performance.now();
+  ledger.appendRunEvent({ runId: lastRun, type: "bench", payload: { i } });
+  appendMs.push(performance.now() - t);
+}
+
 const pct = (xs, p) => {
   const s = [...xs].sort((a, b) => a - b);
   return s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)];
@@ -229,6 +236,7 @@ const results = {
     provider_exit_to_terminal_visible: stat(col("finalize")),
     get_run: stat(getRunMs),
     list_capabilities_live_probe: stat(capsMs),
+    ledger_append_run_event: stat(appendMs),
   },
 };
 

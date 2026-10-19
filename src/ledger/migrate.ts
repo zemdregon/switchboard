@@ -3,8 +3,10 @@ import type Database from "better-sqlite3";
 import { MigrationError } from "./errors.js";
 import { MIGRATIONS, type Migration } from "./migrations/index.js";
 
+/** SHA-256 of `sql`, followed by `postSql` when present (so every earlier migration's checksum is unchanged). */
 export function migrationChecksum(m: Migration): string {
-  return createHash("sha256").update(m.sql).digest("hex");
+  const text = m.postSql === undefined ? m.sql : `${m.sql}\n-- postSql\n${m.postSql}`;
+  return createHash("sha256").update(text).digest("hex");
 }
 
 interface AppliedRow {
@@ -63,6 +65,8 @@ export function migrate(
     try {
       db.transaction(() => {
         db.exec(m.sql);
+        m.backfill?.(db);
+        if (m.postSql !== undefined) db.exec(m.postSql);
         insert(m);
         if (fkOff && (db.pragma("foreign_key_check") as unknown[]).length > 0) {
           throw new MigrationError(`migration ${m.version} (${m.name}) left foreign key violations; aborting`);

@@ -279,7 +279,10 @@ describe("ledger migrations", () => {
       sizeBytes: 3,
       mediaType: "text/plain",
     });
-    ledger.appendRunEvent({ runId: run.id, type: "x", artifactId: art });
+    // A plain insert, as a writer of this schema version did (the chained writer needs migration 25's columns).
+    d.prepare(
+      "INSERT INTO run_event (id, run_id, seq, ts, type, payload_json, artifact_id) VALUES ('evt_old', ?, 1, 't', 'x', '{}', ?)",
+    ).run(run.id, art);
     expect(() =>
       ledger.insertArtifact({
         runId: run.id,
@@ -341,7 +344,10 @@ describe("ledger migrations", () => {
       sizeBytes: 3,
       mediaType: "application/json",
     });
-    ledger.appendRunEvent({ runId: run.id, type: "handoff_built", artifactId: art });
+    // A plain insert, as a writer of this schema version did (the chained writer needs migration 25's columns).
+    d.prepare(
+      "INSERT INTO run_event (id, run_id, seq, ts, type, payload_json, artifact_id) VALUES ('evt_old', ?, 1, 't', 'handoff_built', '{}', ?)",
+    ).run(run.id, art);
     expect(() =>
       ledger.insertArtifact({
         runId: run.id,

@@ -268,8 +268,13 @@ async function cli(args: string[], allowNonZero = false, extra: Partial<CliIo> =
   };
   const code = await main([...args, "--config", configPath], io);
   if (!allowNonZero) expect(code).toBe(0);
-  return out.join("");
+  // `doctor`'s ledger_chain line (T8.13, ADR-0064) counts every run event and prints the chain head, and each inner
+  // call is one `inner_call` run event by design. Only a verified chain is masked; a broken one still differs.
+  return args[0] === "doctor" ? out.join("").replace(VERIFIED_CHAIN, "<ledger chain verified>") : out.join("");
 }
+
+const VERIFIED_CHAIN =
+  /run_event: \d+ row\(s\) linked, head [0-9a-f]{64}; approval: \d+ row\(s\) linked, head [0-9a-f]{64}/gu;
 
 async function toolText(client: Client, name: string, args: Record<string, unknown> = {}): Promise<string> {
   const res = await client.callTool({ name, arguments: args });
@@ -1389,15 +1394,16 @@ describe("a duplicate-id insert in every non-REPLACE conflict spelling is refuse
         /UNIQUE constraint failed: inner_call\.id/u,
       ],
       // SQLite checks the (run_id, seq) index before the primary key, so the same id is tried on a free seq to reach
-      // the key, and a fresh id on the taken seq to reach the index.
+      // the key, and a fresh id on the taken seq to reach the index. Both use a free chain_seq (ADR-0064), whose unique
+      // index would otherwise refuse the copy first.
       [
         "run_event",
-        { ...event, seq: 2, payload_json: JSON.stringify({ tokens: PLANTED }) },
+        { ...event, seq: 2, chain_seq: 1_000, payload_json: JSON.stringify({ tokens: PLANTED }) },
         /UNIQUE constraint failed: run_event\.id/u,
       ],
       [
         "run_event",
-        { ...event, id: "evt_duplicate_seq", payload_json: JSON.stringify({ tokens: PLANTED }) },
+        { ...event, id: "evt_duplicate_seq", chain_seq: 1_000, payload_json: JSON.stringify({ tokens: PLANTED }) },
         /UNIQUE constraint failed: run_event\.run_id, run_event\.seq/u,
       ],
     ];
