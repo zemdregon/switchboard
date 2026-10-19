@@ -20,7 +20,7 @@ changes the persistence format, so it needs an ADR before code.
 
 ## Decision
 
-1. **Two columns per chained table.** Migration 25 adds `chain_seq INTEGER` and `chain_hash TEXT` to `run_event` and to
+1. **Two columns per chained table.** Migration 26 adds `chain_seq INTEGER` and `chain_hash TEXT` to `run_event` and to
    `approval`, with a unique index on `chain_seq` per table. `chain_seq` is the position in the table's chain, 1, 2, 3,
    and so on without gaps; it does not use `rowid`, which `VACUUM` may renumber.
 2. **Two independent chains** (Linus decision (b)). `run_event` rows are linked to the previous `run_event` row,
@@ -48,7 +48,7 @@ changes the persistence format, so it needs an ADR before code.
    decision, inside one transaction. The unique index on `chain_seq` makes a concurrent writer that read the same last
    link fail its insert instead of forking the chain (fail closed). Every production writer of `run_event` goes
    through one helper (`insertChainedRunEvent`, `src/ledger/chain.ts`).
-7. **Backfill.** Migration 25 links existing rows in insertion (`rowid`) order: every `run_event` row, and every
+7. **Backfill.** Migration 26 links existing rows in insertion (`rowid`) order: every `run_event` row, and every
    approval row that is no longer `PENDING`. The `run_event_no_update` and `approval_update_once` guards are dropped for
    the backfill and recreated with their original text in the same migration transaction, so a failed backfill leaves
    the ledger as it was. Ledger ids are clock-prefixed, so insertion order is id order except between ids from the
