@@ -3,8 +3,9 @@
 - Status: Proposed (T16.1 implemented the skill store, migration 0021 and state derivation, T16.3 the
   configuration keys and loader, T16.2 the operator CLI, T16.4 admission, T16.5 prompt-prefix delivery, T16.6 the
   native-delivery framework with leak prevention, T16.9 the MCP tools, T16.10 continuity across handoff and resume
-  and T16.11 the malicious-fixture leg, 2026-10-17, Delegated, not owner-approved; flipping a cell to `native`
-  after its T16.8 live check (T16.8) and M16 acceptance (T16.12) are not implemented;
+  and T16.11 the malicious-fixture leg, 2026-10-17, Delegated, not owner-approved; T16.8 live checks Done 2026-10-19
+  (decision 70: Claude Code `NOT_LOADED`, Grok Build, Cursor and Muse Code `NOT_CHECKED`, so no cell flips to `native`)
+  and M16 acceptance (T16.12) Done on fakes;
   the four limit defaults are Assumptions and their ranges are Delegated)
 - Date: 2026-10-17
 - Decided by: zemdregon (the product direction, [owner decision 58](../ROADMAP.md#42-owner-decisions), 2026-10-17:

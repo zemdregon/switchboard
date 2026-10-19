@@ -6721,7 +6721,8 @@ store, migration `0021` and state derivation (T16.1), the configuration keys and
 (T16.7 Done 2026-10-17, Delegated, not owner-approved), continuity across handoff and resume (T16.10: the bundle
 `skills` facts and re-delivery in the receiving provider's way), the malicious-fixture leg (T16.11) and the M16
 acceptance test on fakes (T16.12), all Delegated, not owner-approved;
-per-provider native (T16.8) Proposed).
+per-provider native (T16.8) Done 2026-10-19, decision 70: Claude Code `NOT_LOADED`, Grok Build, Cursor and Muse Code
+`NOT_CHECKED`, no native cells).
 Delegated mechanism, not owner-approved beyond the direction. The four limit defaults are Assumptions and their ranges
 are Delegated ([§19.3](#193-configuration-fr-skl-03-fr-skl-04-fr-skl-08)).* Requirements: FR-SKL-01 to
 FR-SKL-10. Business rules: [FRD](../requirements/FRD.md#3-business-rules) BR-52 to BR-56, V15, C8, WF-16. Tasks:
