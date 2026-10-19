@@ -2209,8 +2209,9 @@ counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
   - `needs_attention` / `ci_fix_stuck`: the CI poller setting the stuck flag (the 0→1 transition only), via `onStuck`.
   - `budget_exhausted` (T14.4, unchanged): the budget refusal hook already announces it, so it is not announced again
     as `needs_attention`.
-  - `stalled` has no event-time hook (stall is derived on read only, `findStalledRuns` never acts) and is never
-    emitted; `run_terminal`, `project_paused` / `global_paused` and `queue_low` are unchanged.
+  - `stalled` and `secret_scan_blocked` have no event-time hook (both derived on read only: `findStalledRuns`
+    never acts, and a push refusal is a tool result read back from the meta-session's `git_push` events, §3.4.5;
+    T9.14) and are never emitted; `run_terminal`, `project_paused` / `global_paused` and `queue_low` are unchanged.
 
 #### 3.4.10 `tool_profile` (FR-CTL-11)
 
