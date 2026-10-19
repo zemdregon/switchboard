@@ -2431,7 +2431,7 @@ process per run ([ADR-0049](docs/adr/0049-kimi-code-transport-and-bypass-class.m
 [`docs/research/live-checks-2026-10-15-kimi.md`](docs/research/live-checks-2026-10-15-kimi.md), which made no model
 call). Since the owner-level ruling relayed 2026-10-19 08:45 CDT ("T4.68 KIMI BYPASS-ONLY", ROADMAP T4.68), Kimi Code
 is bypass-only: only the approved bypass cell below compiles, and any other mode is `Ineligible:
-PROFILE_UNSUPPORTED` with detail "Kimi has no permission requests" (`kimiBypassOnlyGate` in
+PROFILE_UNSUPPORTED` with a detail starting `mode approval: Kimi has no permission requests` (`kimiBypassOnlyGate` in
 `src/adapters/kimi/adapter.ts`, tested by `src/adapters/kimi/bypass-only-gate.test.ts`), because Kimi Code 2.1.1
 raises no ACP `session/request_permission` in `default` mode (ADR-0049 item 3):
 
@@ -2487,7 +2487,7 @@ the `privileged` cells below (Delegated, fail closed; T4.62).
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | yes, one cell (bypass-only since the 2026-10-19 08:45 CDT ruling) | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). The bypass cell needs network `on` and repository configuration `enabled` (owner decision 26, Q-37); anything narrower is `CAPABILITY_MISSING`. **With `bypass`:** only worktree file access with shell `broad` compiles, as `kimi [--model=<alias>] --prompt=<prompt> --output-format stream-json` with nothing added; read-only files or a narrower shell are `CAPABILITY_MISSING` because Never Ask cannot be narrowed. **Without `bypass`:** `Ineligible: PROFILE_UNSUPPORTED`, detail "Kimi has no permission requests" — Kimi Code 2.1.1 raises no ACP `session/request_permission` in `default` mode (observed 2026-10-19, post-#748 rerun — see ROADMAP T4.68), so per ADR-0049 item 3 the restricted ACP cell no longer compiles; the ACP compile and the `requirePermissionRequest` runtime check stay in code for the Deferred [ROADMAP §8](docs/ROADMAP.md#8-deferred-and-excluded-work) row "Kimi ACP permission gating (ADR-0049 item 3)" but no run reaches them (test: `src/adapters/kimi/bypass-only-gate.test.ts`). A bypass approval on any other profile, or a `bypass` scope without an approval, is `PROFILE_UNSUPPORTED`. |
+| `privileged` | yes, one cell (bypass-only since the 2026-10-19 08:45 CDT ruling) | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). The bypass cell needs network `on` and repository configuration `enabled` (owner decision 26, Q-37); anything narrower is `CAPABILITY_MISSING`. **With `bypass`:** only worktree file access with shell `broad` compiles, as `kimi [--model=<alias>] --prompt=<prompt> --output-format stream-json` with nothing added; read-only files or a narrower shell are `CAPABILITY_MISSING` because Never Ask cannot be narrowed. **Without `bypass`:** `Ineligible: PROFILE_UNSUPPORTED`, detail starting `mode approval: Kimi has no permission requests` — Kimi Code 2.1.1 raises no ACP `session/request_permission` in `default` mode (observed 2026-10-19, post-#748 rerun — see ROADMAP T4.68), so per ADR-0049 item 3 the restricted ACP cell no longer compiles; the ACP compile and the `requirePermissionRequest` runtime check stay in code for the Deferred [ROADMAP §8](docs/ROADMAP.md#8-deferred-and-excluded-work) row "Kimi ACP permission gating (ADR-0049 item 3)" but no run reaches them (test: `src/adapters/kimi/bypass-only-gate.test.ts`). A bypass approval on any other profile, or a `bypass` scope without an approval, is `PROFILE_UNSUPPORTED`. |
 
 **Bypass-class flags (ADR-0049).** The registry entry (`src/adapters/providers.ts`) declares `--auto` and `--plan`
 (with the shared `--yolo`) and the short `-y` as bypass flags, and the ACP modes `auto` and `yolo` (as a mode id or the
@@ -2537,8 +2537,7 @@ The conformance suite (T4.65, [#455](https://github.com/zemdregon/switchboard/pu
 (synthetic recorded fixtures, FR-ADP-11, T4.65)") replays the synthetic fixtures in `src/adapters/kimi/fixtures/`
 (`kimiConformanceCases` in `cases.ts`) through the replay dialect `src/adapters/fixtures/replay-dialects/kimi.mjs`,
 which accepts only the approved bypass argv and exits 64 for any other word, a bypass-class or never-emitted flag, or
-`KIMI_CODE_HOME` in the environment. Only the bypass cell is a conformance case; the `kimi acp` permission round trip
-is T4.68.
+`KIMI_CODE_HOME` in the environment. Only the bypass cell is a conformance case; the `kimi acp` permission round trip was carried by T4.68 (observed: 2.1.1 raises none in `default` mode; permission gating Deferred — see ROADMAP T4.68).
 
 ### Git and commits
 
