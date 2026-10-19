@@ -127,7 +127,7 @@ export function insertChainedRunEvent(db: Database.Database, input: ChainedRunEv
 }
 
 /**
- * Migration 25's backfill (ADR-0064 item 7): links every `run_event` row and every decided approval row in insertion
+ * Migration 26's backfill (ADR-0064 item 7): links every `run_event` row and every decided approval row in insertion
  * (`rowid`) order. Runs inside the migration transaction while the update guards are dropped.
  */
 export function backfillChains(db: Database.Database): void {

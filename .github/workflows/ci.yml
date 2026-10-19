@@ -43,6 +43,17 @@ jobs:
       - name: Test
         run: npm test
 
+      # T8.11 (NFR-MAINT-06): coverage of the same suite, no threshold; the report is an artifact for review.
+      - name: Coverage
+        run: npm test -- --coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: error
+
       - name: Build
         run: npm run build
 
