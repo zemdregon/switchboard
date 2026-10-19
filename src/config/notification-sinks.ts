@@ -17,7 +17,10 @@
  * - At most 8 sinks (**Assumption**), each `id` once.
  */
 
-/** LLD §3.4.1 `sink_event_kind`: the closed list of events a sink can receive. */
+/**
+ * LLD §3.4.1 `sink_event_kind`: the closed list of events a sink can receive. `digest` (T14.16, FR-CTL-14) is sent only
+ * when the operator configures `control_plane.digest_schedule`.
+ */
 export const SINK_EVENT_KINDS = [
   "run_terminal",
   "needs_attention",
@@ -26,6 +29,7 @@ export const SINK_EVENT_KINDS = [
   "budget_exhausted",
   "project_paused",
   "queue_low",
+  "digest",
 ] as const;
 export type SinkEventKind = (typeof SINK_EVENT_KINDS)[number];
 

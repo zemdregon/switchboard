@@ -226,6 +226,8 @@ export interface RoutingConfigInput {
 
 /** LLD §17.1 bounds of each `routing.weights` value (Assumption, Q-80); the default of 1 lives in `src/routing/score.ts`. */
 export const MAX_ROUTING_WEIGHT = 100;
+/** T14.16: largest `projects[].queue.stall_hours` (30 days; Assumption, Delegated). */
+export const MAX_STALL_HOURS = 720;
 
 /** `control_plane` as written in the config file (LLD §3.4.6); `budgets` (T14.4) and `loop_breaker` (T14.5) so far. */
 export interface ControlPlaneConfigInput {
@@ -235,6 +237,8 @@ export interface ControlPlaneConfigInput {
     stall_minutes?: number;
     max_successors_per_meta_session?: number;
   };
+  /** T14.16 (FR-CTL-14, LLD §20.5): push a metadata-only digest to the sinks on this schedule; absent means off. */
+  digest_schedule?: { cron: string };
 }
 
 /** `capacity` as written in the config file (LLD §16.1). */
@@ -408,6 +412,8 @@ export interface ProjectConfig {
    */
   queue?: {
     low_water?: number;
+    /** T14.16 (FR-CTL-14, LLD §20.5): `stalled_progress` window in hours; absent means off. */
+    stall_hours?: number;
   };
 }
 
@@ -611,6 +617,8 @@ export const projectSchema = {
       additionalProperties: false,
       properties: {
         low_water: { type: "integer", minimum: 1 },
+        // T14.16: the upper bound (30 days) is an Assumption, a sanity limit with no source (Delegated).
+        stall_hours: { type: "integer", minimum: 1, maximum: MAX_STALL_HOURS },
       },
     },
     contexts: { type: "array", minItems: 1, items: contextSchema },
@@ -1006,6 +1014,13 @@ export const configSchema = {
             stall_minutes: { type: "integer", minimum: 1, maximum: 10080 },
             max_successors_per_meta_session: { type: "integer", minimum: 1, maximum: 100 },
           },
+        },
+        // T14.16 (FR-CTL-14, LLD §20.5): the §18.5 cron syntax (five fields, UTC), checked in `control-plane.ts`.
+        digest_schedule: {
+          type: "object",
+          additionalProperties: false,
+          required: ["cron"],
+          properties: { cron: { type: "string", minLength: 1, maxLength: 256 } },
         },
       },
     },
