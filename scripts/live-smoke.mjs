@@ -25,8 +25,19 @@
  * cell's scope, parks in AWAITING_APPROVAL and is approved through the operator `approve` CLI (no MCP tool can
  * approve, FR-MCP-06); the audit then requires exactly the cell's one bypass-class flag (none for OpenCode and the
  * Kimi ACP cell), as `adapters validate` does.
+ *
+ * Kimi Code evidence (T4.68, decision 74; `scripts/live/acp-evidence.mjs`): a plug-in with `permissionRecord` gets
+ * `<prefix>-P1`, the `session/request_permission` round trip of the ACP smoke run (fail closed: no request is FAILED).
+ * A plug-in with `failedTurn` gets `<prefix>-F1`: after the smoke run, one deliberately failed turn in that approved
+ * cell, compiled as a resume of a `--session` id no session has and run through `startAdapterRun` with an in-memory
+ * approval local to this one call, as `adapters validate` runs its cell (owner decision 59): the same argv audit
+ * (exactly the cell's one bypass-class flag), a fresh empty directory, a prompt that asks for no tool, and a 120 s
+ * bound. The CLI's own exit code is recorded and printed apart from this script's exit code; exit 0 on the failed
+ * turn is FAILED. That turn is a second provider invocation, so the budget guard admits two runs for such a plug-in.
+ * A plug-in with `keepEvidence` keeps the temp directory (redacted stream, ledger, serve log) as `SWITCHBOARD_LIVE_KEEP=1`.
  */
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -40,6 +51,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { failedTurnVerdict, forcedSessionId, permissionRoundTrip } from "./live/acp-evidence.mjs";
 import { admitLiveRun, EXIT_REFUSED, modelHandoff, withBudgetModel } from "./live/budget.mjs";
 
 // Provider plug-ins (T4.3): one scripts/live/providers/<id>.mjs per provider; the contract is in those files.
@@ -71,11 +83,19 @@ const cell = plugin.smokeCell;
 /** Placeholder approval id for the in-script compile below; it names no approval row (nothing is persisted). */
 const SMOKE_APPROVAL_ID = "apv_0000000000000000000000SMKE";
 const timeoutMs = Number(process.env.SWITCHBOARD_LIVE_TIMEOUT_MS ?? 600_000);
-const keep = process.env.SWITCHBOARD_LIVE_KEEP === "1";
+// T4.68 (decision 74): a plug-in that asks for its evidence keeps the temp directory without the variable.
+const keep = process.env.SWITCHBOARD_LIVE_KEEP === "1" || plugin.keepEvidence === true;
+/** Bound of the deliberately failed turn (`<prefix>-F1`): it should end at once, so it never waits long. */
+const FAILED_TURN_TIMEOUT_MS = 120_000;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // T8.9 (NFR-MAINT-05): the live-test budget guard runs before dist/ is loaded and before any provider process.
-const budget = admitLiveRun({ script: "live-smoke", runs: { [provider]: 1 }, repoRoot: ROOT });
+// The smoke task is one run; a plug-in's forced failed turn (`failedTurn`) is one more provider invocation.
+const budget = admitLiveRun({
+  script: "live-smoke",
+  runs: { [provider]: plugin.failedTurn ? 2 : 1 },
+  repoRoot: ROOT,
+});
 if (budget.configured && !budget.allowed) {
   process.stderr.write(`live-smoke: REFUSED by the live-test budget: ${budget.reason}\n`);
   process.exit(EXIT_REFUSED);
@@ -102,6 +122,7 @@ if (!existsSync(BIN)) {
 const dist = (p) => import(pathToFileURL(path.join(DIST, p)).href);
 const adapters = await dist("adapters/index.js");
 const { privilegedScopeHash, resolveProfile, resolveTrustProfile } = await dist("policy/index.js");
+const { defaultRedactor } = await dist("artifacts/redact.js");
 const { PROBE_ENV_ALLOWLIST } = await dist("cli/io.js");
 const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
@@ -312,15 +333,19 @@ const shapes = {
   threadStarted: undefined,
   turnCompleted: undefined,
 };
+let streamText = "";
+let runEvents = [];
 if (runId && existsSync(path.join(dataDir, "ledger.sqlite"))) {
   const db = new Database(path.join(dataDir, "ledger.sqlite"), { readonly: true });
   const art = db.prepare("SELECT sha256 FROM artifact WHERE run_id = ? AND kind = 'provider_stdout'").get(runId);
+  runEvents = db.prepare("SELECT type, payload_json FROM run_event WHERE run_id = ? ORDER BY seq").all(runId);
   db.close();
   if (art) {
     const file = path.join(dataDir, "artifacts", art.sha256.slice(0, 2), art.sha256.slice(2, 4), art.sha256);
     const state = adapters.createParseState();
     types = new Map();
-    for (const line of readFileSync(file, "utf8").split("\n")) {
+    streamText = readFileSync(file, "utf8");
+    for (const line of streamText.split("\n")) {
       if (line.trim() === "") continue;
       lines += 1;
       let doc;
@@ -409,6 +434,108 @@ record(
   gitRefsEvidence,
 );
 plugin.gitWriteChecks({ record });
+
+// T4.68 (decision 74): K-P1, the permission round trip of the ACP smoke run, from the stored (redacted) stream and the
+// controller's `acp_permission` events. Field names, counts and option kinds only; fail closed.
+let permissionRecord;
+if (plugin.permissionRecord && cell && cell.scope.bypass !== true) {
+  const p1 = permissionRoundTrip({ ran, stream: streamText, runEvents });
+  permissionRecord = p1.record;
+  record(
+    `${plugin.checkPrefix}-P1`,
+    "ADR-0049 item 3",
+    "`default` mode raises `session/request_permission` for the run's tool calls, each with the tool name and arguments, and the controller answers each allow_once or reject_once",
+    p1.result,
+    p1.evidence,
+  );
+}
+
+// T4.68 (decision 74): K-F1, one deliberately failed turn in the plug-in's approved cell, outside `serve` (as
+// `adapters validate` runs its cell), and the CLI's own exit code.
+let failedTurnRecord;
+if (plugin.failedTurn) {
+  const ft = plugin.failedTurn;
+  let v;
+  if (!binaryOk || !gate.eligible) {
+    v = failedTurnVerdict({
+      spawned: false,
+      reason: binaryOk ? "version outside the manifest range" : "binary not found",
+    });
+  } else {
+    const ftDir = path.join(tmp, "failed-turn");
+    mkdirSync(ftDir);
+    writeFileSync(path.join(ftDir, "README.md"), "# Empty directory for the Switchboard forced failed turn\n");
+    const ftProfile = resolveTrustProfile("privileged", {
+      privileged: {
+        scope: ft.scope,
+        scopeHash: privilegedScopeHash({
+          clientId: "live-smoke",
+          metaSessionId: "live-smoke-failed-turn",
+          scope: ft.scope,
+        }),
+        approvalId: SMOKE_APPROVAL_ID,
+      },
+    });
+    const ftRequest = withBudgetModel(
+      {
+        runId: "run_smoke_failed_turn",
+        objective: "Reply with the single word ok. Do not use any tool and do not create or modify any file.",
+        constraints: [],
+        workspace: { cwd: ftDir, writable: true },
+        ...(ft.scope.bypass ? { bypassApproved: true } : {}),
+      },
+      model,
+    );
+    const sessionId = forcedSessionId(randomBytes(8).toString("hex"));
+    const inv = adapter.resumeArgs({ provider: adapterId, nativeSessionId: sessionId }, ftRequest, ftProfile);
+    const found = adapters.isIneligible(inv) ? [] : adapters.findBypassFlags(inv, adapterId);
+    const expected = ft.bypassFlag ? [ft.bypassFlag] : [];
+    if (adapters.isIneligible(inv)) {
+      v = failedTurnVerdict({ spawned: false, reason: `resume compile ineligible: ${inv.reason}` });
+    } else if (found.length !== expected.length || found.some((f, i) => f !== expected[i])) {
+      v = failedTurnVerdict({
+        spawned: false,
+        reason: `bypass-flag audit refused the resume: ${found.join(", ") || "none"} (cell declares ${expected.join(", ") || "none"})`,
+      });
+    } else {
+      out(`\nforced failed turn: resume of an unknown --session id in the ${ft.bypassFlag ?? "approved"} cell`);
+      const bounded = {
+        ...inv,
+        timeouts: {
+          ...inv.timeouts,
+          wallClockMs: Math.min(inv.timeouts.wallClockMs, FAILED_TURN_TIMEOUT_MS),
+          idleMs: Math.min(inv.timeouts.idleMs, FAILED_TURN_TIMEOUT_MS),
+        },
+      };
+      const outcome = await adapters.startAdapterRun(adapter, bounded, {
+        profile: ftProfile,
+        bypassApproved: ft.scope.bypass === true,
+      }).done;
+      // Evidence retention: the redacted streams of the failed turn beside the smoke run's ledger.
+      writeFileSync(path.join(tmp, "failed-turn.stdout.jsonl"), defaultRedactor(outcome.stdout));
+      writeFileSync(path.join(tmp, "failed-turn.stderr.txt"), defaultRedactor(outcome.stderr));
+      v = failedTurnVerdict({
+        spawned: outcome.exit.outcome !== "spawn_error",
+        reason: "the CLI did not start",
+        exitCode: outcome.exit.exitCode,
+        signal: outcome.exit.signal,
+        turnFailed: outcome.result.ok !== true,
+        failureCode: outcome.result.failureCode,
+      });
+    }
+  }
+  failedTurnRecord = v.record;
+  out(
+    `failed turn: CLI exit code ${v.record.cli_exit_code ?? "none"}${v.record.cli_signal ? ` (signal ${v.record.cli_signal})` : ""}; turn failed: ${v.record.turn_failed ?? "n/a"} (this script's exit code is separate)`,
+  );
+  record(
+    `${plugin.checkPrefix}-F1`,
+    GROUP,
+    "a deliberately failed turn (resume of a `--session` id no session has) ends with a non-zero CLI exit code",
+    v.result,
+    v.evidence,
+  );
+}
 record(
   "E2E",
   "T2.6",
@@ -430,7 +557,7 @@ out("Record the outcome in ROADMAP Q-13 and update the fixtures and TDD §4.1/§
 const summaryPath = path.join(tmp, "live-smoke-summary.json");
 writeFileSync(
   summaryPath,
-  `${JSON.stringify({ provider, binary_version: probe.binaryVersion, status: final.status ?? null, failure_code: final.failure_code ?? final.error?.code ?? null, native_event_types: Object.fromEntries(types), checks }, null, 2)}\n`,
+  `${JSON.stringify({ provider, binary_version: probe.binaryVersion, status: final.status ?? null, failure_code: final.failure_code ?? final.error?.code ?? null, native_event_types: Object.fromEntries(types), ...(permissionRecord ? { permission_round_trip: permissionRecord } : {}), ...(failedTurnRecord ? { failed_turn: failedTurnRecord } : {}), checks }, null, 2)}\n`,
 );
 if (keep) {
   writeFileSync(path.join(tmp, "serve.log"), serveLog);

@@ -313,6 +313,15 @@ operator's `live-run-ext.sh` meters):
 - `K-M2`: both canaries in the ACP cell.
 - `K-M3`: the approved `--prompt` bypass run, with a commit and both canaries.
 
+Kimi Code adds two evidence checks for T4.68 ([ROADMAP §4.2](../ROADMAP.md#42-owner-decisions) decision 74, pure
+helpers in `scripts/live/acp-evidence.mjs`). `K-P1` is the `session/request_permission` round trip of each ACP-cell run
+(the smoke run, `K-M1` and `K-M2`). It records the request count, the `toolCall` field names (never values) and the
+controller's `acp_permission` answer kinds, and fails closed: no request is FAILED. `K-F1`, in the smoke test only, is
+one turn in the approved `--prompt` cell resuming a `--session` id no session has, run outside `serve` the way
+`adapters validate` runs its cell. It records the CLI's exit code apart from the script's, and exit 0 on that turn is
+FAILED. The extra invocation makes the smoke test ask the budget guard for two runs. Both Kimi legs keep their temp
+directory (redacted streams, ledger, serve log) as `SWITCHBOARD_LIVE_KEEP=1` does.
+
 Every run of the first four providers is an approved bypass run, because that is their only kind of cell. OpenCode's
 `O-M2` and `O-M3` are expected to escape (FR-POL-04/06 under owner decision 46): the report marks them, and they open a
 risk but do not set the exit code. Until `adapters validate <id>` writes a manifest range, every check stops at the
