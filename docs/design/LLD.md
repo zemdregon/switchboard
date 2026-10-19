@@ -2965,7 +2965,10 @@ T11, T14) in `src/lifecycle/verification.ts`, driven by `src/lifecycle/lifecycle
   exit_code, signal?, duration_ms, output_truncated?}`. No argv and no output appear in events or the envelope
   (FR-TEL-03). The `test_report` artifact (`application/json`, version 1) holds `{v, outcome, commands: [{index, argv,
   outcome, exit_code, signal, duration_ms, stdout, stderr, stdout_truncated, stderr_truncated}]}`; it is stored even
-  when the stage was cancelled or failed, and `get_artifacts` returns it.
+  when the stage was cancelled or failed, and `get_artifacts` returns it. Since T8.10 the body also carries `head_sha`
+  (null when the worktree's tree differs from that commit's) and `tree_sha`, and each stored report gets one
+  `verification_result` row keyed by `(publish_ref, head_sha)` (T8.10, FR-EXE-10,
+  [§20.6](#206-head-pinned-verification-evidence-and-the-docs-alignment-skill-fr-exe-10-fr-skl-11-t810)).
 - **Bounds and redaction.** Each stream is captured up to 1 MiB per command (`VERIFICATION_OUTPUT_CAP_BYTES`) and then
   truncated with the marker `[switchboard: output truncated after <n> bytes]`. Argv and output pass through the artifact
   store's redactor (FR-TEL-03, NFR-SEC-01) before they are put into JSON, and the store redacts the whole body again
