@@ -35,7 +35,7 @@ export interface VersionCanaryEvaluation {
    */
   readonly recordVersion: string | null;
   /**
-   * What the canary compared (decision 74): the full observed string next to its normalised core, and the baseline
+   * What the canary compared (decision 75): the full observed string next to its normalised core, and the baseline
    * likewise, so captured evidence shows the exact installed build. Cores are null when absent or unrecognised.
    */
   readonly evidence: VersionCanaryEvidence;
@@ -100,7 +100,7 @@ export function versionCanaryBaseline(
 }
 
 /**
- * The release core the canary compares (T4.80, ROADMAP §4.2 decision 74): the first `x.y.z` token of a version string,
+ * The release core the canary compares (T4.80, ROADMAP §4.2 decision 75): the first `x.y.z` token of a version string,
  * after stripping one trailing build suffix that is exactly `-<7 to 40 hex digits>` (Cursor's commit hash) or
  * `+<anything>` (semver build metadata). Text after whitespace is not part of the token, so raw probe lines such as
  * `codex-cli 0.162.0` and `2.1.294 (Claude Code)` keep working. Any other attached suffix (`-beta`, `-rc1`, `.4`,

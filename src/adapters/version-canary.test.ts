@@ -135,7 +135,7 @@ describe("version canary (T8.5)", () => {
     expect(readFileSync(versionCanaryPath(dir), "utf8")).toContain("0.162.1");
   });
 
-  describe("build-metadata normalisation (T4.80, decision 74)", () => {
+  describe("build-metadata normalisation (T4.80, decision 75)", () => {
     const cursorGate = (observed: string | null, validated = "2026.10.16") =>
       evaluateVersionGate("cursor", cursorManifest(validated), observed);
 

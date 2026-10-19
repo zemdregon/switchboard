@@ -29,7 +29,7 @@ export interface VersionCanaryAdapterReport {
   readonly version_bump: boolean;
   readonly code: string | null;
   readonly detail: string | null;
-  /** Full observed and baseline strings with their compared cores (decision 74); null when the canary did not run. */
+  /** Full observed and baseline strings with their compared cores (decision 75); null when the canary did not run. */
   readonly canary_evidence: VersionCanaryEvidence | null;
 }
 
