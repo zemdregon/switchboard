@@ -339,3 +339,26 @@ as history.
   dated snapshot, and rewriting it would falsify the record; the live
   status lives in the T3.8 row and the M3 row, which agree. It does not
   block PR #719.
+
+## 24. TDD §4.7 heading still says "blocked by B-1" (pre-existing, not from PR #713)
+
+- [TDD §4.7](design/TDD.md#47-kimi-code-m4-blocked-by-b-1) is headed
+  "Kimi Code (M4, blocked by B-1)", while its body says B-1 is cleared
+  (2026-10-15, T4.60/T4.61, ADR-0049) and the Kimi rows (T4.62 to T4.69)
+  are Done or operator-only.
+- Left unchanged: the heading text is frozen by its anchor
+  (`#47-kimi-code-m4-blocked-by-b-1`), which the T4.67 row, LLD and other
+  documents cite; renaming it would break those links and
+  `scripts/check-docs.mjs`. It does not block PR #713.
+
+## 25. T4.43 row says Done under 65 (a) but both waiting lists still name it (pre-existing, not from PR #713)
+
+- The T4.43 (Cursor parser) row records `Done against its Done-when`
+  under owner decision 65 (a), with remaining native shapes carried by
+  T4.48 — yet §6.8.2 item 2 and the M4 row open-items list (b) both still
+  list T4.43 among the rows that "stay `Partial` until scrubbed captures
+  replace their synthetic lines". Both lists are on `origin/main`, so the
+  contradiction predates PR #713, whose diff touches no Cursor row.
+- Left unchanged: reconciling either list with the row means endorsing
+  another lane's Done claim (see item 8 above for the precedent). It does
+  not block PR #713.
