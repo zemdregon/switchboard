@@ -1694,10 +1694,13 @@ per-run approval flag, and no per-run deny rule was shown to hold under the bypa
 | `trusted-development` | no | As `inspect-untrusted` |
 | `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `agy --prompt=<prompt> --output-format stream-json --dangerously-skip-permissions` with `AGY_CLI_DISABLE_AUTO_UPDATE=true`, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` (owner decision 46, Q-84). A scope without `bypass` is refused (`PROFILE_UNSUPPORTED`). Any narrowing Switchboard can express (read-only files or an unwritable workspace, shell allowlist, network off or repository configuration other than `enabled`) is refused before spawn (`CAPABILITY_MISSING`). An explicit model request is also refused (`CAPABILITY_MISSING`); `--model` is never emitted. |
 
-Resume is not compiled: `resumeArgs` is `Ineligible` for every profile until a live capture shows how resume is marked
-(Q-86; synthetic fixtures in `src/adapters/antigravity/antigravity.test.ts`, T4.33 and T4.35). A full refusal matrix is
-pinned on synthetic fixtures — foreign provider bindings, flag-like or unsafe conversation ids, ineligible profiles, and
-no `--conversation` ever compiled ([#297](https://github.com/zemdregon/switchboard/pull/297)). Structured
+Resume (`resumeArgs`, T4.35, owner decision 67) compiles only where `compile` does — the approved
+bypass cell — as the first-run argv plus `--conversation <id>` for a safe-token id; every other cell returns
+`compile`'s `Ineligible`. A resumed run whose returned `conversation_id` differs from the requested one (an unknown
+id silently starts a new conversation, live check C9 run 5) or names none fails closed (`OUTPUT_PROTOCOL_ERROR`,
+new id never bound). A full refusal matrix is pinned on synthetic fixtures — foreign provider bindings, flag-like or
+unsafe conversation ids and ineligible profiles
+([#297](https://github.com/zemdregon/switchboard/pull/297)). Structured
 `backing_provider` on `init` or `result` sets `backingProvider` on `session_bound` (clipped, non-strings dropped) and
 feeds `provider_reported` usage observations on synthetic fixtures (`backing_provider.jsonl`,
 [#297](https://github.com/zemdregon/switchboard/pull/297)). The fixture also runs through `RunLifecycle`, checking
@@ -1741,9 +1744,10 @@ synthetic checks, not native captures of rate limiting, sandbox enforcement or `
 (the quota line shape follows the T6.11 capture key names, but the fixture is hand-written;
 [#272](https://github.com/zemdregon/switchboard/pull/272)). Tool parameter aliases remain **Assumptions** until
 operator captures confirm their native shapes. Later updates that supply or change a command or path reach the
-guard again; commands under unrecorded parameter keys remain unseen. Native resume, blocked outcomes and provider
-validation stay open under ROADMAP T4.35 and T4.38 (T4.33 and T4.36 are Done against their Done-when under owner
-decision 65; their remaining native shapes are carried by T4.38).
+guard again; commands under unrecorded parameter keys remain unseen. A live resume run, live blocked outcomes and
+provider validation stay open under ROADMAP T4.38 (T4.33 and T4.36 are Done against their Done-when under owner
+decision 65, and T4.35 is Done on synthetic fixtures including resume per owner decision 67; their remaining native
+shapes are carried by T4.38).
 
 Residual parser pins ([#344](https://github.com/zemdregon/switchboard/pull/344), "antigravity parser residual pins
 (T4.33, synthetic shapes)") record a second guard gap: tool parameters on a step whose `step_type` is not exactly
@@ -1751,8 +1755,9 @@ Residual parser pins ([#344](https://github.com/zemdregon/switchboard/pull/344),
 `non_tool_step_command.jsonl`, a Git write on such a step, to a success. They also pin that tool steps are
 deduplicated per `step_index`, so a repeated Git write in a new step is checked again; that the model and backing
 vendor bind once, from `init` before a later `result`; and that a `SUCCESS` envelope with tokens and no string
-conversation id succeeds with no session bound (a synthetic shape: every recorded success carried an id, and resume
-is not compiled). A mutation pass over the parser left eight non-equivalent survivors, now pinned in
+conversation id succeeds with no session bound (a synthetic shape: every recorded success carried an id; resume
+compiles `--conversation` with a fail-closed id check, T4.35, owner decision 67). A mutation pass over the parser left
+eight non-equivalent survivors, now pinned in
 [`parser-residual.test.ts`](src/adapters/antigravity/parser-residual.test.ts) ("antigravity parser mutation residuals
 (T4.33, synthetic shapes)", [#359](https://github.com/zemdregon/switchboard/pull/359)).
 
@@ -1762,16 +1767,16 @@ kept), non-array `denied_actions` (`PERMISSION_BLOCKED`, tool name `unknown`), a
 close the successful-envelope sandbox gap above. Supervisor tests check cancellation both with SIGTERM honoured
 and with escalation required, including an empty process group after escalation. The replay dialect refuses unsafe
 resume ids and additional never-emitted flag spellings; these are fixture invocation checks, not native enforcement
-([#332](https://github.com/zemdregon/switchboard/pull/332)). `resume_failure.jsonl` is checked with a manually appended
-conversation id (`TOOL_FAILURE`, resumed id kept) but remains outside the runnable suite while resume compilation is
-refused. Since [#347](https://github.com/zemdregon/switchboard/pull/347), [#361](https://github.com/zemdregon/switchboard/pull/361)
+([#332](https://github.com/zemdregon/switchboard/pull/332)). `resume_failure.jsonl` is replayed through `resumeArgs`
+(owner decision 67: `TOOL_FAILURE`, resumed id kept), listed out of the runnable suite in the fixture inventory.
+Since [#347](https://github.com/zemdregon/switchboard/pull/347), [#361](https://github.com/zemdregon/switchboard/pull/361)
 and [#373](https://github.com/zemdregon/switchboard/pull/373)
 ([`conformance-residual.test.ts`](src/adapters/antigravity/conformance-residual.test.ts)) every case fails when the
 replay refuses the compile, idle (both SIGTERM paths) and wall-clock timeouts replay with their kind pinned, an
 inventory test requires every fixture to be replayed or listed out with a reason and to carry SYNTHETIC provenance,
 and every runnable case pins its failure detail, session id, summary and unknown-event count, so it fails on any
-other case's fixture except eleven listed same-result pairs. T4.35 stays `Partial`: fixtures cannot establish native
-resume or captured rate-limit and sandbox categories.
+other case's fixture except eleven listed same-result pairs. T4.35 is `Done` on synthetic fixtures (owner decision
+67): fixtures cannot establish a live resume run or captured rate-limit and sandbox categories (carried by T4.38).
 
 ### Git and commits
 
@@ -1847,9 +1852,9 @@ streams"); "antigravity parser residual pins (T4.33, synthetic shapes)"
 `src/adapters/antigravity/conformance-residual.test.ts` (including "antigravity whole-stream order shapes in the case
 list (T4.35, T4.33 fixtures)";
 [#347](https://github.com/zemdregon/switchboard/pull/347), [#361](https://github.com/zemdregon/switchboard/pull/361),
-[#373](https://github.com/zemdregon/switchboard/pull/373)). None of these changed the parser or the compiled
-matrix. The conformance `resume` case stays partial until Q-86 and
-an operator resume capture (T4.35). No end-to-end run through Switchboard against a logged-in
+[#373](https://github.com/zemdregon/switchboard/pull/373)). None of these changed the parser; the compiled matrix gains
+only the resume path (T4.35, owner decision 67).
+The conformance `resume` case runs through `resumeArgs`. No end-to-end run through Switchboard against a logged-in
 `agy` has been recorded yet (T4.38).
 
 ## Cursor CLI (milestone 4)

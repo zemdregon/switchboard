@@ -248,8 +248,8 @@ operator live capture (T4.38).
 
 **Evidence (Done against its Done-when under owner decision 65 (a); synthetic lines in the shapes of the T4.31 live
 check).** FR-ADP-04, FR-CAP-01 (envelope
-run-total usage recorded `provider_reported` once), FR-SES-03 (resume not compiled: `resumeArgs` is `Ineligible` for
-every profile and binding).
+run-total usage recorded `provider_reported` once), FR-SES-03 (resume `--conversation <id>` with a fail-closed id
+check: `resumeArgs` compiles only where `compile` does, T4.35, owner decision 67).
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("antigravity parser and result (T4.33)", "antigravity
   parser hardening (T4.33, synthetic shapes)", "antigravity cases with no recorded native shape (T4.33, synthetic
