@@ -16,8 +16,11 @@
  * - `privileged` compiles only when its scope sets `bypass` and the run is approved (owner decision 46: the bypass
  *   cell does not wait for Git-write denial to be shown to hold), and only for the scope Cursor cannot narrow below:
  *   worktree files, shell `broad`, network `on` and repository configuration `enabled` (Q-79). No `--sandbox` flag is
- *   emitted, so Cursor itself confines nothing in that run; what remains is the controller's worktree, the tool-call
- *   guard (ADR-0039), FR-GIT-03 and FR-GIT-06;
+ *   emitted, so Cursor itself confines nothing; the enforcing control is the bubblewrap wrapper of ADR-0059
+ *   (`confinement.ts`): the provider process always starts inside `bwrap` (root read-only, worktree read-write, `$HOME`
+ *   and the temp directories hidden), and a missing `bwrap` or a failed confinement probe makes the cell Ineligible
+ *   (`ELIGIBILITY_NONE`), never an unconfined run. The tool-call guard (ADR-0039, detective only in a bypass run),
+ *   FR-GIT-03 and FR-GIT-06 remain;
  * - the parser (T4.43) reads only the `stream-json` fields the 2026-10-14 live check recorded; a refused tool call is a
  *   `permission_denied` event because the final `result` still says `success`; resume is `--resume <id>` through the
  *   same matrix; a second `result`, a session id that changes mid-run or is not a safe argument, a tool call after the
@@ -57,6 +60,14 @@ import type {
   RunResult,
   SkillDelivery,
 } from "../types.js";
+import {
+  CURSOR_CONFINEMENT_FAILED,
+  type CursorConfinementPlan,
+  cursorBwrapArgs,
+  cursorConfinementPlan,
+  hostConfinementDefaults,
+  probeConfinement,
+} from "./confinement.js";
 import {
   API_KEY_SOURCE_LOGIN,
   AUTH_STATUS_ARGS,
@@ -138,8 +149,17 @@ export interface CursorAdapterOptions {
   /** Test-only: arguments inserted between the executable and the flags (replay launcher). Empty in production. */
   launcherArgs?: readonly string[];
   timeouts?: Partial<Invocation["timeouts"]>;
-  /** PATH used to resolve `cursor-agent` when `executable` is absent. Defaults to process.env.PATH. */
+  /** PATH used to resolve `cursor-agent` (and `bwrap`) when not given. Defaults to process.env.PATH. */
   pathEnv?: string;
+  /**
+   * Absolute path of the `bwrap` that confines every compiled run (ADR-0059), or null for none (the cell is then
+   * Ineligible). Defaults to the first executable `bwrap` on PATH, resolved once.
+   */
+  bwrap?: string | null;
+  /** `$HOME` the wrapper hides (ADR-0059). Defaults to process.env.HOME. */
+  home?: string;
+  /** Temp directory the wrapper hides and the confinement probe uses. Defaults to `os.tmpdir()`. */
+  tmpDir?: string;
 }
 
 type Json = Record<string, unknown>;
@@ -232,9 +252,25 @@ export class CursorAdapter implements ProviderAdapter {
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];
   readonly #timeouts: Invocation["timeouts"];
+  readonly #confinement: CursorConfinementPlan | { refused: string } | undefined;
+  readonly #tmpDir: string;
+  /** The last confinement probe failed on this instance: compile refuses until a later probe passes (ADR-0059). */
+  #confinementFailed = false;
 
   constructor(opts: CursorAdapterOptions = {}) {
-    this.#exe = opts.executable ?? resolveOnPath(CURSOR_BINARY, opts.pathEnv ?? process.env.PATH);
+    const pathEnv = opts.pathEnv ?? process.env.PATH;
+    this.#exe = opts.executable ?? resolveOnPath(CURSOR_BINARY, pathEnv);
+    const host = hostConfinementDefaults(pathEnv);
+    this.#tmpDir = opts.tmpDir ?? host.tmpDir;
+    this.#confinement =
+      this.#exe === undefined
+        ? undefined
+        : cursorConfinementPlan({
+            bwrap: opts.bwrap !== undefined ? opts.bwrap : host.bwrap,
+            home: opts.home ?? host.home,
+            tmpDir: this.#tmpDir,
+            executable: this.#exe,
+          });
     this.#launcher = [...(opts.launcherArgs ?? [])];
     this.#timeouts = {
       wallClockMs: DEFAULT_WALL_CLOCK_MS,
@@ -245,8 +281,10 @@ export class CursorAdapter implements ProviderAdapter {
   }
 
   /**
-   * FR-ADP-02 steps 1 to 5 with no model call: `cursor-agent --version`, then `--help` for the required flags. Output
-   * is probe evidence only (FR-ADP-04). Step 7 (the structured-output smoke call) is not run here. The version string
+   * FR-ADP-02 steps 1 to 5 with no model call: `cursor-agent --version`, then `--help` for the required flags, then the
+   * `confinement` step (ADR-0059): the bwrap wrapper must be shown to hold on this host, or the step fails and the run
+   * is `ELIGIBILITY_NONE`. Output is probe evidence only (FR-ADP-04). Step 7 (the structured-output smoke call) is not
+   * run here. The version string
    * `2026.10.12-d47ca18` ([LIVE] 1a) carries a commit hash parsed as build metadata (T4.48), allowing manifest ranges
    * to gate the version once `adapters validate` is run by an operator (ADR-0009).
    */
@@ -291,6 +329,9 @@ export class CursorAdapter implements ProviderAdapter {
         ...(missing.length ? { detail: `missing ${missing.join(" ")}` } : {}),
       },
     );
+    const confinement = await probeConfinement(this.#confinement ?? { refused: "no plan" }, runner, this.#tmpDir);
+    this.#confinementFailed = !confinement.ok;
+    steps.push(confinement);
     return { binaryPath: exe, binaryVersion: version, steps };
   }
 
@@ -349,7 +390,7 @@ export class CursorAdapter implements ProviderAdapter {
   }
 
   /**
-   * Pure. Order of checks (the first unmet one is the reason):
+   * Pure apart from `realpath` of the worktree. Order of checks (the first unmet one is the reason):
    * 0. shell allowlist entries that could write Git: PROFILE_UNSUPPORTED (FR-GIT-01);
    * 1. a bypass approval on a profile other than `privileged`: PROFILE_UNSUPPORTED (FR-POL-03);
    * 2. any profile other than `privileged`: PROFILE_UNSUPPORTED ({@link NON_PRIVILEGED_UNSUPPORTED_DETAIL});
@@ -363,7 +404,9 @@ export class CursorAdapter implements ProviderAdapter {
    * 7. repository_config `disabled` or `approved`: CAPABILITY_MISSING (`--trust`, needed to start, loads the
    *    repository's `AGENTS.md` and rules, [LIVE] 10c; no per-item approval); only `enabled` compiles (owner decision
    *    26, Q-37);
-   * 8. a requested model: CAPABILITY_MISSING (the model registry has no Cursor data yet, T4.5; `--model` is not emitted).
+   * 8. a requested model: CAPABILITY_MISSING (the model registry has no Cursor data yet, T4.5; `--model` is not emitted);
+   * 9. no usable bwrap wrapper (ADR-0059): CAPABILITY_MISSING when `bwrap` is missing, `HOME` is unusable, the last
+   *    confinement probe on this instance failed, or the worktree would re-expose what the wrapper hides or binds.
    */
   #build(request: CompileRequest, profile: ResolvedProfile, tail: string[]): Invocation | Ineligible {
     const allowlist = profile.shellAllowlist ?? [];
@@ -420,12 +463,31 @@ export class CursorAdapter implements ProviderAdapter {
     if (request.model !== undefined) {
       return ineligible("CAPABILITY_MISSING", "no model registry data for Cursor yet (T4.5; --model is not emitted)");
     }
-    if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${CURSOR_BINARY} not found on PATH`);
+    if (this.#exe === undefined || this.#confinement === undefined) {
+      return ineligible("CAPABILITY_MISSING", `${CURSOR_BINARY} not found on PATH`);
+    }
+    // ADR-0059: the bypass cell starts only inside the bwrap wrapper; every refusal here is Ineligible, never a fallback.
+    if ("refused" in this.#confinement) return ineligible("CAPABILITY_MISSING", this.#confinement.refused);
+    if (this.#confinementFailed) return ineligible("CAPABILITY_MISSING", CURSOR_CONFINEMENT_FAILED);
+    const wrapper = cursorBwrapArgs(this.#confinement, request.workspace.cwd);
+    if (!Array.isArray(wrapper)) return ineligible("CAPABILITY_MISSING", wrapper.refused);
 
     const policyFlags = [TRUST_FLAG, FORCE_FLAG];
+    // The executable's resolved path: a symlink under the hidden `$HOME` (`~/.local/bin`) is not visible inside.
+    const exe = this.#confinement.executable;
     return {
       transport: "subprocess-jsonl",
-      argv: [this.#exe, ...this.#launcher, PRINT_FLAG, OUTPUT_FORMAT_FLAG, OUTPUT_STREAM_JSON, ...policyFlags, ...tail],
+      argv: [
+        this.#confinement.bwrap,
+        ...wrapper,
+        exe,
+        ...this.#launcher,
+        PRINT_FLAG,
+        OUTPUT_FORMAT_FLAG,
+        OUTPUT_STREAM_JSON,
+        ...policyFlags,
+        ...tail,
+      ],
       env: {},
       envAllowlist: [...CURSOR_ENV_ALLOWLIST],
       cwd: request.workspace.cwd,

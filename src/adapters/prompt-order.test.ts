@@ -52,7 +52,11 @@ const SUBJECTS: Record<string, Subject> = {
     profile: ANTIGRAVITY_PROFILE,
     bypassApproved: true,
   },
-  cursor: { make: () => new CursorAdapter({ executable: EXE }), profile: CURSOR_PROFILE, bypassApproved: true },
+  cursor: {
+    make: () => new CursorAdapter({ executable: EXE, bwrap: "/opt/synthetic/bwrap" }),
+    profile: CURSOR_PROFILE,
+    bypassApproved: true,
+  },
   opencode: { make: () => new OpenCodeAdapter({ executable: EXE }), profile: OPENCODE_PROFILE, bypassApproved: true },
   kimi: { make: () => new KimiAdapter({ executable: EXE }), profile: KIMI_PROFILE, bypassApproved: true },
   muse: { make: () => new MuseAdapter({ executable: EXE }), profile: MUSE_PROFILE, bypassApproved: true },

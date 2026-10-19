@@ -62,7 +62,7 @@ export interface ProbeResult {
   binaryPath: string;
   binaryVersion: string | null;
   steps: Array<{
-    step: "binary" | "version" | "command" | "output_format" | "flags" | "smoke";
+    step: "binary" | "version" | "command" | "output_format" | "flags" | "smoke" | "confinement";
     ok: boolean;
     detail?: string;
   }>;

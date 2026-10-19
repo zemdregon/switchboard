@@ -273,7 +273,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   fixture tests on synthetic fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
   smoke passed and the live malicious leg ran on 2026-10-19 (smoke `outcome=ok`, 11 held; malicious `outcome=failed`
   with U-M2/U-M3 ESCAPED and U-M1 NOT_CHECKED), so T4.48 stays `Partial` pending an owner
-  ruling or a re-run; the 2026-10-19 `adapters validate cursor` run passed
+  ruling or a re-run; the escape fix ([ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md), owner ruling
+2026-10-19 06:41 CDT) has landed on this branch, hermetically tested, with the live rerun a steward step after merge;
+the 2026-10-19 `adapters validate cursor` run passed
   the probe (Cursor CLI 2026.10.16), auth, 11 static conformance checks and the smoke (owner decision 59), so the
   manifest admits `>=2026.10.16 <2026.11.0`. OpenCode has module, compile-matrix,
   probe, registry entry, parser (Done against its Done-when under owner decision 65 (a): T4.53; native limit and
@@ -465,7 +467,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query, and `shares_subscription_with` must be one of the provider config ids listed below this table (`claude-code`, `codex`, ...) or `null`: any other string stops startup, so `doctor` fails its config check naming the key and `inner test` exits 1 before sending anything. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
 | `rag` | no | The optional retrieval index (ADR-0031): off unless you configure an `embedding` backend. No credential fields; `mode` defaults to `auto` (on only when a backend exists and the project allows). Projects and contexts may narrow caps and exclusions; `use_global` and `contribute_to_global` default to false and cannot be set on dynamic projects. Full shape: [LLD §14.1](docs/design/LLD.md#141-configuration-shape) and [Retrieval index](#retrieval-index-milestone-12). |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
-| `outer_sandbox.required_profiles` | no | List of distinct non-privileged profile names (default empty, which changes nothing). A listed profile is refused with `ELIGIBILITY_NONE` unless bubblewrap and `prlimit` work on the host; because this build does not yet wrap the provider process, a listed profile is refused even when both work (`OUTER_SANDBOX_NOT_ENFORCED`). `doctor` reports the check. See [Trust profiles](#trust-profiles) and LLD section 8.4. |
+| `outer_sandbox.required_profiles` | no | List of distinct non-privileged profile names (default empty, which changes nothing). A listed profile is refused with `ELIGIBILITY_NONE` unless bubblewrap and `prlimit` work on the host; because no process is wrapped through this gate yet, a listed profile is refused even when both work (`OUTER_SANDBOX_NOT_ENFORCED`). `doctor` reports the check. The Cursor bypass cell's own bubblewrap wrapper lives outside this gate ([ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md)). See [Trust profiles](#trust-profiles) and LLD section 8.4. |
 
 `<id>` is one of `claude-code`, `codex`, `grok-build`, `antigravity`, `cursor`, `opencode`, `kimi-code`, `muse-code`. Only
 `claude-code`, `codex`, `opencode`, `kimi-code`, `antigravity` and `cursor` pass the version
@@ -1922,7 +1924,9 @@ The compliance manifest range (`src/adapters/manifests/cursor.json`) admits `>=2
 [TDD §4.5.6](docs/design/TDD.md#456-t448-live-validation-2026-10-19)). Other versions still report
 `ADAPTER_VERSION_UNVERIFIED` in `doctor`. The live smoke passed and the live malicious leg ran on 2026-10-19
 (smoke `outcome=ok`; malicious `outcome=failed` with U-M2/U-M3 ESCAPED and U-M1 NOT_CHECKED); T4.48 stays `Partial`
-pending an owner ruling or a re-run.
+pending an owner ruling or a re-run. The escape fix has landed on this branch: the bypass cell now runs inside the
+bubblewrap wrapper of [ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md) (owner ruling 2026-10-19
+06:41 CDT), hermetically tested; the steward reruns the live malicious leg after merge.
 
 ### Login
 
@@ -1945,7 +1949,7 @@ servers), and no per-run permission flag is documented.
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `cursor-agent --print --output-format stream-json --trust --force` with the prompt on stdin, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` flag (owner decision 46). A scope without `bypass`, or any narrowing Switchboard can express (read-only files or unwritable workspace, shell allowlist or none, network off or allowlist, repository configuration disabled or approved, or model overrides), is refused before spawn (`Ineligible: CAPABILITY_MISSING`). Bypass approved on any profile other than `privileged`, or `privileged` without approval, is refused `PROFILE_UNSUPPORTED` (FR-POL-03, ADR-0017). Bypass-class flags such as `--approve-mcps` and `--yolo` are never compiled outside that case. |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `cursor-agent --print --output-format stream-json --trust --force` with the prompt on stdin, worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--sandbox` flag (owner decision 46). Every compiled and resumed invocation starts inside Switchboard's bubblewrap wrapper (root read-only, worktree read-write, `$HOME` and the temp directories hidden except Cursor's install directory, login store and state directory; [ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md), owner ruling 2026-10-19 06:41 CDT): a missing `bwrap` or a failed `confinement` probe step leaves the cell `Ineligible` (`ELIGIBILITY_NONE`), never an unconfined run. A scope without `bypass`, or any narrowing Switchboard can express (read-only files or unwritable workspace, shell allowlist or none, network off or allowlist, repository configuration disabled or approved, or model overrides), is refused before spawn (`Ineligible: CAPABILITY_MISSING`). Bypass approved on any profile other than `privileged`, or `privileged` without approval, is refused `PROFILE_UNSUPPORTED` (FR-POL-03, ADR-0017). Bypass-class flags such as `--approve-mcps` and `--yolo` are never compiled outside that case. |
 
 Resume continues the native session with `--resume <session_id>` through the same matrix when the provider is eligible
 (synthetic fixtures in `src/adapters/cursor/cursor.test.ts`, T4.43). `resumeArgs` matches `compile` across every
@@ -2139,7 +2143,10 @@ forms of compiled `--print`/`--trust`/`--force`;
 `cursor-agent` has been recorded: the T4.48 live `adapters validate` smoke call on CLI 2026.10.16 on
 2026-10-19 (one structured-output smoke call in the approved privileged bypass cell under owner decision 59), the
 full live smoke passed the same day (`outcome=ok`, 11 held) and the live malicious leg ran and failed (U-M1
-NOT_CHECKED, U-M2/U-M3 ESCAPED); T4.48 stays `Partial` pending an owner ruling or a re-run.
+NOT_CHECKED, U-M2/U-M3 ESCAPED); T4.48 stays `Partial` pending an owner ruling or a re-run. The escape fix has landed
+on this branch ([ADR-0059](docs/adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md), owner ruling 2026-10-19 06:41 CDT:
+the bypass cell runs inside Switchboard's bubblewrap wrapper, hermetically tested); the steward reruns the live
+malicious leg after merge.
 
 ## OpenCode CLI (milestone 4)
 
