@@ -2606,7 +2606,11 @@ joined, session id from run_started only, the other SDK kinds dropped", "exit co
 FAILED, never success", "unknown kinds fail closed: counted and clipped, never a result or a session, so an
 unknown-only exit 0 fails", "stream anomaly %s is OUTPUT_PROTOCOL_ERROR, never success" and "a session id is taken from
 structured output only, never from assistant or terminal text", over the synthetic fixtures in
-`src/adapters/muse/fixtures/`.
+`src/adapters/muse/fixtures/`. Tool records: "muse tool records and the ADR-0039 guard (T4.76; ...)" in the same file,
+among them "fixture git_write_guard: a command record with a Git write under a completed terminal at exit 0 ends
+PERMISSION_BLOCKED", "the shell-command form is read from a %s record", "a command line is read from %s and guarded
+as a shell call" and "the guard verdict wins at every exit code, after a failed terminal, after the terminal record
+and with a changed session id".
 
 The conformance suite (T4.75; "muse conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.75)") replays those
 synthetic fixtures (`museConformanceCases` in `fixtures/cases.ts`) through the replay dialect
