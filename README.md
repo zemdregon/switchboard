@@ -284,10 +284,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#323](https://github.com/zemdregon/switchboard/pull/323),
   [#355](https://github.com/zemdregon/switchboard/pull/355),
   [#369](https://github.com/zemdregon/switchboard/pull/369)) and Git declaration fixture tests on synthetic
-  fixtures (README [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to T4.57); live smoke, live malicious leg
-  and `adapters validate` remain operator work (T4.58): the 2026-10-18 `adapters validate opencode` run passed the probe
-  (`opencode v2.0.23`), auth and 11 static conformance checks and stopped at the smoke with `OUTPUT_PROTOCOL_ERROR (no
-  result event)`, so the manifest still admits no version. T4.52, T4.54, T4.55 and T4.57 are Done against their
+  fixtures (README [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to T4.57); live smoke and the live
+  malicious leg remain operator work (T4.58): the 2026-10-18 `adapters validate opencode` run passed the probe
+  (`opencode v2.0.23`), auth, 11 static conformance checks and the smoke (owner decisions 60 and 68; one model call),
+  so the manifest admits `>=2.0.23 <2.1.0`. T4.52, T4.54, T4.55 and T4.57 are Done against their
   Done-when on synthetic fixtures; T4.53 and T4.56 are Done against their Done-when under owner decision 65 (a) and (b),
   with their native-shape gaps carried by T4.58. Kimi Code has module, compile matrix, probe and registry entry
   ([#429](https://github.com/zemdregon/switchboard/pull/429)), parser and resume (partial: T4.63, one scrubbed capture
@@ -299,9 +299,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   2026-10-18 live final-verify (auth `OK`; still `Partial` pending a scrubbed capture, ROADMAP T4.64) and the
   T4.68 live `adapters validate` pass on 2026-10-18 (CLI 2.1.1, manifest range `>=2.1.1 <2.2.0`) (README
   [Kimi Code CLI](#kimi-code-cli-milestone-4), ROADMAP T4.62 to T4.69); live smoke and the live malicious leg
-  remain operator work (T4.68). The Grok Build, Antigravity, Cursor, OpenCode and Muse Code manifests still admit
-  no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex and
-  Kimi Code already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
+  remain operator work (T4.68). The Grok Build, Antigravity, Cursor and Muse Code manifests still admit
+  no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex, OpenCode
+  and Kimi Code already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
   Delegated). Open items, by blocker: operator live legs (T4.12 on a Mac, T4.28, T4.38, T4.48, T4.58, T4.68; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
@@ -351,7 +351,8 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
 - For real work, at least one provider CLI installed and logged in natively: Claude Code, Codex, Grok Build,
-  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex and Kimi Code admit a version today;
+  Antigravity, Cursor, OpenCode, Kimi Code or Muse Code. Only Claude Code, Codex, OpenCode and Kimi Code admit a
+  version today;
   the other manifests admit no version until `switchboard adapters validate` passes a live CLI (see
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks)). `doctor` does not require any particular one.
 
@@ -2135,7 +2136,8 @@ argument (matching `^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`, refusing leading dashe
 reason on `step_finish`, or a non-empty `text` before any tool event or `step_finish` (owner decision 68), emits a
 result (on `step_finish`, case, whitespace, alternate reasons or non-string values never emit a result
 and fail closed as `OUTPUT_PROTOCOL_ERROR`; Q-85, [#328](https://github.com/zemdregon/switchboard/pull/328)). A
-`tool_use` line after the final `step_finish` `stop` is not a success (fail closed; a guard-flagged trailing call keeps
+`tool_use` line after the final result — a `step_finish` `stop`, or a text-only reply under owner decision 68 —
+is not a success (fail closed; a guard-flagged trailing call keeps
 `PERMISSION_BLOCKED` per ADR-0039). A trailing `tool_use` the parser cannot read still ends `OUTPUT_PROTOCOL_ERROR`
 instead of success. `tool_use` keys that name `Object.prototype` members map to `other` (own-key lookup;
 [#245](https://github.com/zemdregon/switchboard/pull/245)); since
@@ -2144,7 +2146,7 @@ prototype-named or `__proto__`-smuggled values fail closed as `unknown`. A malfo
 or a non-string `part.type` such as null, boolean, number, array or object) fails closed as `unknown`, ending
 `OUTPUT_PROTOCOL_ERROR`, while an omitted `part.type` remains accepted
 ([#339](https://github.com/zemdregon/switchboard/pull/339)). An unknown or unreadable event anywhere in the stream —
-before or after the final `stop` — is never a success: exit 0 ends `OUTPUT_PROTOCOL_ERROR`, exit 1 stays `TOOL_FAILURE`,
+before or after the final result — is never a success: exit 0 ends `OUTPUT_PROTOCOL_ERROR`, exit 1 stays `TOOL_FAILURE`,
 and a later `stop` does not wash an earlier unreadable line
 ([#284](https://github.com/zemdregon/switchboard/pull/284)). Opaque unknown envelopes (even carrying spoofed session ID,
 model, vendor, tokens or status) before or after clean `stop` cannot bind a session or smuggle status, usage, model or
@@ -2328,8 +2330,10 @@ guard-blocked, trailing-tool and unreadable-event streams [#245](https://github.
 upgrades and exit 2/137 variations [#369](https://github.com/zemdregon/switchboard/pull/369)). T4.52, T4.54, T4.55 and
 T4.57 are `Done` against their Done-when on synthetic fixtures; T4.53 and T4.56 are `Done` against their Done-when
 under owner decision 65 (a) and (b), with native limit, refusal and tool-input shapes carried by T4.58 (see those rows).
-No successful end-to-end run through Switchboard against a logged-in `opencode` has been recorded yet: the 2026-10-18
-`adapters validate opencode` smoke reached the model call and ended `OUTPUT_PROTOCOL_ERROR (no result event)` (T4.58).
+No successful end-to-end routed run through Switchboard against a logged-in `opencode` has been recorded yet:
+the live smoke and the live malicious leg remain operator work (T4.58). The 2026-10-18
+`adapters validate opencode` pass (CLI 2.0.23, owner decisions 60 and 68) ran one model call through the smoke
+and set the manifest range to `>=2.0.23 <2.1.0`.
 
 ## Kimi Code CLI (milestone 4)
 

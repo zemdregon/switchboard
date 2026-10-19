@@ -787,7 +787,8 @@ Compile matrix and transport: [TDD §4.6](TDD.md#46-opencode-m4). Task status: [
 fixtures only; no `opencode` in CI).
 
 **As built (T4.52).** Module `src/adapters/opencode/`; manifest `src/adapters/manifests/opencode.json` (range
-`<0.0.0`). Transport `subprocess-jsonl` with `run --format json --standalone -- <prompt>`. Every non-`privileged`
+`>=2.0.23 <2.1.0` since the live `adapters validate` pass on 2026-10-18, T4.58). Transport `subprocess-jsonl` with
+`run --format json --standalone -- <prompt>`. Every non-`privileged`
 profile is `Ineligible: PROFILE_UNSUPPORTED` (Q-64); the sole compiled shape is the Q-83 bypass cell without `--auto`.
 
 - **Tests:** `src/adapters/opencode/opencode.test.ts` (`opencode compile matrix (T4.52)`, `opencode bypass-class
@@ -795,7 +796,9 @@ profile is `Ineligible: PROFILE_UNSUPPORTED` (Q-64); the sole compiled shape is 
   gate (T4.52)`).
 
 **As built (T4.53, Done against its Done-when under owner decision 65 (a)).** `parseEvent`, `extractResult`,
-`classifyFailure` and `resumeArgs` in `adapter.ts`;
+`classifyFailure` and `resumeArgs` in `adapter.ts`; `--format json` fields in `protocol.ts`. Success needs a
+`step_finish` with `reason` `stop` (Q-85), or a text-only reply with no tool event and no `step_finish`
+(owner decision 68, Q-85 narrowed). Hardening
 ([#229](https://github.com/zemdregon/switchboard/pull/229)): finite non-negative usage only; unknown `type` clipped to
 64 characters; changed `sessionID` ends `OUTPUT_PROTOCOL_ERROR`; non-object roots and unstructured errors fail closed.
 Nested tests `cases with no recorded native shape (live check rows 7, 11, 14c)` pin row 11 (out-of-worktree denial not
@@ -807,8 +810,8 @@ detected at exit 0), row 14c (rate limit `TOOL_FAILURE`) and omitted tool input 
   T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 **Not covered here:** conformance (T4.55 Done), malicious leg (T4.56 Done against its Done-when under
-owner decision 65 (b)), Git declaration (T4.57 Done), operator
-live validate (T4.58).
+owner decision 65 (b)), Git declaration (T4.57 Done), operator live smoke and live malicious leg (T4.58; the
+`adapters validate` cell passed live on 2026-10-18).
 
 ### 2.1 Model registry (M4, T4.5)
 

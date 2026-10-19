@@ -108,7 +108,7 @@ The check's hermetic test is `~/operator-runs/live-ext/opencode-deny.test.sh` (f
 wrapper's allowance of exactly `opencode mcp list` is covered by `~/operator-runs/live-ext/pin-wrap.test.sh`. Both are
 operator scripts, not part of this repository.
 
-# Live checks on the operator's machine, 2026-10-18: `adapters validate opencode` under owner decisions 60 and 68 (T4.58)
+## Live checks on the operator's machine, 2026-10-18: `adapters validate opencode` under owner decisions 60 and 68 (T4.58)
 
 Status: research input (historical record once written). Run by an agent (Claude Opus 5.5, then Claude Fable 5.1 after
 a host reboot, Delegated) on the operator's Ampere server (Ubuntu 26.04.1, aarch64), with the installed, logged-in
