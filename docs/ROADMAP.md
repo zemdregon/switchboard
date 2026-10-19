@@ -971,8 +971,8 @@ earlier, 66 with main.)
 
 <!-- markdownlint-disable-next-line MD029 -->
 69\. T4.12 deferred until a Mac with native logins is available (2026-10-19). **Relayed by the orchestrator (Linus,
-owner-delegated standing authority), not owner-approved.** Entry 68 sits in an open pull request
-(63, 64, 66, 67 and 70 have since merged to main);
+owner-delegated standing authority), not owner-approved.** Entries 63, 64, 66, 67, 68 and 70 are on `main`
+(68 has since merged);
 the gap is left on purpose and nothing is renumbered. Relayed ruling: "T4.12: mark Deferred (optional, needs a Mac),
 with a section 4.2 decision and section 8 row."
     *Delegated reading, not zemdregon's words.* T4.12 (live smoke and live malicious leg for Claude Code and Codex on
@@ -985,8 +985,8 @@ with a section 4.2 decision and section 8 row."
 <!-- markdownlint-disable-next-line MD029 -->
 70\. T16.8 is Done with only the Claude Code location verdicted (2026-10-19). **Relayed by the orchestrator (Linus,
 owner-delegated standing authority), not owner-approved.** The relayed ruling: "accept Done with only the Claude location
-verdicted and the other three NOT_CHECKED". Entries 68 and 69 are in open pull requests and are not on `main` yet
-(67 has since merged); the gap is left on purpose and nothing is renumbered.
+verdicted and the other three NOT_CHECKED". Entry 69 is in an open pull request and is not on `main` yet
+(67 and 68 have since merged); the gap is left on purpose and nothing is renumbered.
     *Delegated reading, not zemdregon's words.* T16.8's research note records one verdict per candidate of
     [TDD §3.16.1](design/TDD.md#3161-per-provider-delivery-table): Claude Code from one approved bypass run through the
     operator's `live-run-ext.sh skill-location claude` check, and Grok Build, Cursor and Muse Code as `NOT_CHECKED`,
@@ -999,7 +999,7 @@ verdicted and the other three NOT_CHECKED". Entries 68 and 69 are in open pull r
 71\. The ext live channel runs Codex through the in-volume container login (2026-10-19). **Relayed by the orchestrator
 (Linus, owner-delegated standing authority), not owner-approved.** The relayed ruling ("CODEX AVAILABLE VIA CONTAINER
 LOGIN", 2026-10-18 19:10 CT) says that the in-volume Codex login works and that the host Codex limit applies only to
-the host login. Entries 68 and 69 are in open pull requests and are not on `main` yet (67 and 70 have since merged);
+the host login. Entry 69 is in an open pull request and is not on `main` yet (67, 68 and 70 have since merged);
 the gap is left on purpose and nothing is renumbered.
     *Delegated reading, not zemdregon's words.* The operator's `live-run-ext.sh` channel runs every Codex call of a check
     that involves Codex (`resume codex`, `pair`, `live-test codex`, `validate codex`, `malicious codex`) inside a container,
