@@ -312,8 +312,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   compile matrix, auth preflight,
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
   [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
-  is partial until the T4.71 capture; T4.76 is blocked because the adapter has no denial or tool-call record to end a
-  hostile stream `PERMISSION_BLOCKED`; T4.79 is final after T4.78.
+  is partial until the T4.71 capture; T4.76 is `Done` against its Done-when (2026-10-19, owner decision 65 (b):
+  the parser reads tool records into `tool_call` events for the ADR-0039 guard, field spellings an Assumption until
+  T4.71); T4.79 is final after T4.78.
   Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
   Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
@@ -2540,8 +2541,10 @@ The `--json` parser (T4.73, `parseEvent` and `extractResult` in `src/adapters/mu
 line, keyed on a string `kind`:
 
 - `run_started` binds the session id from its `session_id` field, which must be a uuid; `run_output_delta` `text`
-  becomes assistant text, joined as the summary; `task_lifecycle`, `command_accepted`, `command_result`,
-  `model_configured`, `tool_result` and `turn_input_user` are dropped.
+  becomes assistant text, joined as the summary; `task_lifecycle`, `model_configured` and `turn_input_user` are
+  dropped. A `tool_result`, `command_accepted` or `command_result` record that carries a tool name, a command line or
+  a path becomes a `tool_call` event for the ADR-0039 guard (T4.76; field spellings an Assumption until T4.71); a tool
+  record with no readable field is dropped.
 - **Success only for `terminal: "completed"`.** A run succeeds only with a `run_terminal` record whose `terminal` is
   `completed`, at an expected exit code (`0`), with no provider error. Exit code 0 alone never succeeds, and exit 0
   with any other `terminal` value ends `FAILED`.
@@ -2593,8 +2596,8 @@ run is unverified.
   `ADAPTER_VERSION_UNVERIFIED` until `adapters validate` passes a version (T4.78).
 - Live smoke, live malicious leg and `adapters validate` are operator work that needs Meta access (T4.71, T4.78, Q-27).
 
-T4.72, T4.74, T4.75 and T4.77 are `Done` against their Done-when on synthetic fixtures; T4.73 stays `Partial` and T4.76
-is `Planned` (blocked as above). No run through Switchboard against a real `muse` has been recorded.
+T4.72, T4.74, T4.75, T4.76 and T4.77 are `Done` against their Done-when on synthetic fixtures; T4.73 stays `Partial`.
+No run through Switchboard against a real `muse` has been recorded.
 
 ## Trust profiles
 
@@ -2835,8 +2838,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   is operator work. See [Kimi Code CLI](#kimi-code-cli-milestone-4).
 - **Muse Code is built on synthetic fixtures only and does not run (ROADMAP T4.72 to T4.79).** No `muse` has been
   installed or run, and Meta access (Q-27) is not verified. The `--json` record spellings and the `muse auth status`
-  probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) is blocked because the
-  parser emits no tool-call event for the guard to check. The provider is `BINARY_MISSING` without a `muse` on `PATH`
+  probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) is `Done` against its
+  Done-when (2026-10-19, owner decision 65 (b)) and rests on Switchboard's tool-call guard alone, under tool-record
+  field names that are Assumptions until T4.71. The provider is `BINARY_MISSING` without a `muse` on `PATH`
   and `ADAPTER_VERSION_UNVERIFIED` with one, and only an approved `privileged` bypass scope compiles. See
   [Muse Code CLI](#muse-code-cli-milestone-4).
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
