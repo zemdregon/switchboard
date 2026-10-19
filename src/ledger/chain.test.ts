@@ -148,7 +148,7 @@ describe("append path (ADR-0064 item 6)", () => {
     expect(verifyChain(db, "run_event").broken).toBeUndefined();
   });
 
-  it("the guards still refuse an UPDATE of a linked row (migration 25 recreated them)", () => {
+  it("the guards still refuse an UPDATE of a linked row (migration 26 recreated them)", () => {
     const [e] = events(1);
     expect(() => db.prepare("UPDATE run_event SET chain_hash = ? WHERE id = ?").run("f".repeat(64), e?.id)).toThrow(
       /append-only/u,
@@ -212,7 +212,7 @@ describe("verifyChain names the first broken row (ADR-0064 item 8)", () => {
   });
 });
 
-describe("migration 25 backfill (ADR-0064 item 7)", () => {
+describe("migration 26 backfill (ADR-0064 item 7)", () => {
   it("links the rows of a pre-migration ledger in insertion order and leaves PENDING approvals unlinked", () => {
     const d = new Database(path.join(dir, "m24.sqlite"));
     try {
@@ -275,10 +275,10 @@ describe("migration 25 backfill (ADR-0064 item 7)", () => {
         undefined,
         MIGRATIONS.filter((m) => m.version <= 24),
       );
-      const m25 = MIGRATIONS.find((m) => m.version === 25);
-      if (m25 === undefined) throw new Error("migration 25 missing");
+      const m26 = MIGRATIONS.find((m) => m.version === 26);
+      if (m26 === undefined) throw new Error("migration 26 missing");
       const failing = {
-        ...m25,
+        ...m26,
         backfill: () => {
           throw new Error("boom");
         },
@@ -294,11 +294,11 @@ describe("migration 25 backfill (ADR-0064 item 7)", () => {
   });
 
   it("the checksum covers postSql, and migrations without it keep their old checksum", () => {
-    const m25 = MIGRATIONS.find((m) => m.version === 25);
-    if (m25 === undefined) throw new Error("migration 25 missing");
-    expect(migrationChecksum(m25)).not.toBe(migrationChecksum({ ...m25, postSql: "" }));
-    const { postSql: _drop, ...withoutPost } = m25;
-    expect(migrationChecksum(withoutPost)).not.toBe(migrationChecksum(m25));
+    const m26 = MIGRATIONS.find((m) => m.version === 26);
+    if (m26 === undefined) throw new Error("migration 26 missing");
+    expect(migrationChecksum(m26)).not.toBe(migrationChecksum({ ...m26, postSql: "" }));
+    const { postSql: _drop, ...withoutPost } = m26;
+    expect(migrationChecksum(withoutPost)).not.toBe(migrationChecksum(m26));
     const m24 = MIGRATIONS.find((m) => m.version === 24);
     if (m24 === undefined) throw new Error("migration 24 missing");
     expect(migrationChecksum(m24)).toBe(createHash("sha256").update(m24.sql).digest("hex"));

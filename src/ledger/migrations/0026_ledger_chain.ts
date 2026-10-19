@@ -1,5 +1,5 @@
 /**
- * Migration 0025 (T8.13; FR-TEL-05, ADR-0064, LLD §20.13): hash-chained `run_event` and `approval` rows.
+ * Migration 0026 (T8.13; FR-TEL-05, ADR-0064, LLD §20.13): hash-chained `run_event` and `approval` rows.
  *
  * Adds `chain_seq` (the gapless position in the table's chain, unique) and `chain_hash` (hex SHA-256 of the previous
  * link's hash followed by the row's canonical JSON) to both tables. Two independent chains: every `run_event` row is

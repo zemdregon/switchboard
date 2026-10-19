@@ -24,7 +24,8 @@ import { sql as sql0021 } from "./0021_skill_store.js";
 import { sql as sql0022 } from "./0022_dependency_seed.js";
 import { sql as sql0023 } from "./0023_ci_fix_cap.js";
 import { sql as sql0024 } from "./0024_ci_transient.js";
-import { postSql as postSql0025, sql as sql0025 } from "./0025_ledger_chain.js";
+import { sql as sql0025 } from "./0025_eval_result.js";
+import { postSql as postSql0026, sql as sql0026 } from "./0026_ledger_chain.js";
 
 export interface Migration {
   readonly version: number;
@@ -33,7 +34,7 @@ export interface Migration {
   /** Run with `PRAGMA foreign_keys = OFF` and a `foreign_key_check` before commit (a rebuild of a referenced table). */
   readonly foreignKeysOff?: boolean;
   /**
-   * Data step run after `sql` in the same transaction (migration 25's chain backfill). Its code is as immutable as the
+   * Data step run after `sql` in the same transaction (migration 26's chain backfill). Its code is as immutable as the
    * SQL once released; it is not part of the checksum.
    */
   readonly backfill?: (db: Database.Database) => void;
@@ -67,5 +68,6 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 22, name: "dependency_seed", sql: sql0022, foreignKeysOff: true },
   { version: 23, name: "ci_fix_cap", sql: sql0023 },
   { version: 24, name: "ci_transient", sql: sql0024 },
-  { version: 25, name: "ledger_chain", sql: sql0025, backfill: backfillChains, postSql: postSql0025 },
+  { version: 25, name: "eval_result", sql: sql0025 },
+  { version: 26, name: "ledger_chain", sql: sql0026, backfill: backfillChains, postSql: postSql0026 },
 ];

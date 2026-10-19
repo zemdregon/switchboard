@@ -1,7 +1,7 @@
 # ADR-0064: Hash-chained `run_event` and approval rows, verified by `doctor`
 
 - Status: Accepted (2026-10-19, Delegated agent work under owner decision 77 and the WORK QUEUE v10 Linus decisions; not
-  owner-approved). Built by ROADMAP T8.13 (migration 25, `src/ledger/chain.ts`, the `ledger_chain` check of `doctor`)
+  owner-approved). Built by ROADMAP T8.13 (migration 26, `src/ledger/chain.ts`, the `ledger_chain` check of `doctor`)
 - Date: 2026-10-19
 - Decided by: Delegated (agent, 2026-10-19). Linus decisions relayed with the task (WORK QUEUE v10, Delegated, not
   owner-approved): the ADR is in the same change as the code and committed first (v10-D1), and there is one chain per

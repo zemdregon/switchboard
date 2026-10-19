@@ -218,7 +218,7 @@ export function verifyChain(db: Database.Database, table: ChainedTable): ChainVe
   return { table, length, head: previous };
 }
 
-/** True when the ledger has the chain columns (migration 25 applied). */
+/** True when the ledger has the chain columns (migration 26 applied). */
 export function hasChainColumns(db: Database.Database): boolean {
   const cols = db.prepare("SELECT name FROM pragma_table_info('run_event')").all() as { name: string }[];
   return cols.some((c) => c.name === "chain_hash");
