@@ -242,8 +242,7 @@ Git behaviour is declared (`gitWriteControl`
 Outside an approved `privileged` scope with `bypass`, every profile is `Ineligible` (`PROFILE_UNSUPPORTED`) because
 `toolPermission` is a settings value, not a per-run control ([TDD
 §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430)). Only the approved bypass cell compiles
-on synthetic fixtures; argv spellings and `--prompt=` are cited in source to TDD §4.4 or marked Assumption until
-operator live capture (T4.38).
+on synthetic fixtures; argv spellings and `--prompt=` are cited in source to TDD §4.4 or marked Assumption (T4.38 live legs ran 2026-10-19 but recorded no new argv evidence; native parameter keys stay unrecorded).
 
 #### T4.33 — parser, result, failure classification and resume (Done against its Done-when)
 
@@ -266,9 +265,9 @@ check: `resumeArgs` compiles only where `compile` does, T4.35, owner decision 67
   a denial, denial over envelope error and non-zero exit, guard over all). Sourcing: [TDD
   §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433).
 
-**Gaps (carried by T4.38 under owner decision 65 (a); this subsection is Done).** Resume now compiles with a fail-closed
+**Gaps (this subsection is Done under owner decision 65 (a); T4.38 is Done without closing them).** Resume now compiles with a fail-closed
 `conversation_id` check (T4.35, owner decision 67; was not compiled, Q-86). Rate-limit and sandbox-violation
-shapes were not observed in the live check, so those failures end `TOOL_FAILURE` rather than dedicated taxonomy
+shapes were observed in neither the T4.31 live check nor the 2026-10-19 T4.38 legs, so those failures end `TOOL_FAILURE` rather than dedicated taxonomy
 codes. The stderr
 `AGY_ERROR` shape has since been observed for real (seven quota stops at exit 3, T6.11
 [limit captures](../research/limit-captures-2026-10-17.md)) and mapped in `classifyFailure` to `QUOTA_EXHAUSTED` (T6.15,
@@ -276,7 +275,7 @@ codes. The stderr
 because the adapter contract gives it no stderr (pinned in `src/adapters/antigravity/limit-signals.test.ts`). Tool-step
 parameter key names (`command`, path fields) are Assumptions where the capture
 did not record them. Operator extension of T4.31 is still needed for a live resume run with a known
-conversation id (synthetic resume is T4.35, owner decision 67), rate limits
+conversation id (synthetic resume is T4.35, owner decision 67; T4.38 ran no resume check), rate limits
 and full tool-parameter shapes.
 
 #### T4.34 — auth preflight (placeholder)
@@ -316,7 +315,7 @@ component-level outcome. Mirrors the Grok Build declaration ([TDD
   `gitWriteRisks` in `src/adapters/git-write.ts`
 
 **Not shown by this evidence.** Whether settings deny rules hold under `--dangerously-skip-permissions` was not
-observed (T4.31 C8; operator task T4.38). T4.36 recorded a finding that `extractResult` returned `ok` for a clean
+observed (T4.31 C8; still unrun after T4.38 — see that row's remainder). T4.36 recorded a finding that `extractResult` returned `ok` for a clean
 `SUCCESS` envelope without reading a guard `violation` on a Git write, although ADR-0039 ends such a run
 `PERMISSION_BLOCKED`; that gap is now fixed (`extractResult` treats a flagged `tool_call` as not clean) and the former
 known-gap test passes as a plain test, as recorded in the [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks)
