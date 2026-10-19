@@ -1408,13 +1408,15 @@ budget](LLD.md#146-selection-and-token-budget), [§14.8 Freshness and fallback](
   row; pack labelling and token budget (de-overlap and cap); ledger and event payloads contain ids and hashes only
   (recursive scan for planted canary strings); admission integration on the fake lifecycle path with retrieval on versus
   off and versus hostile snippets. Global-index merge at admission is specified in [§3.13.9](#3139-t127-global-index-and-sharing-2026-10-14)
-  and lands with the T12.7 runtime; T12.5 on `main` stubs `use_global: false` only.
+  and landed with the T12.7 runtime (Partial; the tool's `global`/`both` scopes still answer `GLOBAL_NOT_AVAILABLE`,
+  ROADMAP T12.7); T12.5 alone stubbed `use_global: false`.
 
 #### 3.13.9 T12.7 global index and sharing (2026-10-14)
 
 **Design evidence (on `main`).** Specifies FR-RAG-09 and FR-RAG-10 ([SRS
 §3.15](../requirements/SRS.md#315-retrieval-index-fr-rag), [FRD BR-47](../requirements/FRD.md#3-business-rules), WF-14
-global leg). **Runtime (implemented, Done on fakes; ROADMAP T12.7).** Landed after
+global leg). **Runtime (implemented, Partial; ROADMAP T12.7).** Partial (2026-10-19, owner ruling): global/both scope
+returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f). Landed after
 [#197](https://github.com/zemdregon/switchboard/pull/197) (w61-t127 on sb-worker-a).
 
 - **Specification.** [LLD §14.9](LLD.md#149-global-index-and-sharing): optional `rag.global.enabled` (default off),
@@ -1431,7 +1433,8 @@ global leg). **Runtime (implemented, Done on fakes; ROADMAP T12.7).** Landed aft
 - **Configuration and narrowing (implemented, T12.1).** Global `sources` under an allowed root; per-project sharing flags
   in config; dynamic project definitions cannot set or widen `use_global` or `contribute_to_global` ([§3.13.5](#3135-t121-config-and-store-2026-10-14),
   `src/config/rag.ts`, `src/projects/rules.ts`, `src/mcp/project-tools.test.ts`).
-- **Runtime (implemented, Done on fakes; ROADMAP T12.7).** The global store is built under `<data>/rag/` by
+- **Runtime (implemented, Partial; ROADMAP T12.7; global/both scope returns GLOBAL_NOT_AVAILABLE on main; fix in
+  #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f)).** The global store is built under `<data>/rag/` by
 `serve` after the projects (`src/retrieval/global.ts`); `index rebuild global`, `index clear global`,
 `index status global` and the `doctor` global check are honoured (`src/cli/rag-index.ts`,
 `src/cli/rag-index.test.ts`); admission merges global hits with `use_global` (T12.5 as-built note). T12.6 still

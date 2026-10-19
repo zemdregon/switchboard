@@ -345,7 +345,8 @@ BR-46](FRD.md#3-business-rules)) are specified on `main` in [LLD §14.11](../des
 **Runtime (implemented, T12.5).** T12.4 and T12.5 are built on fakes ([ROADMAP §6.7](../ROADMAP.md#67-m12-retrieval-index-tasks)):
 delegated runs of a project with retrieval on receive an untrusted context pack at dispatch
 (`src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`, `src/retrieval/import-boundary.test.ts`);
-differences from the design are listed at the end of LLD §14.11. Global-index merge at admission is deferred to T12.7
+differences from the design are listed at the end of LLD §14.11. Global-index merge at admission is built by T12.7
+(Partial; ROADMAP T12.7)
 (TDD §3.13.8).
 
 **Design evidence (T12.7; on `main`).** FR-RAG-09 and FR-RAG-10 (WF-14 global index leg; [FRD
@@ -362,7 +363,9 @@ that only the operator file may set sharing flags (dynamic projects cannot widen
 `src/mcp/project-tools.test.ts`). Component mapping: [SDD §5](../design/SDD.md#5-requirements-to-design-traceability)
 (`FR-RAG-09`, `FR-RAG-10`); [ADR-0031](../adr/0031-retrieval-index.md).
 
-**Runtime (implemented, T12.7, Done on fakes; ROADMAP §6.7).** A separate global SQLite store is built by
+**Runtime (implemented, T12.7, Partial; ROADMAP §6.7).** T12.7 is Partial (2026-10-19, owner ruling): global/both scope
+returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f).
+A separate global SQLite store is built by
 `serve` after the projects from operator `sources` and contributing projects (`src/retrieval/global.ts`,
 `src/retrieval/global.test.ts`); admission merges global hits when `use_global` is set
 (`src/retrieval/admission.ts`); `index rebuild global`, `index clear global`, `index status global` and the `doctor`
@@ -376,7 +379,7 @@ that only the operator file may set sharing flags (dynamic projects cannot widen
 | T12.1 | FR-RAG-03 | `src/retrieval/store.test.ts`, `src/mcp/project-tools.test.ts` | `src/retrieval/store.ts`, project delete and serve-time prune (`src/mcp/project-tools.ts`, `src/cli/serve.ts`) |
 | T12.3 | FR-RAG-04 | `src/retrieval/http-embedder.test.ts`, `src/retrieval/embedding.test.ts` | `src/retrieval/embedding.ts`, `http-embedder.ts`, `fake-embedder.ts` |
 | T12.4 | FR-RAG-11 (partial), FR-RAG-14 (partial) | `src/cli/rag-index.test.ts`, `src/retrieval/build.test.ts` | `src/cli/rag-index.ts`, `src/retrieval/build.ts`, `src/cli/serve.ts` |
-| T12.5 | FR-RAG-05, FR-RAG-07, FR-RAG-08 | `src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`, `src/retrieval/import-boundary.test.ts` | `src/retrieval/admission.ts` (project store only until T12.7) |
+| T12.5 | FR-RAG-05, FR-RAG-07, FR-RAG-08 | `src/retrieval/admission.test.ts`, `src/lifecycle/context-pack.test.ts`, `src/retrieval/import-boundary.test.ts` | `src/retrieval/admission.ts` (project store, plus global merge for `use_global` projects since T12.7, Partial) |
 | T12.7 | FR-RAG-09, FR-RAG-10 | `src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts` (global index and doctor global rows) | global store build, contribution copy, admission merge, `index rebuild global` / `index clear global` |
 
 ### 3.16 PR and merge subscriptions (`FR-SUB`)
