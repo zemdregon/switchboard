@@ -316,7 +316,9 @@ operator's `live-run-ext.sh` meters):
 Every run of the first four providers is an approved bypass run, because that is their only kind of cell. OpenCode's
 `O-M2` and `O-M3` are expected to escape (FR-POL-04/06 under owner decision 46): the report marks them, and they open a
 risk but do not set the exit code. Until `adapters validate <id>` writes a manifest range, every check stops at the
-version gate as `NOT_CHECKED`; only Kimi Code's manifest admits a version today. The live runs are the operator rows
+version gate as `NOT_CHECKED`; only Kimi Code's and OpenCode's manifests admit a version today (`>=2.1.1 <2.2.0` since
+the T4.68 live pass, `>=2.0.23 <2.1.0` since the T4.58 live pass on 2026-10-18 under owner decisions 60 and 68).
+The live runs are the operator rows
 T4.28, T4.38, T4.48, T4.58 and T4.68. Tests are hermetic: `test/live-smoke.test.ts` and `test/live-malicious.test.ts`
 compile every cell in the real adapter class with a fake executable path (`test/live-cells.ts`) and check the run caps,
 check ids and verdict helpers. `test/live-budget.test.ts` checks that each provider asks the guard for exactly its
@@ -1440,15 +1442,15 @@ budget](LLD.md#146-selection-and-token-budget), [§14.8 Freshness and fallback](
   row; pack labelling and token budget (de-overlap and cap); ledger and event payloads contain ids and hashes only
   (recursive scan for planted canary strings); admission integration on the fake lifecycle path with retrieval on versus
   off and versus hostile snippets. Global-index merge at admission is specified in [§3.13.9](#3139-t127-global-index-and-sharing-2026-10-14)
-  and landed with the T12.7 runtime (Partial; the tool's `global`/`both` scopes still answer `GLOBAL_NOT_AVAILABLE`,
+  and landed with the T12.7 runtime (Done; the tool's `global`/`both` scopes read the global store,
   ROADMAP T12.7); T12.5 alone stubbed `use_global: false`.
 
 #### 3.13.9 T12.7 global index and sharing (2026-10-14)
 
 **Design evidence (on `main`).** Specifies FR-RAG-09 and FR-RAG-10 ([SRS
 §3.15](../requirements/SRS.md#315-retrieval-index-fr-rag), [FRD BR-47](../requirements/FRD.md#3-business-rules), WF-14
-global leg). **Runtime (implemented, Partial; ROADMAP T12.7).** Partial (2026-10-19, owner ruling): global/both scope
-returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f). Landed after
+global leg). **Runtime (implemented, Done; ROADMAP T12.7).** Done (2026-10-19, Delegated agent work, not owner-approved;
+it was Partial earlier that day while `global`/`both` scope answered only `GLOBAL_NOT_AVAILABLE`). Landed after
 [#197](https://github.com/zemdregon/switchboard/pull/197) (w61-t127 on sb-worker-a).
 
 - **Specification.** [LLD §14.9](LLD.md#149-global-index-and-sharing): optional `rag.global.enabled` (default off),
@@ -1465,13 +1467,24 @@ returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-searc
 - **Configuration and narrowing (implemented, T12.1).** Global `sources` under an allowed root; per-project sharing flags
   in config; dynamic project definitions cannot set or widen `use_global` or `contribute_to_global` ([§3.13.5](#3135-t121-config-and-store-2026-10-14),
   `src/config/rag.ts`, `src/projects/rules.ts`, `src/mcp/project-tools.test.ts`).
-- **Runtime (implemented, Partial; ROADMAP T12.7; global/both scope returns GLOBAL_NOT_AVAILABLE on main; fix in
-  #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f)).** The global store is built under `<data>/rag/` by
+- **Runtime (implemented, Done; ROADMAP T12.7).** The global store is built under `<data>/rag/` by
 `serve` after the projects (`src/retrieval/global.ts`); `index rebuild global`, `index clear global`,
 `index status global` and the `doctor` global check are honoured (`src/cli/rag-index.ts`,
-`src/cli/rag-index.test.ts`); admission merges global hits with `use_global` (T12.5 as-built note). T12.6 still
-returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the global store is wired into the tool
-(`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`).
+`src/cli/rag-index.test.ts`); admission merges global hits with `use_global` (T12.5 as-built note). The tool
+(`src/mcp/search-context.ts`, wired in `src/cli/serve.ts`, output schema in `src/mcp/schemas.ts`) serves `global` from
+`<data>/rag/global/index.db` only and `both` by merging project and global hits by score (then path, then start line)
+under one `limit` and the same byte bounds. Either scope still needs `use_global`. A global row is served only when its
+origin is in the live origins map built from current configuration (`globalOrigins` in `src/retrieval/global.ts`, as at
+admission), its `origin_project` matches and the origin is not the reading project, so a project that stopped
+contributing is never served before the next build and no project gets its own contribution back. Each global hit
+carries `origin_project` or `source`, its `context_id` is the global-store id (`project:<id>/<context>` or
+`source:<label>`), and it is freshness-checked against its origin's directory. It fails closed: no wired origins,
+unresolvable origins or a missing or never-built global store give `unavailable` with `GLOBAL_NOT_AVAILABLE` for
+`global` (the query is not embedded); for `both` the project results stand and the global failure code
+(`GLOBAL_NOT_AVAILABLE`, `REBUILD_PENDING`, `STORE_UNREADABLE`, `DIMENSION_MISMATCH`) is the `reason`. Delegated
+choices (not owner-approved): the bounds apply to the merged answer, and a stale or incomplete global store still
+serves freshness-checked hits from the tool (admission skips a stale global store). The per-run channel (T12.9) uses
+the same handler and so serves `global`/`both` the same way.
 - **Tests (fake embedder only, no network; landed with the T12.7 runtime).** Extend [§3.13.3](#3133-testing-affinity-and-retrieval)
   isolation: two projects with distinct planted markers — B with `use_global: true` sees A's marker in the global index
   only when A has `contribute_to_global: true` and the global store is built; otherwise never; operator `sources` chunks
@@ -1483,9 +1496,15 @@ returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the global store is 
   global` (the existing rebuild test), `index clear global` ("index clear global deletes the global store at once and
   records counts"), `index status global` ("index status global reports only the global store: off, absent and
   present"), and a `doctor` global subsection when enabled ("covers the global store: absent, present, stale, off and
-  missing", asserting the `rag_index_global` check in its present, absent, stale, off and missing states). Tool:
-  `global` and `both` still answer `GLOBAL_NOT_AVAILABLE` (remaining gap, ROADMAP T12.7); reading the built
-global store there is a follow-up.
+  missing", asserting the `rag_index_global` check in its present, absent, stale, off and missing states). Tool
+  (`src/mcp/search-context.test.ts`, describe "searchProjectContext over the global store (T12.7, FR-RAG-09,
+  FR-RAG-10)"): "scope global returns global-index results labelled with their origin, never the reader's own store";
+  "scope both merges project and global hits by score under one limit"; "serves no row of a project that stopped
+  contributing, and never a project its own contribution"; "drops a global hit whose origin file changed since the
+  build"; "scope global stays fail-closed GLOBAL_NOT_AVAILABLE when the global index is unavailable"; and, for the
+  published output schema, describe "search_project_context scope global on the MCP server (T12.7)" ("returns
+  origin-labelled global hits that match the published output schema"). The existing "needs use_global for scope global
+  or both; without global origins the global store is not read" covers the gate.
 
 ### 3.14 Network MCP transport (M13)
 
@@ -2577,13 +2596,13 @@ Each matrix cell is one of: **Could compile** (a documented control exists; what
 | --- | --- |
 | Automation surface | `opencode run [message..]` [D-cli], "explicitly documented for programmatic use" [R2 L78]. **Chosen transport: ephemeral subprocess with `--format json` (JSONL)**; see "Transport decision" below. `serve`/`attach`/`run --attach` stay deferred (FR-EXE-04); `opencode acp` exists [D-cli, D-acp] and is not used |
 | Structured output | **Observed** ([live-checks-2026-10-14-opencode.md](../research/live-checks-2026-10-14-opencode.md), `opencode v2.0.23`, rows 4a–4c, 5, 11): `--format json` emits `step_start`, `text`, `tool_use` (`read`/`write`/`shell`), `step_finish`, `error`; every event has `type`, `timestamp`, `sessionID`, `part`. Errors use `error.type` and `error.message` (not [T-ev]'s `error.name`/`error.data.message`). Events do not name provider or model used |
-| Success rule (Proposed) | Exit code `0` is not success: two user reports describe `--format json` runs that exit 0 with no final `text` event after a tool step ([I-38661] with `--attach`, [I-27697] on one version and provider). Success needs a `step_finish` with `reason` `stop` after at least one `text` event, and the controller's verification (FR-ADP-04). An `error` event is a failure; **observed** mappings: `provider.no-route`, `provider.quota`, `provider.auth` (rows 14a–14b, 14d) |
+| Success rule (Proposed) | Exit code `0` is not success: two user reports describe `--format json` runs that exit 0 with no final `text` event after a tool step ([I-38661] with `--attach`, [I-27697] on one version and provider). Success needs a `step_finish` with `reason` `stop` after at least one `text` event, and the controller's verification (FR-ADP-04). Owner decision 68 (Q-85 narrowed, 2026-10-18): a run that exits 0 with at least one non-empty `text` event and no `error`, no `tool_use`, no `step_finish` and no unknown event is a success without a `stop`; any run with a tool event keeps the `stop` requirement. An `error` event is a failure; **observed** mappings: `provider.no-route`, `provider.quota`, `provider.auth` (rows 14a–14b, 14d) |
 | Resume | `--continue`/`-c` "Continue the last session", `--session`/`-s` "Session ID to continue" [D-cli]. Proposed: `--session <id>` with the id taken from `sessionID` of the first event only (never `--continue`, which depends on shared "last session" state). `--fork` and `export`/`import` unused. **Observed:** `--session <id>` resumes across directories (row 15a); `--continue` starts a new session per project (row 13b) |
 | Auth preflight | **Observed** ([live-checks-2026-10-14-opencode.md](../research/live-checks-2026-10-14-opencode.md), `opencode v2.0.23`, rows 2a–2f): `auth list` and `auth list --format json --standalone` exit 0 logged in, env-only and empty (`[]` / `No authenticated integrations`); exit code does not distinguish states (Q-10 deviation: JSON `connections[].type`). Scratch `HOME` without `--standalone` hits the background service (row 2c). Env-only providers are listed (rows 2d–2f). Credentials are stored in `~/.local/share/opencode/auth.json` and "any keys defined in your environments or a `.env` file in your project" are also loaded [D-cli]; `opencode auth list` "lists all the authenticated providers as stored in the credentials file" [D-cli] (v2: `--format json` [D-v2]). No status command with a documented exit code. Proposed: `UNKNOWN` (fail closed, the Q-10 pattern) until T4.51 records the `auth list` exit codes logged in and logged out; the adapter never reads `auth.json`, `mcp-auth.json` or `.env`, and a missing login yields `AUTH_REQUIRED` naming `opencode auth login` (never run by Switchboard). Whether `auth list` shows providers authenticated only through environment variables: **observed** yes (`environment` connection type, rows 2d–2f) |
 | Trust profile compilation (Proposed) | Permissions only, supplied per run as inline config (`OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` [D-cli]), with **every permission key set to `allow` or `deny`, never `ask`**: defaults are permissive ("most permissions default to `allow`", `external_directory` and `doom_loop` default to `ask`) [D-perm], and a headless run whose permission resolves to `ask` is reported to hang with no timeout ([I-36762], via [I-43888]). `--auto` is not emitted ([§4.6.1](#461-opencode-native-controls-per-profile-and-platform-t450)) |
 | Sandbox controls | **None documented**: no sandbox page exists on the documentation site (HTTP 404 for `/docs/sandbox/`), [R2] names none, and the only sandbox mention found is a third-party plugin on the ecosystem page. Permission rules are tool-level checks, not OS confinement, so profiles needing confinement are `Ineligible: CAPABILITY_MISSING`; only shell-less profiles qualify |
 | Repository config | Merged, not replaced; later sources win only on conflicting keys: remote `.well-known`, global, `OPENCODE_CONFIG`, **project `opencode.json`**, `.opencode` directories, **`OPENCODE_CONFIG_CONTENT`**, managed files, MDM [D-cfg]. So inline config cannot remove what a repository adds (`mcp`, `plugin`, `instructions`, agents). `CLAUDE.md` is read as a fallback when there is no `AGENTS.md`, switchable off with `OPENCODE_DISABLE_CLAUDE_CODE` [D-rules, D-cli]; `--pure` "run without external plugins" [D-cli]. **Observed** (row 10): `AGENTS.md` loads; `CLAUDE.md` alone was not followed; repo `opencode.json` `mcp` merges in (`opencode mcp list`, row 10c). `--pure` does not exist (row 1). Ignore-all-project-config: Unverified: T4.51 |
-| Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10), not counting two paths to one quota pool as independent capacity. v1 and v2 documentation differ (`auth list --format json`, `run --standalone`, `auth switch` appear only in [D-v2]), so the version gate (ADR-0009) must pin the major version; the manifest range admits no version until T4.58. `autoupdate` is on by default [D-cfg]: `OPENCODE_DISABLE_AUTOUPDATE` exists [D-cli]. Snapshots "use an internal git repository" and are on by default [D-cfg]: whether it touches the worktree's Git directory: repo `.git` hash unchanged across a run (row 11); snapshot store not examined |
+| Known risks | Multiple backing providers: record harness and backing provider/model (FR-ADP-10), not counting two paths to one quota pool as independent capacity. v1 and v2 documentation differ (`auth list --format json`, `run --standalone`, `auth switch` appear only in [D-v2]), so the version gate (ADR-0009) must pin the major version; the manifest range admits `>=2.0.23 <2.1.0` since the T4.58 live `adapters validate` pass on 2026-10-18 ([live checks 2026-10-18](../research/live-checks-2026-10-18-opencode.md)). `autoupdate` is on by default [D-cfg]: `OPENCODE_DISABLE_AUTOUPDATE` exists [D-cli]. Snapshots "use an internal git repository" and are on by default [D-cfg]: whether it touches the worktree's Git directory: repo `.git` hash unchanged across a run (row 11); snapshot store not examined |
 | Inner-agent `cli` kind (M11, Proposed) | T11.0 documentation spike recorded in [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16): from docs only, a tool-free one-shot is **not** shown. Live result [§4.6.7](#467-t110-live-result-2026-10-17) (2026-10-17, v2.0.23): `--pure` and `--dir` absent, and a deny-all `OPENCODE_PERMISSION` did not stop a `shell` tool call, so items 4 and 12 are answered "no". Proposed argv from T4.50: `opencode run --format json --model <provider/model> --dir <empty directory>` with every permission `deny`, `--pure`, `OPENCODE_DISABLE_CLAUDE_CODE`, `OPENCODE_DISABLE_AUTOUPDATE`, no `--auto` [D-cli, D-perm] (v2 may lack `--pure`/`--dir`, see [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited)). `cli` stays **`Ineligible`** ([§3.12](#312-inner-agent), FR-INN-04, Q-26) until an installed version passes the checklist |
 | Git writes and injected tools (M4, M9) | Rules are `bash` patterns with wildcards, "last matching rule wins", for example `"git commit *": "deny"` and `"git push *": "deny"` [D-perm]. Pattern completeness is not shown (other `git` spellings, `git -C`, shell wrappers, writes through other tools): `gitWriteControl` `none-documented` (T4.51, 2026-10-18, showed a project-config deny holds only for lexical matches, row 7 ESCAPED, so `provider-deny-rules` stays Proposed and undeclared). `commitChannel` `finalize-only`. A per-run MCP server is a config entry (`mcp`, `type` `local` with a `command` array, or `remote`) [D-mcp] that can be sent inline; no `--approve-mcps`-style flag is named, and whether injected MCP tools need an `allow` rule and whether that works headless: an inline `OPENCODE_CONFIG_CONTENT` `mcp` entry was not listed by `opencode mcp list` (row 9 ESCAPED, 2026-10-18; repo MCP listing observed row 10c) (R-18, R-50). `--fork` and session export are not used. No sandbox, so only shell-less profiles qualify for push |
 
@@ -2749,7 +2768,8 @@ work, not owner-approved; synthetic `--format json` lines only; no `opencode` in
 
 - **Parser and result.** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in
   `src/adapters/opencode/adapter.ts`; fields in `src/adapters/opencode/protocol.ts`. Success needs `step_finish` `stop`
-  (Q-85); structured `sessionID` only.
+  (Q-85), or a non-empty text-only reply with no tool event and no `step_finish` (owner decision 68);
+  structured `sessionID` only.
 - **Hardening.** Finite non-negative usage; unknown line `type` clipped to 64 characters; mid-run `sessionID` change ends
   `OUTPUT_PROTOCOL_ERROR`; non-object roots and unstructured errors fail closed. Nested describe `"cases with no recorded
   native shape (live check rows 7, 11, 14c)"` pins row 11 (permission denial not detected), row 14c (rate limit

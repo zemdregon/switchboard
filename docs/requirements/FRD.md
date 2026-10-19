@@ -151,8 +151,7 @@ embedding backend configured the retrieval feature is inert and suite behaviour 
 
 **Runtime (implemented, T12.6, Done on fakes).** `search_project_context` (FR-RAG-06; ROADMAP §6.7):
 read-only, scoped to the client's projects, bounded result count and size (`src/mcp/search-context.test.ts`). `scope:
-"global"` and the global leg of `"both"` still answer `GLOBAL_NOT_AVAILABLE` until the global store is wired into the
-tool (ROADMAP T12.7).
+"global"` and the global leg of `"both"` read the global store since T12.7 (below).
 
 **Design evidence (T12.5; on `main`).** FR-RAG-05, FR-RAG-07 and FR-RAG-08 (WF-14 admission context pack; BR-46) are
 specified on `main` in [LLD §14.11](../design/LLD.md#1411-admission-context-pack-t125), [SDD §4.1
@@ -163,7 +162,7 @@ specified on `main` in [LLD §14.11](../design/LLD.md#1411-admission-context-pac
 **Runtime (implemented, T12.5).** T12.4 and T12.5 are built on fakes (ROADMAP §6.7): delegated runs of a project with
 retrieval on receive an untrusted context pack at dispatch (`src/retrieval/admission.test.ts`,
 `src/lifecycle/context-pack.test.ts`, `src/retrieval/import-boundary.test.ts`); differences from the design are listed
-at the end of LLD §14.11. Global-index merge at admission is built by T12.7 (Partial; ROADMAP §6.7) ([TDD
+at the end of LLD §14.11. Global-index merge at admission is built by T12.7 (Done; ROADMAP §6.7) ([TDD
 §3.13.8](../design/TDD.md#3138-t125-admission-time-context-pack-2026-10-14)).
 
 **Design evidence (T12.7; on `main`).** FR-RAG-09 and FR-RAG-10 (WF-14 global index leg; BR-47) are specified on
@@ -180,14 +179,21 @@ that only the operator file may set sharing flags (dynamic projects cannot widen
 `src/mcp/project-tools.test.ts`). Component mapping: [SDD §5](../design/SDD.md#5-requirements-to-design-traceability)
 (`FR-RAG-09`, `FR-RAG-10`); [ADR-0031](../adr/0031-retrieval-index.md).
 
-**Runtime (implemented, T12.7, Partial; ROADMAP §6.7).** T12.7 is Partial (2026-10-19, owner ruling): global/both scope
-returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f).
+**Runtime (implemented, T12.7, Done; ROADMAP §6.7).** T12.7 Done (2026-10-19, Delegated agent work, not
+owner-approved; it was Partial earlier that day while `global`/`both` scope answered only `GLOBAL_NOT_AVAILABLE`).
 A separate global SQLite store is built by
 `serve` after the projects from operator `sources` and contributing projects (`src/retrieval/global.ts`,
 `src/retrieval/global.test.ts`); admission merges global hits when `use_global` is set
 (`src/retrieval/admission.ts`); `index rebuild global`, `index clear global`, `index status global` and the `doctor`
-`rag_index_global` check are honoured (`src/cli/rag-index.ts`, `src/cli/rag-index.test.ts`). The tool's `global` and
-`both` scopes still answer `GLOBAL_NOT_AVAILABLE` (T12.6, `src/mcp/search-context.ts`).
+`rag_index_global` check are honoured (`src/cli/rag-index.ts`, `src/cli/rag-index.test.ts`). The tool's `global` scope
+reads only the global store and `both` merges project and global hits by score under one limit and the same byte bounds
+(`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`, "searchProjectContext over the global store (T12.7,
+FR-RAG-09, FR-RAG-10)"). Either scope still needs `use_global`. A global row is served only when its origin is in the
+live origins built from current configuration and is not the reading project, so a project that stopped contributing is
+never served and never gets its own contribution back. Each global hit carries `origin_project` or `source` and is
+freshness-checked against its origin. `GLOBAL_NOT_AVAILABLE` remains the fail-closed answer when the global index is
+unavailable: for `global` it is the `unavailable` reason; for `both` the project results stand and the global failure
+code is the `reason`.
 
 ## 4. Canonical run state machine
 

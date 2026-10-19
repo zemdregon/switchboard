@@ -1,8 +1,9 @@
 /**
  * `cli` inner backend (T11.13; FR-INN-04, FR-ADP-03, FR-ADP-08). Synthetic only: no test executes `opencode`.
  * An in-range manifest and a verification record are injected copies. They are not a claim that T11.0 verified a
- * tool-free argv, and they are not a live backend run. The shipped manifest range stays `<0.0.0` and
- * `CLI_TOOL_FREE_VERIFICATION` stays null, so production does not attach this backend.
+ * tool-free argv, and they are not a live backend run. The shipped manifest range admits `>=2.0.23 <2.1.0` since the
+ * T4.58 live `adapters validate opencode` pass (2026-10-18), but `CLI_TOOL_FREE_VERIFICATION` stays null, so
+ * production still does not attach this backend.
  */
 
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -186,9 +187,11 @@ describe("cli inner backend (T11.13; FR-INN-04, FR-ADP-03, FR-ADP-08)", () => {
 
   it("a version outside the shipped manifest range is Ineligible and spawns nothing", async () => {
     const shipped = tryLoadManifest("opencode");
-    expect(shipped.loaded?.manifest.validated_version_range).toBe("<0.0.0");
+    // T4.58: the shipped range admits 2.0.23 since the 2026-10-18 live `adapters validate opencode` pass; the next
+    // minor is outside it.
+    expect(shipped.loaded?.manifest.validated_version_range).toBe(">=2.0.23 <2.1.0");
     const cases: Array<{ observedVersion: string; manifest?: ComplianceManifest }> = [
-      { observedVersion: "2.0.23" },
+      { observedVersion: "2.1.0" },
       { observedVersion: "1.2.3", manifest: manifestWithRange(">=9.0.0") },
       { observedVersion: "not-a-version", manifest: manifestWithRange(">=1.0.0") },
       { observedVersion: "1.2.3-rc.1", manifest: manifestWithRange(">=1.0.0") },
