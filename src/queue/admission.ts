@@ -82,6 +82,11 @@ export interface AdmitWorkDeps {
   };
   projectStore?: DynamicProjectStore;
   candidateOrder?: readonly ProviderId[];
+  /**
+   * T14.17 (FR-CTL-15, Linus decision v10 (c)): freeze the project snapshot read-only (not writable, no identity, push
+   * policy `none`, no finalize commit, no signing), so the run is never offered the Git channel and never publishes.
+   */
+  readOnlyProject?: boolean;
   models?: ModelRegistry;
   /**
    * T16.4 (FR-SKL-03, LLD §19.4): the skill store (the ledger's own handle) and the resolved `skills` settings. Absent,
@@ -222,11 +227,15 @@ export async function admitWorkItemRequest(
         base_ref: context.baseRef,
         effective_max_profile: effectiveMax,
         ...(project.allowedProviders !== undefined ? { allowed_providers: [...project.allowedProviders] } : {}),
-        writable: context.writable,
-        ...(context.identity !== undefined ? { identity: { ...context.identity } } : {}),
-        push: { policy: context.push.policy },
-        ...(context.finalizeCommit ? { finalize_commit: true as const } : {}),
-        ...(context.sign ? { sign: true as const } : {}),
+        ...(deps.readOnlyProject === true
+          ? { writable: false, push: { policy: "none" as const } }
+          : {
+              writable: context.writable,
+              ...(context.identity !== undefined ? { identity: { ...context.identity } } : {}),
+              push: { policy: context.push.policy },
+              ...(context.finalizeCommit ? { finalize_commit: true as const } : {}),
+              ...(context.sign ? { sign: true as const } : {}),
+            }),
       },
     };
   };

@@ -7492,6 +7492,30 @@ At admission, after the worktree exists, a bounded walk (depth and count capped,
 bypass run it appends one `repo_config_warning` event; under the untrusted profiles the existing FR-POL-04 handling
 applies unchanged.
 
+Implemented by T3.25 (`src/policy/repo-config-preflight.ts`, called from `execute` in `src/lifecycle/lifecycle.ts` once
+the working directory exists, before compile and the FR-POL-04 refusal):
+
+- **Walk.** Breadth-first in name order over the working directory with `readdir` file types only: no file is opened,
+  read or hashed. A symbolic link whose name matches a kind below is listed by name (`symlink: true`); any other
+  name — including a non-matching symlink — is not listed; no symlink is followed or entered. `.git/` and
+  `node_modules/` are not entered. A listed directory (`.claude/`, `.cursor/`) is recorded once and not entered. A
+  directory that cannot be read is skipped.
+- **Caps** (Linus decision, WORK QUEUE v10, Delegated, Assumption). Paths of at most 4 segments, 200 entries, 5,000
+  directory entries visited. Hitting any cap sets `policy_snapshot_json.repo_config_truncated` to `true` (always
+  written, `false` otherwise).
+- **Kinds.** `claude_config` (`.claude`), `mcp_config` (`.mcp.json`), `cursor_config` (`.cursor`), `vscode_tasks`
+  (`.vscode/tasks.json`), `envrc` (`.envrc`), `env_file` (`.env`, `.env.*`) and `provider_config` for the provider
+  project files that can set a base-URL override (**Assumption**, contents not read so "may set": `.codex/config.toml`,
+  `.grok/config.toml`, `.gemini/settings.json`, `opencode.json`, `opencode.jsonc`). Every name matches at any depth
+  within the cap.
+- **Record.** The ledger sets both keys with `json_set` (other snapshot keys untouched) for every run, in the same
+  transaction as the warning event when there is one. A retry successor copies the snapshot and overwrites both keys
+  at its own dispatch.
+- **Warning.** Only an approved bypass run (`bypassApproved` from the dispatch verdict and `bypassApprovedFor`, as the
+  argv audit gate uses) with at least one entry appends one `repo_config_warning` event `{count, kinds, truncated}`
+  (sorted unique kinds, no paths, no contents); the run proceeds (owner decision 77 answer 1). No other profile gets an
+  event.
+
 ### 20.11 MCP SDK v2 and Client ID Metadata Documents (FR-MCP-18, FR-MCP-19, T13.10, T13.11)
 
 An ADR superseding the affected part of [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) comes first and
@@ -7589,6 +7613,31 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
 - **Critic (FR-CTL-15).** `projects.<id>.critic`: `enabled` (default `false`), `min_diff_lines` (Assumption 400), always
   another provider, `inspect-untrusted`; the critic's objective is controller-generated and its findings artifact is
   untrusted. It counts against the project's budgets (FR-CTL-06).
+  *Implemented (T14.17, `src/control/critic.ts`, Delegated agent work, not owner-approved):* `projects[].critic` is a
+  configuration-file key only (not a dynamic project definition), `min_diff_lines` an integer 1–1 000 000. Serve
+  passes every committed transition to the critic (`RunLifecycleOptions.onTransition`, no lifecycle change). For a
+  `SUCCEEDED` run that is write-capable (not `inspect-untrusted`) in an enabled project:
+  1. **Diff size** (Linus decision v10 (a)): added plus deleted lines of `git diff --numstat` between the run's `pre`
+     and `post` checkpoints; binary files (`-` counts) are excluded. Below `min_diff_lines` nothing is recorded.
+  2. **Exactly once** (Linus decision v10 (b)): `critic_requested {diff_lines, min_diff_lines}` is appended to the
+     original run in one transaction only when the run has no critic event yet, and the critic is admitted with the
+     idempotency key `critic:<original run id>` under the original run's client, so a second notification or a restart
+     cannot admit a second critic. A refusal is never retried.
+  3. **Admission** goes through the work-queue admission path (`admitWorkItemRequest`, §18.4) with the candidates
+     narrowed to every registered provider except the original's; routing picks among the eligible ones. Trust profile
+     `inspect-untrusted`, priority `batch`, the project snapshot frozen read-only (`writable: false`, push policy
+     `none`, no identity, finalize commit or signing; Linus decision v10 (c)): with no worktree the critic gets no Git
+     channel and no finalize commit and never publishes. Budgets (FR-CTL-06), pause and ceilings apply as to any run.
+  4. **Objective**: a fixed controller template naming the run, the project and the line count, then the text diff in
+     one `[untrusted_diff]` block it cannot close (control characters removed, secrets redacted, block markers
+     neutralised, capped at 60 000 characters, Assumption).
+  5. **Outcome events** on the original run: `critic_admitted {critic_run_id, provider, diff_lines}`, or
+     `critic_skipped {reason}` with `reason` one of `diff_unavailable`, `no_other_provider`, `no_eligible_provider`,
+     `admission_refused` (budget, pause or queue full) and `admission_failed` (with `code`). When the critic ends,
+     `critic_findings {critic_run_id, provider, state, trust: "untrusted", label, summary?}` with `artifact_id` set to
+     the critic's `provider_stdout` artifact, once; the label is fixed by the controller. Nothing else on the original
+     run changes: its row, commits, checkpoints, artifacts and publication are untouched.
+  6. **Never a critic of a critic**: the critic is `inspect-untrusted`, so it is not write-capable.
 
 ### 20.14 Notes carried from the harness report
 

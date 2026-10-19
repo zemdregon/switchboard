@@ -738,6 +738,15 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   casRunState(input: CasRunState): RunRecord | undefined;
   /** Update non-state columns and append one event, in one transaction. Returns false if the run does not exist. */
   updateRunFields(runId: string, set: RunFieldPatch, event: { type: string; payload?: unknown }): boolean;
+  /**
+   * T3.25 (FR-POL-11, LLD §20.10): sets `policy_snapshot_json.repo_config_seen` and `.repo_config_truncated` (other
+   * snapshot keys untouched) and, when given, appends `event`, in one transaction. False if the run does not exist.
+   */
+  recordRepoConfigSeen(
+    runId: string,
+    seen: { entries: unknown[]; truncated: boolean },
+    event?: { type: string; payload?: unknown },
+  ): boolean;
   findRunByIdempotencyKey(clientId: string, key: string): RunRecord | undefined;
   countRunsInStates(states: readonly RunState[], provider?: string): number;
   /** Runs in `state`, highest priority first, then oldest (`created_at`, then ULID order). */
@@ -1305,6 +1314,23 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           .run(when, ...values, runId);
         if (res.changes !== 1) return false;
         insertEvent(runId, event.type, event.payload, when);
+        return true;
+      });
+    },
+
+    recordRepoConfigSeen(runId, seen, event) {
+      return immediate(() => {
+        const when = ts();
+        const res = db
+          .prepare(
+            `UPDATE run SET version = version + 1, updated_at = ?,
+               policy_snapshot_json = json_set(policy_snapshot_json, '$.repo_config_seen', json(?),
+                                               '$.repo_config_truncated', json(?))
+             WHERE id = ?`,
+          )
+          .run(when, JSON.stringify(seen.entries), JSON.stringify(seen.truncated), runId);
+        if (res.changes !== 1) return false;
+        if (event) insertEvent(runId, event.type, event.payload, when);
         return true;
       });
     },

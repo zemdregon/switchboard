@@ -243,6 +243,10 @@ export interface RoutingConfigInput {
 export const MAX_ROUTING_WEIGHT = 100;
 /** T14.16: largest `projects[].queue.stall_hours` (30 days; Assumption, Delegated). */
 export const MAX_STALL_HOURS = 720;
+/** T14.17 (FR-CTL-15, LLD §20.13): default `projects[].critic.min_diff_lines` (Assumption 400, LLD §20.13). */
+export const DEFAULT_CRITIC_MIN_DIFF_LINES = 400;
+/** T14.17: largest `projects[].critic.min_diff_lines` (a sanity bound with no source; Assumption, Delegated). */
+export const MAX_CRITIC_MIN_DIFF_LINES = 1_000_000;
 
 /** `control_plane` as written in the config file (LLD §3.4.6); `budgets` (T14.4) and `loop_breaker` (T14.5) so far. */
 export interface ControlPlaneConfigInput {
@@ -429,6 +433,14 @@ export interface ProjectConfig {
     low_water?: number;
     /** T14.16 (FR-CTL-14, LLD §20.5): `stalled_progress` window in hours; absent means off. */
     stall_hours?: number;
+  };
+  /**
+   * T14.17 (FR-CTL-15, LLD §20.13): one read-only advisory critic run on another provider after a large diff. Off by
+   * default. Configuration file only (not a dynamic project definition; Delegated): it admits runs on its own.
+   */
+  critic?: {
+    enabled?: boolean;
+    min_diff_lines?: number;
   };
 }
 
@@ -753,10 +765,28 @@ function clientSkillListSchema(): {
   };
 }
 
-/** A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13) and `skills` (T16.3). */
+/** `projects[].critic` (T14.17; FR-CTL-15, LLD §20.13). */
+const projectCriticSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enabled: { type: "boolean" },
+    min_diff_lines: { type: "integer", minimum: 1, maximum: MAX_CRITIC_MIN_DIFF_LINES },
+  },
+} as const;
+
+/**
+ * A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13), `skills`
+ * (T16.3) and `critic` (T14.17).
+ */
 const configProjectSchema = {
   ...projectSchema,
-  properties: { ...projectSchema.properties, dependency_seeds: dependencySeedsSchema, skills: projectSkillsSchema() },
+  properties: {
+    ...projectSchema.properties,
+    dependency_seeds: dependencySeedsSchema,
+    skills: projectSkillsSchema(),
+    critic: projectCriticSchema,
+  },
 } as const;
 
 /** Defaults (Proposed): 30 days (NFR-DATA-01), GC pass every 24 hours. */

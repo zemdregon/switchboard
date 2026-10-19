@@ -121,6 +121,11 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   HLD owner's call, the SDD covers FR-GIT-11, and `node scripts/check-docs.mjs` passes. It does not block
   PR #764.
 
+  **Update 2026-10-19 (doc-align gate for PR #766, T14.17):** this PR widens the same gap by one more ID. Its SDD
+  row maps FR-CTL-15 to COMP-RTE and COMP-MCP while the HLD rows still cite COMP-MCP `FR-CTL-01..11` and
+  COMP-RTE `FR-QUE-01..02`. Left unchanged for the same reason: re-attribution is the HLD owner's call, the SDD
+  covers FR-CTL-15, and `node scripts/check-docs.mjs` passes. It does not block PR #766.
+
 ## 10. M7 wave-B planning notes vs Done rows (pre-existing, not from PR #645)
 
 - The §6.12 sequencing notes still say "T7.8 is blocked on T7.12 (its row)", that T7.9 and T7.12 "wait for
@@ -778,7 +783,27 @@ as history.
   narrowing the SRS guarantee to "from an allowed client" is the SRS
   owner's call. It does not block PR #760.
 
-## 43. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
+## 43. HLD component rows cite pre-#638 requirement ranges, now also excluding FR-POL-11 (pre-existing, not from PR #770)
+
+- [HLD §2](design/HLD.md) COMP-POL cites `FR-POL-01..10` and COMP-WS cites `FR-WS-01..07, FR-POL-10, FR-GIT-08`,
+  while [SRS](requirements/SRS.md) also carries FR-POL-11 (added 2026-10-19 for owner decision 77) and the
+  [SDD](design/SDD.md) maps it to COMP-POL, COMP-WS. The HLD ranges already excluded newer IDs before this PR
+  (cf. item 9 above for the same class); PR #770 only flips the SDD/ROADMAP status of T3.25 to Done and touches
+  neither the SRS requirement nor the HLD rows.
+- Left unchanged: re-attribution is the HLD owner's call, the SDD covers FR-POL-11, and
+  `node scripts/check-docs.mjs` passes. It does not block PR #770.
+
+## 44. ROADMAP §9.2 sequencing note still reads "are `Planned`" (pre-existing, not from PR #770)
+
+- [ROADMAP §9.2](ROADMAP.md#92-harness-and-discovery-rows-2026-10-19) says "The rows added on 2026-10-19 are
+  `Planned`", while T3.24, T15.9, T9.14 and now T3.25 (this PR) record Done. The sentence was already overtaken
+  on `origin/main` before this branch (by the T3.24, T15.9 and T9.14 merges); this PR only adds one more Done
+  row to the same list without touching §9.2.
+- Left unchanged: §9.2 is a dated (2026-10-19) sequencing snapshot, and rewriting it would falsify the record
+  (cf. item 23 above for the §6.5 intro precedent); the live status lives in each task row and the milestone
+  rows, which agree. It does not block PR #770.
+
+## 45. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
 
 - PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
   owner's macOS merge waiver" / "under the owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux
@@ -795,7 +820,7 @@ as history.
   ADR-0060 ("the macOS leg was dropped from gating by a ruling") instead of a dated owner waiver, so no §4.2
   entry is needed and no owner approval is implied. Resolved, not outstanding.
 
-## 44. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
+## 46. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
 
 - TDD §5 (implementation strategy, M4 row) listed "macOS CI leg (NFR-PORT-02)" in the present tense as the
   technical approach; past-tensed to "ran 2026-10-14, removed 2026-10-19 when CI went Linux-only, §3.8",

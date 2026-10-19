@@ -82,6 +82,7 @@ import {
   applyPauseRequests,
   BudgetEvaluator,
   ConsentLinkStore,
+  Critic,
   createConsentApprovalSource,
   NO_PROJECT_ID,
   OnceGate,
@@ -128,7 +129,12 @@ import type { SearchContextDeps } from "../mcp/search-context.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
 import { DynamicProjectStore, innerSettingResolver, toResolved } from "../projects/index.js";
-import { attachQueueLowWater, queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
+import {
+  admitWorkItemRequest,
+  attachQueueLowWater,
+  queueSchedulerSettingsFromConfig,
+  runProjectWorkQueueTick,
+} from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
 import { globalOrigins } from "../retrieval/global.js";
 import { pruneRagStores } from "../retrieval/store.js";
@@ -863,6 +869,8 @@ async function runDaemon(
   // T14.9 (FR-CTL-10, ADR-0048): `needs_attention` emits once per (run, reason) in this process; keys name only the
   // run id and the closed reason code.
   const attentionGate = new OnceGate();
+  // T14.17 (FR-CTL-15): the advisory critic, built once the queue admission deps exist (after `lifecycle.start()`).
+  let critic: Critic | undefined;
   // T15.4 (FR-QUE-04, LLD §18.8, ADR-0048): one queue low-water tracker for this process, on the real ledger and the
   // same dispatcher as the other sink events. It recomputes on every work-queue state change the ledger notifies
   // (MCP enqueue/cancel, the scheduler tick's dequeue and admission outcomes, run-terminal transitions); the mark comes
@@ -1003,6 +1011,7 @@ async function runDaemon(
     onTransition: (n) => {
       log.info("run transition", { run_id: n.runId, from: n.from, to: n.to, rule: n.rule });
       notifySinks?.(n);
+      critic?.onTransition(n);
     },
     budgets,
     onBudgetRefused,
@@ -1144,6 +1153,25 @@ async function runDaemon(
     // T16.4 (LLD §19.4): a queued item resolves its skills at its own admission, on the ledger handle.
     ...(config.skills.enabled ? { skills: { db, settings: config.skills } } : {}),
   };
+  // T14.17 (FR-CTL-15, LLD §20.13): one read-only critic run on another provider after a large diff, admitted through
+  // the same path as a queued item (budgets, pause and ceilings apply) with the project snapshot frozen read-only.
+  const criticSettings = new Map(config.projects.flatMap((p) => (p.critic ? [[p.id, p.critic] as const] : [])));
+  if (criticSettings.size > 0) {
+    critic = new Critic({
+      ledger,
+      settingsFor: (projectId) => criticSettings.get(projectId),
+      providers: () => registry.list().map((a) => a.id),
+      admit: (a) =>
+        admitWorkItemRequest(
+          { ...queueAdmission, candidateOrder: a.candidates as ProviderId[], readOnlyProject: true },
+          a.clientId,
+          a.projectId,
+          a.request,
+          a.idempotencyKey,
+        ),
+      onError: (err) => log.error("advisory critic failed", { error: message(err) }),
+    });
+  }
   const runQueueTick = () =>
     runProjectWorkQueueTick(ledger, queueAdmission, queueSettings).catch((err) => {
       log.error("project work queue tick failed", { error: message(err) });
