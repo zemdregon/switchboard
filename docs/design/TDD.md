@@ -1035,8 +1035,9 @@ been used anywhere in the suite.
   generic `BACKEND_ERROR` reason and no address in any row, event or log. **Not built:** the Unix-socket form
   (`base_url` is `http`/`https` only, T11.3), the full-stack resolves-loopback-at-load-elsewhere-at-connect case (the
   transport connects only to its pinned address, so on one host the peer can disagree with the classification only
-  through an inconsistent pin; a host with no bindable non-loopback interface skips the two peer tests), and the `cli`
-  kind (reported `Ineligible`, never started; `src/cli/inner.test.ts`).
+  through an inconsistent pin; a host with no bindable non-loopback interface skips the two peer tests), and a verified
+  tool-free `cli` invocation (the gate itself is built, T11.13; the shipped kind stays `Ineligible`, never started;
+  `src/inner/cli-backend.test.ts`, `src/cli/inner.test.ts`).
 - *Accounting and replay*: `src/inner/usage.test.ts`, `src/inner/usage-surfaces.test.ts`,
   `src/inner/usage-channels.test.ts` (the `commit` tool channel and the MCP admission harness themselves: admission,
   continuation and, since 2026-10-15 post-#389, the quota failover, the one routing classification recorded under a
