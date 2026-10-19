@@ -20,7 +20,7 @@ import {
 import { resolveProfile } from "../../policy/profiles.js";
 import type { PrivilegedScope } from "../../policy/types.js";
 import { groupAlive } from "../supervisor.js";
-import type { AcpRunEvent } from "./client.js";
+import { ACP_MAX_EARLY_UPDATES, ACP_UNREQUESTED_TOOL_CALL, type AcpRunEvent } from "./client.js";
 
 const root = mkdtempSync(path.join(tmpdir(), "sb-acp-client-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -230,6 +230,85 @@ describe("acp-stdio: session start and streamed updates", () => {
       baseEnv: { PATH: process.env.PATH ?? "/usr/bin", SECRET_TOKEN: "x", HOME: "/root" },
     });
     expect(recorded()[0]?.env?.filter((k) => k !== "__CF_USER_TEXT_ENCODING")).toEqual(["PATH"]);
+  });
+});
+
+describe("acp-stdio: updates before the session/new reply (T4.68, Kimi Code CLI 2.1.1 live smoke 2026-10-19)", () => {
+  const HELD_NEW: Step[] = [{ recv: "session/new" }];
+  const replyNew = (sessionId = SID): Step => ({ reply_to: "session/new", result: { sessionId } });
+  const commands = (sessionId = SID) =>
+    update({ sessionUpdate: "available_commands_update", availableCommands: [] }, sessionId);
+
+  it("are held and handled in order after session_bound, checked against the returned id", async () => {
+    const { out } = await run({
+      steps: [INIT(), ...HELD_NEW, commands(), commands(), replyNew(), PROMPT, END()],
+    });
+    expect(out.result.ok).toBe(true);
+    expect(out.events).toEqual([
+      { kind: "session_bound", nativeSessionId: SID },
+      { kind: "unknown", rawType: "available_commands_update" },
+      { kind: "unknown", rawType: "available_commands_update" },
+      { kind: "result", ok: true },
+    ]);
+  });
+
+  it("a held update for another session, or more than the bound, is OUTPUT_PROTOCOL_ERROR before any prompt", async () => {
+    const other = await run({
+      steps: [INIT(), ...HELD_NEW, commands("other-session"), replyNew(), { hang: true }],
+    });
+    expect(other.out.result.failureCode).toBe("OUTPUT_PROTOCOL_ERROR");
+    expect(other.received().some((m) => m.method === "session/prompt")).toBe(false);
+    const flood = Array.from({ length: ACP_MAX_EARLY_UPDATES + 1 }, () => commands());
+    const many = await run({ steps: [INIT(), ...HELD_NEW, ...flood, { hang: true }] });
+    expect(many.out.result.failureCode).toBe("OUTPUT_PROTOCOL_ERROR");
+    expect(many.out.groupEmpty).toBe(true);
+  });
+
+  it("an update before session/new was sent is still OUTPUT_PROTOCOL_ERROR", async () => {
+    const { out } = await run({ steps: [commands(), { hang: true }] });
+    expect(out.result.failureCode).toBe("OUTPUT_PROTOCOL_ERROR");
+  });
+});
+
+describe("acp-stdio: requirePermissionRequest (ADR-0049 item 3, fail closed)", () => {
+  const require = (inv: Invocation): Invocation => ({
+    ...inv,
+    acp: { ...(inv.acp as NonNullable<Invocation["acp"]>), requirePermissionRequest: true },
+  });
+  const ranUnasked: Step[] = [
+    INIT(),
+    NEW,
+    PROMPT,
+    update({ sessionUpdate: "tool_call", toolCallId: "t1", kind: "read", status: "pending" }),
+    update({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" }),
+    END(),
+  ];
+
+  it("a tool call that ran with no request naming it ends PERMISSION_BLOCKED; without the flag nothing changes", async () => {
+    const blocked = await run({ steps: ranUnasked, tweak: require });
+    expect(blocked.out.result.failureCode).toBe("PERMISSION_BLOCKED");
+    expect(blocked.out.events).toContainEqual({ kind: "permission_denied", tool: ACP_UNREQUESTED_TOOL_CALL });
+    const unflagged = await run({ steps: ranUnasked });
+    expect(unflagged.out.result.ok).toBe(true);
+  });
+
+  it("a tool call that was asked for and allowed runs on; an approved bypass run is not restricted", async () => {
+    const asked = await run({
+      steps: (wt) => [
+        INIT(),
+        NEW,
+        PROMPT,
+        update({ sessionUpdate: "tool_call", toolCallId: "t1", kind: "edit", status: "pending" }),
+        permission(5, { toolCallId: "t1", kind: "edit", locations: [{ path: path.join(wt, "README.md") }] }),
+        { recv_response: 5 },
+        update({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" }),
+        END(),
+      ],
+      tweak: require,
+    });
+    expect(asked.out.result.ok).toBe(true);
+    const bypass = await run({ profile: privileged(true), bypassApproved: true, steps: ranUnasked, tweak: require });
+    expect(bypass.out.result.ok).toBe(true);
   });
 });
 

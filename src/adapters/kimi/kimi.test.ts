@@ -107,6 +107,7 @@ describe("kimi compile matrix (T4.62)", () => {
           mcpServers: [],
           ...(readOnly ? { modeId: "plan" } : {}),
           loginCommand: "kimi login",
+          requirePermissionRequest: true,
         });
         expect(auditInvocation(inv), label).toEqual([]);
         expect(auditAcpPlan(inv, "kimi"), label).toEqual([]);

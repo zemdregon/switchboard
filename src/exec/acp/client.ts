@@ -10,11 +10,18 @@
  * - opens the session with `session/new`, or for a resume `session/resume` (if `sessionCapabilities.resume` was
  *   advertised) else `session/load` (if `loadSession`), else ends `TOOL_FAILURE` (`acp_resume_unsupported`), within
  *   {@link ACP_SESSION_TIMEOUT_MS}; updates replayed by `session/load` are counted, not turned into events;
+ * - holds `session/update` notifications that arrive while `session/new` is still unanswered (at most
+ *   {@link ACP_MAX_EARLY_UPDATES}; Kimi Code CLI 2.1.1 sends `available_commands_update` before its `session/new`
+ *   reply, T4.68 live smoke 2026-10-19) and handles them in order after `session_bound`, each checked against the
+ *   returned `sessionId` (another id is `OUTPUT_PROTOCOL_ERROR`, as before);
  * - sends the plan's `session/set_mode` and `session/set_config_option` values (audited before spawn), then exactly one
  *   `session/prompt` with one `text` block;
  * - answers `session/request_permission` at once through the injected decision (`decidePermission`, ADR-0036 item 9),
  *   rejecting when it throws or misses {@link ACP_PERMISSION_DECISION_MS}; refuses every other agent request with
  *   `-32601`; never selects `allow_always`;
+ * - when the plan sets `requirePermissionRequest` (outside an approved bypass run), ends the run `PERMISSION_BLOCKED`
+ *   on a `tool_call` or `tool_call_update` whose status says it ran (not `pending`) for a `toolCallId` no permission
+ *   request named: a mode that runs tools without asking fails closed (ADR-0049 item 3; Proposed, T4.68);
  * - on the `session/prompt` result or error, closes stdin, waits `killGraceMs`, then kills the group;
  * - on cancel or a wall-clock or idle timeout, answers pending permission requests `cancelled`, sends `session/cancel`
  *   and waits up to `killGraceMs` for the result before the group kill (the kill never waits on the agent).
@@ -47,6 +54,10 @@ export const ACP_PERMISSION_DECISION_MS = 1_000;
 export const ACP_MAX_PENDING_AGENT_REQUESTS = 8;
 /** ADR-0036 item 9.6: at most this many `acp_permission` events per run; the rest are counted in one final event. */
 export const ACP_MAX_PERMISSION_EVENTS = 256;
+/** Proposed bound on `session/update` notifications held while `session/new` is unanswered; more is a protocol error. */
+export const ACP_MAX_EARLY_UPDATES = 64;
+/** The `permission_denied` tool of a tool call that ran without a permission request (`requirePermissionRequest`). */
+export const ACP_UNREQUESTED_TOOL_CALL = "acp_unrequested_tool_call";
 /** JSON-RPC "method not found", the answer to every agent request but permission requests (ADR-0036 item 11). */
 export const ACP_METHOD_NOT_FOUND = -32601;
 
@@ -156,6 +167,12 @@ export function runAcpAgent(opts: AcpRunOptions): AcpRun {
   let expectedSessionId: string | undefined;
   let replaying = false;
   let replayed = 0;
+  /** `session/new` sent and not yet answered: updates are held in `early` until its `sessionId` is known. */
+  let opening = false;
+  const early: Array<{ params: unknown; line: number }> = [];
+  /** `toolCallId`s some permission request named (`requirePermissionRequest`). */
+  const askedToolCallIds = new Set<string>();
+  const requirePermission = plan.requirePermissionRequest === true && !opts.approvedBypass;
   let promptId: AcpId | undefined;
   let turnEnded = false;
   let done = false; // no further message is acted on (result, error, protocol failure)
@@ -272,6 +289,7 @@ export function runAcpAgent(opts: AcpRunOptions): AcpRun {
     const cwd = opts.cwd ?? process.cwd();
     const mcpServers = plan.mcpServers;
     if (plan.session.kind === "new") {
+      opening = true;
       request("session/new", { cwd, mcpServers });
     } else {
       const id = plan.session.nativeSessionId;
@@ -313,6 +331,11 @@ export function runAcpAgent(opts: AcpRunOptions): AcpRun {
     sessionId = id;
     expectedSessionId = id;
     emit([{ kind: "session_bound", nativeSessionId: id }]);
+    opening = false;
+    for (const u of early.splice(0)) {
+      onUpdate(u.params, u.line);
+      if (done || cancelling) return;
+    }
     if (plan.modeId !== undefined) setupSteps.push(["session/set_mode", { sessionId: id, modeId: plan.modeId }]);
     for (const o of plan.configOptions ?? []) {
       setupSteps.push(["session/set_config_option", { sessionId: id, configId: o.configId, value: o.value }]);
@@ -384,6 +407,7 @@ export function runAcpAgent(opts: AcpRunOptions): AcpRun {
     }
     const toolCall = isObj(p.toolCall) ? p.toolCall : undefined;
     const locationCount = Array.isArray(toolCall?.locations) ? toolCall.locations.length : 0;
+    if (typeof toolCall?.toolCallId === "string") askedToolCallIds.add(toolCall.toolCallId);
     if (cancelling) {
       respond(id, { result: { outcome: { outcome: "cancelled" } } });
       recordPermission(toolCall, { answer: "cancel_turn", reason: "run_cancelling", denied: "run_cancelling" }, 0);
@@ -432,6 +456,41 @@ export function runAcpAgent(opts: AcpRunOptions): AcpRun {
     apply(now() - started > decisionMs ? rejectionFor(params, "decision_timeout") : d);
   };
 
+  /** A tool call reported as run (any status but `pending`) whose id no permission request named (fail closed). */
+  const ranUnasked = (update: Json): boolean => {
+    if (update.sessionUpdate !== "tool_call" && update.sessionUpdate !== "tool_call_update") return false;
+    if (update.status === undefined || update.status === "pending") return false;
+    return typeof update.toolCallId !== "string" || !askedToolCallIds.has(update.toolCallId);
+  };
+
+  /** One `session/update` notification, as it arrives or (held during `session/new`) after `session_bound`. */
+  function onUpdate(rawParams: unknown, line: number): void {
+    lineNumber = line;
+    const params = isObj(rawParams) ? rawParams : {};
+    if (expectedSessionId === undefined || params.sessionId !== expectedSessionId) {
+      protocolError("session_mismatch", `line ${line}: update for another session`);
+      return;
+    }
+    if (replaying) {
+      replayed += 1; // ADR-0036 item 7.2: kept in the raw artifact, not this run's events
+      return;
+    }
+    const update = isObj(params.update) ? params.update : {};
+    if (update.sessionUpdate === "current_mode_update" && !opts.approvedBypass) {
+      const mode = typeof update.currentModeId === "string" ? update.currentModeId : undefined;
+      if (mode !== undefined && (opts.bypassModeIds ?? []).includes(mode)) {
+        emit([{ kind: "permission_denied", tool: "acp_bypass_mode" }]);
+        cancelTurn();
+        return;
+      }
+    }
+    emit(opts.parse({ jsonrpc: "2.0", method: "session/update", params: rawParams }));
+    if (requirePermission && ranUnasked(update)) {
+      emit([{ kind: "permission_denied", tool: ACP_UNREQUESTED_TOOL_CALL }]);
+      cancelTurn();
+    }
+  }
+
   const onValue = (value: unknown, line: number) => {
     lineNumber = line;
     if (done) return;
@@ -464,25 +523,15 @@ export function runAcpAgent(opts: AcpRunOptions): AcpRun {
           emit([{ kind: "unknown", rawType: bound(env.method, 64) }]);
           return;
         }
-        const params = isObj(env.params) ? env.params : {};
-        if (expectedSessionId === undefined || params.sessionId !== expectedSessionId) {
-          protocolError("session_mismatch", `line ${line}: update for another session`);
-          return;
-        }
-        if (replaying) {
-          replayed += 1; // ADR-0036 item 7.2: kept in the raw artifact, not this run's events
-          return;
-        }
-        const update = isObj(params.update) ? params.update : {};
-        if (update.sessionUpdate === "current_mode_update" && !opts.approvedBypass) {
-          const mode = typeof update.currentModeId === "string" ? update.currentModeId : undefined;
-          if (mode !== undefined && (opts.bypassModeIds ?? []).includes(mode)) {
-            emit([{ kind: "permission_denied", tool: "acp_bypass_mode" }]);
-            cancelTurn();
+        if (opening && expectedSessionId === undefined) {
+          if (early.length >= ACP_MAX_EARLY_UPDATES) {
+            protocolError("too_many_early_updates", `line ${line}: more than ${ACP_MAX_EARLY_UPDATES} early updates`);
             return;
           }
+          early.push({ params: env.params, line });
+          return;
         }
-        emit(opts.parse({ jsonrpc: "2.0", method: env.method, params: env.params }));
+        onUpdate(env.params, line);
         return;
       }
     }

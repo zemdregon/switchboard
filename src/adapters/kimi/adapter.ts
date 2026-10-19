@@ -19,8 +19,10 @@
  *   Never Ask (worktree files, shell `broad`, network `on`, repository configuration `enabled`; as Cursor, Q-79);
  * - `privileged` without `bypass`: ACP, only with network `on` and repository configuration `enabled` (neither can be
  *   narrowed per run); files `read-only` compile mode `plan`, `worktree` the default mode; the shell scope is enforced
- *   by the controller's permission answers. If T4.68 shows `default` mode does not ask, this cell becomes `Ineligible`
- *   and Kimi Code is privileged-bypass only (ADR-0049 item 3).
+ *   by the controller's permission answers. The plan sets `requirePermissionRequest`: a tool call reported as run
+ *   without a permission request naming it ends the run `PERMISSION_BLOCKED` (fail closed, T4.68). If T4.68 shows
+ *   `default` mode does not ask, this cell becomes `Ineligible` and Kimi Code is privileged-bypass only (ADR-0049
+ *   item 3).
  * Parser, result, failure classification and resume (T4.63, synthetic fixtures plus the one [CAP] capture): the
  * `stream-json` parser reads the recorded `meta`/`assistant` records and the documented tool records (field names an
  * Assumption), binds the session id from the resume hint and ends the turn there; ACP messages use the shared mapping
@@ -566,6 +568,8 @@ export class KimiAdapter implements ProviderAdapter {
           ? { configOptions: [{ configId: ACP_CONFIG_MODEL, value: request.model }] }
           : {}),
         loginCommand: KIMI_LOGIN_COMMAND,
+        // ADR-0049 item 3 (fail closed): a tool call that runs without a permission request ends PERMISSION_BLOCKED.
+        requirePermissionRequest: true,
       },
     };
   }

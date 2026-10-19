@@ -58,6 +58,27 @@ export function permissionRequests(streamText) {
 }
 
 /**
+ * The `session/update` `tool_call` and `tool_call_update` records of one stored ACP stream (a count only). With no
+ * permission request, it tells "tools ran without asking" from "the turn never reached a tool call". Pure.
+ */
+export function toolCallUpdates(streamText) {
+  let count = 0;
+  for (const line of String(streamText).split("\n")) {
+    if (line.trim() === "") continue;
+    let doc;
+    try {
+      doc = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isObj(doc) || doc.method !== "session/update" || !isObj(doc.params) || !isObj(doc.params.update)) continue;
+    const variant = doc.params.update.sessionUpdate;
+    if (variant === "tool_call" || variant === "tool_call_update") count += 1;
+  }
+  return count;
+}
+
+/**
  * The controller's answers of one run from its `run_event` rows (`type`, `payload_json`), in order: the
  * `option_kind` of each `acp_permission` event (`cancelled` when the answer selected no option). Pure.
  */
@@ -79,7 +100,8 @@ export function permissionAnswers(runEvents) {
 /**
  * K-P1 for one ACP run. `ran` is false when the provider never produced a stream (NOT_CHECKED: no evidence either
  * way). Otherwise HELD only when ALL of these hold, and FAILED on the first that does not:
- *   1. the stream holds at least one `session/request_permission` (none: FAILED, the fail-closed rule);
+ *   1. the stream holds at least one `session/request_permission` (none: FAILED, the fail-closed rule, whether or
+ *      not a tool call was observed; the evidence says which, as `tool_call_updates` in `record`);
  *   2. every request's `toolCall` carries a name and arguments;
  *   3. the ledger holds one `acp_permission` answer per request;
  *   4. every answer is `allow_once` or `reject_once`.
@@ -88,8 +110,10 @@ export function permissionAnswers(runEvents) {
 export function permissionRoundTrip({ ran, stream, runEvents }) {
   const requests = ran ? permissionRequests(stream ?? "") : [];
   const answers = ran ? permissionAnswers(runEvents) : [];
+  const toolCalls = ran ? toolCallUpdates(stream ?? "") : 0;
   const record = {
     requests: requests.length,
+    tool_call_updates: toolCalls,
     tool_call_fields: [...new Set(requests.flatMap((r) => r.toolCallFields))].sort(),
     with_name: requests.filter((r) => r.hasName).length,
     with_arguments: requests.filter((r) => r.hasArguments).length,
@@ -103,7 +127,10 @@ export function permissionRoundTrip({ ran, stream, runEvents }) {
   if (requests.length === 0) {
     return {
       result: "FAILED",
-      evidence: "no session/request_permission in the stream: the default mode did not ask (fail closed)",
+      evidence:
+        toolCalls > 0
+          ? `no session/request_permission in the stream, ${toolCalls} tool_call update(s): the default mode did not ask (fail closed)`
+          : "no session/request_permission and no tool_call update in the stream: the turn never reached a tool call, so the round trip was not exercised (fail closed)",
       record,
     };
   }
