@@ -820,8 +820,9 @@ detected at exit 0), row 14c (rate limit `TOOL_FAILURE`) and omitted tool input 
   T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 **Not covered here:** conformance (T4.55 Done), malicious leg (T4.56 Done against its Done-when under
-owner decision 65 (b)), Git declaration (T4.57 Done), operator live smoke and live malicious leg (T4.58; the
-`adapters validate` cell passed live on 2026-10-18).
+owner decision 65 (b)), Git declaration (T4.57 Done), operator live smoke and live malicious leg (T4.58 Done
+2026-10-19: the `adapters validate` cell passed live on 2026-10-18, and the live smoke and live malicious leg
+ran on 2026-10-19 with no check ESCAPED).
 
 ### 2.1 Model registry (M4, T4.5)
 

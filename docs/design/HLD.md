@@ -242,7 +242,8 @@ Git behaviour is declared (`gitWriteControl`
 Outside an approved `privileged` scope with `bypass`, every profile is `Ineligible` (`PROFILE_UNSUPPORTED`) because
 `toolPermission` is a settings value, not a per-run control ([TDD
 §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430)). Only the approved bypass cell compiles
-on synthetic fixtures; argv spellings and `--prompt=` are cited in source to TDD §4.4 or marked Assumption (T4.38 live legs ran 2026-10-19 but recorded no new argv evidence; native parameter keys stay unrecorded).
+on synthetic fixtures; argv spellings and `--prompt=` are cited in source to TDD §4.4 or marked Assumption (T4.38 live
+legs ran 2026-10-19 but recorded no new argv evidence; native parameter keys stay unrecorded).
 
 #### T4.33 — parser, result, failure classification and resume (Done against its Done-when)
 
@@ -265,9 +266,11 @@ check: `resumeArgs` compiles only where `compile` does, T4.35, owner decision 67
   a denial, denial over envelope error and non-zero exit, guard over all). Sourcing: [TDD
   §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433).
 
-**Gaps (this subsection is Done under owner decision 65 (a); T4.38 is Done without closing them).** Resume now compiles with a fail-closed
+**Gaps (this subsection is Done under owner decision 65 (a); T4.38 is Done without closing them).** Resume now compiles
+with a fail-closed
 `conversation_id` check (T4.35, owner decision 67; was not compiled, Q-86). Rate-limit and sandbox-violation
-shapes were observed in neither the T4.31 live check nor the 2026-10-19 T4.38 legs, so those failures end `TOOL_FAILURE` rather than dedicated taxonomy
+shapes were observed in neither the T4.31 live check nor the 2026-10-19 T4.38 legs, so those failures end `TOOL_FAILURE`
+rather than dedicated taxonomy
 codes. The stderr
 `AGY_ERROR` shape has since been observed for real (seven quota stops at exit 3, T6.11
 [limit captures](../research/limit-captures-2026-10-17.md)) and mapped in `classifyFailure` to `QUOTA_EXHAUSTED` (T6.15,
@@ -315,7 +318,8 @@ component-level outcome. Mirrors the Grok Build declaration ([TDD
   `gitWriteRisks` in `src/adapters/git-write.ts`
 
 **Not shown by this evidence.** Whether settings deny rules hold under `--dangerously-skip-permissions` was not
-observed (T4.31 C8; still unrun after T4.38 — see that row's remainder). T4.36 recorded a finding that `extractResult` returned `ok` for a clean
+observed (T4.31 C8; still unrun after T4.38 — see that row's remainder). T4.36 recorded a finding that `extractResult`
+returned `ok` for a clean
 `SUCCESS` envelope without reading a guard `violation` on a Git write, although ADR-0039 ends such a run
 `PERMISSION_BLOCKED`; that gap is now fixed (`extractResult` treats a flagged `tool_call` as not clean) and the former
 known-gap test passes as a plain test, as recorded in the [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks)
@@ -378,11 +382,12 @@ through the compile matrix), FR-ADP-10 (`backingProvider` unset: events name no 
   detected), row 14c (rate limit `TOOL_FAILURE`) and missing tool input keys. Sourcing: [TDD
   §4.6.5](TDD.md#465-opencode-parser-implementation-evidence-m4-t453).
 
-**Gaps (carried by T4.58 under owner decision 65 (a); this section is Done).** No recorded permission-denial,
+**Gaps (T4.58 ran 2026-10-19 without capturing these shapes; now a T4.51 extension, under owner decision 65 (a);
+this section is Done).** No recorded permission-denial,
 rate-limit or sandbox event shape; `tool_use` input key names are Assumptions; native captures report no provider or
 model (live check row 4c), so without an explicit structured `backing_provider`/`model` those stay unset (the
 structured support and `backing_provider.jsonl`, [#290](https://github.com/zemdregon/switchboard/pull/290), meet T4.6).
-Operator capture: T4.58 / T4.51 extension.
+Operator capture: T4.51 extension.
 
 ### 2.5 COMP-INN implementation evidence (M11, T11.1–T11.13, Done on fakes)
 
