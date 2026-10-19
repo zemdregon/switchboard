@@ -717,3 +717,18 @@ as history.
   range change in `src/**`, which this gate cannot touch). The current
   range is stated in the T4.48 row, TDD §4.5.6, the README Cursor section
   and the manifest itself. It does not block PR #757.
+
+## 41. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
+
+- [HLD §1.2](design/HLD.md#12-explicit-exclusions) still excludes "No network
+  listener: MCP is stdio only; HTTP/SSE is deferred", while the M13 network
+  transport (Streamable HTTP with OAuth 2.1, ADR-0041 Accepted 2026-10-14,
+  T13.1 to T13.9 Done) is built and this PR extends it to the work-queue
+  tools (T15.9). Likewise the [FRD actor table](requirements/FRD.md) still
+  gives the Orchestrator upstream agent "MCP over stdio (COMP-MCP)".
+- PR #762 neither introduces nor worsens either: both were already overtaken
+  by M13 before this branch. Left unchanged: restating the transport
+  exclusion is the HLD/FRD owners' call (cf. item 13 for the same
+  as-built-vs-review-label precedent). It does not block PR #762 (the live
+  transport facts are stated in the M13 row, LLD §3.3 and LLD §20.8, which
+  this PR updates where it touches them).
