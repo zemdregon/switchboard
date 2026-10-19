@@ -114,8 +114,9 @@ describe("examples/mcp-clients/ snippets (T8.12)", () => {
       const entry = parsed.mcpServers?.switchboard;
       expect(entry, `${file}: must register a switchboard server`).toBeDefined();
       expect(entry?.command).toBe("node");
-      expect(Array.isArray(entry?.args), `${file}: args must be a list`).toBe(true);
-      expect((entry?.args as string[]).join(" ")).toContain("serve --client");
+      const args = entry?.args;
+      expect(Array.isArray(args), `${file}: args must be a list`).toBe(true);
+      expect((args as string[]).join(" ")).toContain("serve --client");
     }
   });
 });
