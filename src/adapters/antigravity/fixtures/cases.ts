@@ -4,8 +4,7 @@
  * antigravity` in place of the `agy` binary. The prompt is the `--prompt=<prompt>` argv word (stdin unused), which the
  * dialect reads.
  *
- * The `resume` case is listed so `missingRequiredKinds` names no gap, but it cannot pass while `resumeArgs` is
- * `Ineligible` (Q-86, T4.33): {@link ANTIGRAVITY_RUNNABLE_KINDS} excludes it, and the test asserts it fails closed.
+ * The `resume` case compiles `--conversation <id>` through `resumeArgs` (owner decision 67, Q-86), so every kind runs.
  */
 import { fileURLToPath } from "node:url";
 import type { ConformanceCase, ConformanceCaseKind } from "../../conformance.js";
@@ -39,7 +38,7 @@ export const BYPASS_SCOPE = {
 
 export const PRIVILEGED_BYPASS_PROFILE: ResolvedProfile = privilegedProfile(BYPASS_SCOPE);
 
-/** Kinds whose case runs end to end today; `resume` waits for Q-86. */
+/** Kinds whose case runs end to end: every FR-ADP-11 kind (resume since owner decision 67). */
 export const ANTIGRAVITY_RUNNABLE_KINDS: readonly ConformanceCaseKind[] = [
   "success",
   "task_failure",
@@ -48,6 +47,7 @@ export const ANTIGRAVITY_RUNNABLE_KINDS: readonly ConformanceCaseKind[] = [
   "timeout",
   "cancellation",
   "partial_mutation",
+  "resume",
 ];
 
 const SHORT = { wallClockMs: 10_000, idleMs: 2_000, killGraceMs: 300 };
@@ -674,7 +674,12 @@ export function antigravityConformanceCases(makeCwd: () => string): ConformanceC
       adapter: replayAdapter("resume"),
       request: request(),
       binding: { provider: "antigravity", nativeSessionId: RESUMED_SESSION_ID },
-      expect: { ok: true, nativeSessionId: RESUMED_SESSION_ID },
+      expect: {
+        ok: true,
+        nativeSessionId: RESUMED_SESSION_ID,
+        summary: "Resumed earlier conversation.",
+        unknownEventCount: 0,
+      },
     },
     {
       ...base,
