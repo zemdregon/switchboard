@@ -7545,6 +7545,31 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
 - **Critic (FR-CTL-15).** `projects.<id>.critic`: `enabled` (default `false`), `min_diff_lines` (Assumption 400), always
   another provider, `inspect-untrusted`; the critic's objective is controller-generated and its findings artifact is
   untrusted. It counts against the project's budgets (FR-CTL-06).
+  *Implemented (T14.17, `src/control/critic.ts`, Delegated agent work, not owner-approved):* `projects[].critic` is a
+  configuration-file key only (not a dynamic project definition), `min_diff_lines` an integer 1–1 000 000. Serve
+  passes every committed transition to the critic (`RunLifecycleOptions.onTransition`, no lifecycle change). For a
+  `SUCCEEDED` run that is write-capable (not `inspect-untrusted`) in an enabled project:
+  1. **Diff size** (Linus decision v10 (a)): added plus deleted lines of `git diff --numstat` between the run's `pre`
+     and `post` checkpoints; binary files (`-` counts) are excluded. Below `min_diff_lines` nothing is recorded.
+  2. **Exactly once** (Linus decision v10 (b)): `critic_requested {diff_lines, min_diff_lines}` is appended to the
+     original run in one transaction only when the run has no critic event yet, and the critic is admitted with the
+     idempotency key `critic:<original run id>` under the original run's client, so a second notification or a restart
+     cannot admit a second critic. A refusal is never retried.
+  3. **Admission** goes through the work-queue admission path (`admitWorkItemRequest`, §18.4) with the candidates
+     narrowed to every registered provider except the original's; routing picks among the eligible ones. Trust profile
+     `inspect-untrusted`, priority `batch`, the project snapshot frozen read-only (`writable: false`, push policy
+     `none`, no identity, finalize commit or signing; Linus decision v10 (c)): with no worktree the critic gets no Git
+     channel and no finalize commit and never publishes. Budgets (FR-CTL-06), pause and ceilings apply as to any run.
+  4. **Objective**: a fixed controller template naming the run, the project and the line count, then the text diff in
+     one `[untrusted_diff]` block it cannot close (control characters removed, secrets redacted, block markers
+     neutralised, capped at 60 000 characters, Assumption).
+  5. **Outcome events** on the original run: `critic_admitted {critic_run_id, provider, diff_lines}`, or
+     `critic_skipped {reason}` with `reason` one of `diff_unavailable`, `no_other_provider`, `no_eligible_provider`,
+     `admission_refused` (budget, pause or queue full) and `admission_failed` (with `code`). When the critic ends,
+     `critic_findings {critic_run_id, provider, state, trust: "untrusted", label, summary?}` with `artifact_id` set to
+     the critic's `provider_stdout` artifact, once; the label is fixed by the controller. Nothing else on the original
+     run changes: its row, commits, checkpoints, artifacts and publication are untouched.
+  6. **Never a critic of a critic**: the critic is `inspect-untrusted`, so it is not write-capable.
 
 ### 20.14 Notes carried from the harness report
 
