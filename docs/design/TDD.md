@@ -443,6 +443,10 @@ as the spawn mark) and `extractResult` (called as soon as process exit is observ
 - **exit to terminal visible**: exit observed to the first `get_run` showing a terminal state (finalize: worktree
   teardown, diff artifact, ledger commit), polled in a tight loop.
 - **get_run** and **list_capabilities**: tool call to result, 30 calls each against a finished run.
+- **ledger_append_run_event** (T8.13, FR-TEL-05, [ADR-0064](../adr/0064-hash-chained-ledger-rows.md)): one `run_event`
+  append through the ledger, the path that computes the hash-chain link; ten times as many samples as runs (300 timed
+  appends at the default `--n 30`, after 50 warm-up), each its own `IMMEDIATE` transaction with a synchronous commit.
+  The T8.13 before/after figures are recorded with the T8.13 evidence in [ROADMAP §6.15](../ROADMAP.md#615-m8-hardening-tasks).
 
 **Result, 2026-10-12.** Host: sandbox container, not representative of an operator laptop (Node v22.22.0; Linux
 6.18.44-fc-v114 x64; Intel Xeon Processor @ 2.10 GHz, 4 vCPUs; 15.7 GiB RAM). Three consecutive invocations, each 30
