@@ -1,6 +1,7 @@
 # ADR-0020: Container images contain no Git client
 
-- Status: Accepted (the rule); the runtime and login mechanism stay Proposed in ADR-0013 until the T10.0 spike
+- Status: Accepted (the rule); the runtime and login mechanism in ADR-0013 were Proposed until the T10.0 spike and are
+  Accepted since 2026-10-18 (operator results; no provider needed a Git client, none marked `host`-only)
 - Date: 2026-10-13
 - Decided by: zemdregon (owner decision 24: "since we are containerizing, we could simply not include a git tool, then git
   is handled by switchboard on the host"; asked for this ADR in owner decision 25). The checks and failure behaviour

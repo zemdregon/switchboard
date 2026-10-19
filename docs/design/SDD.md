@@ -90,7 +90,7 @@ re-bases affinity (FR-CAP-06). COMP-RTE writes the new affinity and the decision
 | Admission (COMP-MCP), COMP-OPS | COMP-RAG | Sync with a hard time bound for the context pack, background for index builds | Project reference and objective in; snippets (ids, hashes, labels) or nothing out; `index` commands and `doctor` queries | COMP-RAG gives reference data only; COMP-POL, the profile compilers, eligibility, retry and push do not call it (FR-RAG-07). Failure returns "no pack". |
 | COMP-RAG | Embedding backend (M12) | Batched requests over the `local` or `http` port, after redaction and the locality gate | Chunk text out, vectors in | No credential in configuration; `remote` only with `allow_remote` and `allow_source_content` (FR-RAG-04). |
 | COMP-RAG | COMP-LED | Sync transaction | `rag_index_built`, `rag_retrieval` records and run events | Counts, durations, backend id, snippet ids and hashes; never content, never `usage_observation` (FR-RAG-12). |
-| COMP-PRJ | Container runtime (M10) | Sync commands behind a small port | create, start, stop, remove; label lookup for orphans | Runtime is Proposed in ADR-0013 (rootless); the port keeps it replaceable. |
+| COMP-PRJ | Container runtime (M10) | Sync commands behind a small port | create, start, stop, remove; label lookup for orphans | Runtime is rootless (ADR-0013, mechanism Accepted 2026-10-18; Docker per ADR-0052); the port keeps it replaceable. |
 
 COMP-OPS commands run in their own short-lived process, write only operator records (approvals, denials, cancel
 requests) to the shared ledger, and leave all side effects to the `serve` daemon

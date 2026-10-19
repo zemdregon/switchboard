@@ -6,8 +6,13 @@
   scan were **observed** on this host. Provider native login and "CLI works without a Git client" were **not**
   live-checked: no provider CLI was installed or run, not even `--version`, inside or outside a container.
   [PR #523](https://github.com/zemdregon/switchboard/pull/523).
+  *Update 2026-10-18 (operator live, Delegated write-up):* the operator completed each provider's native login inside
+  its own named volume in a Git-free image, and every login is **Observed**; one real prompt per provider ran from
+  that volume (six replied, Grok Build is Deferred-until-reset on a usage-balance limit). See
+  [§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18). Sections 1 to 5 are kept as written; their
+  `Unverified` cells for the seven providers are superseded by §6.
 - Used by: [ROADMAP](../ROADMAP.md) T10.0, R-13, R-40; [ADR-0013](../adr/0013-projects-environments-and-contexts.md)
-  (container mechanism stays Proposed); [ADR-0020](../adr/0020-container-image-without-git-client.md) (rule unchanged);
+  (container mechanism Accepted 2026-10-18 on §6); [ADR-0020](../adr/0020-container-image-without-git-client.md) (rule unchanged);
   [TDD §3.11](../design/TDD.md#311-container-environments).
 - Scope: Q-6 / owner decision 24 / FR-PRJ-05 / FR-AUTH-01. **No `src/` or `test/` changes.** Switchboard never
   builds images (ADR-0013).
@@ -19,6 +24,8 @@
   never read.
 - **Unverified: operator (T10.0 live):** needs the operator's native login and/or a provider CLI in a container.
   Not claimed here. No provider is marked `host`-only.
+- **Observed (operator, 2026-10-18):** run on this host by the operator on 2026-10-18 from the per-provider login
+  volumes (§6). Output redacted; credential contents never read, printed or copied.
 
 ## Primary sources
 
@@ -107,7 +114,9 @@ PATH scan: neither git nor gh executable present
 ```
 
 No provider CLI was placed in the image. Whether each provider **runs** without a Git client remains
-**Unverified: operator (T10.0 live)** — R-40 clause (1). No provider is marked `host`-only.
+**Unverified: operator (T10.0 live)** — R-40 clause (1). No provider is marked `host`-only. *Update 2026-10-18:*
+Observed for all seven providers from their login volumes in Git-free images
+([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)).
 
 ## 3. Mounts, network, limits, teardown
 
@@ -146,8 +155,10 @@ the volume. Not demonstrated with a provider CLI.
 
 ## 4. Provider CLIs and native login (documentation only)
 
-**No provider CLI was installed or run.** Every per-provider cell is
-`Unverified: operator (T10.0 live)`. None is marked `host`-only.
+**No provider CLI was installed or run** on 2026-10-16; every per-provider cell was then
+`Unverified: operator (T10.0 live)`. *Update 2026-10-18:* the seven provider cells below are now Observed from the
+operator's in-volume logins ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)); Muse Code stays
+Unverified (skipped, owner decision 16). None is marked `host`-only.
 
 In-volume login (Proposed, ADR-0013, FR-AUTH-01): the operator runs the provider's own login inside the
 project's container volume; the controller copies nothing. Plausibility below is **inference from documented
@@ -158,13 +169,13 @@ need network during login, then the run container can use `--network none` with 
 
 | Provider | Native login (docs) | Directory / env (docs; contents not read) | In-volume login plausible? | Cell |
 | --- | --- | --- | --- | --- |
-| Claude Code | `claude auth login` ([README](../../README.md#log-in-to-the-providers-natively)) | Default `~/.claude/`; `CLAUDE_CONFIG_DIR` relocates config **and** credentials ([TDD §4.1](../design/TDD.md#41-claude-code-m2), [verified research](headless-ai-coding-controller-verified-2026-10-12.md)) | File store. A volume at `HOME/.claude` or `CLAUDE_CONFIG_DIR`, login as uid 0 with network, then a run container with the same volume, is the Proposed shape. | Unverified: operator (T10.0 live) |
-| Codex | `codex login`; status `codex login status` (README; live-checks 2026-10-13) | `~/.codex/auth.json`; `CODEX_HOME` isolates config but needs its own login ([TDD §4.2](../design/TDD.md#42-codex-m2), [verified research](headless-ai-coding-controller-verified-2026-10-12.md)) | File store. Volume as `CODEX_HOME` or `HOME/.codex`. | Unverified: operator (T10.0 live) |
-| Grok Build | `grok login` / `grok login --device-code` (README; [live-checks-2026-10-14-grok](live-checks-2026-10-14-grok.md)) | `~/.grok/` including a file named `auth.json`; `GROK_HOME` relocates config, auth and sessions (same note; documented as Assumption on that check) | File store. Volume as `GROK_HOME`. Device-code may complete without a browser **in** the container if the operator finishes the flow elsewhere. | Unverified: operator (T10.0 live) |
-| Antigravity | Launch `agy` with no arguments (README; [live-checks-2026-10-14-antigravity](live-checks-2026-10-14-antigravity.md)) | Token **file** named `antigravity-oauth-token` (mode 600, contents not read) under the CLI state directory; selected by `$HOME` or `--gemini_dir`. Live check: **not** a keyring; `DBUS_SESSION_BUS_ADDRESS` unset still worked. TDD §4.4's keyring wording is contradicted by that check and is not re-litigated here. | File store under `HOME` / `--gemini_dir`. A volume plus networked login that prints a URL is the Proposed shape. Not marked `host`-only. | Unverified: operator (T10.0 live) |
-| Cursor CLI | `cursor-agent login` (README); live check also names `agent login` ([live-checks-2026-10-14-cursor](live-checks-2026-10-14-cursor.md)) | Login follows `HOME` / `~/.cursor`. `CURSOR_CONFIG_DIR` alone does **not** isolate the login (same note, row 11). | Volume must cover `HOME` (or whatever store a later check shows), not only `CURSOR_CONFIG_DIR`. | Unverified: operator (T10.0 live) |
-| OpenCode | `opencode auth login` (README; [live-checks-2026-10-14-opencode](live-checks-2026-10-14-opencode.md)) | Default `run` / `auth list` talk to a **background user service**. Scratch `HOME`/`XDG_*` without `--standalone` failed (service-port-in-use). `--standalone` plus scratch dirs listed only environment connections. Binary under `~/.opencode/bin/`. | Unclear: a container has no host user service. `--standalone` plus a `HOME` volume may be the path; the host service must not be mounted. | Unverified: operator (T10.0 live) |
-| Kimi Code | `kimi login` (device-code) (README; [kimi-code spike](kimi-code-spike-2026-10-13.md) K10) | `$KIMI_CODE_HOME/credentials/` (0700/0600); default `~/.kimi-code/`. `KIMI_CODE_HOME` relocates config, sessions, logs and credentials. | File store. Volume as `KIMI_CODE_HOME`. Device-code as Grok. | Unverified: operator (T10.0 live) |
+| Claude Code | `claude auth login` ([README](../../README.md#log-in-to-the-providers-natively)) | Default `~/.claude/`; `CLAUDE_CONFIG_DIR` relocates config **and** credentials ([TDD §4.1](../design/TDD.md#41-claude-code-m2), [verified research](headless-ai-coding-controller-verified-2026-10-12.md)) | File store. A volume at `HOME/.claude` or `CLAUDE_CONFIG_DIR`, login as uid 0 with network, then a run container with the same volume, is the Proposed shape. | Observed (operator, 2026-10-18): in-volume login, status probe and prompt ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)) |
+| Codex | `codex login`; status `codex login status` (README; live-checks 2026-10-13) | `~/.codex/auth.json`; `CODEX_HOME` isolates config but needs its own login ([TDD §4.2](../design/TDD.md#42-codex-m2), [verified research](headless-ai-coding-controller-verified-2026-10-12.md)) | File store. Volume as `CODEX_HOME` or `HOME/.codex`. | Observed (operator, 2026-10-18): in-volume login, status probe and prompt ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)) |
+| Grok Build | `grok login` / `grok login --device-code` (README; [live-checks-2026-10-14-grok](live-checks-2026-10-14-grok.md)) | `~/.grok/` including a file named `auth.json`; `GROK_HOME` relocates config, auth and sessions (same note; documented as Assumption on that check) | File store. Volume as `GROK_HOME`. Device-code may complete without a browser **in** the container if the operator finishes the flow elsewhere. | Observed (operator, 2026-10-18): in-volume login and status probe; prompt Deferred-until-reset (402 usage balance) ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)) |
+| Antigravity | Launch `agy` with no arguments (README; [live-checks-2026-10-14-antigravity](live-checks-2026-10-14-antigravity.md)) | Token **file** named `antigravity-oauth-token` (mode 600, contents not read) under the CLI state directory; selected by `$HOME` or `--gemini_dir`. Live check: **not** a keyring; `DBUS_SESSION_BUS_ADDRESS` unset still worked. TDD §4.4's keyring wording is contradicted by that check and is not re-litigated here. | File store under `HOME` / `--gemini_dir`. A volume plus networked login that prints a URL is the Proposed shape. Not marked `host`-only. | Observed (operator, 2026-10-18): in-volume login, status probe and prompt ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)) |
+| Cursor CLI | `cursor-agent login` (README); live check also names `agent login` ([live-checks-2026-10-14-cursor](live-checks-2026-10-14-cursor.md)) | Login follows `HOME` / `~/.cursor`. `CURSOR_CONFIG_DIR` alone does **not** isolate the login (same note, row 11). | Volume must cover `HOME` (or whatever store a later check shows), not only `CURSOR_CONFIG_DIR`. | Observed (operator, 2026-10-18): in-volume login, status probe and prompt ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)) |
+| OpenCode | `opencode auth login` (README; [live-checks-2026-10-14-opencode](live-checks-2026-10-14-opencode.md)) | Default `run` / `auth list` talk to a **background user service**. Scratch `HOME`/`XDG_*` without `--standalone` failed (service-port-in-use). `--standalone` plus scratch dirs listed only environment connections. Binary under `~/.opencode/bin/`. | Unclear: a container has no host user service. `--standalone` plus a `HOME` volume may be the path; the host service must not be mounted. | Observed (operator, 2026-10-18): in-volume login (`--standalone`, no user service), status probe and prompt ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)) |
+| Kimi Code | `kimi login` (device-code) (README; [kimi-code spike](kimi-code-spike-2026-10-13.md) K10) | `$KIMI_CODE_HOME/credentials/` (0700/0600); default `~/.kimi-code/`. `KIMI_CODE_HOME` relocates config, sessions, logs and credentials. | File store. Volume as `KIMI_CODE_HOME`. Device-code as Grok. | Observed (operator, 2026-10-18): in-volume login, ACP status probe and prompt ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)) |
 | Muse Code (Should) | `muse login` ([muse-code research](muse-code-2026-10-13.md)) | `~/.config/muse/auth.json`; settings `~/.config/muse/settings.json` | File store under XDG. Volume as `XDG_CONFIG_HOME` / `HOME/.config/muse`. | Unverified: operator (T10.0 live) |
 
 ### Operator-only follow-up (exact checks; not run)
@@ -222,13 +233,13 @@ After teardown, `docker ps -aq --filter name=sb-t100-spike` and
 | Image with no Git client; ADR-0020 check | **Observed:** `command -v git gh` empty; `PATH` scan finds neither. |
 | Mounts, `--network none`, `--memory` / `--pids-limit`, remove | **Observed** (section 3). |
 | uid 0 vs other uids on bind mounts | **Observed:** only uid 0 can write host binds. Recorded for FR-PRJ-05 and login. |
-| In-volume native login per provider | **Unverified: operator (T10.0 live).** Documentation table only. |
-| Each provider CLI without a Git client | **Unverified: operator (T10.0 live).** No CLI was run. |
-| Mark a provider `host`-only | **Not done** (no evidence). |
+| In-volume native login per provider | **Observed (operator, 2026-10-18)** for Claude Code, Codex, Grok Build, Antigravity, Cursor CLI, OpenCode and Kimi Code (§6). Muse Code skipped (owner decision 16). |
+| Each provider CLI without a Git client | **Observed (operator, 2026-10-18):** all seven start and report logged in with no `git`/`gh` on `PATH` and `--network none`; six answered a real prompt; Grok Build reached the API and was refused for billing (402), prompt Deferred-until-reset (§6). |
+| Mark a provider `host`-only | **None** (no provider failed login in the volume or needed a Git client). |
 
-T10.0 is therefore **Partial**, not Done. T10.1 can implement the environment port against rootless Docker
-on this host using the mount/limit/PATH-scan behaviours above; login and Git-free CLI behaviour stay on the
-operator checklist.
+On 2026-10-16 T10.0 was **Partial**. With the 2026-10-18 operator results (§6) every clause above is met, so T10.0
+is **Done**. T10.1 implements the environment port against rootless Docker on this host using the mount/limit/PATH-scan
+behaviours above.
 
 ## 5. Operator login runbook (2026-10-18, documentation only)
 
@@ -236,8 +247,9 @@ Status: research input (Delegated agent work, not owner-approved). Nothing below
 CLI was invoked, no login was attempted, no credential was read, mounted or copied. Muse Code is skipped
 (Should per owner decision 16; Q-27 on Meta access stays open), so the seven providers below are
 Claude Code, Codex, Grok Build, Antigravity, Cursor CLI,
-OpenCode and Kimi Code. Every per-provider cell is still `Unverified: operator (T10.0 live)`; no provider
-is marked `host`-only.
+OpenCode and Kimi Code. Every per-provider cell was still `Unverified: operator (T10.0 live)` when this section
+was written; no provider is marked `host`-only. *Update 2026-10-18:* the operator ran this runbook's login and state
+probe for all seven (§6); the last column of the table records what is still open.
 
 ### Why Cursor and Kimi are still not covered (no new run on 2026-10-18)
 
@@ -295,10 +307,58 @@ login cannot complete in the volume, or whose CLI refuses to start without `git`
 
 | Provider | Login env (export inside step 1) | Native login in the volume (TDD §4) | State probe and Git-free check (step 2) | Step 4 Switchboard task | What to record | Prior evidence (still standing on 2026-10-18) | Remaining operator cell |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | `CLAUDE_CONFIG_DIR=/root/.claude` (or default `~/.claude`) | `claude auth login` ([TDD §4.1](../design/TDD.md#41-claude-code-m2): `claude auth --help` lists `login`, `logout`, `status`; [README](../../README.md#log-in-to-the-providers-natively)) | `claude auth status` (exit code; `OK` vs `AUTH_REQUIRED`), then `command -v git` empty | Step 4 (common) with `claude` | `login works`, or `fails` → `host`-only | 2026-10-17: 2.1.294, `--version` exit 0, logged out (`loggedIn: false`) in a fresh volume with no `git` on `PATH` | In-volume native login and container task: `Unverified: operator (T10.0 live)` |
-| Codex | `CODEX_HOME=/root/.codex` (or default `~/.codex`) | `codex login` ([TDD §4.2](../design/TDD.md#42-codex-m2): status is `codex login status`; [README](../../README.md#log-in-to-the-providers-natively)) | `codex login status` (exit 0 logged in, 1 logged out), then `command -v git` empty | Step 4 (common) with `codex` | `login works`, or `fails` → `host`-only | 2026-10-17: codex-cli 0.162.0, `--version` exit 0, `Not logged in` in a fresh volume with no `git` on `PATH` | In-volume native login and container task: `Unverified: operator (T10.0 live)` |
-| Grok Build | `GROK_HOME=/root/.grok` | `grok login --device-code`, completing the flow from another device ([TDD §4.3](../design/TDD.md#43-grok-build-m4); [README](../../README.md#log-in-to-the-providers-natively)) | `grok models` first line (`You are logged in` vs `You are not authenticated`), then `command -v git` empty | Step 4 (common) with `grok` | `login works`, or `fails` → `host`-only | 2026-10-17: 1.0.50, `--version` exit 0, `You are not authenticated.` in a fresh volume with no `git` on `PATH` | In-volume native login and container task: `Unverified: operator (T10.0 live)` |
-| Antigravity | `HOME=/root` (volume root) or `--gemini_dir` pointing into the volume | Launch `agy` with no arguments and complete the browser sign-in (no tokens pasted) ([TDD §4.4](../design/TDD.md#44-antigravity-agy-m4); [README](../../README.md#log-in-to-the-providers-natively)) | `agy models` (exit 0 with `<slug>\t<name>` lines vs exit 1 `Error: Please sign in`), then `command -v git` empty; confirm the token file name exists (name and mode only) | Step 4 (common) with `agy` | `login works`, or `fails` → `host`-only | 2026-10-17: 1.4.0, `--version` exit 0, `Error: Please sign in …` in a fresh volume with no `git` on `PATH` | In-volume native login and container task: `Unverified: operator (T10.0 live)` |
-| Cursor CLI | `HOME=/root` (`CURSOR_CONFIG_DIR` alone does not isolate the login, [TDD §4.5](../design/TDD.md#45-cursor-cli-m4)) | `cursor-agent login` ([TDD §4.5](../design/TDD.md#45-cursor-cli-m4); [README](../../README.md#log-in-to-the-providers-natively)) | `cursor-agent status --format json`, key on `isAuthenticated`, then `command -v git` empty | Step 4 (common) with `cursor` | `login works`, or `fails` → `host`-only | 2026-10-17 host check: 2026.10.16-e3cb207, probe ok, auth OK; container login-state: not run (no mount lines in `c_login_state`) | Container login-state, in-volume native login and container task: `Unverified: operator (T10.0 live)` |
-| OpenCode | `HOME=/root` plus XDG dirs; always pass `--standalone` and never mount the host user service | `opencode auth login` ([TDD §4.6](../design/TDD.md#46-opencode-m4); [README](../../README.md#log-in-to-the-providers-natively)) | `opencode auth list --format json --standalone` (any non-`environment` connection type is logged in), then `command -v git` empty; record whether the user service was required | Step 4 (common) with `opencode` | `login works`, or `fails` → `host`-only | 2026-10-17: v2.0.23, `--version` exit 0, `No authenticated integrations` in a fresh volume with no `git` on `PATH` | In-volume native login and container task: `Unverified: operator (T10.0 live)` |
-| Kimi Code | `KIMI_CODE_HOME=/root/.kimi-code` | `kimi login` (device-code) ([TDD §4.7](../design/TDD.md#47-kimi-code-m4-blocked-by-b-1); [README](../../README.md#log-in-to-the-providers-natively); never `kimi acp --login`) | ACP `initialize` then `session/new` (a `sessionId` is logged in, JSON-RPC `-32000` is logged out; no `session/prompt`), then `command -v git` empty | Step 4 (common) with `kimi` | `login works`, or `fails` → `host`-only | 2026-10-17 host check: 2.1.1, auth `UNKNOWN`; 2026-10-15 ACP probe observed; container login-state: not run (no mount lines in `c_login_state`) | Container login-state, in-volume native login and container task: `Unverified: operator (T10.0 live)` |
+| Claude Code | `CLAUDE_CONFIG_DIR=/root/.claude` (or default `~/.claude`) | `claude auth login` ([TDD §4.1](../design/TDD.md#41-claude-code-m2): `claude auth --help` lists `login`, `logout`, `status`; [README](../../README.md#log-in-to-the-providers-natively)) | `claude auth status` (exit code; `OK` vs `AUTH_REQUIRED`), then `command -v git` empty | Step 4 (common) with `claude` | `login works`, or `fails` → `host`-only | 2026-10-17: 2.1.294, `--version` exit 0, logged out (`loggedIn: false`) in a fresh volume with no `git` on `PATH` | In-volume native login: Observed 2026-10-18 ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)). Step 4 Switchboard container task: not run (the container backend mounts no login volume yet, T10.1 limitation (4)); tracked under M10, outside the T10.0 Done-when |
+| Codex | `CODEX_HOME=/root/.codex` (or default `~/.codex`) | `codex login` ([TDD §4.2](../design/TDD.md#42-codex-m2): status is `codex login status`; [README](../../README.md#log-in-to-the-providers-natively)) | `codex login status` (exit 0 logged in, 1 logged out), then `command -v git` empty | Step 4 (common) with `codex` | `login works`, or `fails` → `host`-only | 2026-10-17: codex-cli 0.162.0, `--version` exit 0, `Not logged in` in a fresh volume with no `git` on `PATH` | In-volume native login: Observed 2026-10-18 ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)). Step 4 Switchboard container task: not run (the container backend mounts no login volume yet, T10.1 limitation (4)); tracked under M10, outside the T10.0 Done-when |
+| Grok Build | `GROK_HOME=/root/.grok` | `grok login --device-code`, completing the flow from another device ([TDD §4.3](../design/TDD.md#43-grok-build-m4); [README](../../README.md#log-in-to-the-providers-natively)) | `grok models` first line (`You are logged in` vs `You are not authenticated`), then `command -v git` empty | Step 4 (common) with `grok` | `login works`, or `fails` → `host`-only | 2026-10-17: 1.0.50, `--version` exit 0, `You are not authenticated.` in a fresh volume with no `git` on `PATH` | In-volume native login: Observed 2026-10-18 ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)). Step 4 Switchboard container task: not run (the container backend mounts no login volume yet, T10.1 limitation (4)); tracked under M10, outside the T10.0 Done-when |
+| Antigravity | `HOME=/root` (volume root) or `--gemini_dir` pointing into the volume | Launch `agy` with no arguments and complete the browser sign-in (no tokens pasted) ([TDD §4.4](../design/TDD.md#44-antigravity-agy-m4); [README](../../README.md#log-in-to-the-providers-natively)) | `agy models` (exit 0 with `<slug>\t<name>` lines vs exit 1 `Error: Please sign in`), then `command -v git` empty; confirm the token file name exists (name and mode only) | Step 4 (common) with `agy` | `login works`, or `fails` → `host`-only | 2026-10-17: 1.4.0, `--version` exit 0, `Error: Please sign in …` in a fresh volume with no `git` on `PATH` | In-volume native login: Observed 2026-10-18 ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)). Step 4 Switchboard container task: not run (the container backend mounts no login volume yet, T10.1 limitation (4)); tracked under M10, outside the T10.0 Done-when |
+| Cursor CLI | `HOME=/root` (`CURSOR_CONFIG_DIR` alone does not isolate the login, [TDD §4.5](../design/TDD.md#45-cursor-cli-m4)) | `cursor-agent login` ([TDD §4.5](../design/TDD.md#45-cursor-cli-m4); [README](../../README.md#log-in-to-the-providers-natively)) | `cursor-agent status --format json`, key on `isAuthenticated`, then `command -v git` empty | Step 4 (common) with `cursor` | `login works`, or `fails` → `host`-only | 2026-10-17 host check: 2026.10.16-e3cb207, probe ok, auth OK; container login-state: not run (no mount lines in `c_login_state`) | In-volume native login: Observed 2026-10-18 ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)). Step 4 Switchboard container task: not run (the container backend mounts no login volume yet, T10.1 limitation (4)); tracked under M10, outside the T10.0 Done-when |
+| OpenCode | `HOME=/root` plus XDG dirs; always pass `--standalone` and never mount the host user service | `opencode auth login` ([TDD §4.6](../design/TDD.md#46-opencode-m4); [README](../../README.md#log-in-to-the-providers-natively)) | `opencode auth list --format json --standalone` (any non-`environment` connection type is logged in), then `command -v git` empty; record whether the user service was required | Step 4 (common) with `opencode` | `login works`, or `fails` → `host`-only | 2026-10-17: v2.0.23, `--version` exit 0, `No authenticated integrations` in a fresh volume with no `git` on `PATH` | In-volume native login: Observed 2026-10-18 ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)). Step 4 Switchboard container task: not run (the container backend mounts no login volume yet, T10.1 limitation (4)); tracked under M10, outside the T10.0 Done-when |
+| Kimi Code | `KIMI_CODE_HOME=/root/.kimi-code` | `kimi login` (device-code) ([TDD §4.7](../design/TDD.md#47-kimi-code-m4-blocked-by-b-1); [README](../../README.md#log-in-to-the-providers-natively); never `kimi acp --login`) | ACP `initialize` then `session/new` (a `sessionId` is logged in, JSON-RPC `-32000` is logged out; no `session/prompt`), then `command -v git` empty | Step 4 (common) with `kimi` | `login works`, or `fails` → `host`-only | 2026-10-17 host check: 2.1.1, auth `UNKNOWN`; 2026-10-15 ACP probe observed; container login-state: not run (no mount lines in `c_login_state`) | In-volume native login: Observed 2026-10-18 ([§6](#6-operator-in-volume-login-and-prompt-results-2026-10-18)). Step 4 Switchboard container task: not run (the container backend mounts no login volume yet, T10.1 limitation (4)); tracked under M10, outside the T10.0 Done-when |
+
+## 6. Operator in-volume login and prompt results (2026-10-18)
+
+Status: **Observed (operator, 2026-10-18)** on the Ampere host; write-up is Delegated agent work. Muse Code is
+skipped (owner decision 16). No credential file was read, printed, copied or committed; outputs below are redacted
+status lines only.
+
+**Images and volumes.** One operator-built image per provider, `FROM node:22-bookworm-slim@sha256:43ac6c60b8f8…`
+(pinned by digest), with the provider CLI the host already pins and **no `git` or `gh`** (every probe and prompt
+printed `git=none gh=none`). Switchboard did not build them (ADR-0013). One named volume per provider holds its login,
+mounted at the store the section 4 table names: `CLAUDE_CONFIG_DIR=/root/.claude`, `CODEX_HOME=/root/.codex`,
+`GROK_HOME=/root/.grok`, `KIMI_CODE_HOME=/root/.kimi-code`, and the whole `HOME=/root` for Antigravity, Cursor CLI
+and OpenCode (no relocation variable isolates their login). Every container ran as uid 0 (section 1).
+
+**Login (step 1).** 2026-10-18 22:29–23:15Z: the provider's own login command in a networked container with the volume
+attached; the operator finished each flow in a browser (device code for Codex, Grok Build, OpenCode and Kimi Code;
+hosted-page code pasted back for Claude Code and Antigravity; polling for Cursor CLI). No `localhost` callback was
+needed. OpenCode used `opencode auth login --standalone opencode` (no user service in the container).
+
+**State probe (step 2)**, same volume, `--network none`, 2026-10-18 23:16–23:18Z (Antigravity with network, below):
+
+| Provider | CLI | Probe | Result |
+| --- | --- | --- | --- |
+| Claude Code | 2.1.294 | `claude auth status` | exit 0, `loggedIn=true authMethod=claude.ai` |
+| Codex | 0.162.0 | `codex login status` | exit 0, `Logged in using ChatGPT` |
+| Grok Build | 1.0.50 | `grok models` | exit 0, `You are logged in with grok.com.` |
+| Antigravity | 1.4.2 | `agy models` | with `--network none`: exit 1 `Fetching available models...` (needs network; token file present, mode 600, name only). With network: models listed |
+| Cursor CLI | 2026.10.16-e3cb207 | `cursor-agent status --format json` | exit 0, `isAuthenticated=true` |
+| OpenCode | v2.0.23 | `opencode auth list --format json --standalone` | exit 0, one non-`environment` connection (`opencode`) |
+| Kimi Code | 2.1.1 | ACP `initialize` then `session/new` (no `session/prompt`) | `sessionId` returned (logged in) |
+
+**One real prompt (Git-free check)**, same volume, network on, empty working directory, prompt `Reply with the
+single word ok.`, cheapest model from the operator's model list, 2026-10-18 23:20–23:21Z:
+
+| Provider | Model | Exit | Result | Verdict |
+| --- | --- | --- | --- | --- |
+| Claude Code | `claude-haiku-5-5` (`-p --output-format json`) | 0 | `subtype: success`, `result: ok` | Observed |
+| Codex | `gpt-6-luna`, effort low (`exec --sandbox read-only --skip-git-repo-check`) | 0 | `ok` (warns that no system bubblewrap is installed and uses the bundled one) | Observed |
+| Grok Build | `grok-4.7` (`-p`) | 1 | `API error (status 402 Payment Required): Grok Build usage balance exhausted` | **Deferred-until-reset** (weekly balance; no reset time printed). The CLI started, authenticated and reached the API with no Git client |
+| Antigravity | `gemini-3.8-flash-low` (`-p`) | 0 | `ok` | Observed |
+| Cursor CLI | `auto` (`-p --trust`) | 0 | `ok`. `composer-2.5` first returned `ActionRequiredError … You're out of usage` (exit 1); `--trust` trusts the empty workspace only (not `--force`) | Observed |
+| OpenCode | `opencode-go/deepseek-v4.1-flash` (`run --standalone`) | 0 | `ok` | Observed |
+| Kimi Code | `kimi-code/kimi-for-coding` (`-p`) | 0 | `ok` | Observed |
+
+**Verdict.** In-volume native login works for all seven providers, and no provider needs a Git client to start,
+authenticate or (six of seven, Grok pending its balance reset) answer a prompt. No provider is marked `host`-only.
+Not covered here, and outside the T10.0 Done-when: a Switchboard `container` project using these volumes (runbook
+step 4), because the container backend mounts no login volume yet (T10.1 limitation (4)); that stays under M10.

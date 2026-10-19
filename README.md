@@ -36,7 +36,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   against a live provider through Switchboard's own tool channel, signing was tried only with a throwaway GnuPG key,
   pushing from dynamic projects is refused by design (`CONTEXT_UNKNOWN`, owner decision 62; Q-46 answered), and
   the `container` clauses stay **Partial** until milestone 10 is `Done`
-  (mounting and MCP admission are on fakes; T10.0 live and opt-in Docker remain open — see milestone 10 below). The
+  (mounting and MCP admission are on fakes; T10.0 operator login checks are Done; opt-in Docker and a live container run
+  remain open — see milestone 10 below). The
   exceptions are listed in
   [ROADMAP §6.3](docs/ROADMAP.md#63-m9-projects-and-controlled-commits-tasks) (task T9.8).
 - **Milestone 5 (continuity) is `Partial`.** `continue_task` resumes the provider's native session or hands off to
@@ -87,8 +88,9 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
   for `container` projects ([PR #554](https://github.com/zemdregon/switchboard/pull/554)), orphan sweep,
   malicious-fixture container leg, `projects validate` container checks and retention GC are implemented and tested on
-  fakes (and emulated runtime in CI). It is not `Done`: operator live checks for in-volume provider login (T10.0), the
-  opt-in Docker mount legs (`SWITCHBOARD_CONTAINER_TESTS=1`), and no live end-to-end run through a real provider CLI.
+  fakes (and emulated runtime in CI). It is not `Done`: the opt-in Docker mount legs (`SWITCHBOARD_CONTAINER_TESTS=1`)
+  and a live end-to-end run through a
+  real provider CLI remain open.
   See [Container environments (milestone 10)](#container-environments-milestone-10) and
   [ROADMAP §6.4](docs/ROADMAP.md#64-m10-container-environments-tasks).
 - **Milestone 11 (inner agent) is `Partial`.** T11.1 to T11.12 are done on fakes: an optional HTTP backend, privacy
@@ -634,7 +636,7 @@ A `container` project runs the provider inside a rootless Docker container that 
 and declared read-only contexts, applies limits and network policy, and is torn down when the run ends. The image must
 have no `git` or `gh` on its `PATH` ([ADR-0020](docs/adr/0020-container-image-without-git-client.md)). On `main` today
 the port, security legs and MCP admission are tested on fakes ([PR #554](https://github.com/zemdregon/switchboard/pull/554));
-operator live login (T10.0) and opt-in Docker legs remain open.
+opt-in Docker legs remain open (operator in-volume login, T10.0, is Done since 2026-10-18).
 
 ### Status and tests
 
@@ -1277,7 +1279,8 @@ then run `switchboard projects approve <id>` (add `--revision <n>` once the proj
 is refused while one of its runs is still going; its history stays. By design a push from a dynamic project
 is refused (`CONTEXT_UNKNOWN`) even after approval (owner decision 62; Q-46 answered). Approved `container`
 dynamic projects can run when `serve` composes placement (milestone 10,
-[PR #554](https://github.com/zemdregon/switchboard/pull/554)); operator live login (T10.0) is still open.
+[PR #554](https://github.com/zemdregon/switchboard/pull/554)); operator in-volume login (T10.0) is Done since
+2026-10-18; the container backend does not mount a login volume yet.
 
 `gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than
 `retention.days` (all their runs finished, no lease) and any orphans, and changes nothing. `gc --apply` removes each
