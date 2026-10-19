@@ -25,8 +25,12 @@
  * T14.4 (FR-CTL-06): unless the caller passes its own `control` facts, `budget_exhausted` reads the budget evaluator the
  * run lifecycle registered for this ledger (`src/control/budgets.ts`), so the flag matches what refuses admission.
  * T14.5 (FR-CTL-07): likewise `parked_loop` reads the loop breaker's park events (`src/control/loop-attention.ts`).
+ *
+ * T3.24 (FR-CAP-12, LLD §20.2): a `QUEUED` run whose latest `load_hold` event has no later `load_release` carries
+ * `hold: { reason: "held_load", since }` (the hold event's time). Absent otherwise; a hold is not a needs-attention reason.
  */
 
+import { HELD_LOAD_REASON, LOAD_HOLD_EVENT, LOAD_RELEASE_EVENT } from "../capacity/host-load.js";
 import { budgetControlFacts } from "../control/budgets.js";
 import { loopBreakerControlFacts } from "../control/loop-attention.js";
 import {
@@ -77,6 +81,8 @@ export interface Envelope {
   superseded_by?: string;
   /** T14.2 (FR-CTL-03): derived on read for `get_run` and `list_runs`; `reason` only when `active`. */
   needs_attention?: NeedsAttention;
+  /** T3.24 (FR-CAP-12): present only while a `QUEUED` run is held by the host load hold. */
+  hold?: { reason: typeof HELD_LOAD_REASON; since: string };
   replayed?: boolean;
   events?: { seq: number; ts: string; type: string; payload: unknown }[];
 }
@@ -109,7 +115,12 @@ export function buildEnvelope(
   let adapterVersion: string | null = null;
   let terminal: TransitionPayload | undefined;
   let summaryPayload: unknown;
+  let loadHoldSince: string | undefined;
   for (const e of ledger.listRunEvents(run.id)) {
+    if (e.type === LOAD_HOLD_EVENT || e.type === LOAD_RELEASE_EVENT) {
+      loadHoldSince = e.type === LOAD_HOLD_EVENT ? e.ts : undefined;
+      continue;
+    }
     if (e.type === LOG_SUMMARY_EVENT) {
       try {
         summaryPayload = JSON.parse(e.payload_json); // the latest wins
@@ -153,6 +164,9 @@ export function buildEnvelope(
     usage: { reported: reportedUsage(ledger, run.id), estimated: null, capacity_confidence: null },
     ...approvalOf(ledger, run),
     ...retryLinks(ledger, run),
+    ...(run.state === "QUEUED" && loadHoldSince !== undefined
+      ? { hold: { reason: HELD_LOAD_REASON, since: loadHoldSince } }
+      : {}),
     ...(attention !== undefined
       ? {
           needs_attention: needsAttentionOf(ledger, run, {

@@ -18,6 +18,7 @@ import {
   readVersionCanaryStore,
   recordAdapterVersion,
 } from "../adapters/index.js";
+import { type LoadReader, osLoadReader, readLoad1 } from "../capacity/host-load.js";
 import type { CapacityProjection } from "../capacity/index.js";
 import {
   loadConfig,
@@ -410,6 +411,30 @@ function checkDiskFloor(cfg: ResolvedConfig, probe: DiskProbe): DoctorCheck | un
 }
 
 /**
+ * Host load hold (T3.24; FR-CAP-12, LLD §20.2). Present only when the config sets `host`, so the check list of a
+ * configuration without it is unchanged. Never `fail`: above the maximum `serve` holds new runs (`warn`), and an
+ * unreadable load average is `warn` because the hold is then not enforced.
+ */
+function checkHostLoad(cfg: ResolvedConfig, reader: LoadReader): DoctorCheck | undefined {
+  const gate = cfg.hostLoad;
+  if (gate === undefined) return undefined;
+  const limits = `max ${gate.maxLoad1}, resume ${gate.resumeLoad1} (host.max_load1, host.resume_load1)`;
+  const load1 = readLoad1(reader);
+  if (load1 === null) {
+    return check("host_load", "Host load", "warn", `cannot read the 1-minute load average; ${limits} is not enforced`);
+  }
+  if (load1 > gate.maxLoad1) {
+    return check(
+      "host_load",
+      "Host load",
+      "warn",
+      `1-minute load ${load1} is above the ${limits}: serve holds new runs in QUEUED (held_load)`,
+    );
+  }
+  return check("host_load", "Host load", "ok", `1-minute load ${load1}; ${limits}`);
+}
+
+/**
  * Every provider registry entry with an adapter (`src/adapters/providers.ts`, T4.1): test-only entries first (the
  * fake), then the real providers in table order.
  */
@@ -587,6 +612,8 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     checks.push(...(await checkRetentionAndOrphans(cfg, (io.now ?? (() => new Date()))())));
     const disk = checkDiskFloor(cfg, io.diskProbe ?? statfsDiskProbe);
     if (disk) checks.push(disk);
+    const hostLoad = checkHostLoad(cfg, io.loadReader ?? osLoadReader);
+    if (hostLoad) checks.push(hostLoad);
     checks.push(skillsDoctorCheck(cfg)); // T16.2 (LLD §19.10)
   } else {
     for (const [id, label] of [
