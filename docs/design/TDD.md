@@ -1051,7 +1051,7 @@ Implements FR-INN-01..17 and [ADR-0016](../adr/0016-inner-agent.md) for M11 (COM
 contracts are in [LLD §13](LLD.md#13-inner-agent). Status: **Proposed**. zemdregon decided that an inner agent exists and
 which tasks motivate it (owner decision 14); everything below is Delegated and unverified until M11 lands.
 
-*As built (2026-10-15, T11.14, Delegated; T11.1 to T11.12 are Done on fakes, [ROADMAP
+*As built (2026-10-15, T11.14, Delegated; T11.1 to T11.13 are Done on fakes, [ROADMAP
 §6.6](../ROADMAP.md#66-m11-inner-agent-tasks)).* The design text above and below is unchanged; this note says what the
 tests on `main` prove against each bullet and what is not built. No live inner backend, provider CLI or network host has
 been used anywhere in the suite.
@@ -1081,8 +1081,9 @@ been used anywhere in the suite.
   generic `BACKEND_ERROR` reason and no address in any row, event or log. **Not built:** the Unix-socket form
   (`base_url` is `http`/`https` only, T11.3), the full-stack resolves-loopback-at-load-elsewhere-at-connect case (the
   transport connects only to its pinned address, so on one host the peer can disagree with the classification only
-  through an inconsistent pin; a host with no bindable non-loopback interface skips the two peer tests), and the `cli`
-  kind (reported `Ineligible`, never started; `src/cli/inner.test.ts`).
+  through an inconsistent pin; a host with no bindable non-loopback interface skips the two peer tests), and a verified
+  tool-free `cli` invocation (the gate itself is built, T11.13; the shipped kind stays `Ineligible`, never started;
+  `src/inner/cli-backend.test.ts`, `src/cli/inner.test.ts`).
 - *Accounting and replay*: `src/inner/usage.test.ts`, `src/inner/usage-surfaces.test.ts`,
   `src/inner/usage-channels.test.ts` (the `commit` tool channel and the MCP admission harness themselves: admission,
   continuation and, since 2026-10-15 post-#389, the quota failover, the one routing classification recorded under a
@@ -1106,7 +1107,8 @@ been used anywhere in the suite.
   described, and `inner resume <task>` is built too (FR-INN-17; `src/cli/inner.test.ts`).
 - *OpenCode `cli` kind*: documentation spike [§4.6.6](#466-t110-documentation-spike-2026-10-16) (2026-10-16) and the
   live result [§4.6.7](#467-t110-live-result-2026-10-17) (2026-10-17: no tool-free one-shot on v2.0.23); `Ineligible`
-  in code; unchanged in `src/cli/inner.test.ts`.
+  in code; unchanged in `src/cli/inner.test.ts`; the gate is pinned in `src/inner/cli-backend.test.ts` (T11.13 Done
+  2026-10-18 on the gate, owner decision 66; shipped stays `Ineligible`).
 
 - **Technology (Proposed).** The `http` kind uses the Node built-in `fetch`/HTTP client (and `node:net`/`node:http`
   for a Unix socket); no new dependency and no vendor SDK, so the controller does not pick a provider or carry a provider's
@@ -1622,7 +1624,7 @@ observed cites that note, not [R2]. The §4.7 heading keeps "blocked by B-1" as 
 | --- | --- |
 | Automation surface | `claude -p` ([R2]) |
 | Structured output | `--output-format json` or `stream-json`; partial deltas with `--verbose --include-partial-messages`; final result carries `session_id` |
-| Resume | `--resume <session>` and `--continue`; read `session_id` from structured output, never regex (FR-ADP-04); the live T5.12 resume findings for 2.1.294 are in [§4.10](#410-native-resume-inventory-t50) |
+| Resume | `--resume <session>` and `--continue`; read `session_id` from structured output, never regex (FR-ADP-04); the live T5.12 resume findings for 2.1.294 are in [§4.10](#410-native-resume-inventory-t50); in the T5.11 live pair of 2026-10-19 (Claude Code 2.1.294 to Codex), the Claude Code run was admitted and succeeded (P-1 HELD, [live checks 2026-10-19](../research/live-checks-2026-10-19-codex-container-resume.md)) |
 | Auth preflight | `claude auth status` returns structured JSON and exit codes; on failure return `AUTH_REQUIRED` naming the native login (FR-AUTH-02) |
 | Trust profile compilation (Proposed) | Untrusted profiles: `--safe-mode --restricted --strict-mcp-config` (disable `CLAUDE.md`, skills, plugins, hooks and MCP servers, ignore settings files and confine file tools to the working directory; FR-POL-04), fail-closed `dontAsk` with `--permission-prompts none`, explicit `--tools`/`--allowedTools` rules; never `--allowedTools "*"` (skipped by Claude). **Not `--bare`:** the installed help says it makes auth strictly API-key based, which [ADR-0003](../adr/0003-no-credential-handling.md) and the Claude manifest forbid ([ADR-0015](../adr/0015-claude-untrusted-isolation-flags.md)). Verified against `claude --help` 2.1.296 text only; tool names beyond `Read`, `Edit` and `Bash(...)` rule syntax are Assumptions |
 | Sandbox controls | None documented in [R2], and none in the installed help (T3.0, [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30)); `--safe-mode`/`--restricted` are not a sandbox and Bash/read/edit remain. Credential confinement unproven, so `inspect-untrusted` and `edit-untrusted` compile with no arbitrary shell (only `edit-untrusted`'s narrow allowlist), and `test-sandboxed` is ineligible for Claude until confinement is shown (FR-POL-06; M3 evaluation) |
@@ -1697,7 +1699,7 @@ R-41). Every remaining `Unknown: live check in T3.9` cell is still unknown ([ROA
 | --- | --- |
 | Automation surface | `codex exec` |
 | Structured output | `--json` emits JSONL (thread, turn, item, error and token-usage events) |
-| Resume | `codex exec resume <SESSION_ID>` or `--last` (prefer explicit ID); the T5.12 live checks (cells 1 to 5) are `NOT_CHECKED`, blocked by a provider quota stop (see [ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks) T5.12 and [§4.10](#410-native-resume-inventory-t50)) |
+| Resume | `codex exec resume <SESSION_ID>` or `--last` (prefer explicit ID). T5.12 live checks on codex-cli 0.162.0, run 2026-10-19 in the operator's container login (decision 71, image `sb-live-codex:t10.0-git`; [live checks 2026-10-19](../research/live-checks-2026-10-19-codex-container-resume.md)): cell 1 **PASS** (same thread id; exec-level flags before `resume <id>` and the prompt on stdin work), cell 2 **PASS** (found from a second worktree and an unrelated empty directory; `resumeCwd: 'independent'`), cells 3 and 4 **FAIL** (no sandboxed write succeeded in the container, even under `workspace-write`, so the sandbox in effect on resume is not established), cell 5 **PASS** (exit 1, `thread/resume failed: no rollout found for thread id …`). T5.11 live pair: **FAIL** at P-7 (the Codex handoff run succeeded but its file did not land). See [§4.10](#410-native-resume-inventory-t50) and [ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks) T5.12 |
 | Auth preflight | Saved ChatGPT or API-key auth is reused. [R2] states no status command; `codex login status` was observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md` (PR #41), not a link: the file is not on this branch): exit 0 logged in, exit 1 not logged in, output format undocumented. The adapter keys on the exit code only; any other exit code, a timeout or a spawn failure is `UNKNOWN` (fail closed). `~/.codex/auth.json` is sensitive and never read |
 | Trust profile compilation (Proposed) | `--sandbox workspace-write` or stricter, plus `--ignore-user-config` and `--ignore-rules` for full harness control. Read-only sandbox value spelling: to be verified in M4 |
 | Sandbox controls | Native: Seatbelt (macOS), bubblewrap (Linux/WSL2); explicit `--sandbox`. Per profile and platform: [§4.2.1](#421-codex-native-controls-per-profile-and-platform-t30) |
@@ -2292,15 +2294,17 @@ obligations as `grok Git declaration (T4.27)`, `cursor Git declaration (T4.47)` 
   cases above; finalize-only lifecycle leg.
 
 **Out of scope for T4.37 (other tasks).** Operator live Git-write and bypass cells (T4.38), README final status after
-live validate (T4.39), and tool-step parameter keys for the Switchboard tool-call guard while T4.33 stays `Partial`.
+live validate (T4.39), and tool-step parameter keys for the Switchboard tool-call guard (T4.33 is Done against its
+Done-when under owner decision 65 (a); remaining native shapes carried by T4.38).
 
 #### 4.4.7 Antigravity parser implementation evidence (M4, T4.33)
 
 Live-check context: [§4.4.5](#445-note-2026-10-14-contradictions-found-by-the-t431-live-checks-delegated-cells-above-not-edited).
-Task boundary and remaining gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.33`, `Partial`).
+Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.33`, Done against its Done-when
+under owner decision 65 (a); remaining native shapes carried by T4.38).
 Adapter contract and taxonomy: [LLD §2](LLD.md#2-adapter-contract), [LLD §4](LLD.md#4-failure-taxonomy). Requirements:
 FR-ADP-04, FR-CAP-01 (`provider_reported` once), FR-SES-03 (resume not compiled, Q-86). HLD: [§2.2
-T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-partial). LLD as-built: [§2.0](LLD.md#20-antigravity-adapter-implementation-evidence-m4-t432-t433-t437).
+T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-done-against-its-done-when). LLD as-built: [§2.0](LLD.md#20-antigravity-adapter-implementation-evidence-m4-t432-t433-t437).
 
 **Implementation evidence (on `origin/main`, [#227](https://github.com/zemdregon/switchboard/pull/227); Delegated agent
 work, not owner-approved; synthetic lines only; no `agy` in CI).**
@@ -2314,9 +2318,12 @@ work, not owner-approved; synthetic lines only; no `agy` in CI).**
   never bind the session; classification precedence pinned; negative or non-number usage dropped; unrecorded rate-limit
   text ends `TOOL_FAILURE`.
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`"antigravity parser and result (T4.33)"`, `"antigravity
-  parser hardening (T4.33, synthetic shapes)"`).
+  parser hardening (T4.33, synthetic shapes)"`, `"antigravity cases with no recorded native shape (T4.33, synthetic
+  shapes)"`, `"antigravity parser fallbacks and exact matching (T4.33, synthetic shapes)"`);
+  `src/adapters/antigravity/parser-residual.test.ts` (residual pins, parser unchanged).
 
-**Out of scope (stay `Partial` until operator capture).** Resume with `--conversation`; stdout shapes for rate limit,
+**Out of scope (carried by T4.38 under owner decision 65 (a); this section is Done).** Resume with
+`--conversation`; stdout shapes for rate limit,
 sandbox violation and stderr `AGY_ERROR`; recorded `tool_info.parameters` keys.
 
 ### 4.5 Cursor CLI (M4)
@@ -2763,7 +2770,11 @@ channel ([live-checks-2026-10-17-opencode.md](../research/live-checks-2026-10-17
 
 **Verdict: a tool-free one-shot is not available on v2.0.23.** The `cli` kind stays **`Ineligible`** ([§3.12](#312-inner-agent),
 FR-INN-04, Q-26) and `CLI_TOOL_FREE_VERIFICATION` stays `null`. A later OpenCode version needs this check run again
-before T11.13 can attach a backend.
+before T11.13 can attach a backend. *Update 2026-10-18 (Delegated, owner decision 66):* the upstream `run` options were
+re-checked at tag `v2.0.32` (2026-10-16) and `dev` (`packages/cli/src/commands/handlers/run.ts` and the `run` Spec in
+`packages/cli/src/commands/commands.ts` are identical at both: `server`, `standalone`, `continue`, `session`, `fork`,
+`model`, `agent`, `format`, `file`, `title`, `thinking`, `auto`, with no tools or `--pure` flag), so no release through
+v2.0.32 changes this verdict; the shipped `cli` backend stays `Ineligible` and T11.13 is Done on its gate.
 
 ### 4.7 Kimi Code (M4, blocked by B-1)
 
@@ -3045,8 +3056,9 @@ request.
 ### 4.10 Native-resume inventory (T5.0)
 
 *Documentation only, Delegated agent work (not owner-approved), 2026-10-14; the Claude Code cells were observed live on
-2026-10-17 (T5.12, 2.1.294).* Apart from the cells that name a CLI version and a dated note under `docs/research/`,
-nothing below was run: no other provider CLI was invoked and no network was used. Each cell is either **sourced** (a tag
+2026-10-17 (T5.12, 2.1.294) and the Codex cells on 2026-10-19 (T5.12, codex-cli 0.162.0 in the container
+login).* Apart from the cells that name a CLI version and a dated note under `docs/research/`, nothing below
+was run: no other provider CLI was invoked and no network was used. Each cell is either **sourced** (a tag
 in the right-hand column, a TDD §4 subsection, or a line of a research document, with the CLI version where a source
 records one) or reads exactly `Unverified: <task>`, naming the operator checklist item that will verify it. Task T5.12
 is the Claude Code and Codex operator task ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the other ids are the
@@ -3057,7 +3069,7 @@ question (6) and T5.7.
 | Provider | Resume form (how the native id is passed) | Tied to the working directory | Sandbox flags on resume | Permission flags on resume | Sources |
 | --- | --- | --- | --- | --- | --- |
 | Claude Code | `--resume <session>`; `--continue` also exists; the id is `session_id` from structured output ([§4.1](#41-claude-code-m2) Resume row; [R2] L72, L90); same id returned on resume (T5.12 cell 1, 2.1.294) | **No** (2.1.294: found from a second worktree and from an unrelated empty directory, T5.12 cell 2; adapter declares `resumeCwd: 'independent'`) | Not applicable (no sandbox flag in the Claude argv, [§4.1](#41-claude-code-m2)) | **Not kept** (2.1.294: each invocation's flags apply; omitting them gives `default` mode, T5.12 cells 3 and 4), so re-send on every resume | [§4.1](#41-claude-code-m2); [R2] L72, L90 (research of 2026-10-12, which records no CLI version); `--help` of 2.1.296 is recorded in [§4.1.1](#411-claude-code-native-controls-per-profile-and-platform-t30) and names no resume text; live 2026-10-17 [live-checks-2026-10-17-claude.md](../research/live-checks-2026-10-17-claude.md) (unknown id: exit 1, `error_during_execution`, "No conversation found with session ID: …") |
-| Codex | `codex exec resume <SESSION_ID>` or `--last`; an explicit id is preferred ([§4.2](#42-codex-m2) Resume row; [R2] L75) | Unverified: T5.12 | Unverified: T5.12 | Unverified: T5.12 | [§4.2](#42-codex-m2); [R2] L75 (no CLI version recorded for the resume form; codex-cli 0.162.1 was observed only for `codex login status`) |
+| Codex | `codex exec resume <SESSION_ID>` or `--last`; an explicit id is preferred ([§4.2](#42-codex-m2) Resume row; [R2] L75); `exec --json <flags> resume <id>` with the prompt on stdin returns the same thread id (T5.12 cell 1, 0.162.0) | **No** (0.162.0: found from a second worktree and from an unrelated empty directory, T5.12 cell 2; adapter declares `resumeCwd: 'independent'`) | Not established (0.162.0: T5.12 cells 3 and 4 FAIL because no sandboxed write succeeded in the container, even under `workspace-write`), so re-send on every resume | Not established (same cells; Codex has no permission flag apart from `--sandbox`, [§4.2](#42-codex-m2)), so re-send on every resume | [§4.2](#42-codex-m2); [R2] L75; live 2026-10-19 [live-checks-2026-10-19-codex-container-resume.md](../research/live-checks-2026-10-19-codex-container-resume.md) (codex-cli 0.162.0 in `sb-live-codex:t10.0-git`; unknown id: exit 1, `thread/resume failed: no rollout found for thread id …`) |
 | Grok Build | `-r, --resume [<ID>]`; `-c, --continue` is the most recent session for the directory; `-s, --session-id <UUID>` names a new session and does not resume (the adapter plans `-r <id>` from `.sessionId`, never `-c` or `-s`) [CLI], [SESS], [R2 L287]; [HL] contradicts on `-s` | Unverified: T4.21 | Preserved on resume (changelog entry 0.2.56) [CL] | Unverified: T4.21 | [§4.3.1](#431-grok-build-native-controls-per-profile-and-platform-t420) Resume and Resume contradiction rows and its source table ([CLI] last updated 2026-07-21, [HL] 2026-06-10, [SESS] undated, [CL] "Grok Build 1.0.52", 2026-10-11; all retrieved 2026-10-13; no binary version validated) |
 | Antigravity | `--conversation <id>` (explicit; preferred) or `-c, --continue`; the id is `conversation_id` in the `json` envelope [H, RS] | Histories are scoped to the working directory; `--continue` resolves the workspace through a local cache keyed by it [RS] | Unverified: T4.31 | Unverified: T4.31 | [§4.4](#44-antigravity-agy-m4) Resume row and its source list ([H], [RS]; retrieved 2026-10-13; no `agy` version validated) |
 | Cursor | `--resume [chatId]`; `--continue` is "alias for `--resume=-1`"; `agent resume`, `agent ls`, `agent create-chat`; the id is `session_id` on every stream event and on `result` [C1, C2, C8] | **No** (row 8c: same `session_id` from another directory) | Unverified: T4.41 (row 16a blocked: needs working `--sandbox enabled` first) | Unverified: T4.41 (row 16c not run: needs `--force`) | [§4.5](#45-cursor-cli-m4) Resume row; [live-checks-2026-10-14-cursor.md](../research/live-checks-2026-10-14-cursor.md) CLI `2026.10.12-d47ca18` |
@@ -3070,8 +3082,9 @@ question (6) and T5.7.
 the same `#build`, so every policy flag (permission, tools, isolation, Git deny rules for Claude Code; `--sandbox`,
 `--ignore-user-config`, `--ignore-rules` for Codex) is sent again on every resume; only `--resume <id>` (Claude Code) or
 `resume <id>` (Codex) is added. The Codex position of exec-level flags before `resume <id>`, and the prompt on stdin,
-are an Assumption in that file. The fake adapter (`src/adapters/fake/adapter.ts`) appends `--resume <id>` to its normal
-argv. The working directory of a continuation was the new run's worktree (`<data>/worktrees/<sess>/<run>`) until T5.7;
+were observed to work on codex-cli 0.162.0 (T5.12 cell 1, 2026-10-19). The fake adapter
+(`src/adapters/fake/adapter.ts`) appends `--resume <id>` to its normal argv. The working directory of a
+continuation was the new run's worktree (`<data>/worktrees/<sess>/<run>`) until T5.7;
 since T5.7 a resume runs in the worktree path of the run that created the native session unless the adapter declares
 `resumeCwd: 'independent'` ([LLD §15.6](LLD.md#156-working-directory-of-a-native-resume)). So the controller never
 relies on a resumed session keeping its flags, nor on an `Unverified` working-directory cell. The sandbox and
@@ -3090,7 +3103,7 @@ the resume statement only and T4.61 item 17 checks both.
 
 | Provider | Cells | Checklist item |
 | --- | --- | --- |
-| Codex | cwd, sandbox, permission | T5.12, checks 1 to 4 ([ROADMAP §6.9](../ROADMAP.md#69-m5-continuity-tasks)); the Claude Code cells were recorded 2026-10-17 (T5.12 Partial) |
+| Codex | sandbox, permission | T5.12 cells 3 and 4 ran on 2026-10-19 and FAILED for a container reason (the cwd cell is settled, cell 2); a re-run where Codex's sandbox can start is listed in [ROADMAP §6.9.2](../ROADMAP.md#692-blocks-done-what-needs-the-operator-or-zemdregon) |
 | Grok Build | cwd, permission | [§4.3.2](#432-t421-operator-checklist-grok-build) step 14 |
 | Antigravity | sandbox, permission (and the cross-directory case of the cwd cell) | [§4.4.3](#443-t431-operator-checklist-antigravity) C18 (and C9) |
 | Cursor | cwd, sandbox, permission | [§4.5.3](#453-t441-operator-checklist) item 16 |

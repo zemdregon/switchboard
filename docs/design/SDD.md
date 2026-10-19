@@ -218,7 +218,7 @@ transaction; no hostile-pack behavioural test and no `rag.retrieve` span) are li
 `src/retrieval/global.test.ts`, `src/cli/rag-index.test.ts`). Remaining gap: the tool's `global`/`both` scopes still
 answer `GLOBAL_NOT_AVAILABLE` (ROADMAP T12.7).
 
-### 4.2 COMP-ADP M4 parser implementation evidence (`Partial`)
+### 4.2 COMP-ADP M4 parser implementation evidence (Done against its Done-when)
 
 Milestone boundaries and Done-when gaps: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.23`, `T4.33`,
 `T4.43`, `T4.53`). Mechanism and failure taxonomy: [LLD §2](LLD.md#2-adapter-contract), [LLD §4](LLD.md#4-failure-taxonomy);
@@ -227,14 +227,14 @@ provider-specific as-built detail in [LLD §2.0](LLD.md#20-antigravity-adapter-i
 [§2.0.2](LLD.md#202-opencode-adapter-implementation-evidence-m4-t452-t453); sourcing in [TDD
 §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433), [§4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443)
 and [§4.6.5](TDD.md#465-opencode-parser-implementation-evidence-m4-t453). HLD component evidence: [§2.2
-T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-partial), [§2.3
+T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-done-against-its-done-when), [§2.3
 T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-done-against-its-done-when), [§2.4
 T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 | Task | Requirements (primary) | Tests (parser suites) |
 | --- | --- | --- |
 | T4.23 Grok Build (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-EXE-03 | `src/adapters/grok/grok.test.ts` (`grok parser to resume round trip (T4.23 residual; SYNTHETIC lines, parser unchanged)`); `src/adapters/grok/protocol.ts` EVENT comment ([#384](https://github.com/zemdregon/switchboard/pull/384)); [ROADMAP T4.23](../ROADMAP.md#68-m4-adapter-expansion-tasks) ([#385](https://github.com/zemdregon/switchboard/pull/385)) |
-| T4.33 Antigravity (`Partial`) | FR-ADP-04, FR-CAP-01, FR-SES-03 | `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`, `antigravity parser hardening (T4.33, synthetic shapes)`) |
+| T4.33 Antigravity (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-CAP-01, FR-SES-03 | `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`, `antigravity parser hardening (T4.33, synthetic shapes)`, `antigravity cases with no recorded native shape (T4.33, synthetic shapes)`, `antigravity parser fallbacks and exact matching (T4.33, synthetic shapes)`); `src/adapters/antigravity/parser-residual.test.ts` |
 | T4.43 Cursor (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/cursor/cursor.test.ts` (`cursor parser and result (T4.43)`, `cursor parser hardening (T4.43, synthetic shapes)`, `cursor parser residual branches (T4.43, synthetic)`); `src/adapters/cursor/parser-residual.test.ts` and `fixtures/idless_guard.jsonl` ([#360](https://github.com/zemdregon/switchboard/pull/360)) |
 | T4.53 OpenCode (Done against its Done-when, owner decision 65 (a)) | FR-ADP-04, FR-SES-03, FR-ADP-10 | `src/adapters/opencode/opencode.test.ts` (`opencode parser and result (T4.53)`, nested `cases with no recorded native shape (live check rows 7, 11, 14c)`) |
 
@@ -251,12 +251,12 @@ OpenCode T4.53: Done against its Done-when under owner decision 65 (a): the reco
 rate-limit event shapes, the `tool_use` input key names and any native backing-vendor field remain open under
 (ROADMAP T4.58).
 
-### 4.3 COMP-INN implementation evidence (M11, T11.1–T11.12, Done on fakes)
+### 4.3 COMP-INN implementation evidence (M11, T11.1–T11.13, Done on fakes)
 
 Task status and clause-by-clause Done-when evidence: [ROADMAP §6.6](../ROADMAP.md#66-m11-inner-agent-tasks).
 Schemas, pipeline, gates and contracts: [LLD §13](LLD.md#13-inner-agent); as-built testing notes: [TDD
 §3.12](TDD.md#312-inner-agent); component evidence: [HLD
-§2.5](HLD.md#25-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes). The table below is SDD traceability only
+§2.5](HLD.md#25-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes). The table below is SDD traceability only
 (written 2026-10-15, T11.14, Delegated). Every test runs on the scripted in-process fake backend or a fake HTTP server on
 a loopback address; no live inner backend, provider CLI or network host has been used, so M11 stays `Partial`.
 
@@ -274,8 +274,10 @@ a loopback address; no live inner backend, provider CLI or network host has been
 | T11.10 handoff condensation (service function, not on a run path) | FR-INN-13, FR-SES-04 | `src/inner/handoff-condense.test.ts` (handoff view byte-identical; labelled fields; deterministic truncation) |
 | T11.11 routing classification (on the `serve` path at admission, continuation and quota failover; record-only, Q-82) | FR-INN-12, FR-RTE-04 | `src/inner/route-features.test.ts`, `src/mcp/inner-route-features.test.ts`, `src/cli/serve.test.ts` ("T11.11") |
 | T11.12 run title (service function, display-only, not on a run path) | FR-INN-14 | `src/inner/run-title.test.ts` |
+| T11.13 `cli` backend gate (shipped `Ineligible`) | FR-INN-04, FR-ADP-08, FR-ADP-03 | `src/inner/cli-backend.test.ts` (every gate reason spawns nothing; an eligible gate spawns only the tool-free argv; a tool call in the stream is refused), `src/inner/cli-doctor-surfaces.test.ts`, `src/cli/inner.test.ts` (shipped surfaces stay `no_backend`/`Ineligible` with no process) |
 
-Not built, so no row claims it: the `cli` backend kind (T11.0, T11.13; FR-INN-04 is reported `Ineligible`), the
+Not built, so no row claims it: a verified tool-free `cli` invocation (the gate itself is built, T11.13; the shipped
+kind stays `Ineligible` since no OpenCode release through v2.0.32 offers the control), the
 `inner.call` span (LLD §13.8 as-built note), the Unix-socket form of `base_url`, a live-inner opt-in in
 `scripts/live-smoke.mjs`, and a run path, hook or `inner` command that calls the T11.8, T11.9, T11.10 or T11.12
 service functions. FR-INN-18 is deferred by the SRS.
@@ -314,8 +316,8 @@ T12.5 admission pack design for FR-RAG-05, FR-RAG-07 and FR-RAG-08 is in [LLD
 §14.11](LLD.md#1411-admission-context-pack-t125) and [TDD §3.13.8](TDD.md#3138-t125-admission-time-context-pack-2026-10-14);
 implementation evidence is in [§4.1](#t125--admission-context-pack-design-intent). M4 adapter parser hardening on
 synthetic fixtures (Grok Build, Antigravity, Cursor, OpenCode;
-T4.43 and T4.53 are Done against their Done-when under owner decision 65 (a), the rest stay `Partial`)
-is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial).
+T4.23, T4.33, T4.43 and T4.53 are Done against their Done-when under owner decision 65 (a))
+is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-done-against-its-done-when).
 
 | ID | Component(s) | Design element / mechanism | ADR(s) | Detail |
 | --- | --- | --- | --- | --- |
@@ -339,7 +341,7 @@ is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial)
 | FR-ADP-01 | COMP-ADP | Ports-and-adapters: one adapter port, per-provider implementations behind a registry | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-02 | COMP-ADP, COMP-EXE | Ordered preflight pipeline with cached result per adapter | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-03 | COMP-ADP, COMP-RTE, COMP-OPS | Adapter state machine with ADAPTER_VERSION_UNVERIFIED; eligibility filter reads it; operator acceptance via adapters validate; operator-scheduled version canary (T8.5, [§4.4](#44-comp-tel-and-version-canary-implementation-evidence-m8-t81t86)) | [ADR-0009](../adr/0009-version-gated-adapters.md) | [LLD §2](LLD.md#2-adapter-contract), [LLD §1](LLD.md#1-data-model) |
-| FR-ADP-04 | COMP-ADP | Parsers consume native JSON/JSONL/ACP messages only; no free-text inference of ids, status or usage | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §2](LLD.md#2-adapter-contract), M4 parser evidence [§4.2](SDD.md#42-comp-adp-m4-parser-implementation-evidence-partial) |
+| FR-ADP-04 | COMP-ADP | Parsers consume native JSON/JSONL/ACP messages only; no free-text inference of ids, status or usage | [ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md) | [LLD §2](LLD.md#2-adapter-contract), M4 parser evidence [§4.2](SDD.md#42-comp-adp-m4-parser-implementation-evidence-done-against-its-done-when) |
 | FR-ADP-05 | COMP-ADP | Refreshable model registry (operator config plus provider listing commands), outside adapter source | — | [TDD §4](TDD.md#4-provider-adapter-strategy), [LLD §2](LLD.md#2-adapter-contract) |
 | FR-ADP-06 | COMP-ADP | Claude Code adapter is the first real adapter behind the port | [ADR-0009](../adr/0009-version-gated-adapters.md) | [TDD §4](TDD.md#4-provider-adapter-strategy) |
 | FR-ADP-07 | COMP-ADP | Codex, Grok Build, Antigravity, Cursor adapters behind the same port | [ADR-0009](../adr/0009-version-gated-adapters.md) | [TDD §4](TDD.md#4-provider-adapter-strategy) |
@@ -437,24 +439,24 @@ is summarized in [§4.2](#42-comp-adp-m4-parser-implementation-evidence-partial)
 | FR-GIT-08 | COMP-GIT, COMP-WS | Separate publish ref per meta-session; run branches and checkpoints never pushed | [ADR-0014](../adr/0014-tool-only-commits-and-publication.md) | [LLD §5](LLD.md#5-workspace-and-lease-algorithm), [LLD §12](LLD.md#12-injected-git-tools-commits-and-publication) |
 | FR-GIT-10 | COMP-GIT, COMP-POL | Optional controller-side signing with the operator's existing Git configuration; no fallback to unsigned | [ADR-0014](../adr/0014-tool-only-commits-and-publication.md), [ADR-0034](../adr/0034-controller-side-commit-signing.md) | [LLD §12.3.1](LLD.md#1231-signing-fr-git-10) |
 | FR-GIT-09 | COMP-GIT, COMP-EXE | Controller commit at FINALIZING for adapters in finalize-only mode | [ADR-0014](../adr/0014-tool-only-commits-and-publication.md) | [LLD §12](LLD.md#12-injected-git-tools-commits-and-publication) |
-| FR-INN-01 | COMP-INN, COMP-OPS | Optional service with no default backend or model; absence selects every task's fallback | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-02 | COMP-INN | Stateless single-turn backend port; no tools offered; controller performs all actions | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-03 | COMP-INN | `http` backend kind over a chat-completion endpoint from configuration; no credential value, keys via an operator-run gateway | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-04 | COMP-INN, COMP-EXE, COMP-ADP | `cli` backend kind (first `opencode run`) in an empty directory with minimal environment; ineligible unless tool-free is shown (Proposed) | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-05 | COMP-INN | Task registry with per-task enable flag, versioned template, budget, schema, validator and fallback | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-06 | COMP-INN, COMP-POL, COMP-ADP, COMP-RTE, COMP-GIT | Structural authority boundary: no dependency edge from policy, compile, retry or push code; import-boundary test | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-07 | COMP-INN | Untrusted-output pipeline: schema parse, length bound, control-character strip, at most one re-ask | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-08 | COMP-INN, COMP-LED, COMP-OPS | Advisory output with deterministic fallback; per-call timeout; per-backend circuit breaker; degraded state in `doctor` | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-09 | COMP-INN, COMP-LED | Per-call outcome recording and rolling rejection-rate suspension per task (thresholds proposed) | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-10 | COMP-GIT, COMP-INN | `commit` asks COMP-INN for a draft in modes `draft_if_missing`, `always`, `never`; FR-GIT-04 sanitiser applies; `MESSAGE_REQUIRED` when empty | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-11 | COMP-INN, COMP-GIT, COMP-LED | `pr_draft` artifact through the same sanitiser; no pull request is opened | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-12 | COMP-RTE, COMP-INN, COMP-LED | Stage-2 features from the inner agent stored with source, model and template version; replay reads the stored value | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-13 | COMP-INN, COMP-LED, COMP-WS, COMP-EXE | Labelled condensing of handoff and log text with raw-artifact pointer; statuses and counts from records only | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-14 | COMP-INN, COMP-LED | Run title and one-line summary task (Could) | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-15 | COMP-INN, COMP-LED | `inner_call` table apart from `usage_observation`; one `inner_agent` observation only under `shares_subscription_with` | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-16 | COMP-INN, COMP-POL, COMP-PRJ, COMP-TEL | Locality gate (`allow_remote`, `allow_source_content`, project `inner_agent`), deterministic redaction before each call, no bodies stored | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-17 | COMP-OPS, COMP-INN | `doctor` inner section, `inner status`, `inner test <task>` on a built-in fixture | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
-| FR-INN-18 | COMP-INN, COMP-TEL | Deferred; extra add-only redaction pass can be added behind the same pipeline, never removing a deterministic redaction | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1112-done-on-fakes) |
+| FR-INN-01 | COMP-INN, COMP-OPS | Optional service with no default backend or model; absence selects every task's fallback | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-02 | COMP-INN | Stateless single-turn backend port; no tools offered; controller performs all actions | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-03 | COMP-INN | `http` backend kind over a chat-completion endpoint from configuration; no credential value, keys via an operator-run gateway | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-04 | COMP-INN, COMP-EXE, COMP-ADP | `cli` backend kind (first `opencode run`) in an empty directory with minimal environment; ineligible unless tool-free is shown (Proposed) | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-05 | COMP-INN | Task registry with per-task enable flag, versioned template, budget, schema, validator and fallback | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-06 | COMP-INN, COMP-POL, COMP-ADP, COMP-RTE, COMP-GIT | Structural authority boundary: no dependency edge from policy, compile, retry or push code; import-boundary test | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-07 | COMP-INN | Untrusted-output pipeline: schema parse, length bound, control-character strip, at most one re-ask | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-08 | COMP-INN, COMP-LED, COMP-OPS | Advisory output with deterministic fallback; per-call timeout; per-backend circuit breaker; degraded state in `doctor` | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-09 | COMP-INN, COMP-LED | Per-call outcome recording and rolling rejection-rate suspension per task (thresholds proposed) | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-10 | COMP-GIT, COMP-INN | `commit` asks COMP-INN for a draft in modes `draft_if_missing`, `always`, `never`; FR-GIT-04 sanitiser applies; `MESSAGE_REQUIRED` when empty | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-11 | COMP-INN, COMP-GIT, COMP-LED | `pr_draft` artifact through the same sanitiser; no pull request is opened | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-12 | COMP-RTE, COMP-INN, COMP-LED | Stage-2 features from the inner agent stored with source, model and template version; replay reads the stored value | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-13 | COMP-INN, COMP-LED, COMP-WS, COMP-EXE | Labelled condensing of handoff and log text with raw-artifact pointer; statuses and counts from records only | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-14 | COMP-INN, COMP-LED | Run title and one-line summary task (Could) | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-15 | COMP-INN, COMP-LED | `inner_call` table apart from `usage_observation`; one `inner_agent` observation only under `shares_subscription_with` | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-16 | COMP-INN, COMP-POL, COMP-PRJ, COMP-TEL | Locality gate (`allow_remote`, `allow_source_content`, project `inner_agent`), deterministic redaction before each call, no bodies stored | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-17 | COMP-OPS, COMP-INN | `doctor` inner section, `inner status`, `inner test <task>` on a built-in fixture | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
+| FR-INN-18 | COMP-INN, COMP-TEL | Deferred; extra add-only redaction pass can be added behind the same pipeline, never removing a deterministic redaction | [ADR-0016](../adr/0016-inner-agent.md) | [LLD §13](LLD.md#13-inner-agent), [TDD §3.12](TDD.md#312-inner-agent), [§4.3](#43-comp-inn-implementation-evidence-m11-t111t1113-done-on-fakes) |
 | FR-RAG-01 | COMP-RAG, COMP-PRJ | Per-project index built and maintained in the data directory; mode `auto` (on only with a configured backend), `off`, `on` | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.1](LLD.md#141-configuration-shape), [TDD §3.13](TDD.md#313-retrieval-index) |
 | FR-RAG-02 | COMP-RAG, COMP-PRJ | Scanner limited to context roots; exclusions, secret denylist, FR-INN-16 redaction before embedding and storage | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.3](LLD.md#143-scanner-chunking-and-redaction) |
 | FR-RAG-03 | COMP-RAG, COMP-PRJ | One store file per project; store deleted with the project; no cross-project read except the global path | [ADR-0031](../adr/0031-retrieval-index.md) | [LLD §14.2](LLD.md#142-stores-and-tables) |

@@ -694,7 +694,8 @@ the Q-84 bypass cell: `--prompt=<objective>`, `--output-format stream-json`, `--
   `antigravity registry entry and manifest gate (T4.32)`); `src/adapters/providers.test.ts` (declared
   bypass spellings).
 
-**As built (T4.33, Partial).** `parseEvent`, `extractResult`, `classifyFailure` and `resumeArgs` in `adapter.ts`; event
+**As built (T4.33, Done against its Done-when under owner decision 65 (a)).** `parseEvent`, `extractResult`,
+`classifyFailure` and `resumeArgs` in `adapter.ts`; event
 names and status prefixes in `protocol.ts`. Structured JSONL only (FR-ADP-04): `session_bound` from `init`, never from
 free text. Success needs a clean expected exit, a `result` with `status` `SUCCESS`, run-total `total_tokens` above zero,
 and no `denied_actions` or `error` text (Q-86); envelope usage is emitted once as `provider_reported` (a second `result`
@@ -712,9 +713,11 @@ The stderr-only `AGY_ERROR` line has since been captured for real (seven quota s
 captures (pinned in `src/adapters/antigravity/limit-signals.test.ts`).
 
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` (`antigravity parser and result (T4.33)`,
-  `antigravity parser hardening (T4.33, synthetic shapes)`).
+  `antigravity parser hardening (T4.33, synthetic shapes)`, `antigravity cases with no recorded native shape (T4.33,
+  synthetic shapes)`, `antigravity parser fallbacks and exact matching (T4.33, synthetic shapes)`);
+  `src/adapters/antigravity/parser-residual.test.ts` (residual pins, parser unchanged).
 - **Design sourcing:** [TDD §4.4.7](TDD.md#447-antigravity-parser-implementation-evidence-m4-t433); HLD [§2.2
-  T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-partial).
+  T4.33](HLD.md#t433--parser-result-failure-classification-and-resume-done-against-its-done-when).
 
 **As built (T4.37).** Git declarations and Done-when for FR-GIT-01, FR-GIT-02 and FR-GIT-09
 ([TDD §4.4](TDD.md#44-antigravity-agy-m4) "Git writes and injected tools",
@@ -5463,8 +5466,9 @@ Tests: `src/continuity/render.test.ts`, `src/continuity/render-lifecycle.test.ts
 
 Adapter declaration (static data on the adapter, like `gitWriteControl`, T5.7): `resumeCwd: 'bound' | 'independent' |
 'unverified'`. Values from [TDD §4.10](TDD.md#410-native-resume-inventory-t50): Claude Code `independent` (T5.12 cell 2
-live evidence, 2026-10-17, 2.1.294; declared 2026-10-18); Antigravity and Muse Code `bound` (sourced); Codex,
-Grok Build, Cursor, OpenCode and Kimi Code `unverified`; the fakes set either for tests. `unverified` is handled as
+live evidence, 2026-10-17, 2.1.294; declared 2026-10-18) and Codex `independent` (T5.12 cell 2 live evidence,
+2026-10-19, codex-cli 0.162.0); Antigravity and Muse Code `bound` (sourced); Grok Build, Cursor, OpenCode and Kimi
+Code `unverified`; the fakes set either for tests. `unverified` is handled as
 `bound` (NFR-SEC-06).
 
 For a resume (`resumeCwd` not `independent`):
@@ -5487,8 +5491,8 @@ provider's M4 operator item, for the validated version range), a resume uses a f
 
 *As built (T5.7, 2026-10-14, Delegated, not owner-approved).* `ProviderAdapter.resumeCwd` is required static data
 (`src/adapters/types.ts`); the lifecycle treats every value but `independent`, including a missing one, as `bound`
-(`resumeMayChangeDirectory`). Codex declares `unverified` and Claude Code declares `independent` (2026-10-18, from
-the T5.12 cell 2 live evidence); the fake `bound` by default (an option makes
+(`resumeMayChangeDirectory`). Claude Code (2026-10-18) and Codex (2026-10-19) declare `independent`, from
+their T5.12 cell 2 live evidence; the fake `bound` by default (an option makes
 the test variants). The provider table (`src/adapters/providers.ts`) also names TDD §4.10's value for every provider,
 reserved ones included (Antigravity `bound`; Grok Build, Cursor, OpenCode, Kimi Code `unverified`; Muse Code `bound`,
 T4.72), and a registry test requires each adapter to declare its entry's value. The origin lookup and the

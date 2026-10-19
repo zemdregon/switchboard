@@ -167,10 +167,12 @@ export class CodexAdapter implements ProviderAdapter {
   readonly transports = ["subprocess-jsonl"] as const;
   readonly gitWriteControl = CODEX_GIT_WRITE_CONTROL;
   /**
-   * T5.7 (ADR-0038 item 6.3): TDD §4.10 records whether a resumed session is tied to its directory as
-   * `Unverified: T5.12`, so a resume reuses the origin worktree path (handled as `bound`).
+   * T5.12 cell 2 (2026-10-19, codex-cli 0.162.0 in the operator's container login;
+   * docs/research/live-checks-2026-10-19-codex-container-resume.md): `exec resume <id>` found the session from a
+   * second worktree and from an unrelated empty directory (same thread id, exit 0), so resumeCwd is `independent`
+   * (ADR-0038 item 6.3, LLD §15.6, TDD §4.10). Every resume still re-sends the full policy flags.
    */
-  readonly resumeCwd = "unverified" as const;
+  readonly resumeCwd = "independent" as const;
   /** T7.12 (FR-RTE-08, Q-90): no documented model flag (R2, TDD §4.2), so a remembered model is never pinned. */
   readonly reportedModelFlag = { kind: "not_accepted", detail: "no documented Codex model flag" } as const;
   readonly gitCapabilities = CODEX_GIT_CAPABILITIES;
@@ -276,7 +278,8 @@ export class CodexAdapter implements ProviderAdapter {
     if (!SESSION_ID_RE.test(binding.nativeSessionId)) {
       return ineligible("CAPABILITY_MISSING", "native session id is not a safe single argument");
     }
-    // Assumption: exec-level flags precede `resume <id>`, and the follow-up prompt is read from stdin as for `exec`.
+    // Observed (T5.12 cell 1, 2026-10-19, codex-cli 0.162.0): exec-level flags before `resume <id>` and the follow-up
+    // prompt on stdin resume the same thread with exit 0.
     return this.#build(request, profile, [RESUME_SUBCOMMAND, binding.nativeSessionId]);
   }
 
