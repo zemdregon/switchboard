@@ -288,9 +288,12 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#355](https://github.com/zemdregon/switchboard/pull/355),
   [#369](https://github.com/zemdregon/switchboard/pull/369)) and Git declaration fixture tests on synthetic
   fixtures (README [OpenCode CLI](#opencode-cli-milestone-4), ROADMAP T4.52 to T4.57); live smoke and the live
-  malicious leg remain operator work (T4.58): the 2026-10-18 `adapters validate opencode` run passed the probe
+  malicious leg ran on 2026-10-19 (T4.58 Done): the 2026-10-18 `adapters validate opencode` run passed the probe
   (`opencode v2.0.23`), auth, 11 static conformance checks and the smoke (owner decisions 60 and 68; one model call),
-  so the manifest admits `>=2.0.23 <2.1.0`. T4.52, T4.54, T4.55 and T4.57 are Done against their
+  so the manifest admits `>=2.0.23 <2.1.0`, and the 2026-10-19 smoke (11 HELD, edit through recognised calls) and
+  malicious leg (O-M1/O-M2/O-M3 HELD, no check ESCAPED) are recorded in
+  [`docs/research/live-checks-2026-10-19-opencode.md`](docs/research/live-checks-2026-10-19-opencode.md).
+  T4.52, T4.54, T4.55 and T4.57 are Done against their
   Done-when on synthetic fixtures; T4.53 and T4.56 are Done against their Done-when under owner decision 65 (a) and (b),
   with their native-shape gaps carried by T4.58. Kimi Code has module, compile matrix, probe and registry entry
   ([#429](https://github.com/zemdregon/switchboard/pull/429)), parser and resume (T4.63, three scrubbed captures
@@ -306,7 +309,7 @@ Pre-release. The package is private and is not published to any registry; you bu
   remain operator work (T4.68). The Grok Build, Cursor and Muse Code manifests still admit
   no version until `switchboard adapters validate` passes a real CLI (operator tasks); Claude Code, Codex, OpenCode,
   Kimi Code and Antigravity already admit one. M4 stays `Partial` (T4.90 closure, 2026-10-17,
-  Delegated). Open items, by blocker: operator live legs (T4.28, T4.38, T4.48, T4.58, T4.68; T4.12 is Deferred
+  Delegated). Open items, by blocker: operator live legs (T4.28, T4.38, T4.48, T4.68; T4.12 is Deferred
   under decision 69 — it needed a Mac and was optional for criterion 2; the
   2026-10-17 live runs found that `adapters validate` compiles under `inspect-untrusted`, which Grok Build, Cursor
   and OpenCode cannot run by design; owner decisions 59 and 60 let Grok Build, Cursor, Kimi Code, OpenCode and
@@ -2113,8 +2116,10 @@ checks, reconfirmed 2026-10-18).
 The compliance manifest range (`src/adapters/manifests/opencode.json`) admits `>=2.0.23 <2.1.0` since
 `switchboard adapters validate opencode` passed on CLI v2.0.23 on 2026-10-18 (ROADMAP T4.58, owner decisions 60 and
 68; [`docs/research/live-checks-2026-10-18-opencode.md`](docs/research/live-checks-2026-10-18-opencode.md)). Other
-versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`. The live smoke and the live malicious leg of T4.58
-remain operator-only. T11.0's
+versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`. The live smoke and the live malicious leg ran on
+2026-10-19 (ROADMAP T4.58 Done; [`docs/research/live-checks-2026-10-19-opencode.md`](docs/research/live-checks-2026-10-19-opencode.md)):
+smoke 11 HELD with the edit landing through recognised `write`/`shell` calls, malicious O-M1/O-M2/O-M3 all HELD, no
+check ESCAPED. T11.0's
 2026-10-17 run found no tool-free control on that version
 ([TDD §4.6.7](docs/design/TDD.md#467-t110-live-result-2026-10-17)).
 
@@ -2346,8 +2351,10 @@ guard-blocked, trailing-tool and unreadable-event streams [#245](https://github.
 upgrades and exit 2/137 variations [#369](https://github.com/zemdregon/switchboard/pull/369)). T4.52, T4.54, T4.55 and
 T4.57 are `Done` against their Done-when on synthetic fixtures; T4.53 and T4.56 are `Done` against their Done-when
 under owner decision 65 (a) and (b), with native limit, refusal and tool-input shapes carried by T4.58 (see those rows).
-No successful end-to-end routed run through Switchboard against a logged-in `opencode` has been recorded yet:
-the live smoke and the live malicious leg remain operator work (T4.58). The 2026-10-18
+A successful end-to-end routed run through Switchboard against a logged-in `opencode` was recorded on
+2026-10-19 (T4.58 Done): the live smoke edit task SUCCEEDED with `SMOKE.md` on the result branch, and the live
+malicious leg held O-M1/O-M2/O-M3 with no check ESCAPED
+([`docs/research/live-checks-2026-10-19-opencode.md`](docs/research/live-checks-2026-10-19-opencode.md)). The 2026-10-18
 `adapters validate opencode` pass (CLI 2.0.23, owner decisions 60 and 68) ran one model call through the smoke
 and set the manifest range to `>=2.0.23 <2.1.0`.
 
