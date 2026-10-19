@@ -352,6 +352,7 @@ as history.
   `scripts/check-docs.mjs`. It does not block PR #713.
 
 ## 25. T4.43 waiting-list claim withdrawn: no contradiction found (checked on this branch for PR #713)
+
 - A draft of this note claimed the T4.43 (Cursor parser) row records
   `Done against its Done-when` under owner decision 65 (a) while §6.8.2
   item 2 and the M4 row open-items list (b) still list T4.43 among the
