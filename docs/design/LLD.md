@@ -7363,11 +7363,16 @@ The network transport lists `enqueue_work`, `list_work` and `cancel_work` for a 
 - **Scanner.** Deterministic and in-process: the rule set of the artifact secret redactor
   ([ADR-0042](../adr/0042-objective-redaction-at-admission.md)) plus high-signal token formats, each rule with a stable
   id; no entropy-only rule by default (false positives), Assumption. No external scanner binary.
-- **Scope.** Added lines of `git diff --no-ext-diff --no-textconv -U0 <from>..<head>`, where `<from>` is the remote
-  ref's current tip, or the base checkpoint for a new ref. Binary files are not scanned and are listed in the event.
+- **Scope.** Added lines of the outgoing diff (`git diff -U0 --inter-hunk-context=0 --text --no-renames --no-color
+  --no-relative --src-prefix=a/ --dst-prefix=b/ --end-of-options <from> <head>` through the hardened helper, which adds
+  `--no-textconv --no-ext-diff` and neutralises every driver), where `<from>` is the remote-tracking tip when the ledger holds an ACCEPTED push of
+  exactly that SHA and it is an ancestor of the head, else the base checkpoint (after a push by hand the next
+  controller push scans everything since the base again). Every file is diffed as text, so a `.gitattributes` line
+  cannot hide added lines; paths Git counts as binary are still scanned and are listed in the event.
 - **Outcome.** A hit refuses the push with `SECRET_SCAN_BLOCKED`, appends `secret_scan_hit {stage: "push", rule_id,
-  path, line}` (never the value) and flags `secret_scan_blocked` until a clean push of that ref or an operator
-  acknowledgement through the CLI. The commit tool appends the same event with `stage: "commit"` and does not refuse.
+  path, line}` (never the value) and flags `secret_scan_blocked` until a clean push of that ref (an operator
+  acknowledgement through the CLI is Proposed, not built). The commit tool appends the same event with `stage:
+  "commit"` and does not refuse (Proposed, not built by T9.14: the commit tool has no content scan).
 - **No override in-band.** The only allowlist is operator configuration (`git.secret_scan.allow`, rule id and path
   glob); no MCP field, privileged scope or bypass flag changes the result. The operator can always push by hand.
 
