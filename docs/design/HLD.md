@@ -354,7 +354,9 @@ the compile matrix), FR-ADP-10 (`backingProvider` unset: no vendor field was rec
   parser unchanged).** `src/adapters/cursor/parser-residual.test.ts` and `idless_guard.jsonl` (supervisor replay) extend
   the T4.43 evidence listed in [TDD §4.5.5](TDD.md#455-cursor-parser-implementation-evidence-m4-t443).
 
-**Gaps (carried by T4.48 under owner decision 65 (a); this section is Done).** No recorded `stream-json` quota-stop
+**Gaps (were carried by T4.48 under owner decision 65 (a); T4.48 is Done 2026-10-19 per owner decision 77
+without capturing these shapes — now a T4.41 extension or owner decision;
+this section is Done).** No recorded `stream-json` quota-stop
 shape (quota stops are captured as stderr tails, T6.11) or sandbox event shape; no native backing-vendor field was
 observed (live check row 102; TDD §4.5 forbids inferring one, so the structured `backing_provider` support and
 `backing_provider.jsonl` meet T4.6). Operator capture: T4.48 / T4.41 extension.
