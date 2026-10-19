@@ -675,3 +675,17 @@ as history.
   entries is the roadmap owner's call. It does not block PR #752 (the
   substance of each ruling is recorded where it is cited, and
   `node scripts/check-docs.mjs` does not validate the §4.2 numbering).
+
+## 40. FR-ADP-09 enable-condition vs Kimi adapter staying disabled (pre-existing, not from PR #755)
+
+- [SRS FR-ADP-09](requirements/SRS.md) says the Kimi adapter "shall be enabled once that contract is pinned".
+  The contract is pinned since 2026-10-18 (`adapters validate kimi` passed on CLI 2.1.1, manifest range
+  `>=2.1.1 <2.2.0`), conformance is Done (T4.65), yet the adapter stays disabled: T4.68 closed Partial-by-ruling
+  (owner ruling 05:22 CDT, then the 08:45 CDT bypass-only ruling implemented by PR #755), with permission gating
+  Deferred to ROADMAP §8.
+- [HLD §2](design/HLD.md) ("Disabled until the CLI contract is pinned (FR-ADP-09)") reads as if pinning alone
+  enables; it predates the validate pass and neither it nor FR-ADP-09 records the ruling that keeps the adapter
+  disabled past pinning.
+- Left unchanged: reconciling "enabled once pinned" with "disabled by ruling" (amend FR-ADP-09, or record the
+  ruling as the superseding condition) is the SRS/HLD owners' call, and it predates PR #755, which changes no
+  enablement. It does not block PR #755.
