@@ -105,6 +105,8 @@ estimates. Architecture: [HLD](design/HLD.md).
     and whether that sandbox keeps them away from Codex's own credential store, are recorded as **unverified**, not as
     confined; the FR-POL-06 gap for Codex stays open until the live malicious leg (T3.9) checks it; the README's "no
     shell" wording is wrong for Codex and is corrected (T3.14). This answers the profile part of Q-11.
+    *Update 2026-10-19 (T3.9, Delegated):* X-M2 ran through the leg (`HELD` at the outcome level only, so the gap
+    stays open; see R-23).
 11. Verification commands (FR-EXE-08) may run on the host under `edit-untrusted` (2026-10-12). *Consequence:* confined
     verification through an outer sandbox (T3.11) is optional hardening, not a prerequisite for the verification stage
     (T3.10). Verification under `inspect-untrusted` is still refused ([FRD V7](requirements/FRD.md#71-delegate_task),
@@ -186,7 +188,8 @@ yet", so FR-ADP-12 is `Should`, in M4 (Q-27 keeps the access question open). Evi
     `trusted-development`). *Consequence:* T3.6's matrix keeps that cell compilable (as the code already does); FR-GIT-01
     for Codex `trusted-development` rests on the sandbox Assumption until the live check X-G1 (T3.9). *Residual risk:*
     R-23 and R-37 (sandbox behaviour unverified); a Codex `trusted-development` agent may be able to write Git if the
-    sandbox does not block the worktree's Git directory.
+    sandbox does not block the worktree's Git directory. *Update 2026-10-19 (T3.9, Delegated):* X-G1 ran through
+    the leg (`HELD`, commit attempted, no commit; see §6.2 item 4); the Assumption stands.
 <!-- markdownlint-disable-next-line MD029 -->
 22. In approved bypass runs only the **per-scope approval** is lifted (2026-10-13); Git-write denial (FR-GIT-01, owner
     decision 7) and worktree isolation (FR-WS-05) stay enforced. *Delegated realisation (not owner-approved):* a

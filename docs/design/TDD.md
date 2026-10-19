@@ -719,7 +719,11 @@ bypass run without `--safe-mode`. The audit symbols are `MCP_CONFIG_FLAG`, `bypa
 sandbox), and says nothing about supplying an MCP definition, MCP tool approval, Unix-socket access from inside the
 sandbox, per-command Git deny rules or a commit or attribution setting. Every cell is **Unverified**; the Codex adapter
 keeps `gitWriteControl.kind = none-documented` and the finalize-only fallback (FR-GIT-09) is the only evidenced design
-for it until a binary is installed and T3.9 or a follow-up live check runs.
+for it until a binary is installed and T3.9 or a follow-up live check runs. *Update 2026-10-19 (T3.9, Delegated):*
+the binary and the live check this paragraph waits for have both happened (codex-cli 0.162.0 validated 2026-10-14;
+X-G1 `HELD` 2026-10-19, [live checks](../research/live-checks-2026-10-19-t39-malicious.md)); the conclusion stands: no
+deny rule or attribution setting is documented, so the adapter keeps `gitWriteControl.kind = none-documented` with
+the FR-GIT-09 fallback (ROADMAP §6.3 T9.0 table).
 
 | Question | Claude Code 2.1.296 | Codex |
 | --- | --- | --- |
