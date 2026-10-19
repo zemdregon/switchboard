@@ -22,8 +22,12 @@
  * was run): record kinds and fields are reported or **Assumption** spellings in protocol.ts, `Unverified: T4.71`. Success
  * needs a `run_terminal` record with `terminal: "completed"` and a clean expected exit; exit code `0` alone never is
  * ([M-ext]: it "reports how the run ended, not whether the work is correct", BR-16). Auth preflight (T4.74),
- * conformance (T4.75), malicious leg (T4.76) and the Git declaration (T4.77) are later tasks; until then the auth state
- * is `UNKNOWN`.
+ * conformance (T4.75) and the Git declaration (T4.77) followed.
+ * Tool records (T4.76, Delegated, not owner-approved; synthetic fixtures, no `muse` was run): a `tool_result`,
+ * `command_accepted` or `command_result` record that carries a tool name, a command line or a path becomes a
+ * `tool_call` event (the shell-command form carries the transient `command`), so Switchboard's ADR-0039 guard ends a
+ * run with a Git write `PERMISSION_BLOCKED` at any exit code, as the Grok Build and Cursor adapters do. The field
+ * spellings are an **Assumption: T4.71** (`TOOL_*` in protocol.ts); a tool record without a readable field stays dropped.
  */
 
 import {
@@ -67,6 +71,7 @@ import {
   AUTH_STATUS_LINE_MAX,
   AUTH_STATUS_TIMEOUT_MS,
   DELTA_TEXT_FIELD,
+  EDIT_TOOL_NAME_RE,
   EXEC_SUBCOMMAND,
   GIT_WRITE_CONTROL_DETAIL,
   HELP_ARGS,
@@ -82,6 +87,12 @@ import {
   SESSION_ID_FIELD,
   SESSION_ID_FLAG,
   TERMINAL_COMPLETED,
+  TOOL_COMMAND_FIELDS,
+  TOOL_ID_FIELDS,
+  TOOL_INPUT_FIELDS,
+  TOOL_NAME_FIELDS,
+  TOOL_PATH_FIELDS,
+  TOOL_RECORDS,
   TRUST_WORKSPACE_FLAG,
   VERSION_ARGS,
   WORKTREE_OFF,
@@ -149,9 +160,39 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 const obj = (v: unknown): Json | undefined =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Json) : undefined;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
+const nonEmpty = (v: string | undefined): string | undefined => (v !== undefined && v !== "" ? v : undefined);
+/** First own string field of `record` among `keys`, in order. */
+const firstStr = (record: Json | undefined, keys: readonly string[]): string | undefined => {
+  for (const k of keys) {
+    const v = str(ownProp(record, k));
+    if (v !== undefined) return v;
+  }
+  return undefined;
+};
+/** First own field of `record` among `keys` that is an object, or a JSON string encoding one (Assumption: T4.71). */
+const firstObj = (record: Json | undefined, keys: readonly string[]): Json | undefined => {
+  for (const k of keys) {
+    const v = ownProp(record, k);
+    const o = obj(v);
+    if (o !== undefined) return o;
+    if (typeof v === "string") {
+      try {
+        const parsed = obj(JSON.parse(v));
+        if (parsed !== undefined) return parsed;
+      } catch {
+        // not JSON: no parameters readable from this field
+      }
+    }
+  }
+  return undefined;
+};
 const ineligible = (reason: Ineligible["reason"], detail: string): Ineligible => ({ ineligible: true, reason, detail });
 /** `run_terminal` records already seen per run: any record after the first is a protocol anomaly (fail closed). */
 const seenTerminals = new WeakMap<ParseState, number>();
+/** Per run, the parameter keys already reported per tool-record id, so the same call is not reported twice (T4.76). */
+const seenToolCalls = new WeakMap<ParseState, Map<string, Set<string>>>();
+/** Kept `target` of a path-only tool call (the transient `command` is never clipped: the guard reads all of it). */
+const MAX_TARGET_CHARS = 512;
 /** Category of a stream anomaly (a record after `run_terminal`, a changed or unsafe session id): OUTPUT_PROTOCOL_ERROR. */
 const PROTOCOL_CATEGORY = "protocol";
 const CATEGORY_CODES = { ...PROVIDER_ERROR_CATEGORY_CODES, [PROTOCOL_CATEGORY]: "OUTPUT_PROTOCOL_ERROR" } as const;
@@ -387,11 +428,13 @@ export class MuseAdapter implements ProviderAdapter {
   /**
    * One `--json` record per line (T4.73; spellings in protocol.ts, `Unverified: T4.71`). `run_started` binds the
    * session id from its structured field only; `run_output_delta` text becomes assistant messages; `run_terminal`
-   * becomes the `result` (ok only for `terminal: "completed"`); the other [SDK] kinds carry nothing Switchboard records
-   * and are dropped (`turn_input_user` echoes the prompt; no usage field is sourced, so none is recorded, FR-CAP-01).
-   * Any other kind, a record without a string `kind`, or a known kind without its field is `unknown`: counted, never a
-   * result. Fail closed (Delegated): any record after the first `run_terminal`, a session id that is not a uuid and a
-   * changed session id are OUTPUT_PROTOCOL_ERROR.
+   * becomes the `result` (ok only for `terminal: "completed"`); a tool record (`tool_result`, `command_accepted`,
+   * `command_result`) with a readable tool name, command line or path becomes a `tool_call` for the ADR-0039 guard
+   * (T4.76, `#toolRecord`); the other [SDK] kinds, and a tool record with no readable field, carry
+   * nothing Switchboard records and are dropped (`turn_input_user` echoes the prompt; no usage field is sourced, so
+   * none is recorded, FR-CAP-01). Any other kind, a record without a string `kind`, or a known kind without its field
+   * is `unknown`: counted, never a result. Fail closed (Delegated): any record after the first `run_terminal`, a
+   * session id that is not a uuid and a changed session id are OUTPUT_PROTOCOL_ERROR.
    */
   parseEvent(input: string | AcpMessage, state: ParseState): NormalizedEvent[] {
     if (typeof input !== "string") return []; // no ACP transport for Muse Code (TDD §4.8)
@@ -437,15 +480,62 @@ export class MuseAdapter implements ProviderAdapter {
         return [{ kind: "result", ok: false, summary }];
       }
       case RECORD.taskLifecycle:
-      case RECORD.commandAccepted:
-      case RECORD.commandResult:
       case RECORD.modelConfigured:
-      case RECORD.toolResult:
       case RECORD.turnInputUser:
         return [];
       default:
+        if (TOOL_RECORDS.includes(kind)) return this.#toolRecord(e, kind, state);
         return this.#unknown(state, kind);
     }
+  }
+
+  /**
+   * A tool record (T4.76; field spellings are an **Assumption: T4.71**, `TOOL_*` in protocol.ts). The command line is
+   * read from the parameters object (`input`, `args`, `arguments` or `parameters`, an object or a JSON string) or the
+   * top level, under `command` or `cmd`; a path under `path` or `file_path`; the name under `tool`, `name` or
+   * `tool_name`. A command makes a `shell` call whatever the name says (a non-shell name does not hide a command line);
+   * a path alone makes a `read`, or an `edit` when the name says so; a name alone makes an `other` call. The command
+   * is the transient `command` the guard reads in full and `startAdapterRun` drops before the event is stored; the
+   * kept `target` is clipped. A record with none of these fields is dropped (T4.73). A record whose id was already
+   * reported with the same command or path, or that adds no parameter, is not reported again; a different command on
+   * the same id (a swapped or late command line) is, so the guard sees every command line a call ever carried.
+   */
+  #toolRecord(e: Json, kind: string, state: ParseState): NormalizedEvent[] {
+    const input = firstObj(e, TOOL_INPUT_FIELDS);
+    const command = nonEmpty(firstStr(input, TOOL_COMMAND_FIELDS) ?? firstStr(e, TOOL_COMMAND_FIELDS));
+    const target = nonEmpty(firstStr(input, TOOL_PATH_FIELDS) ?? firstStr(e, TOOL_PATH_FIELDS));
+    const name = nonEmpty(firstStr(e, TOOL_NAME_FIELDS));
+    if (command === undefined && target === undefined && name === undefined) return [];
+    const callId = nonEmpty(firstStr(e, TOOL_ID_FIELDS));
+    if (callId !== undefined) {
+      const paramKey = command !== undefined ? `command:${command}` : target !== undefined ? `target:${target}` : "";
+      let seen = seenToolCalls.get(state);
+      if (seen === undefined) {
+        seen = new Map();
+        seenToolCalls.set(state, seen);
+      }
+      const reported = seen.get(callId);
+      if (reported === undefined) seen.set(callId, new Set([paramKey]));
+      else if (paramKey === "" || reported.has(paramKey)) return [];
+      else reported.add(paramKey);
+    }
+    const tool =
+      command !== undefined
+        ? "shell"
+        : target !== undefined
+          ? EDIT_TOOL_NAME_RE.test(name ?? "")
+            ? "edit"
+            : "read"
+          : "other";
+    return [
+      {
+        kind: "tool_call",
+        tool,
+        name: clip(name ?? kind, 64),
+        ...(command !== undefined ? { command } : {}),
+        ...(target !== undefined && command === undefined ? { target: clip(target, MAX_TARGET_CHARS) } : {}),
+      },
+    ];
   }
 
   /** The first uuid binds the session; a different later id, or one that is not a uuid, fails the run (fail closed). */
@@ -469,9 +559,10 @@ export class MuseAdapter implements ProviderAdapter {
   /**
    * Success needs a clean expected exit, a final `result` with `ok` (a `run_terminal` of `completed`) and no
    * `provider_error`, `permission_denied`, `sandbox_violation`, `rate_limit` or guard-flagged `tool_call` event (fail
-   * closed, as Grok Build T4.23). Exit `0` with any other terminal value is a failure; unknown records are counted and
-   * never make a result. The summary is the joined assistant text (last {@link MAX_SUMMARY_CHARS} characters), else the
-   * terminal record's text.
+   * closed, as Grok Build T4.23; the guard verdict ends the run in every run, bypass included, ADR-0039, so a Git
+   * write in a tool record ends `PERMISSION_BLOCKED` at exit 0, T4.76). Exit `0` with any other terminal value is a
+   * failure; unknown records are counted and never make a result. The summary is the joined assistant text (last
+   * {@link MAX_SUMMARY_CHARS} characters), else the terminal record's text.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;

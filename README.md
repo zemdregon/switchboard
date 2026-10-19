@@ -323,8 +323,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
   [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
   is `Done` against its Done-when under owner decision 65 (a), with record spellings, session-id field and `terminal`
-  values Assumption until the T4.71 capture (carried by T4.78); T4.76 is blocked because the adapter has no denial or
-  tool-call record to end a hostile stream `PERMISSION_BLOCKED`; T4.79 is `Done` except the post-T4.78 update.
+  values Assumption until the T4.71 capture (carried by T4.78); T4.76 is `Done` against its Done-when under owner
+  decision 65 (b), on Switchboard's ADR-0039 tool-call guard alone, with tool-record field names Assumption until
+  T4.71; T4.79 is `Done` except the post-T4.78 update.
   Outside an approved `privileged` bypass scope every profile is ineligible for the new providers, except that Kimi
   Code also compiles a `privileged` scope without `bypass` through `kimi acp` (ADR-0049). See
   [ROADMAP §6.8](docs/ROADMAP.md#68-m4-adapter-expansion-tasks).
@@ -2590,8 +2591,10 @@ The `--json` parser (T4.73, `parseEvent` and `extractResult` in `src/adapters/mu
 line, keyed on a string `kind`:
 
 - `run_started` binds the session id from its `session_id` field, which must be a uuid; `run_output_delta` `text`
-  becomes assistant text, joined as the summary; `task_lifecycle`, `command_accepted`, `command_result`,
-  `model_configured`, `tool_result` and `turn_input_user` are dropped.
+  becomes assistant text, joined as the summary; `task_lifecycle`, `model_configured` and `turn_input_user` are
+  dropped. A `tool_result`, `command_accepted` or `command_result` record that carries a tool name, a command line or
+  a path becomes a `tool_call` event for the ADR-0039 guard (T4.76; field spellings an Assumption until T4.71); a tool
+  record with no readable field is dropped.
 - **Success only for `terminal: "completed"`.** A run succeeds only with a `run_terminal` record whose `terminal` is
   `completed`, at an expected exit code (`0`), with no provider error. Exit code 0 alone never succeeds, and exit 0
   with any other `terminal` value ends `FAILED`.
@@ -2607,7 +2610,11 @@ joined, session id from run_started only, the other SDK kinds dropped", "exit co
 FAILED, never success", "unknown kinds fail closed: counted and clipped, never a result or a session, so an
 unknown-only exit 0 fails", "stream anomaly %s is OUTPUT_PROTOCOL_ERROR, never success" and "a session id is taken from
 structured output only, never from assistant or terminal text", over the synthetic fixtures in
-`src/adapters/muse/fixtures/`.
+`src/adapters/muse/fixtures/`. Tool records: "muse tool records and the ADR-0039 guard (T4.76; ...)" in the same file,
+among them "fixture git_write_guard: a command record with a Git write under a completed terminal at exit 0 ends
+PERMISSION_BLOCKED", "the shell-command form is read from a %s record", "a command line is read from %s and guarded
+as a shell call" and "the guard verdict wins at every exit code, after a failed terminal, after the terminal record
+and with a changed session id".
 
 The conformance suite (T4.75; "muse conformance suite (synthetic recorded fixtures, FR-ADP-11, T4.75)") replays those
 synthetic fixtures (`museConformanceCases` in `fixtures/cases.ts`) through the replay dialect
@@ -2636,17 +2643,17 @@ run is unverified.
   `run_terminal` shape are reported, by a third party; the other record kinds, the `session_id` and `text` fields and
   the `muse auth status` command and replies are Assumption spellings (T4.73 is `Done` against its Done-when under
   owner decision 65 (a); the spellings stay Assumption until the T4.71 capture, carried by T4.78).
-- **The malicious-fixture leg (T4.76) is blocked.** The parser emits no `tool_call` event, so Switchboard's tool-call
-  guard never sees a command and a synthetic Git write in a Muse command or tool record at exit 0 ends in success
-  rather than `PERMISSION_BLOCKED`; closing it needs a parser change that reads commands out of those records, whose
-  field names are unsourced.
+- **The malicious-fixture leg (T4.76) rests on Switchboard's tool-call guard alone.** The parser reads a `tool_result`,
+  `command_accepted` or `command_result` record into a `tool_call` event for the ADR-0039 guard, so a synthetic Git
+  write in a Muse tool record ends `PERMISSION_BLOCKED` at any exit code (`test/malicious/adapters/muse.case.ts`),
+  under tool-record field names that are Assumptions until T4.71.
 - **Not runnable by default.** With no `muse` installed the provider is `BINARY_MISSING`, and with one installed it is
   `ADAPTER_VERSION_UNVERIFIED` until `adapters validate` passes a version (T4.78).
 - Live smoke, live malicious leg and `adapters validate` are operator work that needs Meta access (T4.71, T4.78, Q-27).
 
-T4.72 to T4.75, T4.77 and T4.79 are `Done` against their Done-when on synthetic fixtures (T4.73 under owner decision
-65 (a); T4.79 under owner decision 65 (c), README updated again after T4.78); T4.76 is `Planned` (blocked as above). No
-run through Switchboard against a real `muse` has been recorded.
+T4.72 to T4.77 and T4.79 are `Done` against their Done-when on synthetic fixtures (T4.73 under owner decision 65 (a);
+T4.76 under owner decision 65 (b), on the tool-call guard as above; T4.79 under owner decision 65 (c), README updated
+again after T4.78). No run through Switchboard against a real `muse` has been recorded.
 
 ## Trust profiles
 
@@ -2897,8 +2904,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   (T4.68). See [Kimi Code CLI](#kimi-code-cli-milestone-4).
 - **Muse Code is built on synthetic fixtures only and does not run (ROADMAP T4.72 to T4.79).** No `muse` has been
   installed or run, and Meta access (Q-27) is not verified. The `--json` record spellings and the `muse auth status`
-  probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) is blocked because the
-  parser emits no tool-call event for the guard to check. The provider is `BINARY_MISSING` without a `muse` on `PATH`
+  probe are Assumptions until the operator capture (T4.71); the malicious-fixture leg (T4.76) rests on Switchboard's
+  tool-call guard alone, under tool-record field names that are Assumptions too. The provider is `BINARY_MISSING`
+  without a `muse` on `PATH`
   and `ADAPTER_VERSION_UNVERIFIED` with one, and only an approved `privileged` bypass scope compiles. See
   [Muse Code CLI](#muse-code-cli-milestone-4).
 - **Event shapes are partly verified.** The 2026-10-13 live checks confirmed the Claude Code stream-json shapes
