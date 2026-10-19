@@ -3067,8 +3067,9 @@ other than the fake compiles `acp-stdio`.
 ### 8.3 Process table per platform (M4, T4.9)
 
 *Implemented 2026-10-13 (Delegated agent work, not owner-approved; every choice below is Proposed). The macOS path was
-written and unit-tested on Linux against fixtures only; since 2026-10-14 it runs on a GitHub-hosted macOS runner
-(T4.10: `macos-26-arm64`, macOS 26.6.2, all tests that can run there pass). The operator's optional live check is
+written and unit-tested on Linux against fixtures only; from 2026-10-14 to 2026-10-19 it ran on a GitHub-hosted
+macOS runner (T4.10: `macos-26-arm64`, macOS 26.6.2, all tests that can run there passed; the job was then removed,
+TDD §3.8). The operator's optional live check is
 T4.12.* One macOS fact the CI leg found: `kill(-pgid, 0)` answers `EPERM`, not success, for a group whose members are
 all zombies, so `groupAlive` (`src/exec/supervisor.ts`) asks the table on `EPERM` as well as on success; `ESRCH` alone
 means the group is gone. The supervisor (§8) and reconciliation ask the

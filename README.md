@@ -208,7 +208,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [ADR-0056](docs/adr/0056-switchboard-controlled-skills.md) and
   [ROADMAP §6.16](docs/ROADMAP.md#616-m16-switchboard-controlled-skills-tasks).
 - **Milestone 4 (adapter expansion) is `Partial`.** Shared registry, conformance plumbing, `adapters validate`, the ACP
-  client and a macOS CI leg are done; Grok Build, Antigravity, Cursor and OpenCode each have a module, compile matrix
+  client and a macOS CI leg (T4.10; ran 2026-10-14, removed 2026-10-19 when CI went Linux-only) are done; Grok Build,
+  Antigravity, Cursor and OpenCode each have a module, compile matrix
   and parser work on synthetic fixtures. Grok Build has module, compile-matrix, parser (T4.23, `Done` against its
   Done-when on synthetic fixtures under owner decision 65; every Done-when case has a supervisor-replayed JSONL fixture
   on `main` ([#260](https://github.com/zemdregon/switchboard/pull/260)); native shapes are T4.28's work),
@@ -389,7 +390,7 @@ Commercial, resale, multi-user or credential-sharing use needs your own policy r
 ## Requirements
 
 - Linux. Other operating systems are not supported yet. macOS process handling (process tree and PID-reuse guard
-  through `ps`) runs in a macOS CI leg (typecheck, lint, tests and docs check on a GitHub-hosted runner), and no trust
+  through `ps`) passed a macOS CI leg (T4.10; the leg was removed on 2026-10-19 and CI is Linux only), and no trust
   profile is eligible on macOS.
 - Node.js 22 or newer (`engines` in `package.json`).
 - Git 2.32.0 or newer (`MIN_GIT_VERSION` in `src/workspace/git.ts`). `doctor` checks both.
