@@ -1162,7 +1162,7 @@ it themselves. `approve` and `deny` act only on a `privileged` run waiting for a
 `runs show` first); `deny` ends the run cancelled, and a second decision is refused. Add `--json` to any of these for
 machine-readable output. Every command documents itself: `switchboard <command> --help` (or `switchboard help
 <command>`) prints that command's usage, options and one example. Exit codes: 0 success, 1 failure (including a
-refused decision), 2 usage error.
+refused decision), 2 usage error, 65 skills add refused.
 
 `affinity list` shows the provider each project is kept on (the project id, or `ws:` and a hash of the workspace path),
 the model its last run reported, since when and why it last switched. `affinity reset <project_key>` makes the next
