@@ -7524,6 +7524,50 @@ used). Neither leg issues or accepts a session id. Evidence: `src/mcp/http-eras.
 presented session id is still refused; a non-JSON body is refused), the unchanged T13.9 acceptance in
 `src/mcp/mcp.test.ts`, and every unchanged stdio and in-memory suite.
 
+**T13.11 as built (2026-10-19, Delegated; [ADR-0063](../adr/0063-client-id-metadata-documents.md)).** A `client_id`
+that is an `https` URL names a Client ID Metadata Document (`src/mcp/oauth-cimd.ts`,
+`draft-ietf-oauth-client-id-metadata-document`), accepted while `transport.http.cimd` is `true` (the default;
+`false` makes such a `client_id` an unknown client with no fetch; stdio has no authorization server and is
+unaffected). The identifier must be its own WHATWG serialisation: `https`, a DNS-name host (an IP literal is refused),
+a path other than `/`, no userinfo, query, fragment or dot segments, at most 2048 characters, and not this issuer's
+own origin. The fetch happens at `GET /authorize` only: the server resolves the host itself and refuses the client when
+**any** resolved address is special-use (unspecified, loopback, private, shared address space, link-local,
+unique-local, multicast, documentation, benchmarking or reserved; the IPv4-mapped, NAT64 well-known-prefix, 6to4 and
+Teredo forms of a blocked IPv4 range are blocked too, and `64:ff9b:1::/48` whole); the TLS connection is pinned to
+the checked address with the server name and certificate check set to the host (no second resolution); one `GET`,
+with any redirect refused (the draft's §5 says MUST NOT follow; the Proposed "at most one redirect" above is
+tightened to none); the response must be `200` with a JSON media type; the whole fetch, resolution included, ends
+after 5 s; a body over 64 KiB, declared or received, is refused unparsed; at most 2 fetches run at once; the trust
+store is Node's default, with a certificate authority injectable only through the fetcher's constructor (tests). The
+document's `client_id` must equal the identifier by simple string comparison, then `checkClientMetadata` applies as
+for a registration request. The client is stored in `oauth_client` under `sbc_` + 128 bits of the URL's SHA-256
+(`cimdInternalClientId`, so `oauth_token`, `http_subject` and the `transport.http.clients` mapping are unchanged;
+`oauth_client_id` there may be the URL, mapped to the derived identifier at load) with the URL in `oauth_cimd_client`
+(migration 0025, DDL below). A new URL is `pending` under the registration cap, checked before the fetch; a denied or
+revoked client gets no fetch on its behalf; every authorization request fetches afresh and refreshes the stored
+metadata (nothing is cached across consents); `POST /token` takes the URL as `client_id` and never fetches. The
+consent page shows the URL as the client id, its host on its own line and the name labelled as taken from the
+document; a refused document is an error page with no redirect. The authorization-server metadata carries
+`client_id_metadata_document_supported`. Audit events `cimd_fetched` and `cimd_refused` carry the derived id, the host
+and a reason code, never the document. Evidence: `src/mcp/oauth-cimd.test.ts` ("passes consent with the URL's host
+shown and gets an audience-bound token under the normal PKCE flow"; "refuses a URL resolving to a … address before
+any connection" for loopback, private, link-local, IPv4-mapped, NAT64, unique-local and IPv6 loopback; "refuses a
+redirect, whether it points to a private address or anywhere else"; "refuses an oversize document, declared or
+streamed, without parsing it"; "refuses a slow document at the fetch deadline"; "refuses a document whose client_id
+is not its URL, and one that is not a public-client document"; "applies the pending-registration cap before fetching,
+and refuses a denied client without fetching"; "blocks special-use addresses in every transition form and allows
+public ones"), `src/config/config.test.ts` ("maps a Client Identifier URL under its derived id and takes cimd:
+false"), `src/ledger/ledger.test.ts` ("0025 adds oauth_cimd_client …"); the DCR suites `src/mcp/oauth-clients.test.ts`
+and `src/mcp/oauth-server.test.ts` pass unchanged.
+
+```sql
+CREATE TABLE oauth_cimd_client (         -- migration 0025 (T13.11); the URL behind a derived sbc_ client id
+  client_id  TEXT PRIMARY KEY CHECK (client_id GLOB 'sbc_*') REFERENCES oauth_client(client_id) ON DELETE CASCADE,
+  url        TEXT NOT NULL UNIQUE CHECK (url GLOB 'https://*' AND length(url) <= 2048),
+  fetched_at TEXT NOT NULL
+) STRICT;
+```
+
 ### 20.12 Property tests and coverage (NFR-MAINT-06, T8.11)
 
 A pinned `fast-check` dev dependency and generated-input tests for each parser NFR-MAINT-06 lists, run by the normal
