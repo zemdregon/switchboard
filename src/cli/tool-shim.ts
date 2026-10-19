@@ -10,9 +10,8 @@
  */
 import net from "node:net";
 import path from "node:path";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, type CallToolResult, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { type CallToolResult, Server } from "@modelcontextprotocol/server";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import {
   COMMIT_DESCRIPTION,
   COMMIT_DESCRIPTION_MESSAGE_OPTIONAL,
@@ -139,13 +138,13 @@ function toolListing(name: ToolName, messageOptional: boolean): { description: s
 /** Build the stdio MCP server; exported for tests. */
 export function createShimServer(cfg: ShimConfig): Server {
   const server = new Server({ name: "switchboard-git-tools", version: "1.0.0" }, { capabilities: { tools: {} } });
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler("tools/list", async () => ({
     tools: (cfg.tools ?? ["commit"]).map((name) => {
       const { description, inputSchema } = toolListing(name, cfg.messageOptional === true);
       return { name, description, inputSchema: inputSchema as unknown as { type: "object" } };
     }),
   }));
-  server.setRequestHandler(CallToolRequestSchema, async (req) =>
+  server.setRequestHandler("tools/call", async (req) =>
     toResult(await forward(cfg, req.params.name, req.params.arguments)),
   );
   return server;

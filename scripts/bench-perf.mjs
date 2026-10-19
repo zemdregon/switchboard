@@ -9,8 +9,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { FakeAdapter } from "../dist/adapters/fake/adapter.js";
 import { AdapterRegistry, PreflightCache } from "../dist/adapters/index.js";
 import { ArtifactStore } from "../dist/artifacts/index.js";
