@@ -1493,7 +1493,8 @@ previous provider and model, runs that switched, by reason) are a query over `ro
 
 ### 3.3 Network MCP transport (M13)
 
-Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted 2026-10-14 under T13.1).
+Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted 2026-10-14 under T13.1), with its
+SDK and protocol-era statements superseded in part by [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md) (T13.10).
 Requirements FR-MCP-12 to 17. Off unless the config enables it.
 
 - **Endpoint.** One Streamable HTTP path (`/mcp`), bound to `127.0.0.1` unless `transport.http.bind` is set explicitly.
@@ -1639,9 +1640,12 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
   the OAuth client id. Only `POST` is served (405 with `Allow: POST` otherwise: a stateless `GET` would hold an endless
   event stream). At most 16 requests are in flight, 4 per OAuth client (503 with `Retry-After: 1`), and a body is at
   most 256 KiB (Assumptions). The `Authorization` and `Cookie` headers are removed before the SDK copies headers into
-  the handlers' request info. Otherwise the request is served in the MCP SDK's stateless Streamable HTTP mode: a fresh
-  `createSwitchboardServer` for the mapped client (the same lifecycle, ledger, projects and policy as stdio, so the same
-  ceiling and admission checks) and a fresh transport per request, JSON responses, closed when the response ends. Token
+  the handlers' request info. Otherwise the request is served in either protocol era as built under T13.10
+  ([§20.11](#2011-mcp-sdk-v2-and-client-id-metadata-documents-fr-mcp-18-fr-mcp-19-t1310-t1311),
+  [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md)): a fresh `createSwitchboardServer` for the mapped client (the
+  same lifecycle, ledger, projects and policy as stdio, so the same ceiling and admission checks) per request in both
+  eras — a fresh stateless transport with JSON responses for a 2025-era request, the strict modern handler leg for a
+  2026-07-28 request — closed when the response ends. Token
   scopes and claims never reach the server, so nothing in a token can raise the profile. Runs are recorded under the MCP
   client id; T13.5 also binds them to the OAuth client (below). Code: `src/mcp/http.ts`,
   `src/config/http-transport.ts`, `src/config/load.ts`, `src/cli/serve.ts`.
@@ -7495,6 +7499,30 @@ follows the T14.12 readiness spike. CIMD fetch limits (Proposed): `https` only; 
 target must not be private, loopback, link-local or unique-local; at most one redirect; 5 s and 64 KiB caps; the
 document's `client_id` must equal its URL; redirect URIs `https` only; the consent page shows the URL's host. Stdio is
 unchanged.
+
+**T13.10 as built (2026-10-19, Delegated; [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md)).** The packages are
+`@modelcontextprotocol/server`, `client` and `core`, exact-pinned 2.3.1 (`client` is a runtime dependency because the
+fake provider CLI shipped in `dist` is an MCP client). `src/mcp/server.ts` and the Git tool shim keep the low-level
+`Server`; its `tools/list` and `tools/call` handlers are registered by method name (the v2 signature) and still publish
+the Ajv-validated JSON Schemas of [§3](#3-mcp-tool-contracts). Stdio: `startStdioServer` still
+connects one `Server` to `StdioServerTransport`, and the connection follows the client's opening handshake as before
+(`serveStdio` is not used). HTTP (`src/mcp/http.ts`): every check of [§3.3](#33-network-mcp-transport-m13) runs
+unchanged (allowed `Origin`, bearer token, approved client, `mcp` scope, client mapping, POST only, `Mcp-Session-Id`
+refused with 400, in-flight caps, `Authorization` and `Cookie` stripped); then a non-JSON media type is refused with
+415, and the request is classified with the SDK's `isLegacyRequest` under the same 256 KiB body cap. A 2025-era
+request (an `initialize`, or any request without the per-request `_meta` envelope) is served by a fresh
+`WebStandardStreamableHTTPServerTransport` with `sessionIdGenerator: undefined` and `enableJsonResponse`; a 2026-07-28
+request (envelope plus `MCP-Protocol-Version: 2026-07-28`) by one `createMcpHandler` per listener with
+`legacy: "reject"` and `responseMode: "auto"` (one JSON body, since no Switchboard tool emits a related notification
+before its result; `"json"` would print an SDK warning at construction). One factory builds the same fresh
+`SwitchboardMcpServer` per request for both legs and finds the request's configured MCP client and OAuth client in a
+`WeakMap` keyed by the web `Request` the SDK hands back as `ctx.requestInfo`; nothing is passed through the SDK's
+`AuthInfo`, so no token or placeholder enters an SDK structure. The `node:http` request is bridged to the SDK's
+web-standard `fetch(Request)` entry in this module (`@modelcontextprotocol/node` lags the server package and is not
+used). Neither leg issues or accepts a session id. Evidence: `src/mcp/http-eras.test.ts` (a 2025-era client and a
+2026-07-28 client both initialize and call a tool through the real token checks; no response carries a session id; a
+presented session id is still refused; a non-JSON body is refused), the unchanged T13.9 acceptance in
+`src/mcp/mcp.test.ts`, and every unchanged stdio and in-memory suite.
 
 ### 20.12 Property tests and coverage (NFR-MAINT-06, T8.11)
 

@@ -19,8 +19,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { runArtifactsText, surfacesContaining } from "../../test/malicious/detectors.js";

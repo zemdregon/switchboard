@@ -152,7 +152,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [HLD §2.1](docs/design/HLD.md#21-comp-rag-implementation-evidence-m12-t121t123),
   [LLD §14](docs/design/LLD.md#14-retrieval-index) and [TDD §3.13](docs/design/TDD.md#313-retrieval-index).
 - **Milestone 13 (network MCP transport) is `Partial`** (reopened 2026-10-19 for owner decision 77: T13.10
-  and T13.11 are Planned; the M13 scope below stays Done). `serve` can expose the MCP tools over Streamable HTTP with OAuth
+  is Done (2026-10-19, ADR-0062) and T13.11 is Planned; the M13 scope below stays Done). `serve` can expose the MCP
+  tools over Streamable HTTP with OAuth
   2.1 (an embedded authorization server with an operator consent page, PKCE, client registration that the operator
   approves, audience-bound opaque tokens). It is off by default and binds to loopback; put your own TLS proxy in
   front of it. A test runs the whole path from client registration and PKCE to a tool call. Residual risks are listed

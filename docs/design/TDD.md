@@ -31,7 +31,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | Area | Choice | Why | Tradeoff | Version |
 | --- | --- | --- | --- | --- |
 | Language and runtime | TypeScript with `strict` on current Node.js LTS ([ADR-0010](../adr/0010-typescript-node-stack.md)) | I/O-bound supervisor; MCP/ACP/JSON-schema-heavy surface; one language for adapters and schemas | Requires Node on the host; single-executable packaging is later work; Go or Rust would give easier distribution | TypeScript 7.0.2 (`strict`); Node 22 LTS (`engines` `>=22`, developed on 22.22.0); `@types/node` 22.20.5 |
-| Upstream protocol | Official MCP TypeScript SDK, stdio transport ([ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md), FR-MCP-01) | Tracks the spec; avoids hand-rolled JSON-RPC | SDK churn can break tool registration; isolate behind `COMP-MCP` | `@modelcontextprotocol/sdk` 1.32.1 (exact-pinned runtime dependency, T2.4; latest on npm 2026-10-12). Its `McpServer.registerTool` helper takes zod schemas, so `src/mcp/server.ts` uses the lower-level `Server` with `tools/list` and `tools/call` handlers and publishes the Ajv-validated JSON Schemas from `src/mcp/schemas.ts`; zod arrives only as the SDK's own transitive dependency and is not imported (Delegated) |
+| Upstream protocol | Official MCP TypeScript SDK, stdio transport ([ADR-0002](../adr/0002-mcp-upstream-acp-downstream.md), FR-MCP-01) | Tracks the spec; avoids hand-rolled JSON-RPC | SDK churn can break tool registration; isolate behind `COMP-MCP` | `@modelcontextprotocol/server`, `@modelcontextprotocol/client` and `@modelcontextprotocol/core` 2.3.1 (exact-pinned runtime dependencies, T13.10, [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md); latest on npm 2026-10-19). *Was:* `@modelcontextprotocol/sdk` 1.32.1 (T2.4, until 2026-10-19). The high-level `McpServer.registerTool` helper takes zod schemas, so `src/mcp/server.ts` uses the lower-level `Server` with `tools/list` and `tools/call` handlers (registered by method name in v2) and publishes the Ajv-validated JSON Schemas from `src/mcp/schemas.ts`; zod arrives only as the SDK's own transitive dependency and is not imported (Delegated). The HTTP endpoint serves both protocol eras ([§3.14](#314-network-mcp-transport-m13)) |
 | Downstream ACP | Own thin ACP client over stdio JSON-RPC (M4); check for an official ACP client library first | FR-EXE-03 is Should; the surface needed is small | Maintaining protocol code vs adding a dependency; decide in M4 | M4 |
 | Database | SQLite via `better-sqlite3`, WAL mode ([ADR-0005](../adr/0005-sqlite-ledger.md)) | Synchronous API makes "check-then-write in one transaction" simple and keeps the single writer obvious (NFR-REL-01) | Native addon: needs prebuilt binary or a compiler toolchain per platform; blocks the event loop during a statement (acceptable at expected volume) | better-sqlite3 13.0.3 (exact-pinned runtime dependency, T1.3); `@types/better-sqlite3` 9.6.0 (dev); bundles SQLite 3.53.4 |
 | Database alternative | `node:sqlite` (built-in) | No native build step | Stability and feature level to be re-evaluated against the pinned Node LTS at M1 start; not adopted unless it supports needed features (WAL, STRICT, transactions, user functions not required) and is stable | Re-evaluated at T1.3 (2026-10-12, Delegated): **not adopted**. On Node 22.22.0 `node:sqlite` still emits an `ExperimentalWarning` ("might change at any time"), so it fails the stability condition; `better-sqlite3` 13.0.3 installed and ran here. Revisit at the single-executable hardening item or when `node:sqlite` is stable on the pinned LTS |
@@ -1559,6 +1559,21 @@ the same handler and so serves `global`/`both` the same way.
 
 ### 3.14 Network MCP transport (M13)
 
+- **T13.10 (2026-10-19, read from the installed `@modelcontextprotocol/server` 2.3.1 typings and a runtime probe,
+  not from memory; [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md)).** The v2 HTTP entry is web-standard:
+  `createMcpHandler(factory, { legacy, responseMode, maxRequestBodySize })` returns `{ fetch(Request), close }`;
+  `isLegacyRequest(request, parsedBody?, { maxRequestBodySize })` is the entry's own era classification exported as a
+  predicate; `WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse,
+  maxRequestBodySize })` is the stateless 2025-era transport with `handleRequest(request)`. The SDK's own
+  `legacy: "stateless"` fallback answers 2025-era POSTs as SSE streams, so `src/mcp/http.ts` hand-wires the legacy
+  leg with JSON responses and routes the rest to a strict modern handler. The factory receives
+  `{ era, authInfo?, requestInfo? }`, where `requestInfo` is the same `Request` object passed to `fetch`, which is what
+  lets the per-request identity travel in a `WeakMap` instead of `AuthInfo` (whose `token` is mandatory). The
+  `node:http` adapter is a separate package (`@modelcontextprotocol/node`, 2.1.1 on 2026-10-19, not in lockstep), so
+  the bridge is written here. The v2 `Client` defaults to the 2025-era handshake (`versionNegotiation` is opt-in:
+  `{ mode: "auto" }` probes with `server/discover`, `{ mode: { pin: "2026-07-28" } }` pins), which is why every
+  existing stdio and in-memory test runs unchanged after the import rewrite. Evidence: `src/mcp/http-eras.test.ts`.
+  The T13.1 note below is kept as history; the v1 classes it names no longer exist in the tree.
 - **T13.1 spike (2026-10-14, read from the installed `@modelcontextprotocol/sdk` 1.32.1 in `node_modules`, not from
   memory).** `server/streamableHttp.js` exports `StreamableHTTPServerTransport`, whose `handleRequest(req, res,
   parsedBody?)` takes `node:http` objects (and an optional `req.auth`); the underlying
