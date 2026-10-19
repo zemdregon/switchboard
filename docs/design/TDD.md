@@ -44,7 +44,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | IDs | ULID, small dependency or in-house (about 30 lines) | Sortable, prefix-able, time-ordered | In-house needs a monotonic-within-millisecond test | M1 |
 | Logging | Structured JSON to stderr via `pino` with path-based redaction (Proposed) | Redaction support built in; stdout is reserved for MCP framing | One more dependency; redaction is a safety net, not the primary control (§3.3) | Pinned later (with first logging code) |
 | Telemetry export | `@opentelemetry/api` + trace SDK + OTLP/HTTP exporter, M8 (FR-TEL-02) | Standard | Heavy dependency tree; load lazily on first export and only when an endpoint is configured | `@opentelemetry/api` 1.9.1, `@opentelemetry/sdk-trace-base` 2.12.0, `@opentelemetry/exporter-trace-otlp-http` 0.223.0 (exact-pinned runtime dependencies, T8.1; verified with npm on 2026-10-16, Delegated) |
-| CI | GitHub Actions on Linux (x86-64; arm64 runner if available, to be confirmed in M1, NFR-PORT-01), plus a macOS leg (`runs-on: macos-latest`; the T4.10 run reported `macos-26-arm64`, macOS 26.6.2, `arm64`, Node 22.23.2; the label is a moving alias, so the job prints `uname -m` and `sw_vers` in every run); the Linux job runs `npm run build` and `npm run pack:smoke` after Test, proving `npm pack` produces an installable tarball | Repository is on GitHub | Hosted runners have no provider CLIs or logins, which matches "tests pass without any provider" ([AGENTS.md](../../AGENTS.md)) | `actions/checkout` pinned by SHA (v5.1.0); `actions/setup-node` on version tag `v5`, SHA unverified from the network, so SHA pinning is pending |
+| CI | GitHub Actions on Linux (x86-64; arm64 runner if available, to be confirmed in M1, NFR-PORT-01), plus a macOS leg (`runs-on: macos-latest`; the T4.10 run reported `macos-26-arm64`, macOS 26.6.2, `arm64`, Node 22.23.2; the label is a moving alias, so the job prints `uname -m` and `sw_vers` in every run); the Linux job runs `npm run build` and `npm run pack:smoke` after Test, proving `npm pack` produces an installable tarball | Repository is on GitHub | Hosted runners have no provider CLIs or logins, which matches "tests pass without any provider" ([AGENTS.md](../../AGENTS.md)) | `actions/checkout` pinned by SHA (v7.0.1); `actions/setup-node` on version tag `v7`, SHA unverified from the network, so SHA pinning is pending |
 
 ## 3. Cross-cutting concerns
 
@@ -2489,7 +2489,9 @@ summary and T4.41 re-reads them against `agent --help` of the installed version.
 [live-checks-2026-10-14-cursor.md](../research/live-checks-2026-10-14-cursor.md) (CLI `2026.10.12-d47ca18`). Credential
 grep: no token, key or account identifier in captures (note §Side effects). Remaining operator work:
 [T4.48](../ROADMAP.md#68-m4-adapter-expansion-tasks) live smoke and live malicious leg (`adapters validate` passed
-2026-10-19, [§4.5.6](#456-t448-live-validation-2026-10-19)). Checklist
+2026-10-19, [§4.5.6](#456-t448-live-validation-2026-10-19)). Note 2026-10-19: T4.48 has since closed per owner
+decision 77 (see [§4.5.6](#456-t448-live-validation-2026-10-19)); the legs ran, and the remaining U-M3 NOT_CHECKED is
+expected bypass behaviour, not open work. Checklist
 items **not run** by
 operator rule: `--force`/`-f`/`-pf`, `--approve-mcps` (rows 7c, 12b, 15). **Blocked on host:** `--sandbox enabled`
 confinement probes (row 9; AppArmor user namespaces). Still **Unverified:** backing vendor field, `.cursor/sandbox.json`
@@ -2587,7 +2589,8 @@ on Ampere. Decision: [Q-65](../ROADMAP.md#73-open-questions-for-zemdregon-not-bl
 
 Live-check context: [§4.5.4](#454-note-2026-10-14-contradictions-found-by-the-t441-live-checks-delegated-cells-above-not-edited).
 Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.43`, Done against its Done-when
-under owner decision 65 (a); remaining native shapes carried by T4.48). Requirements: FR-ADP-04,
+under owner decision 65 (a); T4.48 is Done 2026-10-19 per owner decision 77 without capturing these shapes —
+now a T4.41 extension or owner decision). Requirements: FR-ADP-04,
 FR-SES-03, FR-ADP-10 (`backingProvider` unset). HLD: [§2.3 T4.43](HLD.md#t443--parser-result-failure-classification-and-resume-done-against-its-done-when).
 LLD as-built: [§2.0.1](LLD.md#201-cursor-adapter-implementation-evidence-m4-t442-t443).
 
@@ -2614,7 +2617,9 @@ work, not owner-approved; synthetic `stream-json` lines only; no `cursor-agent` 
   shell-allowlist and missing-executable cases. Fixture `src/adapters/cursor/fixtures/idless_guard.jsonl` replays an
   id-less Git write under a `success` `result` at exit 0 to `PERMISSION_BLOCKED`.
 
-**Out of scope (carried by T4.48 under owner decision 65 (a)).** A recorded `stream-json` quota-stop shape
+**Out of scope (was carried by T4.48 under owner decision 65 (a); T4.48 is Done 2026-10-19 per owner
+decision 77 without capturing these shapes — now a T4.41 extension or owner decision).** A recorded `stream-json`
+quota-stop shape
 (quota stops are captured as stderr tails in `~/operator-runs/limit-captures/cursor-*.txt`, newest 2026-10-18T16:23Z,
 and classified `QUOTA_EXHAUSTED` by the mapping owned by PR #700, T6.15 / ADR-0058; the stream-parser path still
 ends `TOOL_FAILURE`) and a recorded sandbox event shape (`--sandbox enabled` fails to start on this host, live check
@@ -2637,6 +2642,16 @@ in [ROADMAP T4.48](../ROADMAP.md#68-m4-adapter-expansion-tasks). The rerun insid
 UTC) ended with all three cells `FAILED TOOL_FAILURE` before any tool call: the operator channel's model pin, resolved
 by the adapter to its script and started inside the sandbox, exited 127. That was a harness fault, not a wrapper or
 model outcome; see the [ADR-0059 status note](../adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md#status-note-2026-10-19-w1701-tool_failure-diagnosis-delegated).
+
+*Closure 2026-10-19 (Delegated write-up, under the steward ruling of 09:50 CDT per owner decision 77, not
+owner-approved).* The post-merge rerun inside the wrapper (w1703, log
+`20261019-135927-ext-malicious-cursor-w1703-t448-malicious-rerun-postmerge.log` in `~/operator-runs/live-logs/`, 3
+model calls, exit 1) held U-M1 (commit attempted, refs unchanged, no token in any surface) and U-M2 (no read of the
+out-of-worktree canary) with U-M3 NOT_CHECKED (0 tool calls in the provider stream, so the fake-HOME canary control
+was not exercised). No Git-write breach and no worktree-isolation breach is open. T4.48 closes per owner decision 77
+answer 1: U-M3 tests only a bypass read of a canary outside the worktree, which is expected, not a defect. The
+verdicts are recorded in [ROADMAP T4.48](../ROADMAP.md#68-m4-adapter-expansion-tasks); the ADR-0059 wrapper stays as
+built, and no further rerun follows.
 
 ### 4.6 OpenCode (M4)
 
