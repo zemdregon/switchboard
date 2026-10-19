@@ -2537,7 +2537,8 @@ The conformance suite (T4.65, [#455](https://github.com/zemdregon/switchboard/pu
 (synthetic recorded fixtures, FR-ADP-11, T4.65)") replays the synthetic fixtures in `src/adapters/kimi/fixtures/`
 (`kimiConformanceCases` in `cases.ts`) through the replay dialect `src/adapters/fixtures/replay-dialects/kimi.mjs`,
 which accepts only the approved bypass argv and exits 64 for any other word, a bypass-class or never-emitted flag, or
-`KIMI_CODE_HOME` in the environment. Only the bypass cell is a conformance case; the `kimi acp` permission round trip was carried by T4.68 (observed: 2.1.1 raises none in `default` mode; permission gating Deferred — see ROADMAP T4.68).
+`KIMI_CODE_HOME` in the environment. Only the bypass cell is a conformance case; the `kimi acp` permission round trip
+was carried by T4.68 (observed: 2.1.1 raises none in `default` mode; permission gating Deferred — see ROADMAP T4.68).
 
 ### Git and commits
 
