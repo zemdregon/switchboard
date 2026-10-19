@@ -2267,7 +2267,8 @@ unchanged. One defect was found and fixed: another run's ref check could see a c
 (see [§12.5](#125-ref-snapshot-and-violation-handling), "Concurrent runs"); finalization is now serialised per
 repository root. Tests: `src/lifecycle/concurrent-worktrees.test.ts`. Not built: the `container` clause of FR-WS-08
 (M10, FR-PRJ-05) and FR-WS-09 (Proposed, not accepted; Q-55 answered 2026-10-18: no merge detection, abandon-only
-removal; the amendment follow-up builds it; its tests are skipped placeholders).
+removal; the amendment follow-up amends and accepts it; the abandon-removal trigger is pinned by two running tests
+and only the merge test stays a skipped placeholder).
 
 *As built (worktree creation, 2026-10-13, Delegated).* Git takes no lock on `.git/worktrees/` during `git worktree add`,
 so concurrent preparations on one repository failed intermittently: an add that enumerated worktrees read a sibling's
@@ -2341,7 +2342,9 @@ Retention job deletes, per expired terminal run, in one
 logical unit: worktree directory (`git worktree remove --force`, then `git worktree prune`), controller branch,
 artifact files (set `deleted_at`). Never touches branches outside `switchboard/`. *Proposed (FR-WS-09, owner decision
 42):* a concurrent run's worktree may also be removed on merge or abandon before retention; the branch and
-artifacts stay until GC. From M9 the publish refs (§12.3) are
+artifacts stay until GC. *Split 2026-10-18 (Delegated, ruling 1 under decision 62):* the abandon trigger is
+`ARCHIVED` by retention GC only (no earlier removal step exists and none is added), so the worktree, branch and
+artifacts are removed together by that GC unit; no merge detection. From M9 the publish refs (§12.3) are
 collected with the rest of their meta-session. Orphan sweep: worktree directories or `switchboard/*` branches with no
 matching `run` row are reported by `doctor` and removed only by GC after the retention period.
 
