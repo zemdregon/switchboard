@@ -3131,7 +3131,7 @@ Detection (`detectOuterSandbox`, never throws; each probe runs with `PATH` only 
 Admission (`outerSandboxRefusal`): a run whose profile is listed is refused by the profile resolver with
 `ProfileUnavailableError` (`ELIGIBILITY_NONE`, FRD BR-3) before any row is written. The message carries
 `OUTER_SANDBOX_UNAVAILABLE` (bubblewrap or `prlimit` unavailable, each probe's detail included) or
-`OUTER_SANDBOX_NOT_ENFORCED` (both available; this build wraps no process, ADR-0051 item 4). Detection that did not run
+`OUTER_SANDBOX_NOT_ENFORCED` (both available; this gate wraps no process, ADR-0051 item 4). Detection that did not run
 counts as unavailable. `serve` detects once at startup, only when the list is not empty; `doctor` always reports the
 `outer_sandbox` check (`ok` when nothing is required, `fail` for a missing mechanism, `warn` when only the wrapping is
 missing). Wrapping verification commands is implemented by T3.11 (`wrapOuterSandboxVerification`, §8.1). The
