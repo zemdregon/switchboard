@@ -729,7 +729,7 @@ as history.
   range is stated in the T4.48 row, TDD §4.5.6, the README Cursor section
   and the manifest itself. It does not block PR #757.
 
-## 41. ADR-0061 Consequences still says binary secrets "are not caught" (from PR #764, blocks)
+## 42. ADR-0061 Consequences still says binary secrets "are not caught" (from PR #764, blocks)
 
 - [ADR-0061](adr/0061-pre-push-secret-scan-blocks-every-run.md) Consequences says "A secret in a binary file or in
   an encoding the rules do not match is not caught; binary files are listed in the event."
@@ -751,7 +751,7 @@ as history.
 - Resolved 2026-10-19 by Linus ruling (DOC-CONFLICT #764): ADR-0061 Amendment 2026-10-19 added; code kept
   (--text scans binaries).
 
-## 42. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
+## 43. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
 
 - [HLD §1.2](design/HLD.md#12-explicit-exclusions) still excludes "No network
   listener: MCP is stdio only; HTTP/SSE is deferred", while the M13 network
@@ -766,7 +766,7 @@ as history.
   transport facts are stated in the M13 row, LLD §3.3 and LLD §20.8, which
   this PR updates where it touches them).
 
-## 42. SRS FR-CAP-12 "light admitted" vs the `allow_light` gate (pre-existing, not from PR #760)
+## 44. SRS FR-CAP-12 "light admitted" vs the `allow_light` gate (pre-existing, not from PR #760)
 
 - [SRS FR-CAP-12](requirements/SRS.md) says "A request or work item marked
   `light` is admitted while held", unconditionally.
@@ -783,7 +783,7 @@ as history.
   narrowing the SRS guarantee to "from an allowed client" is the SRS
   owner's call. It does not block PR #760.
 
-## 43. HLD component rows cite pre-#638 requirement ranges, now also excluding FR-POL-11 (pre-existing, not from PR #770)
+## 45. HLD component rows cite pre-#638 requirement ranges, now also excluding FR-POL-11 (pre-existing, not from PR #770)
 
 - [HLD §2](design/HLD.md) COMP-POL cites `FR-POL-01..10` and COMP-WS cites `FR-WS-01..07, FR-POL-10, FR-GIT-08`,
   while [SRS](requirements/SRS.md) also carries FR-POL-11 (added 2026-10-19 for owner decision 77) and the
@@ -793,7 +793,7 @@ as history.
 - Left unchanged: re-attribution is the HLD owner's call, the SDD covers FR-POL-11, and
   `node scripts/check-docs.mjs` passes. It does not block PR #770.
 
-## 44. ROADMAP §9.2 sequencing note still reads "are `Planned`" (pre-existing, not from PR #770)
+## 46. ROADMAP §9.2 sequencing note still reads "are `Planned`" (pre-existing, not from PR #770)
 
 - [ROADMAP §9.2](ROADMAP.md#92-harness-and-discovery-rows-2026-10-19) says "The rows added on 2026-10-19 are
   `Planned`", while T3.24, T15.9, T9.14 and now T3.25 (this PR) record Done. The sentence was already overtaken
@@ -803,7 +803,7 @@ as history.
   (cf. item 23 above for the §6.5 intro precedent); the live status lives in each task row and the milestone
   rows, which agree. It does not block PR #770.
 
-## 45. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
+## 47. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
 
 - PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
   owner's macOS merge waiver" / "under the owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux
@@ -820,7 +820,7 @@ as history.
   ADR-0060 ("the macOS leg was dropped from gating by a ruling") instead of a dated owner waiver, so no §4.2
   entry is needed and no owner approval is implied. Resolved, not outstanding.
 
-## 46. T5.14 "fresh project runs only" misstatement and bundle-version-3 staleness (from PR #767, fixed in this gate)
+## 48. T5.14 "fresh project runs only" misstatement and bundle-version-3 staleness (from PR #767, fixed in this gate)
 
 - The T5.14 row as merged on this branch said, under "Not covered", that
   "the brief text goes with fresh project runs only (a handoff run's bundle
@@ -843,14 +843,15 @@ as history.
   versions") now reads all three; the ADR index row for ADR-0038
   ("versions 1–2") now names version 3; SRS FR-SES-07 "by version hash" now
   reads "by SHA-256 hash" to match `brief: { run_id, sha256 }`.
-- Also fixed here (mechanical): the second of the two items numbered 41
-  is now item 42, so this entry is item 46. Only §24 is linked from other
+- Also fixed here (mechanical): the tail of this file carried duplicate numbers from earlier merges (two items
+  numbered 41, then two numbered 42 after the merge on this branch); the items from the second 41 onward are
+  renumbered sequentially, so this entry is item 48. Only §24 is linked from other
   documents, so no link breaks.
 - It does not block PR #767 (the task's own evidence — `src/projects/brief.test.ts`,
   `src/cli/brief-pack.test.ts`, `src/continuity/bundle.test.ts` "project
   brief as a hash" — is cited in-row and matches the named tests).
 
-## 47. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
+## 49. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
 
 - TDD §5 (implementation strategy, M4 row) listed "macOS CI leg (NFR-PORT-02)" in the present tense as the
   technical approach; past-tensed to "ran 2026-10-14, removed 2026-10-19 when CI went Linux-only, §3.8",

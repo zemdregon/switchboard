@@ -7593,7 +7593,9 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
   before spawn), renders `<switchboard-project-brief <nonce>>` with a fixed operator-brief header, the hash, the text and
   a closing line carrying the nonce, and places it after the request text and before the retrieval pack. Its tokens
   (UTF-8 bytes / 4, block plus separator) are reserved from `max_context_tokens` before retrieval runs, so retrieval is
-  trimmed first; retrieval is raced against `admission_timeout_ms`, so a slow index drops snippets, never the brief. The
+  trimmed first; retrieval is raced against `admission_timeout_ms`, so a slow index drops snippets, never the brief. A
+  block that has grown past the budget since load refuses the run the same way (the `rag_retrieval` event reason is
+  `PROJECT_BRIEF_OVER_BUDGET`; the run still fails closed with `TOOL_FAILURE`, reason `PROJECT_BRIEF_UNAVAILABLE`). The
   `rag_retrieval` event gains `brief_sha256` and `brief_tokens_est` (outcome `skipped`, reason `INERT`, when retrieval
   is off). A run without a brief compiles byte for byte as before. The brief goes with every run admitted on a
   briefed project, like the pack (§14.6): a handoff successor re-resolves the meta-session's project under the same
