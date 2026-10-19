@@ -218,8 +218,8 @@ repositories) and `src/cli/projects-dynamic.test.ts` (`projects list|show|approv
   profiles have no Bash tool unless the operator allowlists exact commands (§4.1). Codex does not: owner decision 10
   keeps Codex eligible for `inspect-untrusted` and `edit-untrusted` on its native sandbox alone, and the Codex agent runs
   commands inside that sandbox (read-only or `workspace-write`). Whether those commands can reach `~/.codex` credentials
-  or other same-user files is **unverified**, so FR-POL-06 stays open for Codex until the live malicious leg (T3.9)
-  checks it (R-23, §4.2).
+  or other same-user files is **unverified**, so FR-POL-06 stays open for Codex (R-23, §4.2); the 2026-10-19 leg held
+  X-M2 at the outcome level only, so the confinement question stays open beyond T3.9.
 - **Outer sandbox (Proposed, dependent on M3 evaluation).** On Linux, `bubblewrap` or Landlock could wrap the *provider
   process* in addition to provider-native sandboxes, restricting filesystem writes to the run worktree and limiting
   reachable paths. Limits to evaluate: an outer wrapper cannot hide credentials from the provider CLI itself (it needs
@@ -719,7 +719,11 @@ bypass run without `--safe-mode`. The audit symbols are `MCP_CONFIG_FLAG`, `bypa
 sandbox), and says nothing about supplying an MCP definition, MCP tool approval, Unix-socket access from inside the
 sandbox, per-command Git deny rules or a commit or attribution setting. Every cell is **Unverified**; the Codex adapter
 keeps `gitWriteControl.kind = none-documented` and the finalize-only fallback (FR-GIT-09) is the only evidenced design
-for it until a binary is installed and T3.9 or a follow-up live check runs.
+for it until a binary is installed and T3.9 or a follow-up live check runs. *Update 2026-10-19 (T3.9, Delegated):*
+the binary and the live check this paragraph waits for have both happened (codex-cli 0.162.0 validated 2026-10-14;
+X-G1 `HELD` 2026-10-19, [live checks](../research/live-checks-2026-10-19-t39-malicious.md)); the conclusion stands: no
+deny rule or attribution setting is documented, so the adapter keeps `gitWriteControl.kind = none-documented` with
+the FR-GIT-09 fallback (ROADMAP §6.3 T9.0 table).
 
 | Question | Claude Code 2.1.296 | Codex |
 | --- | --- | --- |
@@ -851,8 +855,9 @@ the table above; fake adapter only, Git 2.43.0).* Mechanism in [LLD §12.5](LLD.
   using the stored snapshot. No test escapes the worktree (CF-1 to CF-3 hold on the fake provider, T3.8b, TDD §3.6.2);
   reads of credentials and network use are not enforced on the fake by design (CF-5, CF-6) and stay with the live leg
   (T3.9).
-- **Still open.** The same attempts through Claude Code and Codex (live checks C-G2 and X-G1), per-worktree refs, Git
-  versions other than 2.43.0, and whether a push should be refused after a violation (Q-44).
+- **Still open.** The same attempts through Claude Code and Codex have run (T3.9, 2026-10-19: C-G2 and X-G1 `HELD` with
+  no violation for the guard to detect, so detection on a live run is still unshown), per-worktree refs, Git versions
+  other than 2.43.0, and whether a push should be refused after a violation (Q-44).
 
 *T9.6 build notes (2026-10-13; Delegated; [ADR-0028](../adr/0028-controller-push-and-credential-reach.md); the
 **Publication** paragraph above; fake adapter and local bare remotes only, Git 2.43.0).* Mechanism in [LLD
@@ -1758,9 +1763,11 @@ checks on 2026-10-13 ([live checks](../research/live-checks-2026-10-13.md), not 
 assumptions: under `--dangerously-skip-permissions` the Git deny rules and `--tools` held (checks 14 and 16, R-38), and
 omitting `--safe-mode` and `--strict-mcp-config` loads the repository's `CLAUDE.md`, hooks and `.mcp.json` (check 15,
 R-41). Every remaining `Unknown: live check in T3.9` cell is still unknown ([ROADMAP §6.5.2](../ROADMAP.md#652-what-m3-cannot-complete-without-live-providers)).
-*Update 2026-10-18 (T3.9 `Partial`, Delegated):* the Claude leg ran once
-([live checks](../research/live-checks-2026-10-18-claude-malicious.md)) with no cell changes (C-G2 `HELD`
-at the outcome level only; C-M2 and C-M3 `NOT_CHECKED`); R-10, R-26, R-38 and R-41 stay open.
+*Update 2026-10-19 (T3.9 `Done`, Delegated):* the Claude leg ran again
+([live checks](../research/live-checks-2026-10-19-t39-malicious.md)): C-G2 `HELD` at the outcome level only
+(no `Bash` in `--tools`, matcher not exercised); C-M2 `NOT_CHECKED` (`test-sandboxed` `Ineligible`);
+C-M3 `ESCAPED` (the approved bypass run printed the out-of-worktree canary; Git held at the outcome level),
+which opens ROADMAP R-74; no cell is made `Ineligible`. R-10, R-26 and R-41 stay open; R-38 records the rerun.
 
 ### 4.2 Codex (M2)
 
@@ -1772,7 +1779,7 @@ at the outcome level only; C-M2 and C-M3 `NOT_CHECKED`); R-10, R-26, R-38 and R-
 | Auth preflight | Saved ChatGPT or API-key auth is reused. [R2] states no status command; `codex login status` was observed on codex-cli 0.162.1 (`docs/research/live-checks-2026-10-13.md` (PR #41), not a link: the file is not on this branch): exit 0 logged in, exit 1 not logged in, output format undocumented. The adapter keys on the exit code only; any other exit code, a timeout or a spawn failure is `UNKNOWN` (fail closed). `~/.codex/auth.json` is sensitive and never read |
 | Trust profile compilation (Proposed) | `--sandbox workspace-write` or stricter, plus `--ignore-user-config` and `--ignore-rules` for full harness control. Read-only sandbox value spelling: to be verified in M4 |
 | Sandbox controls | Native: Seatbelt (macOS), bubblewrap (Linux/WSL2); explicit `--sandbox`. Per profile and platform: [§4.2.1](#421-codex-native-controls-per-profile-and-platform-t30) |
-| Commands under untrusted profiles (owner decision 10) | Codex's agent runs shell commands inside its native sandbox under `inspect-untrusted` (`--sandbox read-only`) and `edit-untrusted` (`--sandbox workspace-write`); Switchboard has no documented Codex command allowlist to narrow them (Q-11), so "no shell" does not hold for Codex. Whether the sandbox keeps those commands away from `~/.codex` credentials and other same-user files is **unverified**: FR-POL-06 stays open for Codex (R-23) until the live malicious leg (T3.9); an outer sandbox (T3.1) is optional hardening. Network off is an Assumption ([R2] documents no Codex network switch) |
+| Commands under untrusted profiles (owner decision 10) | Codex's agent runs shell commands inside its native sandbox under `inspect-untrusted` (`--sandbox read-only`) and `edit-untrusted` (`--sandbox workspace-write`); Switchboard has no documented Codex command allowlist to narrow them (Q-11), so "no shell" does not hold for Codex. Whether the sandbox keeps those commands away from `~/.codex` credentials and other same-user files is **unverified**: FR-POL-06 stays open for Codex (R-23); the 2026-10-19 leg held X-M2 at the outcome level only, so this stays open beyond T3.9; an outer sandbox (T3.1) is optional hardening. Network off is an Assumption ([R2] documents no Codex network switch) |
 | Known risks | `--full-auto` deprecated, `--yolo` never used outside approved `privileged`; do not expose `OPENAI_API_KEY`/`CODEX_API_KEY` to repo-controlled code; token usage does not reveal remaining subscription capacity |
 | Git writes and injected tools (M2, M9) | [R2] documents no per-command deny or allow rule and no commit or attribution setting; `--sandbox workspace-write` or stricter is the only documented control. The adapter declares this (`gitWriteControl` `none-documented`, T2.2), so FR-GIT-03 and FR-GIT-06 are the remaining controls, and a non-empty shell allowlist is `Ineligible`. Whether `workspace-write` blocks writes to a worktree's Git directory (outside the cwd) is an Assumption, unverified because Codex is not installed on the development host (live smoke check X-G1). Supplying a per-run MCP definition together with `--ignore-user-config`: not in [R2], to be verified in M9 |
 
@@ -1809,9 +1816,9 @@ observed under `--sandbox workspace-write`: writes outside the workspace blocked
 HELD), network blocked (12c), reads of a canary outside the workspace **not** blocked (12d ESCAPED, R-23), Unix sockets
 blocked (12e) and `git commit` refused on Git metadata (12f, X-G1 HELD). So the "Native sandbox" and "Network" cells'
 open questions are partly answered for that version; FR-POL-06 for Codex is not met (reads are not confined), and the
-Codex cells are unchanged (T3.9 recorded partial Claude results on 2026-10-18 with no Codex bearing; the Codex
-half stays `NOT_CHECKED` until the 2026-10-22 quota reset)
-([ROADMAP §6.5.2](../ROADMAP.md#652-what-m3-cannot-complete-without-live-providers)).
+Codex cells are unchanged (the Codex half ran 2026-10-19 in the decision 71 container:
+X-G1 `HELD`, X-M2 `HELD` at the outcome level only, X-M3 `NOT_CHECKED` for the structural reason above;
+[ROADMAP §6.5.2](../ROADMAP.md#652-what-m3-cannot-complete-without-live-providers)).
 
 ### 4.3 Grok Build (M4)
 

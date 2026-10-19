@@ -576,4 +576,30 @@ as history.
   edit by the PR author (or a code-touching follow-up), not an owner decision.
   It does not block PR #729 (the range field and the evidence lines, which are
   what the gate and the version check read, are correct; the T3.9 sentences PR
-  #729 appends to `notes` describe the 2026-10-18 run accurately).
+  #729 appends to `notes` describe the 2026-10-18 run accurately). PR #742
+  appends the 2026-10-19 T3.9 sentences (C-G2 rerun, C-M3 `ESCAPED`/R-74);
+  those describe the new run accurately. The stale opening sentence persists;
+  still a one-line `src/**` fix, still not blocking.
+
+## 35. `codex.json` T9.0 paragraph and both adapters' `GIT_CAPABILITIES.detail` strings (pre-existing, not from PR #742)
+
+- `src/adapters/manifests/codex.json` `notes` still carries its 2026-10-13
+  T9.0 paragraph ("codex is still not installed on the development host" and
+  "Result: T9.0 is not done for Codex (ROADMAP 6.3)"), and the same paragraph
+  shape survives in `src/adapters/manifests/claude.json`
+  ("Result: T9.0 is Partial for Claude Code (ROADMAP 6.3)"). The roadmap owns
+  status and says T9.0 is **Done** since the 2026-10-16 reconciliation
+  (ROADMAP §6.3 T9.0 table; E2), and codex-cli 0.162.0 has since run live
+  (validated 2026-10-14; X-G1 through the T3.9 leg on 2026-10-19). The
+  `CODEX_GIT_CAPABILITIES.detail` and `CLAUDE_GIT_CAPABILITIES.detail` strings
+  in `src/adapters/codex/adapter.ts` and `src/adapters/claude/adapter.ts`
+  carry the same stale "not installed, Unverified" rationale (same conclusion,
+  stale reason). ROADMAP §6.3 already discloses all of this as "a `src/`
+  follow-up, not changed here".
+- Left unchanged: manifests and adapters are `src/**`, and this gate edits
+  documentation only (`*.md`, `docs/**`). Refreshing those sentences needs
+  `src/**` edits by the PR author (or a code-touching follow-up), not an
+  owner decision. It does not block PR #742 (the range fields, the evidence
+  lines and the newly appended 2026-10-19 T3.9 sentences, which are what the
+  gate and the version check read, are correct; the roadmap rows state the
+  current status).
