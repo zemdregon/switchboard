@@ -44,7 +44,7 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | IDs | ULID, small dependency or in-house (about 30 lines) | Sortable, prefix-able, time-ordered | In-house needs a monotonic-within-millisecond test | M1 |
 | Logging | Structured JSON to stderr via `pino` with path-based redaction (Proposed) | Redaction support built in; stdout is reserved for MCP framing | One more dependency; redaction is a safety net, not the primary control (§3.3) | Pinned later (with first logging code) |
 | Telemetry export | `@opentelemetry/api` + trace SDK + OTLP/HTTP exporter, M8 (FR-TEL-02) | Standard | Heavy dependency tree; load lazily on first export and only when an endpoint is configured | `@opentelemetry/api` 1.9.1, `@opentelemetry/sdk-trace-base` 2.12.0, `@opentelemetry/exporter-trace-otlp-http` 0.223.0 (exact-pinned runtime dependencies, T8.1; verified with npm on 2026-10-16, Delegated) |
-| CI | GitHub Actions on Linux (x86-64; arm64 runner if available, to be confirmed in M1, NFR-PORT-01), plus a macOS leg (`runs-on: macos-latest`; the T4.10 run reported `macos-26-arm64`, macOS 26.6.2, `arm64`, Node 22.23.2; the label is a moving alias, so the job prints `uname -m` and `sw_vers` in every run); the Linux job runs `npm run build` and `npm run pack:smoke` after Test, proving `npm pack` produces an installable tarball | Repository is on GitHub | Hosted runners have no provider CLIs or logins, which matches "tests pass without any provider" ([AGENTS.md](../../AGENTS.md)) | `actions/checkout` pinned by SHA (v7.0.1); `actions/setup-node` on version tag `v7`, SHA unverified from the network, so SHA pinning is pending |
+| CI | GitHub Actions on Linux (x86-64; arm64 runner if available, to be confirmed in M1, NFR-PORT-01), Linux only since 2026-10-19 (the T4.10 macOS leg, `runs-on: macos-latest`, reported `macos-26-arm64`, macOS 26.6.2, `arm64`, Node 22.23.2, and was removed under the owner's macOS merge waiver; §3.8); the Linux job runs `npm run build` and `npm run pack:smoke` after Test, proving `npm pack` produces an installable tarball | Repository is on GitHub | Hosted runners have no provider CLIs or logins, which matches "tests pass without any provider" ([AGENTS.md](../../AGENTS.md)) | `actions/checkout` pinned by SHA (v7.0.1); `actions/setup-node` on version tag `v7`, SHA unverified from the network, so SHA pinning is pending |
 
 ## 3. Cross-cutting concerns
 
@@ -551,8 +551,9 @@ prefixes, Unicode look-alikes) rather than random bytes, because the past gaps w
 Proposed jobs on every pull request, all runnable with no provider installed: (1) install via `npm ci`; (2) `biome
 check`; (3) `tsc --noEmit`; (4) Vitest unit + integration + fake-provider + fault-injection; (5) `node
 scripts/check-docs.mjs`; (6) secret-pattern scan over test outputs; (7) `npm audit` as informational (Assumption).
-Jobs (1) to (5) also run on a macOS runner (T4.10, NFR-PORT-02), as a separate job `Typecheck, lint, test, docs check
-(macOS)` in `.github/workflows/ci.yml`; the tests it skips are listed in [ROADMAP
+Jobs (1) to (5) ran on a macOS runner (T4.10, NFR-PORT-02) as a separate job `Typecheck, lint, test, docs check
+(macOS)` until 2026-10-19, when it was removed from `.github/workflows/ci.yml` (Delegated, Linus ruling, under the
+owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux job); the tests it skipped are listed in [ROADMAP
 T4.10](../ROADMAP.md#68-m4-adapter-expansion-tasks). The fault-injection job needs process-kill privileges only, no
 root. A scheduled job for version canaries is M8 ([ADR-0009](../adr/0009-version-gated-adapters.md)); it needs
 installed provider CLIs and logins and therefore cannot run on hosted runners without operator-managed credentials,
