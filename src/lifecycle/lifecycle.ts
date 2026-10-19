@@ -3327,7 +3327,7 @@ export class RunLifecycle {
    */
   private async quotaLadder(failedId: string): Promise<void> {
     const failed = this.ledger.getRunRecord(failedId);
-    if (!failed || failed.state !== "FAILED" || failed.provider === null || this.stopped) return;
+    if (failed?.state !== "FAILED" || failed.provider === null || this.stopped) return;
     const notes: string[] = [];
     const record = (payload: Record<string, unknown>) =>
       this.ledger.appendRunEvent({ runId: failed.id, type: "quota_ladder", payload: { ...payload, not_taken: notes } });
