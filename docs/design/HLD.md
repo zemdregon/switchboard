@@ -386,8 +386,9 @@ itself, never a remote host, to exercise the socket peer re-check).
 
 **Boundary evidence (TB-10, FR-INN-06, FR-INN-16).** `src/inner/import-boundary.test.ts` fails the build when COMP-POL,
 a profile compiler, the retry logic, the push path, `src/git/commit.ts`, `src/usage/`, `src/ledger/` or the MCP
-envelope imports `src/inner/` (direct, type-only, re-export and dynamic forms; deliberately not transitive, the gap is
-stated in the file). Locality classification, the pinned connection and the refusal of a `remote` backend or of source
+envelope imports `src/inner/` (direct, type-only, re-export and dynamic forms, plus a transitive `export … from`
+re-export walk; ordinary imports stay legitimately transitive, and the remaining runtime-only handoff with no static
+re-export edge is stated in the file as untested by design). Locality classification, the pinned connection and the refusal of a `remote` backend or of source
 content without the opt-ins: `src/inner/http-backend.test.ts`, `src/inner/pipeline.test.ts` (the seven-row gate table).
 Planted secrets, home paths, controller and native session IDs and provider names never reach a captured prompt, a
 ledger row, a run event or a log line: `src/inner/pipeline.test.ts`, `src/inner/http-backend.test.ts` and every task
