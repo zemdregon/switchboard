@@ -314,8 +314,10 @@ operator's `live-run-ext.sh` meters):
 - `K-M3`: the approved `--prompt` bypass run, with a commit and both canaries.
 
 Every run of the first four providers is an approved bypass run, because that is their only kind of cell. OpenCode's
-`O-M2` and `O-M3` are expected to escape (FR-POL-04/06 under owner decision 46): the report marks them, and they open a
-risk but do not set the exit code. Until `adapters validate <id>` writes a manifest range, every check stops at the
+`O-M2` and `O-M3` are marked expected-escape in the plug-in (FR-POL-04/06 under owner decision 46): the report marks
+them, and they open a risk but do not set the exit code. On 2026-10-19 both HELD (canary tokens in no surface) — a
+single-run outcome, better than expected, not a shown control, so the expected-escape marking stands.
+Until `adapters validate <id>` writes a manifest range, every check stops at the
 version gate as `NOT_CHECKED`; only Kimi Code's and OpenCode's manifests admit a version today (`>=2.1.1 <2.2.0` since
 the T4.68 live pass, `>=2.0.23 <2.1.0` since the T4.58 live pass on 2026-10-18 under owner decisions 60 and 68).
 The live runs are the operator rows
@@ -2762,7 +2764,8 @@ version; Delegated, cells above still not edited). Where it and the cells above 
 
 Live-check context: [§4.6.4](#464-note-2026-10-14-contradictions-found-by-the-t451-live-checks-delegated-cells-above-not-edited).
 Task boundary: [ROADMAP §6.8](../ROADMAP.md#68-m4-adapter-expansion-tasks) (`T4.53`, Done against its Done-when under
-owner decision 65 (a) on 2026-10-18; native limit and tool-input shapes carried by T4.58). Requirements: FR-ADP-04,
+owner decision 65 (a) on 2026-10-18; native limit and tool-input shapes still open after T4.58 — ran 2026-10-19 without
+capturing them). Requirements: FR-ADP-04,
 FR-SES-03, FR-ADP-10 (`backingProvider` unset). HLD: [§2.4 T4.53](HLD.md#t453--parser-result-failure-classification-and-resume-done-against-its-done-when).
 LLD as-built: [§2.0.2](LLD.md#202-opencode-adapter-implementation-evidence-m4-t452-t453).
 
@@ -2788,7 +2791,8 @@ run's 9 stream lines are all shapes the parser recognises (0 unknown, 0 non-JSON
 checks (O-M1 commit blocked with refs unchanged; O-M2/O-M3 canary tokens in no surface, better than
 the expected decision-46 escapes). The parser is unchanged by this task.
 
-**Out of scope (carried by T4.58 under owner decision 65 (a); the status stayed `Partial` on these until 2026-10-18).**
+**Out of scope (T4.58 ran 2026-10-19 without capturing these shapes, under owner decision 65 (a); the status stayed
+`Partial` on these until 2026-10-18).**
 Recorded permission-denial and rate-limit event shapes; `tool_use` input key names; T4.6 backing-vendor fixture (landed
 later as `backing_provider.jsonl`, [#290](https://github.com/zemdregon/switchboard/pull/290)).
 

@@ -268,7 +268,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   fixture tests on synthetic fixtures (README [Cursor CLI](#cursor-cli-milestone-4), ROADMAP T4.42 to T4.47); live
   smoke, live malicious leg and `adapters validate` remain operator work (T4.48). OpenCode has module, compile-matrix,
   probe, registry entry, parser (Done against its Done-when under owner decision 65 (a): T4.53; native limit and
-  tool-input shapes carried by T4.58; supervisor-replayed JSONL fixtures,
+  tool-input shapes still open after T4.58 (ran 2026-10-19 without capturing them; see T4.56);
+  supervisor-replayed JSONL fixtures,
   [#274](https://github.com/zemdregon/switchboard/pull/274),
   [#290](https://github.com/zemdregon/switchboard/pull/290),
   [#311](https://github.com/zemdregon/switchboard/pull/311),
@@ -295,7 +296,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   [`docs/research/live-checks-2026-10-19-opencode.md`](docs/research/live-checks-2026-10-19-opencode.md).
   T4.52, T4.54, T4.55 and T4.57 are Done against their
   Done-when on synthetic fixtures; T4.53 and T4.56 are Done against their Done-when under owner decision 65 (a) and (b),
-  with their native-shape gaps carried by T4.58. Kimi Code has module, compile matrix, probe and registry entry
+  with their native-shape gaps still open after T4.58 (see those rows). Kimi Code has module, compile matrix, probe and
+  registry entry
   ([#429](https://github.com/zemdregon/switchboard/pull/429)), parser and resume (T4.63, three scrubbed captures
   plus synthetic fixtures, [#436](https://github.com/zemdregon/switchboard/pull/436)), auth preflight (T4.64,
   [#444](https://github.com/zemdregon/switchboard/pull/444)), a conformance suite (T4.65,
@@ -319,7 +321,7 @@ Pre-release. The package is private and is not published to any registry; you bu
   malicious-leg and README rows are `Done` against their Done-when; T4.33 and T4.36 are `Done`
   under decision 65 (a) and (b), remaining native shapes carried by T4.38); README rows final
   after their live legs
-  (T4.29, T4.39, T4.49, T4.59, T4.69 and T4.79 are `Done` except the post-T4.n8 update);
+  (T4.29, T4.39, T4.49, T4.69 and T4.79 are `Done` except the post-T4.n8 update; T4.59 is `Done`);
   Muse Code (Should) has module, compile matrix, auth preflight,
   conformance suite and Git declaration on synthetic fixtures, with no `muse` run (README
   [Muse Code CLI](#muse-code-cli-milestone-4), ROADMAP T4.72 to T4.79); T4.71 and T4.78 need Meta access (Q-27); T4.73
@@ -2204,7 +2206,8 @@ none or non-string, root session ID wins over part on the same line, empty id is
 fall back to part while a non-string root value shadows the part (dropped, never merged), and `step_finish` without a
 part id is counted every time while one with no readable counters emits no usage but still the result.
 Rate-limit and sandbox stream shapes are still unrecorded (no real
-OpenCode limit capture exists yet; a limitation carried by ROADMAP T4.58 under owner decision 65 (a), with T4.53 Done
+OpenCode limit capture exists yet; a limitation still open after ROADMAP T4.58 (ran 2026-10-19 without capturing a
+native limit shape) under owner decision 65 (a), with T4.53 Done
 against its Done-when on synthetic fixtures). A project-config denial shape was recorded on 2026-10-18 (plain
 `git commit`/`git push` denied as a shell `error` with refusal text; spelling variants escaped), and shell
 `tool_use` input key names are recorded (`command` the only key; values never captured). Supervisor-replayed JSONL
@@ -2238,8 +2241,8 @@ no message at exit 1 to `AUTH_REQUIRED` ([#357](https://github.com/zemdregon/swi
 `part_session_empty_text` replays a part-only `sessionID`, empty text and an id-less `stop` at exit 0 to success with
 the id bound and no summary ([#357](https://github.com/zemdregon/switchboard/pull/357)). Closing the remaining gaps
 needs operator captures of native refusal field values and of `tool_use` input values (key names recorded
-2026-10-18; ROADMAP T4.58). T4.53 is `Done` against
-its Done-when on synthetic fixtures (owner decision 65 (a)) with those native shapes carried by T4.58; T4.52, T4.54,
+2026-10-18; ROADMAP T4.58 ran 2026-10-19 without capturing them — see T4.56). T4.53 is `Done` against
+its Done-when on synthetic fixtures (owner decision 65 (a)) with those native shapes still open after T4.58; T4.52, T4.54,
 T4.55 and T4.57 are `Done` against their Done-when on synthetic fixtures.
 
 ### Git and commits
@@ -2284,8 +2287,8 @@ inside, and after hostile calls (`opencodePartialStreams`), and 140 unreadable-e
 exits 0, 1, 2 and 137 (`opencodeUnreadableStreams`). In an approved bypass run the guard still enforces Git
 writes only: an out-of-worktree denial recorded only as `tool_use`
 `state.status` `error` without refusal-specific fields still ends `ok` in the parser suite (T4.53 gap pinned); closing
-that needs operator capture of native refusal fields or an owner decision on classifying `status` `error` (carried by
-ROADMAP T4.58 under owner decision 65 (b); the gap list stays on T4.56).
+that needs operator capture of native refusal fields or an owner decision on classifying `status` `error` (still open after
+ROADMAP T4.58, which ran 2026-10-19 without capturing native refusal fields; the gap list stays on T4.56).
 
 `commitChannel` is **`finalize-only`**: Switchboard does not inject a per-run MCP server through
 `OPENCODE_CONFIG_CONTENT` (not exercised on the 2026-10-14 live check). In the only compiled scope, repository
@@ -2350,7 +2353,8 @@ guard-blocked, trailing-tool and unreadable-event streams [#245](https://github.
 [#355](https://github.com/zemdregon/switchboard/pull/355), and JSON encodings, hypothetical stop reasons, path-to-command
 upgrades and exit 2/137 variations [#369](https://github.com/zemdregon/switchboard/pull/369)). T4.52, T4.54, T4.55 and
 T4.57 are `Done` against their Done-when on synthetic fixtures; T4.53 and T4.56 are `Done` against their Done-when
-under owner decision 65 (a) and (b), with native limit, refusal and tool-input shapes carried by T4.58 (see those rows).
+under owner decision 65 (a) and (b), with native limit, refusal and tool-input shapes still open after T4.58 (see those
+rows).
 A successful end-to-end routed run through Switchboard against a logged-in `opencode` was recorded on
 2026-10-19 (T4.58 Done): the live smoke edit task SUCCEEDED with `SMOKE.md` on the result branch, and the live
 malicious leg held O-M1/O-M2/O-M3 with no check ESCAPED
@@ -2850,7 +2854,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   the OpenCode parser likewise (ROADMAP T4.53, owner decision 65 (a)): no native rate-limit or sandbox shape
   exists (no real OpenCode limit capture has been made); a project-config denial shape and shell `tool_use` input
   key names were recorded on 2026-10-18 (`command` the only key; values never captured), and a native vendor
-  or model in the stream was observed absent on 2026-10-17, all carried by T4.58.** CI runs
+  or model in the stream was observed absent on 2026-10-17, all still open after T4.58 (ran 2026-10-19 without
+  capturing them; see T4.56).** CI runs
   `test/malicious/adapter-leg.test.ts` with
   `test/malicious/adapters/opencode.case.ts` on synthetic `--format json` streams (no `opencode` installed; no
   `replayGap`). Compile, isolation-flag and hostile replay blocking checks pass for the approved bypass cell: every
