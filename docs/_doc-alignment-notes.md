@@ -339,3 +339,31 @@ as history.
   dated snapshot, and rewriting it would falsify the record; the live
   status lives in the T3.8 row and the M3 row, which agree. It does not
   block PR #719.
+
+## 24. `antigravity.json` manifest notes still read "admits no version" (from the T4.38 re-implementation, out of gate scope)
+
+- The T4.38 re-implementation updates `src/adapters/manifests/antigravity.json` to
+  `validated_cli_version` `1.4.2`, range `>=1.4.2 <1.5.0`, with a dated
+  `Evidence (adapters validate, 2026-10-18)` line appended to `notes`.
+- The same `notes` string still opens with the T4.32 sentence "The range admits
+  no version (ADR-0009, ROADMAP 6.8 conventions): the adapter fails the version
+  gate with ADAPTER_VERSION_UNVERIFIED until `switchboard adapters validate
+  antigravity` passes a version, so nothing here is a claim that any agy version
+  is validated." That condition is now satisfied, so the sentence is
+  stale against the range in the same file.
+- Left unchanged: the manifest is `src/**`, and this gate edits documentation
+  only (`*.md`, `docs/**`). Refreshing that sentence needs a one-line manifest
+  edit by the PR author (or a code-touching follow-up), not an owner decision.
+  It does not block the T4.38 re-implementation (the range fields and the evidence line, which are
+  what the gate and the version check read, are correct).
+- Same staleness, same scope: the header comments in
+  `src/adapters/antigravity/adapter.ts` ("The manifest range admits no
+  version, so none of this runs before `adapters validate` passes a version")
+  and `src/adapters/antigravity/protocol.ts` ("The manifest range admits no
+  version, so none of this runs until `adapters validate` passes a version")
+  were true under the old `<0.0.0` range and are overtaken by the new
+  `>=1.4.2 <1.5.0` range the same way. They need a code-touching follow-up,
+  not an owner decision, and do not block the T4.38 re-implementation. (Kimi has the identical
+  shape since PR #694: `kimi.json` admits `>=2.1.1 <2.2.0` while
+  `src/adapters/kimi/adapter.ts` and `src/adapters/kimi/protocol.ts` still
+  say the range admits no version; see item 15.)
