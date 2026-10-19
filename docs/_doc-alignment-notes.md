@@ -648,7 +648,7 @@ as history.
 ## 38. CI Linux job timeout 10 -> 20 minutes (PR #751, no doc impact, checked 2026-10-19)
 
 - PR #751 changes only `timeout-minutes: 10` to `20` for the Linux job in
-  `.github/workflows/ci.yml` (the macOS job already uses 20).
+  `.github/workflows/ci.yml` (the macOS job also used 20 before its removal in PR #761).
 - No document states a CI job timeout value: [TDD §3.8](design/TDD.md#38-ci-pipeline)
   describes the pipeline jobs without timeouts, and greps for `timeout-minutes`,
   `10 minutes` and `20 minutes` across `docs/`, `README.md`, `CONTRIBUTING.md`
@@ -698,3 +698,17 @@ as history.
   range change in `src/**`, which this gate cannot touch). The current
   range is stated in the T4.48 row, TDD §4.5.6, the README Cursor section
   and the manifest itself. It does not block PR #757.
+
+## 41. TDD §3.8 cites a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, recorded not resolved)
+
+- PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
+  owner's macOS merge waiver" / "under the owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux
+  job".
+- No [§4.2 Owner decisions](ROADMAP.md#42-owner-decisions) entry (§4.2 runs to decision 77) records such a waiver,
+  and the §5 document table says owner decisions are "Listed in §4.2 only".
+- Left unchanged: writing a §4.2 entry would mean restating zemdregon's words and minting decision context this
+  gate cannot verify and must not invent (cf. items 18 and 39 for the same precedent). Recording that entry is
+  the roadmap owner's call. It does not block PR #761: the operative fact — CI is Linux-only
+  (`.github/workflows/ci.yml` holds one job, `Typecheck, lint, test, docs check (Linux)`) — is verified against
+  the code, and the merge-gate reading agrees with ADR-0060, which already recorded the macOS leg as dropped from
+  gating, and with the AGENTS.md "seven checks" merge routine, which lists the Linux job only.
