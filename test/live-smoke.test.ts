@@ -8,6 +8,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { createParseState } from "../src/adapters/types.js";
+import { compileCell } from "./live-cells.js";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "live-smoke.mjs");
 
@@ -26,7 +28,7 @@ describe("live smoke script (opt-in)", () => {
     let stderr = "";
     try {
       execFileSync(process.execPath, [SCRIPT], {
-        env: { PATH: "/nonexistent", SWITCHBOARD_LIVE_TESTS: "1", SWITCHBOARD_LIVE_PROVIDER: "grok" },
+        env: { PATH: "/nonexistent", SWITCHBOARD_LIVE_TESTS: "1", SWITCHBOARD_LIVE_PROVIDER: "nope" },
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -35,7 +37,9 @@ describe("live smoke script (opt-in)", () => {
       stderr = String((err as { stderr: string }).stderr);
     }
     expect(status).toBe(2);
-    expect(stderr).toContain("SWITCHBOARD_LIVE_PROVIDER must be one of claude, codex");
+    expect(stderr).toContain(
+      "SWITCHBOARD_LIVE_PROVIDER must be one of agy, claude, codex, cursor, grok, kimi, opencode",
+    );
   });
 });
 
@@ -64,6 +68,108 @@ describe("live smoke provider plug-ins (T4.3)", () => {
         expect(typeof plugin[hook], `${id}.${hook}`).toBe("function");
       }
     }
+  });
+
+  it("has a plug-in for Antigravity, OpenCode, Cursor, Kimi Code and Grok Build, each with an approved smoke cell", async () => {
+    expect(ids).toEqual(expect.arrayContaining(["agy", "opencode", "cursor", "kimi", "grok"]));
+    const adapterOf: Record<string, string> = { agy: "antigravity" };
+    for (const id of ["agy", "opencode", "cursor", "kimi", "grok"]) {
+      const plugin = (await import(pathToFileURL(path.join(dir, `${id}.mjs`)).href)).default;
+      expect(plugin.adapterId ?? id, id).toBe(adapterOf[id] ?? id);
+      expect(plugin.smokeCell.scope.files.access, id).toBe("worktree");
+      // Every smoke check id starts with the plug-in's prefix; none collides with the shared flow's G-1 or E2E.
+      expect(plugin.checkPrefix, id).toMatch(/^[A-Z]+$/);
+      expect(plugin.checkPrefix, id).not.toBe("G");
+    }
+  });
+
+  it("compiles every smoke cell in its adapter with exactly the cell's declared bypass-class flag", async () => {
+    const want: Record<string, { transport: string; flags: string[] }> = {
+      agy: { transport: "subprocess-jsonl", flags: ["--dangerously-skip-permissions"] },
+      cursor: { transport: "subprocess-jsonl", flags: ["--force"] },
+      grok: { transport: "subprocess-jsonl", flags: ["--always-approve"] },
+      kimi: { transport: "acp-stdio", flags: [] },
+      opencode: { transport: "subprocess-jsonl", flags: [] },
+    };
+    for (const [id, w] of Object.entries(want)) {
+      const plugin = (await import(pathToFileURL(path.join(dir, `${id}.mjs`)).href)).default;
+      const { result, bypassFlags } = compileCell(plugin.adapterId ?? id, plugin.smokeCell.scope);
+      expect("reason" in result ? `${result.reason}: ${result.detail}` : result.transport, id).toBe(w.transport);
+      expect(bypassFlags, id).toEqual(w.flags);
+      expect(plugin.smokeCell.bypassFlag ?? null, id).toBe(w.flags[0] ?? null);
+    }
+  });
+
+  it("Kimi's parseLine skips ACP control-plane messages and passes stream records to the adapter", async () => {
+    const kimi = (await import(pathToFileURL(path.join(dir, "kimi.mjs")).href)).default;
+    const seen: unknown[] = [];
+    const adapter = {
+      parseEvent: (input: unknown) => {
+        seen.push(input);
+        return [{ kind: "message" }];
+      },
+    };
+    const state = createParseState();
+    const rpc = (o: Record<string, unknown>) => JSON.stringify({ jsonrpc: "2.0", ...o });
+    expect(kimi.parseLine(adapter, rpc({ id: 1, result: { protocolVersion: 1 } }), state)).toEqual([]);
+    expect(kimi.parseLine(adapter, rpc({ id: 9, method: "session/request_permission", params: {} }), state)).toEqual(
+      [],
+    );
+    expect(seen).toEqual([]);
+    const update = { jsonrpc: "2.0", method: "session/update", params: { update: {} } };
+    expect(kimi.parseLine(adapter, JSON.stringify(update), state)).toHaveLength(1);
+    const end = { jsonrpc: "2.0", id: 3, result: { stopReason: "end_turn" } };
+    expect(kimi.parseLine(adapter, JSON.stringify(end), state)).toHaveLength(1);
+    const streamJson = JSON.stringify({ role: "assistant", content: "ok" });
+    expect(kimi.parseLine(adapter, streamJson, state)).toHaveLength(1);
+    expect(seen).toEqual([update, end, streamJson]);
+  });
+
+  it("the shared stream checks read the adapter's normalized kinds (fake context, no CLI)", async () => {
+    const opencode = (await import(pathToFileURL(path.join(dir, "opencode.mjs")).href)).default;
+    const rows: { id: string; result: string }[] = [];
+    const record = (id: string, _g: string, _a: string, result: string) => rows.push({ id, result });
+    const held = (ok: boolean | undefined) => (ok === undefined ? "NOT_CHECKED" : ok ? "HELD" : "FAILED");
+    const base = { record, held, final: { status: "SUCCEEDED" }, badJson: 0, smokeContent: "ok" };
+    opencode.streamChecks({
+      ...base,
+      ran: true,
+      succeeded: true,
+      kinds: new Map([
+        ["session_bound", 1],
+        ["result", 1],
+        ["tool_call", 1],
+      ]),
+      unknownEvents: 0,
+      toolNames: new Set(["write"]),
+    });
+    expect(rows.map((r) => `${r.id}:${r.result}`)).toEqual([
+      "O-4:HELD",
+      "O-5:HELD",
+      "O-6:HELD",
+      "O-7:HELD",
+      "O-8:HELD",
+    ]);
+    rows.length = 0;
+    opencode.streamChecks({
+      ...base,
+      ran: true,
+      succeeded: false,
+      kinds: new Map(),
+      unknownEvents: 2,
+      toolNames: new Set(),
+    });
+    expect(rows.map((r) => r.result)).toEqual(["FAILED", "FAILED", "FAILED", "FAILED", "FAILED"]);
+    rows.length = 0;
+    opencode.streamChecks({
+      ...base,
+      ran: false,
+      succeeded: false,
+      kinds: new Map(),
+      unknownEvents: 0,
+      toolNames: new Set(),
+    });
+    expect(new Set(rows.map((r) => r.result))).toEqual(new Set(["NOT_CHECKED"]));
   });
 
   it("the skip message lists the plug-ins found, except the fake fixture (T8.9)", () => {

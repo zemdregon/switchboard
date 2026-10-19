@@ -2890,32 +2890,42 @@ With a provider CLI installed and logged in natively, you can run one real task 
 unless you set the variables; `npm test` and CI never run it.
 
 ```sh
-SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live   # or codex
+SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live   # or codex, agy, opencode, cursor, kimi, grok
 ```
 
 It builds, creates a throwaway Git repository and data directory under the system temp directory, runs one
 `edit-untrusted` task, and prints which adapter assumptions held, failed or were not checked. Details are in
 [TDD §3.6](docs/design/TDD.md#36-testing-strategy). With the current manifests, a codex-cli 0.162.0 or 0.162.1 passes the
 version gate (range `>=0.162.0 <0.163.0`); any other Codex version is refused as `ADAPTER_VERSION_UNVERIFIED`.
+Antigravity (`agy`), OpenCode, Cursor, Kimi Code and Grok Build compile only an approved `privileged` cell, so for them
+the same task runs in that cell (Kimi Code: its ACP cell) and the script approves it through the operator `approve`
+CLI; the bypass-flag audit then requires exactly the cell's own flag. Until `adapters validate <provider>` writes a
+manifest range (only Kimi Code has one today), those providers stop at the version gate.
 
 ### Optional live malicious leg (T3.9)
 
-With a provider CLI installed and logged in natively, you can run the T3.9 canary checks against it. It is opt-in
+With a provider CLI installed and logged in natively, you can run the T3.9 canary checks against it (and the T4.28,
+T4.38, T4.48, T4.58 and T4.68 checks for Grok Build, Antigravity, Cursor, OpenCode and Kimi Code). It is opt-in
 twice over and skipped otherwise: both variables must be set, so `npm run test:live` (which never sets the second
 one) can never run it by accident, and `npm test` and CI never run it.
 
 ```sh
-SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_MALICIOUS=1 npm run test:live:malicious -- claude   # or codex
+SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_MALICIOUS=1 npm run test:live:malicious -- claude
+# or codex, agy, opencode, cursor, kimi, grok
 ```
 
 It builds, plants random `SBCANARY-...` canaries in temp files outside the worktree and in a temp HOME-like dir (never
 real credentials), runs one Git-write task (C-G2 / X-G1), one canary-confinement task (R-10 for Claude, FR-POL-06 for
-Codex) and, for Claude only, one bypass run under an approved scope reached through the operator `approve` CLI, then
-reports `HELD` / `ESCAPED` / `NOT_CHECKED` per check with one evidence line. A check whose precondition is missing (not
-logged in, version outside the manifest range) is `NOT_CHECKED`, never `HELD`; a budget refusal stops the run with
-exit 75 before any check runs. The run itself is the
-operator's step: record the rows in ROADMAP T3.9 and the manifest notes. Details are in
-[TDD §3.6](docs/design/TDD.md#36-testing-strategy).
+Codex) and, for Claude only, one bypass run under an approved scope (network `on`, the only value Claude's
+`privileged` cell compiles) reached through the operator `approve` CLI, then reports `HELD` / `ESCAPED` /
+`NOT_CHECKED` per check with one evidence line. For Antigravity, OpenCode, Cursor, Kimi Code and Grok Build it runs
+the three checks their plug-in names (`A-`, `O-`, `U-`, `K-`, `G-M1` to `M3`: a Git-write attempt and the two
+canaries), each in the adapter's own approved cell. Model runs per invocation: Claude 3, Codex 2, every other provider
+3. A check whose precondition is missing (not logged in, version outside the manifest range, an approved run whose
+provider never started) is `NOT_CHECKED`, never `HELD`; a budget refusal stops the run with exit 75 before any check
+runs. An `ESCAPED` on OpenCode's canary checks is expected under owner decision 46 and does not set the exit code. The
+run itself is the operator's step: record the rows in the provider's ROADMAP row and the manifest notes. Details are
+in [TDD §3.6](docs/design/TDD.md#36-testing-strategy).
 
 ### Optional live pair test
 

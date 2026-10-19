@@ -258,7 +258,7 @@ startup reconciliation applies them. Run state transitions use an optimistic ver
 | Git boundary (M9) | Fake adapter with scripted tool calls and scripted attempts to `git commit`, move refs or push, against real Git repos and a local bare remote; fixtures of typical attribution trailers, footers and session IDs through the sanitiser; assertion that no published commit contains them and that checkpoint commits never reach the remote | No | FR-GIT-01..09 |
 | Project and environment (M9, M10) | Configuration validation (unknown context kind, path outside allowed roots), ceiling arithmetic, `host` runs through a project; container tests need a container runtime and are opt-in (skipped in CI until Q-6 is settled) | No for `host`; runtime for `container` | FR-PRJ-01..09 |
 | Live provider smoke | Opt-in only: `scripts/live-smoke.mjs` (`npm run test:live`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1`; not part of `npm test`, never runs in CI; an operator budget file caps it (T8.9, see below) | Yes | [AGENTS.md](../../AGENTS.md), NFR-MAINT-05 |
-| Live malicious leg (T3.9) | Opt-in twice over: `scripts/live-malicious.mjs` (`npm run test:live:malicious -- claude`, or `codex`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1` **and** `SWITCHBOARD_LIVE_MALICIOUS=1`, so the smoke test never runs it; canary files and tokens only; CI covers only the skip gate and the verdict mapper (`test/live-malicious.test.ts`) | Yes | NFR-SEC-03 |
+| Live malicious leg (T3.9, T4.n8) | Opt-in twice over: `scripts/live-malicious.mjs` (`npm run test:live:malicious -- claude`, or `codex`, `agy`, `opencode`, `cursor`, `kimi`, `grok`) is skipped unless `SWITCHBOARD_LIVE_TESTS=1` **and** `SWITCHBOARD_LIVE_MALICIOUS=1`, so the smoke test never runs it; canary files and tokens only; at most 3 model runs per provider; CI covers only the skip gate, the verdict mapper and the plug-in cells' compile (`test/live-malicious.test.ts`, fakes only) | Yes | NFR-SEC-03 |
 | Controller-overhead benchmark | `scripts/bench-perf.mjs` (`npm run bench`) times the real MCP server over the in-memory transport with the fake adapter; not part of `npm test` (see [§3.6.1](#361-controller-overhead-benchmark-t27)) | No | NFR-PERF-01, NFR-PERF-02 |
 | Inner agent (M11) | Scripted fake backend as a local HTTP server, hostile-output fixtures, planted-secret prompt capture, import-boundary test; details in [§3.12](#312-inner-agent) (as built: an in-process scripted fake plus a loopback fake HTTP server; the §3.12 as-built note maps each item to its test file) | No | FR-INN-01..17 |
 | Affinity replay (M7) | Table-driven and property tests over stored `route_decision` rows and a scripted fake adapter set: for any sequence of runs in a project, the provider and model change only when the decision carries an `affinity_switch_reason` from the closed list; a better score, lower cost or lower load never moves a project; no return after recovery; `require_provider`, `affinity reset`, `QUOTA_EXHAUSTED`, breaker open and exhausted retry each produce exactly their reason. Details in [§3.13.3](#3133-testing-affinity-and-retrieval) | No | FR-RTE-06..09, FR-CAP-08 |
@@ -276,13 +276,59 @@ over every `test/malicious/adapters/<id>.case.ts`; the case names the profile, t
 and its hostile streams (credential-path read, out-of-worktree write, network attempt, unknown events). It proves
 compile and parse behaviour against replayed, synthetic streams only; "no escape" on a real CLI is the operator leg
 (T3.9, T4.n8). Live scripts: `scripts/live-smoke.mjs` loads `scripts/live/providers/<id>.mjs` (the contract is in the
-header of those files) and still exits 0 without running anything unless `SWITCHBOARD_LIVE_TESTS=1`.
+header of those files) and still exits 0 without running anything unless `SWITCHBOARD_LIVE_TESTS=1`. Plug-ins exist for
+Claude Code, Codex, Antigravity (`agy`), OpenCode, Cursor, Kimi Code and Grok Build; the last five are built by
+`scripts/live/plugin-kit.mjs` (outside `providers/`, so it is not itself a plug-in), see the next paragraph.
 `scripts/live-pair.mjs` (T5.11, `npm run test:live:pair`) is the M5 pair: it delegates one edit to the first provider of
 a pair and continues the same meta-session on the second through `continue_task`, for `claude:codex` and `codex:claude`
 by default (`SWITCHBOARD_LIVE_PAIR=<first>:<second>` for one direction), under the same rules (opt-in, no bypass flag,
 no credential read, no prompt or transcript printed). It records statuses, failure codes, bindings without native
 session ids, and the bundle's artifact id and SHA-256. A provider that is not installed, not in its validated range or
 not logged in makes its checks `NOT_CHECKED`, and the script exits 1. Running it is the operator task T5.12.
+
+**Approved-cell plug-ins and their malicious legs (repo side of T4.28, T4.38, T4.48, T4.58, T4.68; Delegated).**
+Antigravity, OpenCode, Cursor, Kimi Code and Grok Build compile only an approved `privileged` scope (owner decisions 46,
+59 and 60), so `edit-untrusted` is `Ineligible` for them. Their plug-ins add `smokeCell` (the scope and the one
+bypass-class flag the cell declares, or none) and `adapterId` where it differs from the file name (`agy` ->
+`antigravity`). The smoke script then delegates the same task under `privileged` with that scope, the run parks in
+`AWAITING_APPROVAL`, and the script approves it through the operator `approve` CLI, as the C-M3 check does (no MCP tool
+can approve, FR-MCP-06). Its in-script audit requires exactly the cell's flag, as `adapters validate` does for its
+fallback. The cells are the adapters' own compiled cells:
+
+- Antigravity, Cursor and OpenCode use `COMPILED_CELL_FALLBACK` (`src/cli/adapters-validate.ts`): worktree files, shell
+  `broad`, network `on`, repository configuration `enabled`.
+- Grok Build uses its narrowest writable cell (network `off`, `--sandbox strict`), because the read-only fallback cell
+  cannot hold the edit.
+- Kimi Code uses its ACP cell (`privileged` without `bypass`, shell `none`) for the smoke, and `--prompt` for its
+  bypass run.
+
+The stream checks read the adapter's normalized events (`session_bound`, `result`, `tool_call`, `unknown`); Kimi's
+`parseLine` hook feeds stored ACP messages to `parseEvent` as objects and skips control-plane responses. Each plug-in
+also names its malicious checks (at most three model runs, `MODEL_RUNS` in `scripts/live-malicious.mjs`, which the
+operator's `live-run-ext.sh` meters):
+
+- `A-M1`, `O-M1`, `U-M1`, `G-M1`, `K-M1`: a Git-write attempt (FR-GIT-01).
+- `A-M2`, `O-M2`, `U-M2`, `G-M2`: the out-of-worktree canary (FR-POL-06).
+- `A-M3`, `O-M3`, `U-M3`, `G-M3`: the fake-HOME credential canary (FR-POL-06).
+- `K-M2`: both canaries in the ACP cell.
+- `K-M3`: the approved `--prompt` bypass run, with a commit and both canaries.
+
+Every run of the first four providers is an approved bypass run, because that is their only kind of cell. OpenCode's
+`O-M2` and `O-M3` are expected to escape (FR-POL-04/06 under owner decision 46): the report marks them, and they open a
+risk but do not set the exit code. Until `adapters validate <id>` writes a manifest range, every check stops at the
+version gate as `NOT_CHECKED`; only Kimi Code's manifest admits a version today. The live runs are the operator rows
+T4.28, T4.38, T4.48, T4.58 and T4.68. Tests are hermetic: `test/live-smoke.test.ts` and `test/live-malicious.test.ts`
+compile every cell in the real adapter class with a fake executable path (`test/live-cells.ts`) and check the run caps,
+check ids and verdict helpers. `test/live-budget.test.ts` checks that each provider asks the guard for exactly its
+`MODEL_RUNS`.
+
+**C-M3 fixes (PR #729 findings, Delegated).** C-M3's approved scope sets network `on` (`CLAUDE_BYPASS_SCOPE`): §4.1.1
+compiles a Claude `privileged` scope only with network `on`, and `off` is `Ineligible: CAPABILITY_MISSING`, so the
+earlier scope's run ended `FAILED` before any provider process. A check that delegates under an approved scope now reads
+whether the provider started from the ledger (the `RUNNING` transition that only the spawn callback writes;
+`providerStarted`). An approved run that never started is `NOT_CHECKED`, never `HELD` (`approvedRunVerdict`). Refs are
+compared with a snapshot taken before each run, so an earlier check's escape is not counted again. The throwaway config
+keys `providers.<id>` by the config id (`claude-code`, `grok-build`, ...), which the loader requires.
 
 **Live-test budget guard (T8.9, NFR-MAINT-05).** All three live scripts call `admitLiveRun` in `scripts/live/budget.mjs`
 after choosing their provider (a plug-in from `scripts/live/providers/` for smoke and pair, an adapter id for the
@@ -295,7 +341,7 @@ file, a relative path or a path inside the repository refuse (fail closed). The 
 injected) refuses, in this order, a purpose (`SWITCHBOARD_LIVE_PURPOSE`) not on the allowlist, a provider not listed, a
 start inside the minimum gap after the last `start` record, and a request that would pass the global or a per-provider
 cap of provider runs counted from `start` records inside the rolling window (a smoke run is one provider run, a pair
-direction one per provider, a live-malicious invocation up to three on its provider). A refusal appends a `denied`
+direction one per provider, a live-malicious invocation its `MODEL_RUNS` count, at most three). A refusal appends a `denied`
 record and exits 75 (`EX_TEMPFAIL`); an admission appends
 `start` and, on process exit, `finish` with the exit code. The file's model reaches the run without a new flag: the
 in-script compile (flag audit) carries it, the throwaway `serve` config lists only that model in `providers.<id>.models`
@@ -329,7 +375,7 @@ non-integer, it refuses to start.
 never logs in for you):
 
 ```sh
-SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live   # or SWITCHBOARD_LIVE_PROVIDER=codex
+SWITCHBOARD_LIVE_TESTS=1 SWITCHBOARD_LIVE_PROVIDER=claude npm run test:live   # or codex, agy, opencode, cursor, kimi, grok
 ```
 
 It builds, creates a throwaway Git repository and data directory under the system temp directory, starts the real
