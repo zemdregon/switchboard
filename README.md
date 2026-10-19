@@ -2572,10 +2572,10 @@ run is unverified.
 - **Record spellings are Assumptions until the operator capture (T4.71).** Only the `kind` field and the
   `run_terminal` shape are reported, by a third party; the other record kinds, the `session_id` and `text` fields and
   the `muse auth status` command and replies are Assumption spellings, so T4.73 stays `Partial`.
-- **The malicious-fixture leg (T4.76) is blocked.** The parser emits no `tool_call` event, so Switchboard's tool-call
-  guard never sees a command and a synthetic Git write in a Muse command or tool record at exit 0 ends in success
-  rather than `PERMISSION_BLOCKED`; closing it needs a parser change that reads commands out of those records, whose
-  field names are unsourced.
+- **The malicious-fixture leg (T4.76) rests on Switchboard's tool-call guard alone.** The parser reads a `tool_result`,
+  `command_accepted` or `command_result` record into a `tool_call` event for the ADR-0039 guard, so a synthetic Git
+  write in a Muse tool record ends `PERMISSION_BLOCKED` at any exit code (`test/malicious/adapters/muse.case.ts`),
+  under tool-record field names that are Assumptions until T4.71.
 - **Not runnable by default.** With no `muse` installed the provider is `BINARY_MISSING`, and with one installed it is
   `ADAPTER_VERSION_UNVERIFIED` until `adapters validate` passes a version (T4.78).
 - Live smoke, live malicious leg and `adapters validate` are operator work that needs Meta access (T4.71, T4.78, Q-27).

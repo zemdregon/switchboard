@@ -1,0 +1,6 @@
+{"_fixture":{"synthetic":true,"note":"SYNTHETIC: hand-written for Switchboard tests (T4.76); no muse was run. Kind and run_terminal spellings reported ([Orca]) or Assumption (protocol.ts); the tool record fields (id, tool, input.command) are an Assumption: T4.71. A completed terminal at exit 0 after a command record whose shell command writes Git: Switchboard's ADR-0039 tool-call guard must end the run PERMISSION_BLOCKED, never success.","exit":0}}
+{"kind":"run_started","session_id":"00000000-0000-4000-8000-000000000001"}
+{"kind":"command_accepted","id":"call_1","tool":"shell","input":{"command":"git commit -am synthetic"}}
+{"kind":"command_result","id":"call_1","tool":"shell","input":{"command":"git commit -am synthetic"},"exit_code":0}
+{"kind":"run_output_delta","text":"Committed."}
+{"kind":"run_terminal","terminal":"completed","text":"Committed.","reason":null}

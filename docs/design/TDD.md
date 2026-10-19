@@ -2839,6 +2839,29 @@ cover every required FR-ADP-11 kind (`success`, `task_failure`, `resume`, `auth_
 `AUTH_REQUIRED` naming `muse login` comes from the preflight. No permission, sandbox or rate-limit case exists, because
 no such record is sourced. Evidence: ROADMAP T4.75 and `src/adapters/muse/muse.test.ts` ("muse conformance suite").
 
+*As built (T4.76, 2026-10-19; Delegated agent work, not owner-approved; fixtures only, no `muse` was run).* Tool
+records. The [SDK] names a `ToolResult` payload and a `CommandAccepted`/`CommandResult` pair ("command intake") and
+none of their fields, and no tool-call payload, so these three records are the only sourced place a tool call can be
+read from. **Assumption: T4.71** (Delegated, fail closed; `TOOL_*` in `src/adapters/muse/protocol.ts`): a
+`tool_result`, `command_accepted` or `command_result` record may carry the tool's name (`tool`, `name`, `tool_name`),
+its parameters as an object or a JSON string (`input`, `args`, `arguments`, `parameters`) or at the top level, a shell
+tool's command line (`command`, `cmd`), a file tool's path (`path`, `file_path`) and a call id (`id`, `call_id`,
+`tool_call_id`). The parser (`#toolRecord` in `src/adapters/muse/adapter.ts`) turns every readable one into a
+`tool_call` event: a command line makes a `shell` call whatever the name says, carried as the transient `command` the
+shared ADR-0039 guard reads in full and `startAdapterRun` drops before the event is stored; a path alone makes a
+`read`, or an `edit` when the name says so; a name alone makes an `other` call; a record with none of these fields
+stays dropped, as the T4.73 paragraph says. A call id reports each command line once; a different command on the same
+id is reported again. So a Git write in a Muse tool record ends the run `PERMISSION_BLOCKED` at every exit code, exit
+`0` under a completed terminal included (the gap the first T4.76 attempt recorded), in an approved bypass run too
+(owner decision 25, [ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md)); a hostile action with no Git write is
+not blocked in that run, by design, and no native permission, sandbox or error record is sourced, so a provider refusal
+is still `TOOL_FAILURE` or success. Should T4.71 show that `command_accepted` echoes the prompt rather than a shell
+command, the capture narrows the record list: until then a prompt that parses as a Git write ends a run
+`PERMISSION_BLOCKED` (a refusal, never an escape). The unsourced `tool_call` kind stays `unknown`. The malicious leg
+(`test/malicious/adapters/muse.case.ts`, both compiled cells) rests on this guard verdict alone. Evidence: ROADMAP
+T4.76, `src/adapters/muse/fixtures/git_write_guard.jsonl` and `src/adapters/muse/muse.test.ts` ("muse tool records and
+the ADR-0039 guard").
+
 #### 4.8.1 T4.71 operator checklist
 
 *Operator-only, Proposed.* Needs an installed Muse Code CLI. Use a throwaway Git repository and a controller-made
@@ -2883,6 +2906,10 @@ and `muse --version` as dated fixtures. Record the answer next to each item; any
     with different values; record which values apply, the exit code and whether the `--allow-workspace-switch` refusal
     is a stop or a prompt without a TTY. Settles the [§4.10](#410-native-resume-inventory-t50) Muse Code sandbox and
     permission cells.
+15. **Tool records (T4.76).** In the item 5 and item 8 runs, record every `tool_result`, `command_accepted` and
+    `command_result` line verbatim (redacted): which of them carries the shell command line, under which field, with
+    which tool name and call id, and whether `command_accepted` is the shell command or the prompt. Replaces the
+    `TOOL_*` Assumption spellings in `src/adapters/muse/protocol.ts`.
 
 ### 4.9 Adapter-addition checklist (T4.2)
 
