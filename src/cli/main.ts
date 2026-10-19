@@ -15,6 +15,7 @@ import { listAffinity, renderAffinityList, renderAffinityReset, resetAffinity } 
 import { renderCapacity, runCapacity } from "./capacity.js";
 import { consentHashPassphrase, consentPair, renderPair, renderPassphraseHash } from "./consent.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
+import { runEvalCommand } from "./eval.js";
 import { renderGc, runGcCommand } from "./gc.js";
 import { renderGitPush, runGitPush } from "./git-push.js";
 import { commandNames, HELP, renderCommandHelp } from "./help.js";
@@ -87,6 +88,7 @@ const OPTIONS = {
   file: { type: "string" },
   "from-repository": { type: "boolean" },
   note: { type: "string" },
+  "live-budget": { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -169,8 +171,11 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
 
     if (cmd !== "gc" && (values.apply || values["dry-run"]))
       throw new UsageError("--apply and --dry-run are only valid with gc");
-    if (cmd !== "capacity" && values.provider !== undefined) {
-      throw new UsageError("--provider is only valid with capacity");
+    if (cmd !== "capacity" && cmd !== "eval" && values.provider !== undefined) {
+      throw new UsageError("--provider is only valid with capacity and eval run");
+    }
+    if (cmd !== "eval" && values["live-budget"] !== undefined) {
+      throw new UsageError("--live-budget is only valid with eval run");
     }
     if (!(cmd === "projects" && sub === "approve") && (values.revision !== undefined || values.reject)) {
       throw new UsageError("--revision and --reject are only valid with projects approve");
@@ -480,6 +485,16 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         throw new UsageError(
           `unknown schedule subcommand ${JSON.stringify(sub ?? "")}; expected list, show, enable, disable, approve, deny or create`,
         );
+      }
+      case "eval": {
+        // T8.14 (FR-OPS-06, LLD §20.13): own-repository evaluation; skipped in CI, real providers need a live budget.
+        const r = await runEvalCommand(io, loaderArgv, sub, rest, {
+          ...(values.provider !== undefined ? { provider: values.provider } : {}),
+          ...(values["live-budget"] !== undefined ? { liveBudget: values["live-budget"] } : {}),
+        });
+        if (json) io.stdout.write(`${JSON.stringify(r.data, null, 2)}\n`);
+        else (r.code === 0 ? io.stdout : io.stderr).write(r.text);
+        return r.code;
       }
       case "skills": {
         // T16.2 (FR-SKL-09, LLD §19.10): operator records and the content file only (ADR-0005).

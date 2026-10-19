@@ -729,7 +729,7 @@ as history.
   range is stated in the T4.48 row, TDD §4.5.6, the README Cursor section
   and the manifest itself. It does not block PR #757.
 
-## 41. ADR-0061 Consequences still says binary secrets "are not caught" (from PR #764, blocks)
+## 42. ADR-0061 Consequences still says binary secrets "are not caught" (from PR #764, blocks)
 
 - [ADR-0061](adr/0061-pre-push-secret-scan-blocks-every-run.md) Consequences says "A secret in a binary file or in
   an encoding the rules do not match is not caught; binary files are listed in the event."
@@ -751,7 +751,7 @@ as history.
 - Resolved 2026-10-19 by Linus ruling (DOC-CONFLICT #764): ADR-0061 Amendment 2026-10-19 added; code kept
   (--text scans binaries).
 
-## 41. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
+## 43. HLD §1.2 "No network listener" and the FRD Orchestrator transport cell (pre-existing, not from PR #762)
 
 - [HLD §1.2](design/HLD.md#12-explicit-exclusions) still excludes "No network
   listener: MCP is stdio only; HTTP/SSE is deferred", while the M13 network
@@ -766,7 +766,7 @@ as history.
   transport facts are stated in the M13 row, LLD §3.3 and LLD §20.8, which
   this PR updates where it touches them).
 
-## 42. SRS FR-CAP-12 "light admitted" vs the `allow_light` gate (pre-existing, not from PR #760)
+## 44. SRS FR-CAP-12 "light admitted" vs the `allow_light` gate (pre-existing, not from PR #760)
 
 - [SRS FR-CAP-12](requirements/SRS.md) says "A request or work item marked
   `light` is admitted while held", unconditionally.
@@ -783,7 +783,27 @@ as history.
   narrowing the SRS guarantee to "from an allowed client" is the SRS
   owner's call. It does not block PR #760.
 
-## 43. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
+## 45. HLD component rows cite pre-#638 requirement ranges, now also excluding FR-POL-11 (pre-existing, not from PR #770)
+
+- [HLD §2](design/HLD.md) COMP-POL cites `FR-POL-01..10` and COMP-WS cites `FR-WS-01..07, FR-POL-10, FR-GIT-08`,
+  while [SRS](requirements/SRS.md) also carries FR-POL-11 (added 2026-10-19 for owner decision 77) and the
+  [SDD](design/SDD.md) maps it to COMP-POL, COMP-WS. The HLD ranges already excluded newer IDs before this PR
+  (cf. item 9 above for the same class); PR #770 only flips the SDD/ROADMAP status of T3.25 to Done and touches
+  neither the SRS requirement nor the HLD rows.
+- Left unchanged: re-attribution is the HLD owner's call, the SDD covers FR-POL-11, and
+  `node scripts/check-docs.mjs` passes. It does not block PR #770.
+
+## 46. ROADMAP §9.2 sequencing note still reads "are `Planned`" (pre-existing, not from PR #770)
+
+- [ROADMAP §9.2](ROADMAP.md#92-harness-and-discovery-rows-2026-10-19) says "The rows added on 2026-10-19 are
+  `Planned`", while T3.24, T15.9, T9.14 and now T3.25 (this PR) record Done. The sentence was already overtaken
+  on `origin/main` before this branch (by the T3.24, T15.9 and T9.14 merges); this PR only adds one more Done
+  row to the same list without touching §9.2.
+- Left unchanged: §9.2 is a dated (2026-10-19) sequencing snapshot, and rewriting it would falsify the record
+  (cf. item 23 above for the §6.5 intro precedent); the live status lives in each task row and the milestone
+  rows, which agree. It does not block PR #770.
+
+## 47. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
 
 - PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
   owner's macOS merge waiver" / "under the owner's 2026-10-18 macOS merge waiver: the merge gate is the Linux
@@ -800,7 +820,7 @@ as history.
   ADR-0060 ("the macOS leg was dropped from gating by a ruling") instead of a dated owner waiver, so no §4.2
   entry is needed and no owner approval is implied. Resolved, not outstanding.
 
-## 44. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
+## 48. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
 
 - TDD §5 (implementation strategy, M4 row) listed "macOS CI leg (NFR-PORT-02)" in the present tense as the
   technical approach; past-tensed to "ran 2026-10-14, removed 2026-10-19 when CI went Linux-only, §3.8",
@@ -814,7 +834,7 @@ as history.
   CI, so the verification method still holds; narrowing it is the SRS owner's call. SDD NFR-PORT-02 row
   still points at TDD §2, which still documents the CI history.
 
-## 45. HLD COMP-TEL row still cites `FR-TEL-01..03` (from PR #769, not blocking)
+## 49. HLD COMP-TEL row still cites `FR-TEL-01..03` (from PR #769, not blocking)
 
 - [HLD §2](design/HLD.md) COMP-TEL cites `FR-TEL-01..03`, while [SDD](design/SDD.md) (updated by this PR) maps
   FR-TEL-06 to COMP-TEL, COMP-ADP and COMP-RTE. FR-TEL-05/FR-TEL-06 postdate the HLD row (both added 2026-10-19
@@ -826,9 +846,9 @@ as history.
   otherwise makes its "no listener" parenthetical read as global. It does not block PR #769 (the T8.15 status,
   evidence and as-built behaviour are cited in the ROADMAP T8.15 row, the M8 row, LLD §20.13, the SDD FR-TEL-06
   row, the SRS FR-TEL-06 note, TDD §3.1, the README telemetry section and config table, and ADR-0063
-  (renumbered from 0062 in this pass; see item 46).
+  (renumbered from 0062 in this pass; see item 50).
 
-## 46. Duplicate ADR number 0062 fixed by renumbering the new ADR to 0063 (PR #769, fixed, not blocking)
+## 50. Duplicate ADR number 0062 fixed by renumbering the new ADR to 0063 (PR #769, fixed, not blocking)
 
 - This branch added `docs/adr/0062-per-run-provider-otlp-metrics-receiver.md` (commit `d98dc74`) while
   `origin/main` already carried `docs/adr/0062-mcp-sdk-v2-dual-era-http.md` (T13.10, PR #771), so the ADR
