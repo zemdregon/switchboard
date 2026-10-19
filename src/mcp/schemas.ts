@@ -509,6 +509,13 @@ const DIGEST = {
         properties: {
           project_id: { type: "string" },
           paused: { type: "boolean" },
+          // T14.16 (FR-CTL-14, LLD §20.5): present only while the project's progress is stalled.
+          project_needs_attention: {
+            type: "object",
+            additionalProperties: false,
+            required: ["active", "reason"],
+            properties: { active: { const: true }, reason: { const: "stalled_progress" } },
+          },
           budget: {
             type: "object",
             additionalProperties: false,

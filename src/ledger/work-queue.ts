@@ -3,6 +3,17 @@ import type { IdGenerator } from "../ids/index.js";
 
 export type WorkItemState = "PENDING" | "READY" | "ADMITTING" | "ADMITTED" | "DONE" | "CANCELLED" | "FAILED_ADMISSION";
 
+/** Every {@link WorkItemState}, in migration 0017's CHECK order. */
+export const WORK_ITEM_STATES: readonly WorkItemState[] = [
+  "PENDING",
+  "READY",
+  "ADMITTING",
+  "ADMITTED",
+  "DONE",
+  "CANCELLED",
+  "FAILED_ADMISSION",
+];
+
 export type WorkSourceKind = "mcp" | "schedule" | "ci_trigger";
 
 export type WorkEventType = "enqueued" | "ready" | "admitted" | "done" | "cancelled" | "admission_failed";
@@ -77,6 +88,17 @@ export interface WorkQueueLedgerSlice {
    * T15.4: registers an optional callback notified whenever work items in a project change state.
    */
   setQueueChangeListener(listener?: (projectId: string) => void): void;
+  /** T14.16 (FR-CTL-14, LLD §20.5): the ledger facts the `stalled_progress` derivation reads for one project. */
+  readProgressStallFacts(projectId: string): ProgressStallFacts;
+  /** T14.16 (FR-CTL-14, LLD §20.5): work items of every project by state (integer counts for the pushed digest). */
+  countWorkItemsByState(): Partial<Record<WorkItemState, number>>;
+}
+
+/** T14.16: one project's `READY` count, the oldest `READY` item's `created_at` and the newest `DONE` `terminal_at`. */
+export interface ProgressStallFacts {
+  readyCount: number;
+  oldestReadyCreatedAt: string | null;
+  lastDoneAt: string | null;
 }
 
 const ITEM_COLS = `id, project_id, creator_client_id, state, priority, request_json, source_kind, source_id,
@@ -431,6 +453,26 @@ export function createWorkQueueLedgerSlice(
 
     setQueueChangeListener(listener) {
       queueChangeListener = listener;
+    },
+
+    readProgressStallFacts(projectId) {
+      const ready = db
+        .prepare(
+          "SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM project_work_item WHERE project_id = ? AND state = 'READY'",
+        )
+        .get(projectId) as { n: number; oldest: string | null };
+      const done = db
+        .prepare("SELECT MAX(terminal_at) AS last FROM project_work_item WHERE project_id = ? AND state = 'DONE'")
+        .get(projectId) as { last: string | null };
+      return { readyCount: ready.n, oldestReadyCreatedAt: ready.oldest, lastDoneAt: done.last };
+    },
+
+    countWorkItemsByState() {
+      const rows = db.prepare("SELECT state, COUNT(*) AS n FROM project_work_item GROUP BY state").all() as {
+        state: WorkItemState;
+        n: number;
+      }[];
+      return Object.fromEntries(rows.map((r) => [r.state, r.n]));
     },
 
     countAdmissibleWorkItems(projectId) {
