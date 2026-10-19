@@ -837,6 +837,31 @@ describe("git.sanitize_patterns (FR-GIT-04, T9.3)", () => {
   });
 });
 
+describe("git.secret_scan.allow (FR-GIT-11, T9.14, LLD §20.9)", () => {
+  it("defaults to none and resolves entries in order", () => {
+    expect(loadConfig({ configPath: write(base()) }).secretScanAllow).toEqual([]);
+    const allow = [
+      { rule_id: "aws_access_key_id", path: "fixtures/**" },
+      { rule_id: "jwt", path: "docs/*.md" },
+    ];
+    const cfg = { ...base(), git: { secret_scan: { allow } } };
+    expect(loadConfig({ configPath: write(cfg) }).secretScanAllow).toEqual(allow);
+  });
+
+  it("refuses an unknown rule id, a missing field, an unknown key and more than 64 entries at load", () => {
+    const at = (allow: unknown, extra: Record<string, unknown> = {}) =>
+      loadConfig({ configPath: write({ ...base(), git: { secret_scan: { allow, ...extra } } }) });
+    expect(() => at([{ rule_id: "not_a_rule", path: "**" }])).toThrow(
+      /\$\.git\.secret_scan\.allow\[0\]\.rule_id: unknown rule "not_a_rule"/u,
+    );
+    expect(() => at([{ rule_id: "jwt" }])).toThrow(/secret_scan/u);
+    expect(() => at([{ rule_id: "jwt", path: "x", extra: 1 }])).toThrow(/secret_scan/u);
+    expect(() => at([], { bypass: true })).toThrow(/\$\.git\.secret_scan\.bypass: unknown key/u);
+    const many = Array.from({ length: 65 }, () => ({ rule_id: "jwt", path: "x" }));
+    expect(() => at(many)).toThrow(/secret_scan/u);
+  });
+});
+
 describe("inner_agent (T11.1; FR-INN-01, FR-INN-03, LLD §13.1)", () => {
   const section = (over: Record<string, unknown> = {}) => ({
     enabled: true,

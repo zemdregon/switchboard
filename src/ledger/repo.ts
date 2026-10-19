@@ -974,6 +974,11 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   getGitPush(id: string): GitPushRow | undefined;
   /** Whether an ACCEPTED `git_push` row pushed exactly `headSha` to `ref` on the remote named `remote` (T9.6). */
   hasAcceptedPush(remote: string, ref: string, headSha: string): boolean;
+  /**
+   * Payload JSON of the newest `git_push` run events across every run of a meta-session, NEWEST FIRST, at most
+   * `limit` (T9.14, FR-CTL-03 `secret_scan_blocked`: operator pushes record on a run of the meta-session too).
+   */
+  listGitPushEventPayloadsForMetaSession(metaSessionId: string, limit: number): string[];
 
   // ---- T11.2 additions (inner-agent call pipeline, LLD §13.3, §13.4 step 13, §13.8) --------------------------------
   /**
@@ -2117,6 +2122,17 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           )
           .get(remote, ref, headSha) !== undefined
       );
+    },
+
+    listGitPushEventPayloadsForMetaSession(metaSessionId, limit) {
+      return (
+        db
+          .prepare(
+            `SELECT e.payload_json AS payload_json FROM run_event e JOIN run r ON r.id = e.run_id
+             WHERE r.meta_session_id = ? AND e.type = 'git_push' ORDER BY e.ts DESC, e.id DESC LIMIT ?`,
+          )
+          .all(metaSessionId, limit) as { payload_json: string }[]
+      ).map((row) => row.payload_json);
     },
 
     getMetaSessionBaseCommit(metaSessionId) {
