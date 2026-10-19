@@ -716,7 +716,12 @@ Control-plane knobs live in `config.json` (no duplicate schema here):
 - `mcp_clients[]`: per client, `tool_profile` (`orchestrator` default or `console`), `approval_proxy` and
   `approval_proxy_targets` for the proxy client (ADR-0047).
 - `control_plane.budgets` and `control_plane.loop_breaker` (T14.4–T14.5).
-- `notification_sinks[]`: webhook and ntfy kinds, filters and rate limits, plus an optional webhook `authorization`
+- `control_plane.digest_schedule` (T14.16, FR-CTL-14): `{ cron }` in the UTC cron syntax; pushes a metadata-only
+  digest to the sinks on schedule; absent means off.
+- `projects[].queue.stall_hours` (T14.16, FR-CTL-14): integer 1 to 720 hours; a project with `READY` items and no
+  item reaching `DONE` in the window is flagged `stalled_progress` on `get_digest`; absent means off.
+- `notification_sinks[]`: webhook and ntfy kinds, filters (including the `digest` kind, T14.16) and rate
+  limits, plus an optional webhook `authorization`
   value sent as the `Authorization` header (FR-CTL-12, T14.14, ADR-0048); off by default.
 
 See [TDD §3.1](docs/design/TDD.md#31-configuration) and [LLD §3.4](docs/design/LLD.md#34-control-plane-m14-proposed-t140).
@@ -758,6 +763,9 @@ Fixtures only; no live provider CLI:
   (served-resource link).
 - Webhook authorization (T14.14, FR-CTL-12): `src/config/notification-sinks.test.ts`, `src/cli/cli.test.ts` (doctor
   `set`/`unset` suite); header-delivery and canary scans in `src/control/sinks.test.ts`.
+- Scheduled digest push and progress stall (T14.16, FR-CTL-14): `src/control/digest-push.test.ts` (metadata-only
+  digest on schedule, stall derivation, project-level flag on `get_digest`) and
+  `src/config/digest-stall-config.test.ts` (off by default, resolution, refusal of bad cron and stall values).
 - Digest and envelopes: `src/mcp/digest.test.ts`, `src/mcp/list-runs.test.ts`, `src/mcp/needs-attention.test.ts`.
 
 ### Known limitations

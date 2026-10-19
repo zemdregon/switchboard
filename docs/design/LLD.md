@@ -1835,6 +1835,9 @@ as `untrusted_text`, never as authoritative instruction text (FR-CTL-02).
   delta lists only the projects of touched runs, each with its current `paused`.
 - `pending_approvals` lists `privileged_scope` approvals; `approval_digest` is the §3.4.8 SHA-256 over controller
   fields. Dynamic-project and push revisions join with T14.8.
+- `project_needs_attention` (T14.16, FR-CTL-14, §20.5): present only while the project's progress is stalled
+  (`{ "active": true, "reason": "stalled_progress" }`); the key is omitted otherwise, so a digest without a
+  configured `stall_hours` window is unchanged. It carries no run: the flag is the project's.
 
 #### 3.4.4 `steer_run`, pause and resume (FR-CTL-04, FR-CTL-05)
 
@@ -2176,7 +2179,8 @@ counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
   `Authorization: <authorization>` when `authorization` is configured (FR-CTL-12, T14.14). ntfy: JSON publish
   ([ntfy publish](https://docs.ntfy.sh/publish/), "Publish as JSON") to the server root with body `{ topic, title:
   "Switchboard: <event_kind>", message: "project_id=<id> reason_code=<code> run_id=<id|none>", click: <link>, tags:
-  ["switchboard"] }` and `Authorization: Bearer <token>` when `token` is set.
+  ["switchboard"] }` and `Authorization: Bearer <token>` when `token` is set. For a `digest` event the message
+  carries the counts tail of §20.5 after the base fields.
 - Delivery starts on a later event-loop turn than the transition, uses no connection reuse, follows no redirect and
   times out after 5 s. Outcome codes: `timeout`, `transport_error`, `http_status` (with the status) and
   `rate_limited`. A failure or drop for an event with a run appends a `sink_delivery_failed` run event `{ sink_id,
@@ -7298,8 +7302,8 @@ provider fact. Nothing here adds a run state: holds keep a run `QUEUED`, and par
   project), `queue_by_state` (work items of every state), `pending_approvals` and `paused_projects`. Holds by reason
   and open decisions join when T3.24 and T14.15 build them. The payload builder rebuilds `counts` key by key from the
   closed lists and drops the event when a key is missing or extra or a value is not a non-negative integer; `counts`
-  on any other kind is dropped too (`src/control/sinks.ts`). The ntfy message appends the non-zero counts as
-  `group.key=n`.
+  on any other kind is dropped too (`src/control/sinks.ts`). The ntfy message appends the non-zero grouped counts
+  and always the two scalar counts (`pending_approvals`, `paused_projects`), each as `group.key=n`.
 - **Stall** reads `READY` count, the oldest `READY` item's `created_at` and the newest `DONE` item's `terminal_at`
   (`readProgressStallFacts`, `src/ledger/work-queue.ts`). "First `READY`" is the oldest `READY` item's `created_at`,
   so an item cycling `READY` → `ADMITTING` → `READY` on admission retries does not restart the window. `stall_hours` is
