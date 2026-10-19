@@ -1,7 +1,9 @@
 # ADR-0013: Projects own environments and contexts
 
-- Status: Accepted (the concept and orchestrator-managed projects); the container mechanism is Proposed (Delegated);
-  the container image rule is amended by [ADR-0020](0020-container-image-without-git-client.md)
+- Status: Accepted (the concept and orchestrator-managed projects); the container mechanism (rootless runtime,
+  in-volume native login) Accepted 2026-10-18 on the T10.0 operator results (Delegated; see
+  [Operator live findings](#operator-live-findings-2026-10-18-t100)); the container image rule is amended by
+  [ADR-0020](0020-container-image-without-git-client.md)
 - Date: 2026-10-12
 - Decided by: zemdregon (projects as first-class, an environment plus contexts, environments likely containers; message
   of 2026-10-12). Delegated (agent, 2026-10-12) for the mechanism: config-defined projects, two environment kinds, the
@@ -53,7 +55,12 @@ could be tempted to do to give the provider CLI its login.
 - **Container runtime and logins (Q-6, Delegated, Proposed).** A rootless OCI-compatible runtime (rootless Podman is the
   likely candidate; unverified), driven through its CLI behind the environment port. Provider logins are done by the
   operator running the provider's own login inside the project's container volume once; the controller copies nothing
-  (FR-AUTH-01). M10 is unblocked on that basis, with a spike to verify it for each provider.
+  (FR-AUTH-01). M10 is unblocked on that basis, with a spike to verify it for each provider. *Update 2026-10-18:*
+  verified by the T10.0 operator results (rootless Docker 29.8.2 on the operator host, in-volume native login
+  Observed for all seven providers); the mechanism is now
+  [Accepted](#operator-live-findings-2026-10-18-t100). The Decision text above is kept as decided; the verification
+  conditions and their results are recorded in [Consequences](#consequences) and
+  [Operator live findings](#operator-live-findings-2026-10-18-t100).
 
 ## Alternatives considered
 
@@ -62,7 +69,10 @@ could be tempted to do to give the provider CLI its login.
 - **Orchestrator creates projects with no approval step.** Rejected: creating a project can mount host paths, start
   containers and grant push, which the client ceiling alone does not cover. Hence the approval gate above.
 - **Always run in a container.** Rejected for now: provider logins live in each CLI's own store, and getting them into a
-  container without the controller copying credentials is only a Proposed mechanism, to be verified in M10.
+  container without the controller copying credentials is only a Proposed mechanism, to be verified in M10. *Update
+  2026-10-18:* the mechanism is verified and Accepted on the T10.0 operator results (see
+  [Operator live findings](#operator-live-findings-2026-10-18-t100)); the rejection above still stands because the
+  container backend mounts no login volume yet (ADR-0052).
 - **Rely only on provider-native sandboxes.** Kept for `host`; the container kind exists because [R2] reports uneven
   native sandboxing (Claude Code has none documented).
 
@@ -74,11 +84,13 @@ could be tempted to do to give the provider CLI its login.
 - Still to verify in the M10 spike: that the rootless runtime fits the host, that the provider CLI can live in an
   operator-pinned image, and that each provider's native login works inside the volume and is acceptable under its terms
   (R-2). *Update 2026-10-16:* the first of those is observed on the Ampere host (rootless Docker); the login and
-  Git-free CLI questions remain open. See [Spike findings](#spike-findings-2026-10-16-t100).
+  Git-free CLI questions remain open. See [Spike findings](#spike-findings-2026-10-16-t100). *Update 2026-10-18:*
+  all three are met; see [Operator live findings](#operator-live-findings-2026-10-18-t100).
 
 ## Spike findings (2026-10-16, T10.0)
 
-Container mechanism **Status stays Proposed**. This section records what T10.0 observed; it does not change the
+Container mechanism **Status stayed Proposed** on 2026-10-16 (Accepted 2026-10-18, [Operator live
+findings](#operator-live-findings-2026-10-18-t100)). This section records what T10.0 observed; it does not change the
 Decision. Evidence:
 [docs/research/container-runtime-spike-2026-10-16.md](../research/container-runtime-spike-2026-10-16.md).
 Delegated agent work, not owner-approved. No provider CLI was installed or run.
@@ -94,21 +106,49 @@ Delegated agent work, not owner-approved. No provider CLI was installed or run.
   tested on named volumes.
 - **Image without a Git client (ADR-0020).** `node:22-bookworm-slim` (already present; not built) has no `git` and
   no `gh` on `PATH`. `command -v git` / `command -v gh` plus a `PATH` directory scan, with `--network none` and
-  `--read-only`, is a workable refusal check. Whether each provider CLI *runs* without a Git client is
-  **Unverified: operator (T10.0 live)**. No provider is marked `host`-only.
+  `--read-only`, is a workable refusal check. Whether each provider CLI *runs* without a Git client was, on
+  2026-10-16, **Unverified: operator (T10.0 live)** (Observed 2026-10-18 for all seven providers; see [Operator live
+  findings](#operator-live-findings-2026-10-18-t100)). No provider is marked `host`-only.
 - **Mounts and limits.** A rw worktree bind, a read-only context bind (write → `Read-only file system`),
   `--network none` (DNS `EAI_AGAIN`, TCP `ENETUNREACH`), `--memory 128m` / `--pids-limit 64` (inspect:
   `Memory=134217728`, `PidsLimit=64`), and `docker rm` at the end all behaved as specified. Spike-prefixed
   containers and the login-stand-in volume were removed. The public slim image was not removed (this spike did
   not create it).
-- **In-volume native login.** Documentation-only table in the research note. Every provider cell is
-  **Unverified: operator (T10.0 live)**. File-based stores (Claude `CLAUDE_CONFIG_DIR` / `~/.claude`, Codex
+- **In-volume native login.** Documentation-only table in the research note. On 2026-10-16 every provider cell was
+  **Unverified: operator (T10.0 live)** (Observed 2026-10-18; see [Operator live
+  findings](#operator-live-findings-2026-10-18-t100)). File-based stores (Claude `CLAUDE_CONFIG_DIR` / `~/.claude`, Codex
   `CODEX_HOME` / `~/.codex/auth.json`, Grok `GROK_HOME` / `~/.grok`, Antigravity token file under `$HOME` or
   `--gemini_dir`, Cursor under `HOME` not `CURSOR_CONFIG_DIR` alone, Kimi `KIMI_CODE_HOME/credentials/`, Muse
   `~/.config/muse/auth.json`) look compatible with a volume *if* the operator can complete native login as uid 0
   with network, then reuse the volume on a `--network none` run. OpenCode's default user service may not exist in
   a container (`--standalone` is the documented isolation path). Antigravity's Ampere live check recorded a
   **file** token, not a keyring; that is not treated as `host`-only. Login was not attempted.
+
+## Operator live findings (2026-10-18, T10.0)
+
+The container mechanism moves from Proposed to **Accepted** (Delegated: zemdregon left Q-6 to the agent). Evidence:
+[container runtime spike §6](../research/container-runtime-spike-2026-10-16.md#6-operator-in-volume-login-and-prompt-results-2026-10-18)
+(Observed by the operator on the Ampere host; no credential read or copied). The Decision is unchanged except that
+the runtime observed and implemented is rootless **Docker** (ADR-0052), not Podman; the Decision always allowed any
+rootless OCI-compatible runtime.
+
+The three verification conditions in Consequences, each literal:
+
+1. *The rootless runtime fits the host:* met 2026-10-16 (rootless Docker Engine 29.8.2; uid 0 maps to the host user).
+2. *The provider CLI can live in an operator-pinned image:* met 2026-10-18. Seven operator-built images from
+   `node:22-bookworm-slim` pinned by digest, each holding one provider CLI and no `git`/`gh`; every CLI started,
+   reported logged in with `--network none` (Antigravity's model list needs network), and six answered a real prompt.
+   Grok Build reached the API and was refused for billing (402 usage balance), so its prompt is Deferred-until-reset;
+   that is a quota state, not an image or login failure.
+3. *Each provider's native login works inside the volume and is acceptable under its terms (R-2):* login met 2026-10-18
+   for Claude Code, Codex, Grok Build, Antigravity, Cursor CLI, OpenCode and Kimi Code (Muse Code skipped, owner
+   decision 16). Each login is the operator's own account, run with the provider's own login command in the
+   operator's own volume, and the controller copies nothing: the R-2 mitigation ("each user runs their own
+   installation with their own logins", ADR-0003, ADR-0011) and FR-AUTH-01 hold. No new terms review was done for
+   this change.
+
+No provider is marked `host`-only. Still open and **not** part of this acceptance: mounting a login volume in the
+container backend (ADR-0052 defers it) and a live Switchboard run in a `container` project; both stay under M10.
 
 ## Revisit when
 

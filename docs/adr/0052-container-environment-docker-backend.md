@@ -17,7 +17,11 @@ labels, teardown, and the refusal of an image that has a Git client. The T10.0 s
 29.8.2 on the Ampere operator host (Podman not installed): bind mounts, `--network none`, `--memory` and
 `--pids-limit` round-trip through `docker inspect`, container uid 0 is the host user and no other uid can write a host
 bind mount, and `node:22-bookworm-slim` has neither `git` nor `gh` on its `PATH`. Provider logins inside a container and
-"provider CLI works without a Git client" were not live-checked and stay on the operator's T10.0 checklist.
+"provider CLI works without a Git client" were not live-checked and stay on the operator's T10.0 checklist. *Update
+2026-10-18:* both are now Observed by the operator for all seven providers
+([spike
+§6](../research/container-runtime-spike-2026-10-16.md#6-operator-in-volume-login-and-prompt-results-2026-10-18)); this
+ADR's decision is unchanged.
 
 The lifecycle audits every invocation before spawn (bypass flags, MCP arguments, `--safe-mode`; T3.17, T9.4b, ADR-0033)
 and composes the provider's environment from an allowlist (FR-EXE-07). Whatever wraps the provider process in a
@@ -88,7 +92,8 @@ container must keep those two properties.
 - **Run the default network for a non-empty allowlist and record it.** Rejected: that starts a run unrestricted under
   a policy that names hosts, the T3.1 precedent (ADR-0051) refuses rather than runs unconfined.
 - **Mount a login volume now.** Deferred: the per-provider mount point depends on the operator's T10.0 live result
-  (spike §4); the mount set stays exactly FR-PRJ-05's two kinds until then.
+  (spike §4); the mount set stays exactly FR-PRJ-05's two kinds until then. *Update 2026-10-18:* the T10.0 result
+  now gives each provider's store (spike §6); mounting it is still not implemented here.
 - **Podman.** Not installed on the operator host; the runtime port keeps it replaceable.
 
 ## Consequences
@@ -97,12 +102,14 @@ container must keep those two properties.
 - MCP and work-queue admission admit a `container` project when `serve` composes `runEnvironments` (a configured
   `container` project); otherwise admission refuses with `ENVIRONMENT_NOT_IMPLEMENTED` before any side effect
   ([PR #554](https://github.com/zemdregon/switchboard/pull/554), `src/mcp/server.ts`, `src/queue/admission.ts`,
-  `src/cli/serve.ts`). Live provider CLIs inside the image are still on the operator's T10.0 checklist.
+  `src/cli/serve.ts`). Live provider CLIs inside the image were checked by the operator (T10.0 Done 2026-10-18;
+  spike §6); mounting a login volume is still not implemented here.
 - The injected Git tool channel (socket and shim on the host) is not reachable from inside a container; malicious-fixture
   coverage for Git-write attempts under bypass uses the host controller and an image without a Git client (T10.3). A
   mounted channel or an alternate commit path for in-container adapters remains an open design point.
 - The provider's probe and auth preflight run against the host binary; inside the image the executable is resolved
-  by name on the image's `PATH`. Whether each provider starts and authenticates there is the operator's T10.0 check.
+  by name on the image's `PATH`. Each provider's start and authentication there was the operator's T10.0 check,
+  Observed 2026-10-18 (spike §6).
 - Tests: `src/environment/container.test.ts`, `src/environment/docker-runtime.test.ts`,
   `src/lifecycle/environment.test.ts` (fakes), and the opt-in `src/environment/container-docker.test.ts`
   (`SWITCHBOARD_CONTAINER_TESTS=1`, a rootless daemon and a local base image; skipped otherwise, including in CI).

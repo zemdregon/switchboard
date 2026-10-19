@@ -932,27 +932,32 @@ documentation**; it implements from each provider's documentation and the instal
 ### 3.11 Container environments
 
 Implements FR-PRJ-04, 05, 07, 09 for M10. Status: **Proposed**. zemdregon left Q-6 to the agent ("the rest you pick"),
-so the choices below are Delegated, not owner-approved, and unverified until the M10 spike.
+so the choices below are Delegated, not owner-approved. The runtime, no-Git-client and in-volume-login mechanisms were
+verified by the M10 spike (T10.0 Done 2026-10-18; Accepted in ADR-0013); mounting a login volume in the backend stays open.
 
-- **Runtime.** A rootless OCI-compatible runtime that the controller drives through its CLI (Proposed; rootless Podman
-  is the likely candidate, unverified). The controller must run unprivileged (NFR-SEC-04), so a root-owned daemon is out;
+- **Runtime.** A rootless OCI-compatible runtime that the controller drives through its CLI (Delegated; observed as
+  rootless Docker 29.8.2 on the operator host, T10.0 2026-10-16; Podman is not installed there). The controller must run
+  unprivileged (NFR-SEC-04), so a root-owned daemon is out;
   the port is small (create, start, stop, remove, list by label) so the choice stays replaceable.
 - **Image.** Operator-supplied and pinned by digest (Proposed); the controller never builds images or pulls implicitly.
   The image contains the provider CLI the project uses and **no Git client** (no `git`, no `gh`; owner decision 24,
   FR-PRJ-05): `projects validate` and container creation look for them on the container's `PATH` and refuse the image
-  if found. Whether each provider CLI works without a Git client is checked in the M10 spike (ROADMAP R-40).
+  if found. Whether each provider CLI works without a Git client was checked in the M10 spike (ROADMAP R-40;
+  Observed 2026-10-18 for all seven providers, spike §6).
 - **Mounts.** The run worktree (writable) and declared read-only contexts only. Not the home directory, data directory,
   runtime socket, or any Git credential store. The worktree's Git directory (under the main repository) is **not**
   mounted, which also keeps refs out of reach (layer 4 above). Git operations, including read-only ones such as
   `git diff`, run in the controller on the host, not in the container (owner decision 24); the agent sees the worktree's
   files only.
-- **Provider logins (Proposed).** The provider CLI inside the container needs its native login. FR-AUTH-01 forbids the
+- **Provider logins (Accepted 2026-10-18 in ADR-0013; not mounted by the backend yet).** The provider CLI inside the
+  container needs its native login. FR-AUTH-01 forbids the
   controller copying or moving credentials between identities or machines, so mounting the host's credential directory is
-  out unless zemdregon decides otherwise. Chosen (Proposed): the operator runs the provider's native login command
+  out unless zemdregon decides otherwise. Chosen: the operator runs the provider's native login command
   inside the project's container volume once (for example through a `projects login <id> <provider>` operator command
   that only attaches the operator's terminal to that command; the controller never reads the result). Whether that is acceptable
   to each provider's terms is unreviewed (compliance manifest
-  review, R-2). The M10 spike must confirm this with each provider before M10 is marked done.
+  review, R-2). The M10 spike confirmed this with each provider (T10.0 Done 2026-10-18, spike §6); mounting the volume
+  in the backend stays under M10.
 - **Network.** The run's profile maps to the container's network: off for untrusted profiles; allowlist only if the
   runtime can enforce one (to be verified).
 - **Limits.** CPU, memory and disk limits from the project, which partly answers R-8.
@@ -960,7 +965,8 @@ so the choices below are Delegated, not owner-approved, and unverified until the
   startup before worktrees are assessed (FR-PRJ-07).
 
 *As built (2026-10-16, T10.1, Delegated; [ADR-0052](../adr/0052-container-environment-docker-backend.md); the text
-above is unchanged and the Proposed items stay Proposed).* What `src/environment/` does against each bullet:
+above is unchanged except for the 2026-10-18 T10.0 updates on the runtime, image and login bullets).*
+What `src/environment/` does against each bullet:
 
 - *Runtime*: rootless **Docker** through its CLI (`docker-runtime.ts`), observed on the operator host in the
   [T10.0 spike](../research/container-runtime-spike-2026-10-16.md); Podman is not installed there. A daemon that does
@@ -971,9 +977,12 @@ above is unchanged and the Proposed items stay Proposed).* What `src/environment
   `projects validate` runs the same checks for each `container` project (T10.3, `checkContainerEnvironment` in
   `src/cli/projects.ts`).
 - *Mounts*: exactly the worktree (rw) and the declared read-only contexts (ro), each at its own host path, so `cwd`
-  and argument paths stay valid; nothing else. No login volume yet (its mount point per provider waits for the
-  operator's T10.0 result).
-- *Provider logins*: unchanged, Proposed, not exercised.
+  and argument paths stay valid; nothing else. No login volume yet (its mount point per provider waited for the
+  operator's T10.0 result; *update 2026-10-18:* that result is in the
+  [spike §6](../research/container-runtime-spike-2026-10-16.md#6-operator-in-volume-login-and-prompt-results-2026-10-18)).
+- *Provider logins*: not exercised by the backend (no login volume). *Update 2026-10-18:* the in-volume login mechanism
+  is
+  Accepted in ADR-0013 on the operator's T10.0 results.
 - *Network*: `off` and an empty allowlist are `--network none`; a non-empty allowlist is **refused** (Docker enforces
   no host allowlist); `policy` runs on the default network with the enforcement recorded as the provider's; a
   privileged scope follows its `network.mode`.
@@ -3063,7 +3072,7 @@ approach only.
 | M7 Routing | Feature extraction and heuristic classifier; static weighted scoring; persist `route_decision` rows; `explain_route` reads them. Scores deterministic for a given stored input (FR-RTE-03). Provider and model affinity: `project_affinity` table, the selection step before scoring, the `affinity_switch_reason` field, `affinity reset`, the cache-friendly prompt assembly order, and the replay property test ([§3.13.3](#3133-testing-affinity-and-retrieval), [LLD §3.2](LLD.md#32-provider-and-model-affinity-m7)). Owner decision 57 (Proposed; partly built: model groups expanded into member candidates, the seventh `pacing` term and version 3 decisions are built by T7.15, `Done` 2026-10-17, and the model-group acceptance test T7.16 is `Done` 2026-10-17 (`src/mcp/m7-group-acceptance.test.ts`); README T7.17 is `Done` 2026-10-17) ([§3.15](#315-model-groups-and-usage-pacing-built-on-fakes)). |
 | M8 Hardening | OTel exporter fed by wrapper-boundary span builders in the run lifecycle, not by replaying `run_event` rows (as built, [LLD §7](LLD.md#7-telemetry-spans)); version canaries (`adapters validate` ships in M4; the canary store and operator command in T8.5). |
 | M9 Projects and controlled commits | Project and context schema in the config loader; `COMP-PRJ` resolution and ceilings; `project_id` columns and the `git_commit` table; per-adapter Git-write denial and channel-support declarations; the shim subcommand and per-run socket; `COMP-GIT` (commit, sanitiser, publish ref, ref snapshots, push with policy); `projects` CLI; fake-adapter fixtures for every attempt in §3.6. Starts with a spike that settles §3.10's open mechanisms (per-run Git config, plumbing commands, socket access under sandboxes). |
-| M10 Container environments | After M9 (Q-6 settled by delegation, Proposed): runtime port, mounts, limits, labels and orphan sweep, container leg of the malicious-fixture suite, answer to the provider-login question ([§3.11](#311-container-environments)). |
+| M10 Container environments | After M9 (Q-6 settled by delegation; container mechanism Accepted 2026-10-18 in ADR-0013): runtime port, mounts, limits, labels and orphan sweep, container leg of the malicious-fixture suite, answer to the provider-login question ([§3.11](#311-container-environments)). |
 | M11 Inner agent | Spike T11.0 first (OpenCode one-shot tool-free controls, or record `Ineligible`). Then in order: config schema, backend port, scripted fake backend, `inner_call` and `inner_task_state` tables and the import-boundary test (T11.1); the pipeline with redaction, budget, breaker, re-ask and fallback (T11.2); `http` backend, locality and privacy gates (T11.3); the commit-message task through the existing sanitiser (T11.4); accounting (T11.5); suspension (T11.6); `doctor`, `inner status`, `inner test` (T11.7); then PR draft, log summary, handoff condensation, route features and run title as their milestones allow (T11.8 to T11.12), and the `cli` kind last (T11.13). Every task ships with its fallback and hostile-fixture tests in the same change ([§3.12](#312-inner-agent), [LLD §13](LLD.md#13-inner-agent)). |
 | M12 Retrieval index | After M9 and the M11 backend port (T11.1). Spike T12.0 first (storage and embedding backend, Q-48; measure the brute-force cap and scan time on real project sizes). Then in order: config and store schema (T12.1); scanner, exclusions, redaction and chunker (T12.2); embedding port with the fake, `local` and `http` backends and the gates (T12.3); incremental background build, `index` CLI and `doctor` (T12.4); retrieval and the context pack at admission (T12.5); `search_project_context` (T12.6); the global index and sharing rules (T12.7); documentation (T12.8); the agent-callable tool last (T12.9, Could). The import-boundary and isolation tests land with T12.1, not after ([§3.13](#313-retrieval-index), [LLD §14](LLD.md#14-retrieval-index)). Affinity is separate and earlier: the `project_affinity` table, selection step and replay tests ship with M7, cache observations with M6 ([LLD §3.2](LLD.md#32-provider-and-model-affinity-m7)). |
 

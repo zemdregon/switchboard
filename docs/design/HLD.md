@@ -70,7 +70,7 @@ Outside the boundary (Switchboard does not own, control or reimplement):
 | The orchestrator's own logic, memory and task decomposition | Switchboard sees only MCP tool calls. |
 | Integration of result branches into the operator's branches | Results are controller-owned branches plus diffs; merging them is the orchestrator's or operator's step (FR-WS-05, [ADR-0006](../adr/0006-worktree-checkpoints-no-blind-replay.md)). |
 | The remote Git host and the operator's push credentials | Switchboard pushes the publish ref only, when a context's policy enables it, using the operator's existing Git configuration; it stores no credentials and never gives them to an agent (FR-GIT-05, FR-GIT-06, [ADR-0014](../adr/0014-tool-only-commits-and-publication.md)). |
-| The container runtime and images | Switchboard asks the runtime to create, start and remove containers (M10); it does not implement one, and the runtime is a Delegated, Proposed choice (rootless, [ADR-0013](../adr/0013-projects-environments-and-contexts.md)). |
+| The container runtime and images | Switchboard asks the runtime to create, start and remove containers (M10); it does not implement one, and the runtime is a Delegated choice (rootless Docker, [ADR-0013](../adr/0013-projects-environments-and-contexts.md); the container mechanism is Accepted since 2026-10-18 on the T10.0 operator results, and the port keeps it replaceable). |
 | OTel collector and its storage | Switchboard only exports when the operator configures an endpoint (FR-TEL-02, NFR-PRIV-01). |
 | The inner backend, its model and its host (M11) | Switchboard sends redacted, budget-limited single-turn prompts to the one backend the operator configured and treats the answer as untrusted data; it ships no default backend or model and holds no credential for it (FR-INN-01, FR-INN-03, FR-INN-16, [ADR-0016](../adr/0016-inner-agent.md)). |
 | Host OS hardening (user accounts, disk quotas, firewall) | Assumption: the operator provides an unprivileged user (NFR-SEC-04); additional outer sandboxing is a TDD matter. |
@@ -757,7 +757,7 @@ the cited controls.
 | Agent commits or pushes by itself (provider built-in or shell) | Git writes denied in the compiled profile (FR-GIT-01); no push credentials in the agent's environment (FR-GIT-06); ref snapshot comparison with commits kept out of the published history (FR-GIT-03) | An unconfined `host` shell can still reach ambient credentials, and a push that succeeds cannot be undone from here; mitigated by withholding push in that case (BR-31) and by container environments (M10) |
 | Attribution reaches published history (trailer, footer, session ID) | Only the commit tool publishes; sanitiser with built-in and operator patterns (FR-GIT-04); fixtures for typical trailers; checkpoint history never published (FR-GIT-08) | The sanitiser is pattern-based, so unusual wording can slip through, and an agent can write attribution into file contents (R-14) |
 | Audit trail lost or unusable | Append-only provenance in the ledger with SHA, tree hash and patch ID (FR-GIT-07) | An operator rebase or squash changes SHAs; the tree hash and patch ID are best-effort links (R-17) |
-| Container escape or orphaned container | Minimal mounts, no runtime socket, limits, removal and orphan sweep (FR-PRJ-05, 07) | Depends on the chosen runtime's isolation; the rootless runtime is Proposed and unverified |
+| Container escape or orphaned container | Minimal mounts, no runtime socket, limits, removal and orphan sweep (FR-PRJ-05, 07) | Depends on the chosen runtime's isolation; the rootless runtime is Observed (rootless Docker 29.8.2 on the operator host) and the mechanism Accepted in ADR-0013 (T10.0 Done 2026-10-18) |
 | Orchestrator names a project or provider it should not use | Per-client project list and the lower-of-two ceiling (FR-PRJ-06) | Misconfigured entries are an operator error |
 | Data leaves the host through the inner backend (M11) | Backend `local` or `remote` classification; `allow_remote` and per-task `allow_source_content`; project `inner_agent` off or `local_only`; deterministic redaction and input budget before every call; no bodies logged (FR-INN-16, FR-TEL-03, NFR-PRIV-01) | Pattern-based redaction misses unusual secrets or proprietary code; an operator who enables `remote` plus source content accepts that exposure; the backend operator's own retention is outside Switchboard's control |
 | Poisoned inner output reaches published history or handoffs (M11) | Output treated as untrusted data: schema, length bound, control-character stripping, one re-ask (FR-INN-07); commit and PR text through the FR-GIT-04 sanitiser and an empty result is a tool error, never an invented message (FR-INN-10, FR-INN-11); condensed handoff text is labelled and keeps a pointer to the raw artifact (FR-INN-13) | Misleading but well-formed prose can pass validation and the pattern-based sanitiser; reviewers must treat drafts as untrusted suggestions (R-14 applies) |
@@ -773,9 +773,10 @@ the cited controls.
 - Data directory layout and worktree location: TDD/LLD to settle (this document proposes only).
 - Per-run disk and resource quotas: not specified in the SRS for `host`; container projects get limits (FR-PRJ-05), which
   partly answers risk R-8. TDD to decide whether `host` needs any.
-- Container runtime and provider logins inside containers: Proposed in
-  [ADR-0013](../adr/0013-projects-environments-and-contexts.md), unverified until the M10 spike. Orchestrator-created
-  projects: allowed by zemdregon (Q-7) with the gates in FR-PRJ-10.
+- Container runtime and provider logins inside containers: Accepted in
+  [ADR-0013](../adr/0013-projects-environments-and-contexts.md) (T10.0 Done 2026-10-18); mounting a login volume in the
+  container backend stays open under M10. Orchestrator-created projects: allowed by zemdregon (Q-7) with the gates in
+  FR-PRJ-10.
 - Inner agent (M11, [ADR-0016](../adr/0016-inner-agent.md)): HTTP client choice and the backend port are settled in
   [TDD §3.12](TDD.md#312-inner-agent); prompt templates, schemas, budgets and the `inner_call` table in [LLD
   §13](LLD.md#13-inner-agent). Open: whether the `cli` kind can be shown tool-free (Q-26), locality classification of
