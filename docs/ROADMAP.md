@@ -4317,7 +4317,8 @@ Notes carried from M2:
 ### 9.2 Harness and discovery rows (2026-10-19)
 
 *Delegated sequencing, not owner-approved beyond owner decisions 76 and 77.* The rows added on 2026-10-19 are
-`Planned` (T13.10 is Done since 2026-10-19, [§6.10](#610-m13-network-mcp-transport-tasks); the rest remain `Planned`) and need no provider login, except the real-provider runs of T8.14 (Operator-only). Order:
+`Planned` (T13.10 is Done since 2026-10-19, [§6.10](#610-m13-network-mcp-transport-tasks); the rest remain `Planned`)
+and need no provider login, except the real-provider runs of T8.14 (Operator-only). Order:
 
 1. **First, in parallel:** T15.6 (R1), T3.24 (R2) and T14.16 (R5).
 2. **Then the discovery rows in the note's §7 order:** T15.9 (rank 2), T9.14 (rank 3), T8.11 (rank 5; its scanner
