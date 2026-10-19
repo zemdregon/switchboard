@@ -825,4 +825,27 @@ as history.
   the same page is scoped in this pass ("no export listener; the T8.15 receiver is separate") because this PR
   otherwise makes its "no listener" parenthetical read as global. It does not block PR #769 (the T8.15 status,
   evidence and as-built behaviour are cited in the ROADMAP T8.15 row, the M8 row, LLD §20.13, the SDD FR-TEL-06
-  row, the SRS FR-TEL-06 note, TDD §3.1, the README telemetry section and config table, and ADR-0062).
+  row, the SRS FR-TEL-06 note, TDD §3.1, the README telemetry section and config table, and ADR-0063
+  (renumbered from 0062 in this pass; see item 46).
+
+## 46. Duplicate ADR number 0062 fixed by renumbering the new ADR to 0063 (PR #769, fixed, not blocking)
+
+- This branch added `docs/adr/0062-per-run-provider-otlp-metrics-receiver.md` (commit `d98dc74`) while
+  `origin/main` already carried `docs/adr/0062-mcp-sdk-v2-dual-era-http.md` (T13.10, PR #771), so the ADR
+  index and the "ADR-0062" citations each named two different decisions. That violates the ADR README
+  rule ("numbered sequentially. Numbers are never reused"), and this PR introduced it.
+- Fixed in this doc-align pass (docs only, no decision change): the new file is now
+  `docs/adr/0063-per-run-provider-otlp-metrics-receiver.md` (next sequential number; no 0063 existed),
+  titled ADR-0063, still Proposed/Delegated; the index row and every docs reference (README twice, HLD
+  TB-6, SDD FR-TEL-06 and NFR-PRIV-01 rows, TDD §3.1, LLD §7 table and §20.13, ROADMAP T8.15, SRS
+  FR-TEL-06 note) now cite ADR-0063. The pre-existing ADR-0062 (MCP SDK v2, accepted direction) is
+  untouched, as are all T13.10 citations to it.
+- Follow-up outside this gate (code side, non-blocking): `src/` comments still cite "ADR-0062" for the
+  OTLP receiver (`src/telemetry/provider-otlp.ts`, `src/lifecycle/lifecycle.ts`, `src/config/load.ts`,
+  `src/cli/serve.ts`, `src/adapters/manifest/schema.ts`, and the T8.15 tests), while "ADR-0062" in
+  `src/mcp/` means the SDK-v2 decision. Updating those comment citations needs a code change, which this
+  gate does not make; behaviour is unaffected (the number is a citation, not a branch condition).
+- Also in this pass: the SDD NFR-PRIV-01 row's "No network listener" is scoped the same way HLD TB-6
+  was ("except the off-by-default loopback-only T8.15 receiver"), since this PR otherwise makes it read
+  as global. The SRS NFR-PRIV-01 requirement text itself is unchanged and still holds (loopback traffic
+  stays on the host; the receiver only runs when the operator explicitly configures it).

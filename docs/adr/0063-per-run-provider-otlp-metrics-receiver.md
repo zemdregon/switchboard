@@ -1,4 +1,4 @@
-# ADR-0062: Per-run loopback OTLP/HTTP metrics receiver for provider telemetry
+# ADR-0063: Per-run loopback OTLP/HTTP metrics receiver for provider telemetry
 
 - Status: Proposed (Delegated, agent, 2026-10-19; direction from owner decision 77 via ROADMAP T8.15, not
   owner-approved)

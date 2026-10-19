@@ -2792,7 +2792,7 @@ prompt or response text. Large payloads are artifacts referenced by ID and hash 
 | Key | Default | Behaviour |
 | --- | --- | --- |
 | `telemetry.otlp_endpoint` | absent (no export) | When omitted or empty, Switchboard does not load `@opentelemetry/api` or an OTLP exporter at startup, opens no telemetry listener, and makes no outbound OTLP connection (NFR-PRIV-01). When set, it must be an `http` or `https` URL validated at config load (T8.1); traces export to that endpoint only. |
-| `telemetry.provider_otlp` | `false` (no receiver) | When anything but `true`, no per-run receiver opens for any run. When `true`, a run whose provider manifest cites `otlp_metrics` gets one loopback listener (FR-TEL-06, T8.15, [ADR-0062](../adr/0062-per-run-provider-otlp-metrics-receiver.md); [§20.13](#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417)). |
+| `telemetry.provider_otlp` | `false` (no receiver) | When anything but `true`, no per-run receiver opens for any run. When `true`, a run whose provider manifest cites `otlp_metrics` gets one loopback listener (FR-TEL-06, T8.15, [ADR-0063](../adr/0063-per-run-provider-otlp-metrics-receiver.md); [§20.13](#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417)). |
 
 **Lazy load and export pipeline (T8.1, ADR-0012).** OTel packages are imported only after a non-empty
 `telemetry.otlp_endpoint` is loaded, on first span export, not at module top level, so configs without telemetry match
@@ -7536,7 +7536,7 @@ A pinned `fast-check` dev dependency and generated-input tests for each parser N
 - **Chain (FR-TEL-05).** An ADR (persistence format) first. Proposed: a `chain_hash` column, SHA-256 over the previous
   row's hash and the row's canonical JSON, backfilled in id order by the migration; `doctor` verifies.
 - **Provider OTLP (FR-TEL-06).** Done (2026-10-19, T8.15, Delegated agent work, not owner-approved):
-  [ADR-0062](../adr/0062-per-run-provider-otlp-metrics-receiver.md) (new local listener) landed in the same PR, committed
+  [ADR-0063](../adr/0063-per-run-provider-otlp-metrics-receiver.md) (new local listener) landed in the same PR, committed
   first. One listener per run on `127.0.0.1:0` for the run's lifetime, metrics only over OTLP/HTTP JSON (no protobuf
   or gRPC, no new dependency), 1 MiB body cap (Assumption), a closed token/cost metric allowlist mapped to
   `provider_reported` usage observations for that run, forbidden attributes dropped, run/task ids injected by the
