@@ -7492,7 +7492,8 @@ Implemented by T3.25 (`src/policy/repo-config-preflight.ts`, called from `execut
 the working directory exists, before compile and the FR-POL-04 refusal):
 
 - **Walk.** Breadth-first in name order over the working directory with `readdir` file types only: no file is opened,
-  read or hashed, and a symbolic link is listed by name (`symlink: true`) and never followed or entered. `.git/` and
+  read or hashed. A symbolic link whose name matches a kind below is listed by name (`symlink: true`); any other
+  name — including a non-matching symlink — is not listed; no symlink is followed or entered. `.git/` and
   `node_modules/` are not entered. A listed directory (`.claude/`, `.cursor/`) is recorded once and not entered. A
   directory that cannot be read is skipped.
 - **Caps** (Linus decision, WORK QUEUE v10, Delegated, Assumption). Paths of at most 4 segments, 200 entries, 5,000
