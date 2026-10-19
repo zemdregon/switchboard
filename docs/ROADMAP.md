@@ -921,7 +921,8 @@ work under T11.0's method, not a reopening of T11.13."
     `Ineligible`. M11 stays `Partial`: its acceptance column still requires an opt-in live run, and the §6.6 breakdown
     stays Proposed.
 69\. T4.12 deferred until a Mac with native logins is available (2026-10-19). **Relayed by the orchestrator (Linus,
-owner-delegated standing authority), not owner-approved.** Entries 63, 64, 66, 67 and 68 sit in open pull requests;
+owner-delegated standing authority), not owner-approved.** Entries 63, 64, 67 and 68 sit in open pull requests
+(66 has since merged to main);
 the gap is left on purpose and nothing is renumbered. Relayed ruling: "T4.12: mark Deferred (optional, needs a Mac),
 with a section 4.2 decision and section 8 row."
     *Delegated reading, not zemdregon's words.* T4.12 (live smoke and live malicious leg for Claude Code and Codex on
@@ -948,7 +949,7 @@ gap is left on purpose and nothing is renumbered.
 71\. The ext live channel runs Codex through the in-volume container login (2026-10-19). **Relayed by the orchestrator
 (Linus, owner-delegated standing authority), not owner-approved.** The relayed ruling ("CODEX AVAILABLE VIA CONTAINER
 LOGIN", 2026-10-18 19:10 CT) says that the in-volume Codex login works and that the host Codex limit applies only to
-the host login. Entries 67 to 70 are in open pull requests and are not on `main` yet; the gap is left on purpose and
+the host login. Entries 67 to 69 are in open pull requests and are not on `main` yet (70 has since merged); the gap is left on purpose and
 nothing is renumbered.
     *Delegated reading, not zemdregon's words.* The operator's `live-run-ext.sh` channel runs every Codex call of a check
     that involves Codex (`resume codex`, `pair`, `live-test codex`, `validate codex`, `malicious codex`) inside a container,
