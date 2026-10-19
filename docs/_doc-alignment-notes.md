@@ -763,3 +763,20 @@ as history.
   (`.github/workflows/ci.yml` holds one job, `Typecheck, lint, test, docs check (Linux)`) — is verified against
   the code, and the merge-gate reading agrees with ADR-0060, which already recorded the macOS leg as dropped from
   gating, and with the AGENTS.md "seven checks" merge routine, which lists the Linux job only.
+- Resolution (doc-align gate on the PR #761 branch): TDD §2 and §3.8 reworded to cite the ruling recorded in
+  ADR-0060 ("the macOS leg was dropped from gating by a ruling") instead of a dated owner waiver, so no §4.2
+  entry is needed and no owner approval is implied. Resolved, not outstanding.
+
+## 44. Stale macOS-runner / present-tense CI-leg wording left by PR #761 (fixed by the doc-align gate on the branch)
+
+- TDD §5 (implementation strategy, M4 row) listed "macOS CI leg (NFR-PORT-02)" in the present tense as the
+  technical approach; past-tensed to "ran 2026-10-14, removed 2026-10-19 when CI went Linux-only, §3.8",
+  matching the T4.10 owner row in ROADMAP §6.8 (ROADMAP owns status; TDD §5 gives the approach only).
+- AGENTS.md verify-and-merge routine step 5 still said "the macOS runner"; no macOS runner exists in
+  `.github/workflows/ci.yml` any more. Reworded to "a Mac with native logins", matching the T4.12 row
+  ("reopen when a Mac with native logins is available"). Step 3 already lists the Linux job only, so the
+  "seven checks" count is unchanged and verified.
+- Checked and left unchanged: SRS NFR-PORT-02 still reads Verify `T (CI)` — the macOS code-path unit tests
+  (`src/exec/proc-info.ts`, `src/reconcile/process.test.ts` over injected macOS tables) still run in Linux
+  CI, so the verification method still holds; narrowing it is the SRS owner's call. SDD NFR-PORT-02 row
+  still points at TDD §2, which still documents the CI history.
