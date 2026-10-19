@@ -7397,6 +7397,29 @@ At admission, after the worktree exists, a bounded walk (depth and count capped,
 bypass run it appends one `repo_config_warning` event; under the untrusted profiles the existing FR-POL-04 handling
 applies unchanged.
 
+Implemented by T3.25 (`src/policy/repo-config-preflight.ts`, called from `execute` in `src/lifecycle/lifecycle.ts` once
+the working directory exists, before compile and the FR-POL-04 refusal):
+
+- **Walk.** Breadth-first in name order over the working directory with `readdir` file types only: no file is opened,
+  read or hashed, and a symbolic link is listed by name (`symlink: true`) and never followed or entered. `.git/` and
+  `node_modules/` are not entered. A listed directory (`.claude/`, `.cursor/`) is recorded once and not entered. A
+  directory that cannot be read is skipped.
+- **Caps** (Linus decision, WORK QUEUE v10, Delegated, Assumption). Paths of at most 4 segments, 200 entries, 5,000
+  directory entries visited. Hitting any cap sets `policy_snapshot_json.repo_config_truncated` to `true` (always
+  written, `false` otherwise).
+- **Kinds.** `claude_config` (`.claude`), `mcp_config` (`.mcp.json`), `cursor_config` (`.cursor`), `vscode_tasks`
+  (`.vscode/tasks.json`), `envrc` (`.envrc`), `env_file` (`.env`, `.env.*`) and `provider_config` for the provider
+  project files that can set a base-URL override (**Assumption**, contents not read so "may set": `.codex/config.toml`,
+  `.grok/config.toml`, `.gemini/settings.json`, `opencode.json`, `opencode.jsonc`). Every name matches at any depth
+  within the cap.
+- **Record.** The ledger sets both keys with `json_set` (other snapshot keys untouched) for every run, in the same
+  transaction as the warning event when there is one. A retry successor copies the snapshot and overwrites both keys
+  at its own dispatch.
+- **Warning.** Only an approved bypass run (`bypassApproved` from the dispatch verdict and `bypassApprovedFor`, as the
+  argv audit gate uses) with at least one entry appends one `repo_config_warning` event `{count, kinds, truncated}`
+  (sorted unique kinds, no paths, no contents); the run proceeds (owner decision 77 answer 1). No other profile gets an
+  event.
+
 ### 20.11 MCP SDK v2 and Client ID Metadata Documents (FR-MCP-18, FR-MCP-19, T13.10, T13.11)
 
 An ADR superseding the affected part of [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) comes first and
