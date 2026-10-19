@@ -1437,9 +1437,14 @@ returns GLOBAL_NOT_AVAILABLE on main; fix in #728 / sb/2026-10-18-fix-t127-searc
   #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f)).** The global store is built under `<data>/rag/` by
 `serve` after the projects (`src/retrieval/global.ts`); `index rebuild global`, `index clear global`,
 `index status global` and the `doctor` global check are honoured (`src/cli/rag-index.ts`,
-`src/cli/rag-index.test.ts`); admission merges global hits with `use_global` (T12.5 as-built note). T12.6 still
-returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the global store is wired into the tool
-(`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`).
+`src/cli/rag-index.test.ts`); admission merges global hits with `use_global` (T12.5 as-built note).
+
+  As built (tool follow-up, 2026-10-18, Delegated, not owner-approved; fakes only): `search_project_context` scopes
+  `global` and `both` read the built global store when the project has `use_global: true` (`src/mcp/search-context.ts`,
+  origins wired in `src/cli/serve.ts`): `global` answers only from the global store, `both` merges both legs by score
+  (each hit labelled `origin_project` or `source`), the live origins map still withholds a withdrawn contribution before
+  the next build, a missing or unbuilt global store keeps `GLOBAL_NOT_AVAILABLE`, and the single `status`/`reason` follow
+  the project leg. Evidence: `src/mcp/search-context.test.ts`.
 - **Tests (fake embedder only, no network; landed with the T12.7 runtime).** Extend [§3.13.3](#3133-testing-affinity-and-retrieval)
   isolation: two projects with distinct planted markers — B with `use_global: true` sees A's marker in the global index
   only when A has `contribute_to_global: true` and the global store is built; otherwise never; operator `sources` chunks

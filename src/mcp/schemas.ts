@@ -1309,6 +1309,8 @@ const SEARCH_RESULT = {
           end_line: { type: "integer", minimum: 1 },
           score: { type: "number" },
           file_sha256: { type: "string" },
+          origin_project: { type: "string" },
+          source: { type: "string" },
           untrusted: { type: "boolean", const: true },
           text: { type: "string" },
         },

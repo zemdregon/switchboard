@@ -127,6 +127,7 @@ import { createProfileResolver } from "../policy/index.js";
 import { DynamicProjectStore, innerSettingResolver, toResolved } from "../projects/index.js";
 import { attachQueueLowWater, queueSchedulerSettingsFromConfig, runProjectWorkQueueTick } from "../queue/index.js";
 import { reconcile } from "../reconcile/index.js";
+import { globalOrigins } from "../retrieval/global.js";
 import { pruneRagStores } from "../retrieval/store.js";
 import { fireDueSchedules } from "../schedule/index.js";
 import { canonicalBody, listRunSkills, readSkillContent } from "../skills/index.js";
@@ -152,7 +153,7 @@ import {
 } from "../workspace/index.js";
 import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
-import { ragBackendFor, type ServeRag, startServeRag } from "./rag-index.js";
+import { ragBackendFor, ragProjects, type ServeRag, startServeRag, toBuildProject } from "./rag-index.js";
 import { checkUnprivileged } from "./unprivileged.js";
 
 export const TEST_FAKE_ADAPTER_ENV = "SWITCHBOARD_TEST_FAKE_ADAPTER";
@@ -615,13 +616,19 @@ async function runDaemon(
   );
 
   // T12.6 (FR-RAG-06): read-only search over a project's store; absent without an embedding backend (FR-RAG-04). The
-  // same handler serves the MCP tool and, T12.9 (FR-RAG-13), the per-run tool channel.
+  // same handler serves the MCP tool and, T12.9 (FR-RAG-13), the per-run tool channel. T12.7 (FR-RAG-10): the
+  // global-store origins that may share now, resolved per call from the live project list exactly as at admission.
   const searchContext: SearchContextDeps | undefined =
     config.rag.embedding !== undefined
       ? {
           dataDir: config.dataDir,
           settings: config.rag,
           backend: ragBackendFor(io, config.rag.embedding),
+          globalOrigins: () =>
+            globalOrigins(
+              config.rag.global,
+              ragProjects(config, db).map((p) => toBuildProject(config.rag, p)),
+            ),
           record: (r: Parameters<RagLedger["record"]>[0]) => void new RagLedger(db, { ids }).record(r),
           ...(io.homedir !== undefined ? { homeDir: io.homedir } : {}),
           ...(now ? { now } : {}),

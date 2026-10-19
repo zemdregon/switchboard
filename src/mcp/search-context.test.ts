@@ -1,5 +1,6 @@
 /**
- * `search_project_context` (T12.6; FR-RAG-06, FR-RAG-08, LLD §14.7, §14.8). Temporary Git repositories, stores built by
+ * `search_project_context` (T12.6; FR-RAG-06, FR-RAG-08, LLD §14.7, §14.8; T12.7 follow-up: FR-RAG-09, FR-RAG-10,
+ * `scope: "global"` and `"both"` read the global store). Temporary Git repositories, stores built by
  * the T12.4 build with the deterministic in-process fake embedder; no network, no provider. Server-level cases go
  * through the SDK client, so every result is checked against the published output schema.
  */
@@ -21,6 +22,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AdapterRegistry } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
@@ -33,9 +35,11 @@ import {
 } from "../config/index.js";
 import type { Ledger, RagRecordInput, TrustProfile } from "../ledger/index.js";
 import type { RunLifecycle } from "../lifecycle/index.js";
+import type { BuildProject } from "../retrieval/build.js";
 import { buildProjectIndex } from "../retrieval/build.js";
 import type { EmbeddingBackend } from "../retrieval/embedding.js";
 import { createFakeEmbedder, FAKE_EMBEDDING_MODEL, type FakeEmbedder } from "../retrieval/fake-embedder.js";
+import { buildGlobalIndex, type GlobalBuildInput, globalOrigins } from "../retrieval/global.js";
 import { ragStoreDir } from "../retrieval/store.js";
 import { TOOL_NAMES, WORK_QUEUE_TOOL_NAMES } from "./schemas.js";
 import {
@@ -119,6 +123,35 @@ const deps = (over: Partial<SearchContextDeps> = {}): SearchContextDeps => ({
   record: (r) => records.push(r),
   ...over,
 });
+
+/** A retrieval build project under `settings` (T12.7 tests resolve origins from these). */
+const bproj = (id: string, root: string, rag?: ProjectRagConfig, settings = GLOBAL_SETTINGS): BuildProject => ({
+  id,
+  effective: effectiveProjectRag(settings, rag),
+  contexts: [{ id: "main", path: root, primary: true }],
+});
+
+const EMBEDDING = { model: FAKE_EMBEDDING_MODEL, allowRemote: false, allowSourceContent: false };
+
+/** Deps with the global origins of `projects` (T12.7): the tool reads the global store only through this map. */
+const globalDeps = (projects: BuildProject[], over: Partial<SearchContextDeps> = {}): SearchContextDeps =>
+  deps({ settings: GLOBAL_SETTINGS, globalOrigins: () => globalOrigins(GLOBAL_SETTINGS.global, projects), ...over });
+
+async function buildGlobal(projects: BuildProject[], over: Partial<GlobalBuildInput> = {}) {
+  const r = await buildGlobalIndex(
+    { dataDir, backend: fake, embedding: EMBEDDING, homeDir: "/nonexistent-home" },
+    {
+      global: GLOBAL_SETTINGS.global,
+      caps: GLOBAL_SETTINGS.caps,
+      exclude: GLOBAL_SETTINGS.exclude,
+      projects,
+      allowedRoots: [tmp],
+      ...over,
+    },
+  );
+  expect(["ok", "partial"]).toContain(r.outcome);
+  return r;
+}
 
 let repo: string;
 beforeEach(() => {
@@ -305,14 +338,17 @@ describe("searchProjectContext (T12.6, FR-RAG-06)", () => {
     expect((await searchProjectContext(deps(), capped, { query: "alpha" })).status).toBe("incomplete");
   });
 
-  it("needs use_global for scope global or both; the global store is not read before T12.7", async () => {
+  it("needs use_global for scope global or both, and reports a missing global store as GLOBAL_NOT_AVAILABLE", async () => {
     const p = target("demo", repo);
     await build(p);
     await expect(searchProjectContext(deps(), p, { query: "x", scope: "global" })).rejects.toMatchObject({
       code: "INVALID_REQUEST",
     });
+    await expect(searchProjectContext(deps(), p, { query: "x", scope: "both" })).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+    });
     const g = target("demo", repo, { use_global: true });
-    const gd = deps({ settings: GLOBAL_SETTINGS });
+    const gd = globalDeps([]);
     expect(await searchProjectContext(gd, g, { query: "x", scope: "global" })).toMatchObject({
       status: "unavailable",
       reason: "GLOBAL_NOT_AVAILABLE",
@@ -321,6 +357,213 @@ describe("searchProjectContext (T12.6, FR-RAG-06)", () => {
     const both = await searchProjectContext(gd, g, { query: "parseInvoiceHeader", scope: "both", limit: 1 });
     expect(both).toMatchObject({ status: "ok", reason: "GLOBAL_NOT_AVAILABLE" });
     expect(both.results[0]?.path).toBe("src/parser.ts");
+    expect(both.results[0]).not.toHaveProperty("origin_project");
+    expect(both.results[0]).not.toHaveProperty("source");
+    // "both" is fail closed on the project leg: a missing project store wins over the global one.
+    const missing = target("bravo", repo, { use_global: true });
+    expect(await searchProjectContext(gd, missing, { query: "x", scope: "both" })).toMatchObject({
+      status: "unavailable",
+      reason: "NOT_BUILT",
+    });
+  });
+
+  it("does not read the global store without an origins function (fail closed)", async () => {
+    const repoA = newRepo("proj-a", { "alpha.ts": "export function zebraAlphaMarker() { return 1; }\n" });
+    const a = target("alpha", repoA, { contribute_to_global: true, use_global: true });
+    const b = target("bravo", repoA, { use_global: true });
+    await build(a, GLOBAL_SETTINGS);
+    const projects = [
+      bproj("alpha", repoA, { contribute_to_global: true, use_global: true }),
+      bproj("bravo", repoA, {
+        use_global: true,
+      }),
+    ];
+    await buildGlobal(projects);
+    expect(
+      await searchProjectContext(deps({ settings: GLOBAL_SETTINGS }), b, {
+        query: "zebraAlphaMarker",
+        scope: "global",
+      }),
+    ).toMatchObject({ status: "unavailable", reason: "GLOBAL_NOT_AVAILABLE", results: [] });
+  });
+
+  it("scope global serves another project's contributions with origin labels, never the reader's own", async () => {
+    const repoA = newRepo("proj-a", { "alpha.ts": "export function zebraAlphaMarker() { return 1; }\n" });
+    const repoC = newRepo("proj-c", { "charlie.ts": "export function quasarCharlieMarker() { return 2; }\n" });
+    const a = target("alpha", repoA, { contribute_to_global: true, use_global: true });
+    const b = target("bravo", repoA, { use_global: true });
+    await build(a, GLOBAL_SETTINGS);
+    await build(target("charlie", repoC, { contribute_to_global: true }), GLOBAL_SETTINGS);
+    const projects = [
+      bproj("alpha", repoA, { contribute_to_global: true, use_global: true }),
+      bproj("charlie", repoC, { contribute_to_global: true }),
+      bproj("bravo", repoA, { use_global: true }),
+    ];
+    await buildGlobal(projects);
+    const gd = globalDeps(projects);
+    // B has no project store of its own: the answer comes only from the global store.
+    const r = await searchProjectContext(gd, b, {
+      query: "zebraAlphaMarker quasarCharlieMarker",
+      scope: "global",
+      limit: 8,
+    });
+    expect(r.status).toBe("ok");
+    expect(typeof r.index_revision).toBe("number");
+    expect(r.results.length).toBeGreaterThan(0);
+    for (const h of r.results) {
+      expect(["alpha", "charlie"]).toContain(h.origin_project);
+      expect(h.source).toBeUndefined();
+      expect(h.context_id.startsWith("project:")).toBe(true);
+      expect(h.path.includes("project:")).toBe(false);
+    }
+    expect(r.results.some((h) => h.origin_project === "alpha" && h.text.includes("zebraAlphaMarker"))).toBe(true);
+    expect(r.results.some((h) => h.origin_project === "charlie" && h.text.includes("quasarCharlieMarker"))).toBe(true);
+    // A's own contributions never come back through the global leg, even to A.
+    const ra = await searchProjectContext(gd, a, {
+      query: "zebraAlphaMarker quasarCharlieMarker",
+      scope: "global",
+      limit: 8,
+    });
+    expect(ra.results.every((h) => h.origin_project !== "alpha")).toBe(true);
+    expect(ra.results.some((h) => h.origin_project === "charlie")).toBe(true);
+  });
+
+  it("does not serve a contribution whose origin stopped sharing, even before the next build", async () => {
+    const repoA = newRepo("proj-a", { "alpha.ts": "export function zebraAlphaMarker() { return 1; }\n" });
+    const b = target("bravo", repoA, { use_global: true });
+    await build(target("alpha", repoA, { contribute_to_global: true }), GLOBAL_SETTINGS);
+    await buildGlobal([
+      bproj("alpha", repoA, { contribute_to_global: true }),
+      bproj("bravo", repoA, { use_global: true }),
+    ]);
+    // A stops contributing; its rows are still in the store until the next global build removes them.
+    const narrowed = [bproj("alpha", repoA, { use_global: true }), bproj("bravo", repoA, { use_global: true })];
+    const r = await searchProjectContext(globalDeps(narrowed), b, {
+      query: "zebraAlphaMarker",
+      scope: "global",
+      limit: 8,
+    });
+    expect(r.results).toEqual([]);
+    expect(r.reason).toBeUndefined();
+  });
+
+  it("serves operator sources with a source label and no origin_project", async () => {
+    const srcDir = path.join(tmp, "ops");
+    put(srcDir, "runbook.md", "opsSourceMarker deploy checklist\n");
+    const withSource = resolveRag({
+      ...RAG,
+      global: { enabled: true, sources: [{ path: srcDir, label: "ops" }] },
+    });
+    const b = target("bravo", repo, { use_global: true });
+    const projects: BuildProject[] = [
+      {
+        id: "bravo",
+        effective: effectiveProjectRag(withSource, { use_global: true }),
+        contexts: [{ id: "main", path: repo, primary: true }],
+      },
+    ];
+    await buildGlobal(projects, { global: withSource.global, caps: withSource.caps, exclude: withSource.exclude });
+    const gd = deps({ settings: withSource, globalOrigins: () => globalOrigins(withSource.global, projects) });
+    const r = await searchProjectContext(gd, b, {
+      query: "opsSourceMarker deploy checklist",
+      scope: "global",
+      limit: 4,
+    });
+    expect(r.status).toBe("ok");
+    expect(r.results.length).toBeGreaterThan(0);
+    for (const h of r.results) {
+      expect(h.source).toBe("ops");
+      expect(h.origin_project).toBeUndefined();
+      expect(h.context_id).toBe("source:ops");
+    }
+    expect(r.results.some((h) => h.text.includes("opsSourceMarker"))).toBe(true);
+  });
+
+  it("scope both merges project and global hits by score within one limit", async () => {
+    const repoA = newRepo("proj-a", { "alpha.ts": "export function zebraAlphaMarker() { return 1; }\n" });
+    const repoB = newRepo("proj-b", { "bravo.ts": "export function bravoMarker() { return 3; }\n" });
+    const b = target("bravo", repoB, { use_global: true });
+    await build(target("alpha", repoA, { contribute_to_global: true }), GLOBAL_SETTINGS);
+    await build(b, GLOBAL_SETTINGS);
+    const projects = [
+      bproj("alpha", repoA, { contribute_to_global: true }),
+      bproj("bravo", repoB, { use_global: true }),
+    ];
+    await buildGlobal(projects);
+    const gd = globalDeps(projects);
+    const r = await searchProjectContext(gd, b, { query: "bravoMarker zebraAlphaMarker", scope: "both", limit: 5 });
+    expect(r).toMatchObject({ status: "ok", index_revision: expect.any(Number) });
+    expect(r.reason).toBeUndefined();
+    const own = r.results.filter((h) => h.origin_project === undefined && h.source === undefined);
+    const shared = r.results.filter((h) => h.origin_project === "alpha");
+    expect(own.length).toBeGreaterThan(0);
+    expect(shared.length).toBeGreaterThan(0);
+    expect(own[0]?.text).toContain("bravoMarker");
+    for (let i = 1; i < r.results.length; i++) {
+      expect((r.results[i - 1]?.score ?? 0) >= (r.results[i]?.score ?? 0)).toBe(true);
+    }
+    const one = await searchProjectContext(gd, b, { query: "bravoMarker zebraAlphaMarker", scope: "both", limit: 1 });
+    expect(one.results).toHaveLength(1);
+    // The single limit bounds the merged answer: the top hit is the merged ranking's first, whichever leg wins
+    // (here the global hit outranks the project's under the fake embedder; the rule is score order, not leg).
+    expect(one.results[0]?.snippet_id).toBe(r.results[0]?.snippet_id);
+  });
+
+  it("reports REBUILD_PENDING when the global store was built for another model", async () => {
+    const repoA = newRepo("proj-a", { "alpha.ts": "export function zebraAlphaMarker() { return 1; }\n" });
+    await build(target("alpha", repoA, { contribute_to_global: true }), GLOBAL_SETTINGS);
+    const projects = [
+      bproj("alpha", repoA, { contribute_to_global: true }),
+      bproj("bravo", repoA, { use_global: true }),
+    ];
+    await buildGlobal(projects);
+    const other = resolveRag({
+      embedding: { kind: "http", base_url: "http://127.0.0.1:1", model: "other-model" },
+      global: { enabled: true, sources: [] },
+    });
+    const gd = deps({ settings: other, globalOrigins: () => globalOrigins(other.global, projects) });
+    expect(
+      await searchProjectContext(gd, target("bravo", repoA, { use_global: true }), {
+        query: "zebraAlphaMarker",
+        scope: "global",
+      }),
+    ).toMatchObject({ status: "unavailable", reason: "REBUILD_PENDING" });
+  });
+
+  it("an unreadable chunk table is STORE_UNREADABLE on its own leg and only a reason in both", async () => {
+    const repoA = newRepo("proj-a", { "alpha.ts": "export function zebraAlphaMarker() { return 1; }\n" });
+    const repoB = newRepo("proj-b", { "bravo.ts": "export function bravoMarker() { return 3; }\n" });
+    const b = target("bravo", repoB, { use_global: true });
+    await build(target("alpha", repoA, { contribute_to_global: true }), GLOBAL_SETTINGS);
+    await build(b, GLOBAL_SETTINGS);
+    const projects = [
+      bproj("alpha", repoA, { contribute_to_global: true }),
+      bproj("bravo", repoB, { use_global: true }),
+    ];
+    await buildGlobal(projects);
+    const gd = globalDeps(projects);
+    // Corrupt the global leg after the build: its meta row still opens, its chunks do not.
+    const corrupt = new Database(path.join(ragStoreDir(dataDir, { kind: "global" }), "index.db"));
+    corrupt.exec("DROP TABLE rag_chunk");
+    corrupt.close();
+    expect(await searchProjectContext(gd, b, { query: "zebraAlphaMarker", scope: "global", limit: 4 })).toMatchObject({
+      status: "unavailable",
+      reason: "STORE_UNREADABLE",
+      results: [],
+    });
+    const both = await searchProjectContext(gd, b, { query: "bravoMarker zebraAlphaMarker", scope: "both", limit: 4 });
+    expect(both).toMatchObject({ status: "ok", reason: "STORE_UNREADABLE" });
+    expect(both.results.length).toBeGreaterThan(0);
+    expect(both.results.every((h) => h.origin_project === undefined && h.source === undefined)).toBe(true);
+    // Corrupt the project leg instead: the call fails closed.
+    const pcorrupt = new Database(path.join(ragStoreDir(dataDir, { kind: "project", projectId: "bravo" }), "index.db"));
+    pcorrupt.exec("DROP TABLE rag_chunk");
+    pcorrupt.close();
+    expect(await searchProjectContext(gd, b, { query: "bravoMarker", scope: "project", limit: 4 })).toMatchObject({
+      status: "unavailable",
+      reason: "STORE_UNREADABLE",
+      results: [],
+    });
   });
 });
 

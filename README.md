@@ -559,9 +559,10 @@ is applied immediately under the data-directory lock; `rebuild` is queued for th
 
 The MCP tool `search_project_context` exists only when an embedding backend is configured **and** the client may use at
 least one project with retrieval on. It is read-only, scoped to that client's projects, and bounds result count and
-size. `scope: "project"` searches the project's index; `global` and `both` need `use_global` on the project, but
-`global` and the global half of `both` still return `unavailable` with `GLOBAL_NOT_AVAILABLE` until a follow-up wires
-the global store into the tool (admission and the global build already use it). Treat every returned `text` field as
+size. `scope: "project"` searches the project's index; `global` and `both` need `use_global` on the project and read the
+built global store (`global` answers only from it, `both` merges both legs by score with each hit labelled
+`origin_project` or `source`); a missing or unbuilt global store is `unavailable` with `GLOBAL_NOT_AVAILABLE`.
+Treat every returned `text` field as
 untrusted reference data, not instructions.
 
 The same search is also an agent tool inside a run (ROADMAP T12.9) **only under the bypass-only Claude Code channel

@@ -4907,9 +4907,13 @@ channel form has no `project` argument: its input
 is exactly `query` (1..2000 characters), optional `limit` (1..32) and `scope`; any other key, including `project` or a
 path, is `INVALID_ARGUMENTS` before the handler runs, and the handler always gets the project id bound when the channel
 opened. Token, rate limit, run state and binding checks are those of `commit`. Bounds, scope rules
-(`GLOBAL_NOT_AVAILABLE`), freshness and `unavailable` with `NOT_BUILT` for a project without an index are the T12.6
-ones; `MAX_SEARCH_LIMIT`, `MAX_RESULT_TEXT_BYTES`, `MAX_SEARCH_TEXT_BYTES` and `MAX_QUERY_LENGTH` are defined once in
-`src/git/tool-protocol.ts` and re-exported by `src/mcp/search-context.ts`. Delegated differences: a `scope` the
+(`GLOBAL_NOT_AVAILABLE` only for a missing or unbuilt global store; global hits carry `origin_project` or `source`),
+freshness and `unavailable` with `NOT_BUILT` for a project without an index are the T12.6 ones as extended by the
+2026-10-18 tool follow-up (Delegated; `both` merges both legs by score within one `limit`, project leg wins
+`status`/`reason`); `MAX_SEARCH_LIMIT`, `MAX_RESULT_TEXT_BYTES`, `MAX_SEARCH_TEXT_BYTES` and `MAX_QUERY_LENGTH` are
+defined once in
+`src/git/tool-protocol.ts` and re-exported by `src/mcp/search-context.ts`. Delegated differences: a `scope`
+the
 project may not use is `INVALID_ARGUMENTS`; a project no longer configured is `PROJECT_UNAVAILABLE`; the `rag_record`
 row carries the run id; the shim's response bound rose from 64 KiB to 512 KiB and the controller drops trailing results
 (setting `truncated`) if the line would still exceed it; `git_channel_closed` counts `searches`. With retrieval off for
@@ -4995,7 +4999,7 @@ sets `use_global` ([§14.7](#147-tool-contract-search_project_context)). Operato
 `index clear global`, and a `doctor` global subsection when `rag.global.enabled` (honoured on `main` since T12.7,
 [§14.5](#145-incremental-build)).
 
-**As built on `main` (T12.7, Partial since 2026-10-19, owner ruling; ROADMAP T12.7).** The `rag.global` block,
+**As built on `main` (T12.7).** The `rag.global` block,
 per-project sharing flags, and `PERMISSION_BLOCKED` when a dynamic project definition sets or widens sharing are
 implemented (`src/config/rag.ts`, `src/projects/rules.ts`; tests `src/config/rag.test.ts`,
 `src/mcp/project-tools.test.ts`). The global file path and `rag_meta` / `rag_file.origin_project` columns exist in
@@ -5003,14 +5007,15 @@ the store schema (`src/retrieval/store.ts`; tests `src/retrieval/store.test.ts`)
 copy (`src/retrieval/global.ts`), the admission merge for `use_global` projects (`src/retrieval/admission.ts`), the
 `serve` build wiring and `index rebuild global`, `index clear global`, `index status global` and the `doctor` global
 check (`src/cli/rag-index.ts`) are on `main`, pinned by `src/retrieval/global.test.ts` and `src/cli/rag-index.test.ts`
-("global index (T12.7)"). **Remaining gap:** `search_project_context` scopes `global` / `both` still answer
-`GLOBAL_NOT_AVAILABLE` (`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`); reading the built global
-store there is a follow-up (fix in #728 / sb/2026-10-18-fix-t127-search-global (f8c3fc5f)).
+("global index (T12.7)"). Tool leg (2026-10-19, Delegated; fakes only): `search_project_context` scopes `global` and
+`both` read the built global store through the live origins map (`src/mcp/search-context.ts`, `src/mcp/schemas.ts`,
+wiring in `src/cli/serve.ts`; evidence `src/mcp/search-context.test.ts`); a missing or unbuilt global store keeps
+`GLOBAL_NOT_AVAILABLE` (fail closed).
 
-**Runtime gaps on `origin/main` (evidence paths, no unmerged behaviour).** Only the tool gap above: admission merges
-the global store for `use_global` projects ([§14.8](#148-freshness-and-fallback) as-built) and the global CLI targets
-are honoured ([§14.5](#145-incremental-build)); T12.6 returns `GLOBAL_NOT_AVAILABLE` for `global` or `both` until the
-built global store is wired into the tool (`src/mcp/search-context.ts`, `src/mcp/search-context.test.ts`).
+**Runtime gaps on `origin/main` (evidence paths, no unmerged behaviour).** None for the global index: admission merges
+the global store for `use_global` projects ([§14.8](#148-freshness-and-fallback) as-built), the global CLI targets are
+honoured ([§14.5](#145-incremental-build)) and the tool reads the global store
+([§14.7](#147-tool-contract-search_project_context)).
 
 **Tests (fake embedder only, no network; landed with the T12.7 runtime).** As in [TDD §3.13.9](TDD.md#3139-t127-global-index-and-sharing-2026-10-14):
 two-project isolation with planted markers; operator `sources` labelled; contribution copy respects redaction,
