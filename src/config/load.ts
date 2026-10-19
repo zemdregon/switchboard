@@ -16,7 +16,7 @@ import {
 } from "../skills/limits.js";
 import { type CapacitySettings, checkCapacity, resolveCapacity } from "./capacity.js";
 import { type CiTriggerSettings, checkCiTrigger, resolveCiTrigger } from "./ci-trigger.js";
-import { type ControlPlaneSettings, resolveControlPlane } from "./control-plane.js";
+import { type ControlPlaneSettings, checkControlPlane, resolveControlPlane } from "./control-plane.js";
 import { ConfigError } from "./errors.js";
 import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
@@ -592,6 +592,10 @@ export function loadConfig(
   );
   if (ciErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${ciErrors.map((l) => `  ${l}`).join("\n")}`);
+  }
+  const controlPlaneErrors = checkControlPlane(cfg.control_plane);
+  if (controlPlaneErrors.length > 0) {
+    throw new ConfigError(`Invalid config:\n${controlPlaneErrors.map((l) => `  ${l}`).join("\n")}`);
   }
   const sinkErrors = checkNotificationSinks(cfg.notification_sinks);
   if (sinkErrors.length > 0) {

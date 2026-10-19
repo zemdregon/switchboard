@@ -28,6 +28,11 @@
  *   project. It is not a `needs_attention` reason and no run row carries it.
  * - Pending approvals are `privileged_scope` approvals only (dynamic-project revisions join with T14.8); the
  *   `approval_digest` is LLD §3.4.8's SHA-256 over controller fields only.
+ *
+ * T14.16 (FR-CTL-14, LLD §20.5; Delegated, not owner-approved): a listed project whose operator-set
+ * `queue.stall_hours` window has passed with `READY` work items and no item reaching `DONE` carries
+ * `project_needs_attention: { active: true, reason: "stalled_progress" }` (`../control/progress-stall.ts`). The key is
+ * omitted otherwise, so a digest without a configured window is unchanged. It carries no run: the flag is the project's.
  */
 
 import { createHash } from "node:crypto";
@@ -35,6 +40,7 @@ import { budgetControlFacts } from "../control/budgets.js";
 import { loopBreakerControlFacts } from "../control/loop-attention.js";
 import type { ControlPlaneFacts, NeedsAttentionReason } from "../control/needs-attention.js";
 import { isAdmissionPaused } from "../control/pause.js";
+import { type ProjectNeedsAttention, progressStallOf } from "../control/progress-stall.js";
 import type { ApprovalRow, Ledger, RunEventRow, RunRecord } from "../ledger/index.js";
 import { canonicalJson } from "../lifecycle/request.js";
 import { buildEnvelope, type Envelope } from "./envelope.js";
@@ -68,6 +74,8 @@ export interface DigestProject {
   /** T14.6: the project's own pause or the operator's global pause holds admission now. */
   paused: boolean;
   budget: { exhausted: boolean };
+  /** T14.16: present only while the project's progress is stalled. */
+  project_needs_attention?: Extract<ProjectNeedsAttention, { active: true }>;
   needs_attention: { run_id: string; reason: NeedsAttentionReason; envelope: Envelope }[];
   finished: Envelope[];
   failed: Envelope[];
@@ -91,6 +99,8 @@ export interface DigestScope {
 export interface DigestOptions {
   now: Date;
   control?: ControlPlaneFacts;
+  /** T14.16: a project's `queue.stall_hours`; undefined (or absent) means off. */
+  stallHours?: (projectId: string) => number | undefined;
   scanBudget?: number;
 }
 
@@ -116,7 +126,12 @@ export function assembleDigest(
     terminal: (run: RunRecord) => boolean,
     projectIds: Iterable<string>,
     terminalMax = Number.POSITIVE_INFINITY,
-  ) => assembleProjects(ledger, runs, { terminal, terminalMax }, projectIds, scrub, { now: options.now, control });
+  ) =>
+    assembleProjects(ledger, runs, { terminal, terminalMax }, projectIds, scrub, {
+      now: options.now,
+      control,
+      ...(options.stallHours !== undefined ? { stallHours: options.stallHours } : {}),
+    });
 
   if (sinceCursor === undefined) {
     const runs = allRuns(ledger, scope);
@@ -170,15 +185,17 @@ function assembleProjects(
   sections: { terminal: (run: RunRecord) => boolean; terminalMax: number },
   projectIds: Iterable<string>,
   scrub: (s: string) => string,
-  attention: { now: Date; control: ControlPlaneFacts },
+  attention: { now: Date; control: ControlPlaneFacts; stallHours?: (projectId: string) => number | undefined },
 ): DigestProject[] {
   const { control } = attention;
   const byProject = new Map<string, DigestProject>();
   for (const id of [...new Set(projectIds)].sort()) {
+    const stall = progressStallOf(ledger, id, { now: attention.now, stallHours: attention.stallHours?.(id) });
     byProject.set(id, {
       project_id: id,
       paused: isAdmissionPaused(ledger, id),
       budget: { exhausted: control.budgetExhausted(id) || control.budgetExhausted("*") },
+      ...(stall.active ? { project_needs_attention: stall } : {}),
       needs_attention: [],
       finished: [],
       failed: [],

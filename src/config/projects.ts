@@ -110,6 +110,8 @@ export interface ResolvedProject {
 export interface ProjectQueueConfig {
   /** Low-water mark for the project work queue; absent means unset (no event emitted). */
   readonly lowWater?: number;
+  /** T14.16 (FR-CTL-14, LLD §20.5): `stalled_progress` window in hours; absent means off. */
+  readonly stallHours?: number;
 }
 
 /** Global or per-project skill name lists (LLD §19.3), with defaults filled in as empty. */
@@ -293,7 +295,14 @@ export function resolveProjects(cfg: SwitchboardConfig): ResolvedProject[] {
           }
         : {}),
       ...(p.skills !== undefined ? { skills: resolveSkillAssignment(p.skills) } : {}),
-      ...(p.queue?.low_water !== undefined ? { queue: { lowWater: p.queue.low_water } } : {}),
+      ...(p.queue?.low_water !== undefined || p.queue?.stall_hours !== undefined
+        ? {
+            queue: {
+              ...(p.queue.low_water !== undefined ? { lowWater: p.queue.low_water } : {}),
+              ...(p.queue.stall_hours !== undefined ? { stallHours: p.queue.stall_hours } : {}),
+            },
+          }
+        : {}),
     };
   });
 }

@@ -40,6 +40,15 @@ built, and the discovery note recommended this one for the same reason.
    of any length. The payload is built from fields, not by filtering a free-text message, so there is no text to redact.
    The closed event-kind list is: `run_terminal`, `needs_attention`, `approval_pending`, `approval_decided`,
    `budget_exhausted`, `project_paused`, and `queue_low` (T15.4, FR-QUE-04; reason code `queue_low`, `run_id` null).
+   *(Amended 2026-10-19 by T14.16, FR-CTL-14, Delegated agent work, not owner-approved; the ADR is Proposed, so it is
+   amended rather than superseded, as [LLD §20.5](../design/LLD.md#205-scheduled-digest-and-progress-stall-fr-ctl-14-t1416)
+   required.)* The list adds `digest` (reason code `digest`, project id `*`, `run_id` null), sent only on the
+   operator's `control_plane.digest_schedule`. A `digest` payload carries one more field, `counts`, and no other kind
+   may carry it. `counts` is an object whose keys come from closed lists (run states, needs-attention reasons, work
+   item states, and the two scalars `pending_approvals` and `paused_projects`) and whose every value is a
+   non-negative integer. It holds no string, so no objective, agent text or decision text can travel in it. It is
+   rebuilt key by key, and an event whose `counts` has a missing key, an extra key or a value that is not an integer
+   is dropped, not sent.
 4. **Filter and rate limit.** Each sink names the event kinds it receives and a maximum rate. Events beyond the rate
    are dropped and counted, not queued without bound.
 5. **Links carry no secret and name only served routes.** A link is the configured MCP HTTP resource URL itself, a
