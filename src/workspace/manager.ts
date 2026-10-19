@@ -6,7 +6,7 @@ import type { NativeSkillLocation } from "../adapters/types.js";
 import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot } from "../config/index.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
-import type { TrustProfile } from "../ledger/index.js";
+import { insertChainedRunEvent, type TrustProfile } from "../ledger/index.js";
 import { git, gitText, MIN_GIT_VERSION, parseGitVersion, versionAtLeast } from "./git.js";
 import { ensureWorktreeGitLink } from "./git-link.js";
 import {
@@ -626,14 +626,13 @@ export class WorkspaceManager {
            WHERE id = ?`,
         )
         .run(runId, expires, nowDate.toISOString(), metaSessionId);
-      const seq = this.db
-        .prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM run_event WHERE run_id = ?")
-        .get(runId) as {
-        n: number;
-      };
-      this.db
-        .prepare("INSERT INTO run_event (id, run_id, seq, ts, type, payload_json) VALUES (?, ?, ?, ?, 'lease', ?)")
-        .run(this.ids.id("evt"), runId, seq.n, nowDate.toISOString(), JSON.stringify({ action: "acquired", expires }));
+      insertChainedRunEvent(this.db, {
+        id: this.ids.id("evt"),
+        runId,
+        ts: nowDate.toISOString(),
+        type: "lease",
+        payloadJson: JSON.stringify({ action: "acquired", expires }),
+      });
     });
     tx.immediate();
   }
