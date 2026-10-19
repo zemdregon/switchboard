@@ -7567,7 +7567,7 @@ document's `client_id` must equal the identifier by simple string comparison, th
 for a registration request. The client is stored in `oauth_client` under `sbc_` + 128 bits of the URL's SHA-256
 (`cimdInternalClientId`, so `oauth_token`, `http_subject` and the `transport.http.clients` mapping are unchanged;
 `oauth_client_id` there may be the URL, mapped to the derived identifier at load) with the URL in `oauth_cimd_client`
-(migration 0025, DDL below). A new URL is `pending` under the registration cap, checked before the fetch; a denied or
+(migration 0026, DDL below). A new URL is `pending` under the registration cap, checked before the fetch; a denied or
 revoked client gets no fetch on its behalf; every authorization request fetches afresh and refreshes the stored
 metadata (nothing is cached across consents); `POST /token` takes the URL as `client_id` and never fetches. The
 consent page shows the URL as the client id, its host on its own line and the name labelled as taken from the
@@ -7581,11 +7581,11 @@ streamed, without parsing it"; "refuses a slow document at the fetch deadline"; 
 is not its URL, and one that is not a public-client document"; "applies the pending-registration cap before fetching,
 and refuses a denied client without fetching"; "blocks special-use addresses in every transition form and allows
 public ones"), `src/config/config.test.ts` ("maps a Client Identifier URL under its derived id and takes cimd:
-false"), `src/ledger/ledger.test.ts` ("0025 adds oauth_cimd_client …"); the DCR suites `src/mcp/oauth-clients.test.ts`
+false"), `src/ledger/ledger.test.ts` ("0026 adds oauth_cimd_client …"); the DCR suites `src/mcp/oauth-clients.test.ts`
 and `src/mcp/oauth-server.test.ts` pass unchanged.
 
 ```sql
-CREATE TABLE oauth_cimd_client (         -- migration 0025 (T13.11); the URL behind a derived sbc_ client id
+CREATE TABLE oauth_cimd_client (         -- migration 0026 (T13.11); the URL behind a derived sbc_ client id
   client_id  TEXT PRIMARY KEY CHECK (client_id GLOB 'sbc_*') REFERENCES oauth_client(client_id) ON DELETE CASCADE,
   url        TEXT NOT NULL UNIQUE CHECK (url GLOB 'https://*' AND length(url) <= 2048),
   fetched_at TEXT NOT NULL

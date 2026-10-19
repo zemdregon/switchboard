@@ -120,7 +120,7 @@ export interface RegisteredClient extends ClientMetadata {
   readonly createdAt: string;
   /**
    * T13.11 (FR-MCP-19): the Client Identifier URL when the client identified itself with a Client ID Metadata
-   * Document (`oauth_cimd_client`, migration 0025); absent for a client registered through RFC 7591.
+   * Document (`oauth_cimd_client`, migration 0026); absent for a client registered through RFC 7591.
    */
   readonly cimdUrl?: string;
 }

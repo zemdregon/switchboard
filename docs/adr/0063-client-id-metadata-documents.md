@@ -58,7 +58,7 @@ must not follow redirects when fetching it; the server should display the URL's 
    rest passes the same checks as RFC 7591 registration (public client, `https` redirect URIs only, the code grant).
    Nothing from the document is trusted beyond that.
 5. **A CIMD client is keyed internally by `sbc_` + 128 bits of the URL's SHA-256**, stored in `oauth_client` like a
-   registered client with the URL beside it in a new, additive table `oauth_cimd_client` (migration 0025). Tokens,
+   registered client with the URL beside it in a new, additive table `oauth_cimd_client` (migration 0026). Tokens,
    meta-session bindings and the `transport.http.clients` mapping keep working unchanged; `oauth_client_id` in that
    mapping may be the URL itself, which config load maps to the derived identifier.
 6. **Consent decides, as before (FR-MCP-17).** A new URL creates a `pending` client under the same registration cap as

@@ -580,19 +580,19 @@ describe("ledger migrations", () => {
     expect(() => cancel.run("crc_2", "a".repeat(40))).toThrow(/UNIQUE/u);
   });
 
-  it("0025 adds oauth_cimd_client on a version 24 database: one URL per derived sbc_ id, cascading from oauth_client (T13.11, FR-MCP-19)", () => {
+  it("0026 adds oauth_cimd_client on a version 25 database: one URL per derived sbc_ id, cascading from oauth_client (T13.11, FR-MCP-19)", () => {
     db = new Database(path.join(dir, LEDGER_FILE_NAME));
     db.pragma("foreign_keys = ON");
     const d = db;
-    const upTo24 = MIGRATIONS.filter((m) => m.version <= 24);
-    expect(migrate(d, undefined, upTo24)).toEqual(upTo24.map((m) => m.version));
+    const upTo25 = MIGRATIONS.filter((m) => m.version <= 25);
+    expect(migrate(d, undefined, upTo25)).toEqual(upTo25.map((m) => m.version));
     expect(
       migrate(
         d,
         undefined,
-        MIGRATIONS.filter((m) => m.version <= 25),
+        MIGRATIONS.filter((m) => m.version <= 26),
       ),
-    ).toEqual([25]);
+    ).toEqual([26]);
     const client = d.prepare(
       `INSERT INTO oauth_client (client_id, redirect_uris_json, grant_types_json, status, created_at)
        VALUES (?, '["https://app.example/cb"]', '["authorization_code"]', 'pending', '2026-10-19T00:00:00Z')`,
