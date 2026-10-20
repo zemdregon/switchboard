@@ -203,9 +203,20 @@ export interface ToolRequest {
   readonly arguments: Record<string, unknown>;
 }
 
+/**
+ * One answer line. An error carries a short code and a message; `details` is optional structured data the shim relays
+ * unchanged (today only a `SECRET_SCAN_BLOCKED` push refusal's findings, ADR-0075).
+ */
 export type ToolResponse =
   | { readonly ok: true; readonly result: Record<string, unknown> }
-  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
+  | {
+      readonly ok: false;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly details?: Readonly<Record<string, unknown>>;
+      };
+    };
 
 /** True when `s` has the exact token shape (prefix plus 43 base64url characters). Does not say whether it is valid. */
 export function isTokenShaped(s: unknown): s is string {

@@ -5,7 +5,8 @@
   [LLD §20.9](../design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061) "Implemented"); point 4 (the
   commit-time warning) is built by the T9.14 split, part 1 (2026-10-20, Delegated agent work, not owner-approved),
   and the operator acknowledgement of the second 2026-10-20 amendment by part 2 (Linus decision, Delegated, not
-  owner-approved); T9.14 is `Done`
+  owner-approved); T9.14 is `Done`. Extended by [ADR-0075](0075-secret-scan-findings-in-refusals.md) (a refusal
+  names each finding's rule id, path and line to the caller; never the value)
 - Date: 2026-10-19
 - Decided by: zemdregon for the direction. The question in the
   [enhancement discovery](../research/enhancement-discovery-2026-10-19.md) §9 was "Should the pre-push secret scan block

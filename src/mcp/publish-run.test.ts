@@ -580,6 +580,16 @@ describe("publish_run (ADR-0069)", () => {
     const { runId } = await f.seedRun({ content: `token: ${TOKEN}\n`, file: "config.ts" });
     const r = await call("publish_run", { run_id: runId });
     expect(r.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "SECRET_SCAN_BLOCKED" } });
+    // ADR-0075: the refusal names the finding (rule id, path, line) through the MCP error envelope; never the value.
+    expect(r.body.error.details).toMatchObject({
+      findings: [{ rule_id: "github_token", path: "config.ts", line: 1 }],
+      finding_count: 1,
+    });
+    expect(r.body.error.details.findings_truncated).toBeUndefined();
+    expect(r.body.error.message).toContain(
+      "push refused (SECRET_SCAN_BLOCKED): 1 secret-scan finding: github_token at config.ts:1. Remove each value",
+    );
+    expect(r.body.error.message).toContain("git.secret_scan.allow");
     expect(JSON.stringify(r.body)).not.toContain(TOKEN);
     expect(remoteRefs(f.bare)).toEqual(["refs/heads/main"]);
     expect(pushRows(f.db)).toEqual([

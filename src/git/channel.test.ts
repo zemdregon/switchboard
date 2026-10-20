@@ -39,6 +39,7 @@ import {
   type OpenChannel,
 } from "./channel.js";
 import { GitPublisher, type GitPublisherOptions, publishRefFor } from "./index.js";
+import type { GitPusher, PushResult } from "./push.js";
 import {
   CHANNEL_MCP_CONFIG_FILE,
   MAX_QUERY_LENGTH,
@@ -834,3 +835,90 @@ describe("project search on the channel (T12.9; FR-RAG-13, LLD §14.7)", () => {
     expect(parseToolList("commit,*")).toBeUndefined();
   });
 });
+
+describe("push tool: secret-scan refusal findings (ADR-0075)", () => {
+  // Synthetic canary built at run time (a fake GitHub-token shape, never a real credential).
+  const CANARY = `ghp_canary${"0".repeat(30)}`;
+
+  /** A service whose pusher answers every push with a SECRET_SCAN_BLOCKED refusal carrying `hits`. */
+  function refusingService(hits: { rule_id: string; path: string; line: number }[], hitCount = hits.length) {
+    const result: PushResult = {
+      pushId: "gps_test",
+      outcome: "REFUSED_POLICY",
+      reason: "SECRET_SCAN_BLOCKED",
+      pushed: false,
+      remote: "origin",
+      ref: "refs/heads/sb/x",
+      headSha: "a".repeat(40),
+      commits: [],
+      eventRunId: "run_x",
+      toolCode: "SECRET_SCAN_BLOCKED",
+      secretScan: { hits, hitCount },
+    };
+    const pusher = { push: async () => result } as unknown as GitPusher;
+    const s = new GitToolService({
+      db,
+      dataDir,
+      publisher: new GitPublisher({ db, scratchDir: path.join(root, "scratch") }),
+      pusher,
+      shimCommand: SHIM,
+      fallbackDirs: [],
+    });
+    services.push(s);
+    return s;
+  }
+
+  it("the agent sees each finding's rule id, path and line in the message and in error.details, never the value", async () => {
+    const r = await running();
+    const s = refusingService([
+      { rule_id: "github_token", path: "test/fixtures/a.ts", line: 12 },
+      { rule_id: "jwt", path: "src/x.ts", line: 4 },
+    ]);
+    const ch = await s.open({ ...openArgs(r), offerPush: true });
+    const ans = await forward({ socketPath: ch.socketPath, token: tokenOf(ch) }, "push", {}, 5000);
+    expect(ans.ok).toBe(false);
+    if (ans.ok) return;
+    expect(ans.error.code).toBe("SECRET_SCAN_BLOCKED");
+    expect(ans.error.message).toMatch(
+      /^push refused: SECRET_SCAN_BLOCKED: 2 secret-scan findings: github_token at test\/fixtures\/a\.ts:12; jwt at src\/x\.ts:4\. Remove each value/u,
+    );
+    expect(ans.error.details).toEqual({
+      findings: [
+        { rule_id: "github_token", path: "test/fixtures/a.ts", line: 12 },
+        { rule_id: "jwt", path: "src/x.ts", line: 4 },
+      ],
+      finding_count: 2,
+    });
+    expect(JSON.stringify(ans)).not.toContain(CANARY);
+    expect(JSON.stringify(ans)).not.toContain("ghp_");
+  });
+
+  it("the answer stays within MAX_RESPONSE_BYTES for 100 findings with long, escaped paths", async () => {
+    const r = await running();
+    const longOdd = "\u0001".repeat(4000);
+    const s = refusingService(
+      Array.from({ length: 100 }, (_, i) => ({ rule_id: "aws_access_key_id", path: `${longOdd}${i}`, line: i })),
+      5000,
+    );
+    const ch = await s.open({ ...openArgs(r), offerPush: true });
+    const ans = (await raw(ch.socketPath, req(tokenOf(ch), {}, "push"))) as Answer;
+    expect(ans.ok).toBe(false);
+    expect(ans.error.details.finding_count).toBe(5000);
+    expect(ans.error.details.findings_truncated).toBe(true);
+    expect(ans.error.details.findings[0].path_truncated).toBe(true);
+    expect(ans.error.message).toContain("and 4999 more");
+    expect(ans.error.message).not.toContain("\u0001");
+    expect(Buffer.byteLength(`${JSON.stringify(ans)}\n`)).toBeLessThanOrEqual(MAX_RESPONSE_BYTES);
+  });
+});
+
+function openArgs(r: { sessionId: string; runId: string; wt: string }) {
+  return {
+    runId: r.runId,
+    metaSessionId: r.sessionId,
+    worktreePath: r.wt,
+    identity: IDENTITY,
+    projectId: "web",
+    contextId: "main",
+  };
+}

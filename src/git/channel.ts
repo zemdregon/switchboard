@@ -65,6 +65,7 @@ import { bypassApprovedFor } from "../lifecycle/approval.js";
 import { CommitError, type GitPublisher } from "./commit.js";
 import { credentialReachFromJson, signingReachFromJson } from "./credential-reach.js";
 import type { GitPusher } from "./push.js";
+import { describeSecretScanFindings, SECRET_SCAN_FIX_HINT, secretScanFindings } from "./secret-scan.js";
 import {
   CHANNEL_FILE_NAMES,
   type ChannelErrorCode,
@@ -774,6 +775,19 @@ export class GitToolService {
       });
       if (result.pushed) {
         return { ok: true, result: { pushed: true, ref: result.ref, head_sha: result.headSha } };
+      }
+      // ADR-0075: a secret-scan refusal names each finding (rule id, path, line; never the value) so the agent can fix
+      // it; the paths are quoted by `messagePath` in the message and are bounded, so the answer stays small.
+      if (result.reason === "SECRET_SCAN_BLOCKED" && result.secretScan !== undefined) {
+        const findings = secretScanFindings(result.secretScan);
+        return {
+          ok: false,
+          error: {
+            code: result.toolCode ?? "SECRET_SCAN_BLOCKED",
+            message: `push refused: SECRET_SCAN_BLOCKED: ${describeSecretScanFindings(findings)}. ${SECRET_SCAN_FIX_HINT}`,
+            details: { ...findings },
+          },
+        };
       }
       // Recorded in `git_push` by the library; the answer names the code and the fixed reason word only.
       return {

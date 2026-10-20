@@ -2403,7 +2403,12 @@ target (remote and `refs/heads/<branch_prefix><sess>`), that push is returned (`
 (§12.6) runs with `requested_by: mcp_client:<id>` and the run as the event run; BR-31 does not apply (a controller
 push, as the operator's). A refusal is `PERMISSION_BLOCKED` (policy reasons, `SECRET_SCAN_BLOCKED` included) or
 `INVALID_REQUEST` (`NOTHING_TO_PUSH`) or `TOOL_FAILURE` (remote and Git failures), each with `details.reason` (the
-§12.6 reason code) and `details.push_id`.
+§12.6 reason code) and `details.push_id`. *Amended 2026-10-20 by
+[ADR-0075](../adr/0075-secret-scan-findings-in-refusals.md) (Delegated agent work, not owner-approved):* a
+`SECRET_SCAN_BLOCKED` refusal also has `details.findings` (`[{rule_id, path, line, path_truncated?}]`, at most 100),
+`details.finding_count` (exact) and `details.findings_truncated: true` when fewer are listed than counted, and its
+message names them (`push refused (SECRET_SCAN_BLOCKED): 2 secret-scan findings: github_token at
+test/fixtures/a.ts:12; jwt at src/x.ts:4. Remove each value ...`, §20.9). Never the value or the line.
 
 **Pull request** (when `open_pull_request`): `owner/repo` from `git remote get-url --push <remote>` (github.com https,
 `ssh://git@github.com/` or `git@github.com:` only; else `REMOTE_NOT_GITHUB`); base = `base_ref` without `refs/heads/`,
@@ -3984,7 +3989,10 @@ Served by the shim to the agent as MCP tools; every object has `additionalProper
 (`NOT_RUNNING`, `LEASE_LOST`, `PATH_OUTSIDE_WORKTREE`, `NOTHING_TO_COMMIT`, `MESSAGE_EMPTY_AFTER_SANITISING`,
 `PUSH_NOT_ALLOWED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_REJECTED`, `SIGNING_FAILED`, from M11 `MESSAGE_REQUIRED`, and
 from T9.14 `SECRET_SCAN_BLOCKED`, §20.9) and are `git_tool_denied` or `git_push` events. They are returned to the agent
-and do not fail the run.
+and do not fail the run. *Amended 2026-10-20 by [ADR-0075](../adr/0075-secret-scan-findings-in-refusals.md)
+(Delegated, not owner-approved):* a `SECRET_SCAN_BLOCKED` push answer's message names each finding after
+`push refused: SECRET_SCAN_BLOCKED`, and the error carries an optional `details {findings, finding_count,
+findings_truncated?}` (§20.9), which the shim relays with the rest of the error object.
 
 **`message` and the inner agent (M11, FR-INN-10, Proposed).** `message` stays required in the published tool schema
 unless the `commit_message` task is enabled with `mode` other than `never`; the shim then serves the schema with no
@@ -4545,7 +4553,9 @@ where this section was silent:
   commit_count, commits (newest first, at most 500), commits_truncated?, credential_reach?, secret_scan?}` (the last
   from T9.14, §20.9: `{from, hit_count, allowed_count, binary_count, binary_paths}`, present once the scan ran).
   Pushes of one meta-session are serialised in the process. Agent tool codes: `PUSH_NOT_ALLOWED`, `NOTHING_TO_PUSH`,
-  `REMOTE_REJECTED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_UNREACHABLE`, `GIT_FAILED`, `SECRET_SCAN_BLOCKED` (T9.14).
+  `REMOTE_REJECTED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_UNREACHABLE`, `GIT_FAILED`, `SECRET_SCAN_BLOCKED` (T9.14;
+  since [ADR-0075](../adr/0075-secret-scan-findings-in-refusals.md) its answer names each finding in the message and
+  in `error.details`, §20.9).
 - **BR-31** (`evaluateCredentialReach`, from the frozen snapshot, at channel open and at each call): `host` only (a
   `container` snapshot is refused until M10), frozen policy `branch`, no `bypassApproved` or scope `bypass` claim
   without a controller-verified approval, and shell `none` or `allowlist` with an empty list (a `privileged` run by its
@@ -8317,7 +8327,21 @@ acknowledgement through the CLI (T9.14 split part 2, 2026-10-20, Linus decision,
   refused with its `credential_reach: "bypass_exempt"` still recorded), tool code `SECRET_SCAN_BLOCKED`, at most 50
   `secret_scan_hit` events `{stage: "push", rule_id, path, line, ref}` on the run the push is recorded against, then
   the `git_push` event with `secret_scan {from, hit_count, allowed_count, binary_count, binary_paths}`. The push tool
-  takes no input and `PushRequest` has no field the scan reads. `needs_attention` / `secret_scan_blocked` is derived
+  takes no input and `PushRequest` has no field the scan reads.
+- **Findings in the refusal** (*added 2026-10-20 by [ADR-0075](../adr/0075-secret-scan-findings-in-refusals.md),
+  Delegated agent work, not owner-approved*). `PushResult.secretScan {hits, hitCount}` is set on a
+  `SECRET_SCAN_BLOCKED` refusal only. `secretScanFindings` (`src/git/secret-scan.ts`) turns it into `{findings:
+  [{rule_id, path, line, path_truncated?}], finding_count, findings_truncated?}` (at most 100 findings, the exact
+  count; a path over 512 characters is cut and marked), which `publish_run` puts in `details` (§3.4.12), the agent
+  `push` tool in `error.details` (§12.6) and `switchboard git push --json` at the top level. The message list
+  (`describeSecretScanFindings`) is `<n> secret-scan finding(s): <rule_id> at <path>:<line>; ...`, at most 20 entries
+  within 1,200 characters, then `; and N more`, followed by a fixed hint (remove the value, build fake values at run
+  time in tests; the operator allowlist `git.secret_scan.allow`). A path that is not plain printable ASCII
+  (`[A-Za-z0-9._/@+=,~-]`) is shown as a JSON string with every other character escaped as `\uXXXX` and is cut at 160
+  characters, so a path cannot put a line break, a terminal escape or a bidirectional override into a message. Never
+  the value or the line. Tests: `src/mcp/publish.test.ts`, the "ADR-0075" cases of `src/git/push.test.ts`,
+  `src/git/channel.test.ts`, `src/cli/secret-scan-ack.test.ts` and the secret-scan case of
+  `src/mcp/publish-run.test.ts`. `needs_attention` / `secret_scan_blocked` is derived
   on read from the meta-session's `git_push` events (§3.4.5, `src/control/needs-attention.ts`).
 - **Allowlist.** `git.secret_scan.allow[]` (at most 64 entries of `{rule_id, path}`): a hit of that rule at a
   repository-relative path the glob matches exactly (`fixtures/**` for a tree; a bare directory name is not a prefix)

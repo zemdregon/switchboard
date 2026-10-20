@@ -62,6 +62,7 @@ import {
   SECRET_SCAN_HIT_EVENT,
   type SecretScanAllow,
   type SecretScanAllowEntry,
+  type SecretScanHit,
   type SecretScanReport,
   scanOutgoingDiff,
 } from "./secret-scan.js";
@@ -225,6 +226,11 @@ export interface PushResult {
   /** The run whose events hold the `git_push` record. */
   readonly eventRunId: string;
   readonly toolCode?: PushToolCode;
+  /**
+   * ADR-0075: on a `SECRET_SCAN_BLOCKED` refusal only, the findings as the `secret_scan_hit` events hold them (rule id,
+   * path, line; at most `MAX_SECRET_SCAN_HITS` with the exact count). Never the value or the line.
+   */
+  readonly secretScan?: { readonly hits: readonly SecretScanHit[]; readonly hitCount: number };
 }
 
 /** Thrown when there is nothing to record against (unknown meta-session, or no run in it). Nothing is written. */
@@ -657,6 +663,14 @@ export class GitPusher {
       commits,
       eventRunId,
       ...(toolCode !== undefined ? { toolCode } : {}),
+      ...(reason === "SECRET_SCAN_BLOCKED" && scan !== undefined
+        ? {
+            secretScan: {
+              hits: scan.report.hits.map(({ rule_id, path, line }) => ({ rule_id, path, line })),
+              hitCount: scan.report.hitCount,
+            },
+          }
+        : {}),
     };
   }
 }
