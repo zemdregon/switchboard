@@ -82,7 +82,7 @@ command the profile does not allow, and then works around it, failed the whole r
   a loop: Claude's deny rules are lexical, ADR-0015). Both runs above had one such non-`mode` denial (a `rule` denial in
   the first, an `other` Glob outside the worktree in the second), so under this mapping they would still end `FAILED`;
   whether a lexical Git-rule hit on a command the guard reads as non-writing, or a read-only file tool outside the
-  worktree, may be recoverable is open question Q-110 for the design authority ([ROADMAP §7.3](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted)).
+  worktree, may be recoverable is open question Q-111 for the design authority ([ROADMAP §7.3](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted)).
 - The policy layer's credential classification is provider-state directories only; a shell read of another secret
   (for example `~/.ssh`) denied by dontAsk is a recoverable `profile` denial. Widening that classification is a separate
   change.
