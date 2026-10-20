@@ -3,7 +3,8 @@
 - Status: Accepted for the direction (owner decision 77, answer 2, 2026-10-19). Mechanism: points 1 to 3 (the push
   side) are built by ROADMAP T9.14 (2026-10-19, Delegated agent work, not owner-approved;
   [LLD §20.9](../design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061) "Implemented"); point 4 (the
-  commit-time warning) stays Proposed until a later change builds it
+  commit-time warning) is built by the T9.14 split, part 1 (2026-10-20, Delegated agent work, not owner-approved;
+  the operator acknowledgement through the CLI stays Proposed and the row stays `Partial` for it)
 - Date: 2026-10-19
 - Decided by: zemdregon for the direction. The question in the
   [enhancement discovery](../research/enhancement-discovery-2026-10-19.md) §9 was "Should the pre-push secret scan block
@@ -66,3 +67,10 @@ The earlier Consequences line "A secret in a binary file or in an encoding the r
 superseded. The implementation diffs every file with `git diff --text --no-textconv --no-ext-diff`, so
 binary-counted files ARE scanned and their hits are listed in the event. The Decision is unchanged. No other part of
 this ADR is changed.
+
+## Amendment 2026-10-20 (T9.14 split, part 1, PR #779)
+
+Decision point 4 (commit-time scan warns) is built: `GitPublisher.warnSecrets` in `src/git/commit.ts` scans the added
+lines of `parent..commit` with the push's scanner and the same operator allowlist after the commit is published and
+recorded, appending at most 50 `secret_scan_hit` events with `stage: "commit"`; it never throws and never refuses.
+The Decision is unchanged; the operator acknowledgement through the CLI stays Proposed.
