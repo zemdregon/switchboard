@@ -233,7 +233,8 @@ export type ArtifactKind =
   | "pr_draft" // T11.8, migration 0009
   | "handoff_condense" // T11.10, migration 0016
   | "seed_log" // T9.13, migration 0022
-  | "docs_alignment"; // T8.10, migration 0027
+  | "docs_alignment" // T8.10, migration 0027
+  | "setup_log"; // ADR-0071, migration 0034
 
 export interface NewArtifactRow {
   /** Pre-allocated with {@link Ledger.newArtifactId} when a row written first must name it (T5.5, LLD §15.2). */

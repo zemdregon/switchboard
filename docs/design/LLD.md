@@ -1156,7 +1156,8 @@ characters, arrays at most 32 items), closed, so a client-limit key such as `max
 in_force_revision?, message? }` (`in_force_revision` and `message` Proposed). `approval_needed` values:
 `container_environment`, `push_policy`, `commit_identity`, `commit_signing`, `widened_trust_ceiling`,
 `widened_providers` (widening is measured against the revision in force), `merge_policy` (T15.8: the definition sets
-`merge_policy.enabled: true`, on every revision that keeps it on, §20.7). Errors, in check order: schema
+`merge_policy.enabled: true`, on every revision that keeps it on, §20.7), `project_setup` (ADR-0071: a `setup` that is
+new or differs from the revision in force, §5.3). Errors, in check order: schema
 `INVALID_REQUEST`; a control, separator or bidirectional character in any string `INVALID_REQUEST`
 (`CONTROL_CHARACTER`); a configured id or another client's project `PERMISSION_BLOCKED` with one message for both
 (`NOT_MANAGEABLE`); unknown id for update/delete, deleted id, or an existing id for create `INVALID_REQUEST` (ids are
@@ -2917,6 +2918,71 @@ record: a later run's guard reports it (`other`, `report`), and step 2 does not 
 preparation (§20.4) still resolves `base_ref` locally. `https` and `ssh` remotes are not tested (tests use `file`
 remotes).
 
+### 5.3 Project setup step (ADR-0071)
+
+*Built 2026-10-20 (Linus, design authority; refinements Delegated, not owner-approved),
+[ADR-0071](../adr/0071-project-setup-step.md). Code: `src/workspace/setup.ts` (`createProjectSetup`, `setupReport`),
+`src/exec/setup-sandbox.ts` (bridge and bubblewrap argv), `src/exec/connect-proxy.ts` (allowlisting CONNECT proxy), the
+`projectSetup` option and `projectSetup` step of `RunLifecycle` (`src/lifecycle/lifecycle.ts`), composed in
+`src/cli/serve.ts`.*
+
+**Definition.** `projects[].setup` (configuration file and dynamic definitions, §11.1 and §3 `create_project`):
+
+```jsonc
+"setup": {
+  "commands": [["corepack", "pnpm", "install", "--frozen-lockfile"]], // 1..8 argv arrays of 1..32 strings (1..1024 chars, no NUL)
+  "network": { "hosts": ["registry.npmjs.org"] },  // default; at most 8 lower-case DNS names, no IP literal, port or wildcard
+  "cache": "pnpm",                                 // "pnpm" | "npm" | "none" (default)
+  "timeout_seconds": 600,                          // default 600, at most 1800
+  "env": { "CI": "true" }                          // closed allowlist: CI, NODE_ENV, NO_COLOR; values [A-Za-z0-9._-]{0,64}
+}
+```
+
+Refused on a `container` project (`checkProjects`). A dynamic revision whose `setup` is new or differs after defaults
+from the revision in force waits for approval (`approval_needed` `project_setup`); removing it does not. `list_projects`
+shows `setup: { commands, network: { hosts }, cache, timeout_seconds, env? }` with defaults filled in. Admission freezes
+it as `policy_snapshot_json.project.setup` (`{ commands, network_hosts, cache, timeout_seconds, env }`), except for a
+read-only critic run.
+
+**Step** (lifecycle, LEASED, worktree runs only; after rebase preparation and the T9.5 ref snapshot, before the
+repository-configuration scan, context pack, compile and spawn):
+
+1. `plan`: lockfile hash (SHA-256 of the JSON list of `[name, sha256(bytes) | "absent" | "not_a_file"]` for
+   `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`, `bun.lockb` at the worktree
+   root) and setup hash (SHA-256 of the canonical frozen setup, hosts and env keys sorted). If
+   `<git rev-parse --absolute-git-dir>/switchboard-setup.json` is `{ v: 1, lockfile_sha256, setup_sha256 }` with both
+   equal: event `workspace_setup { phase: "skipped", reason: "marker_match" }`, continue.
+2. Event `{ phase: "started", commands, network_hosts, cache, timeout_seconds }`; the lease is extended by twice the
+   timeout plus the lease TTL.
+3. Bubblewrap from the outer sandbox detection (§8.4; detected on first use when `serve` did not); unavailable →
+   `sandbox_unavailable`. Create `<data_dir>/setup/<project>/home` and `<data_dir>/caches` (mode 0700) and a short
+   socket directory under the OS temporary directory; record the non-ignored `git status --porcelain=v1 -z
+   --untracked-files=normal` hash; start the proxy on `<socket dir>/proxy.sock`.
+4. Run the commands with `startVerification` (§8.1): built environment only (ADR-0071 item 7), wall clock
+   `timeout_seconds`, 256 KiB per stream, each argv wrapped as `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp
+   [--tmpfs <operator HOME> --tmpfs <data_dir> --tmpfs /run] [--ro-bind <hidden PATH entry or Node.js prefix>]*
+   --bind <worktree> --bind <setup home> --bind <data_dir>/caches --bind <socket dir> --chdir <worktree> --unshare-all
+   --die-with-parent --new-session -- <node> -e <bridge> <socket> <argv...>`; each spawn records pid, pgid and start
+   ticks with event `{ phase: "command_started", index, pid, pgid }`.
+5. Close the proxy and remove the socket directory. Succeeded only when every command passed and the status hash is
+   unchanged (else `outputs_not_ignored`); then write the marker (mode 0600).
+6. Store the `setup_log` artifact when a command ran (version 1: `outcome`, `reason?`, `confined`, both hashes, proxy
+   counts, per command `index`, redacted `argv`, `outcome`, `exit_code`, `signal`, `duration_ms`, redacted `stdout` and
+   `stderr`, truncation flags). Event `{ phase: "succeeded" | "failed" | "cancelled", reason?, duration_ms, exit_codes,
+   confined, proxy_allowed, proxy_refused, artifact_id? }`.
+7. Failure → `FAILED` `TOOL_FAILURE` before spawn with transition payload `{ reason: "SETUP_FAILED" | "SETUP_TIMEOUT",
+   setup_reason, setup_log? }` and `failure_detail` `project setup failed (SETUP_FAILED): <what>; output in the setup_log
+   artifact` (or `project setup timed out after <n> s (SETUP_TIMEOUT); ...`). Cancel → `CANCELLED` (T19). No setup
+   runner wired → `SETUP_FAILED` `unavailable`.
+
+**Proxy** (`startConnectProxy`): request head at most 8 KiB within 10 s; only `CONNECT <host>:443 HTTP/1.x` with
+`<host>` in the list (exact, case-insensitive) is tunnelled (`200 Connection Established`, then bytes both ways, idle
+close after 5 minutes, at most 64 tunnels); other methods `405`, other hosts or ports `403`, an oversized head `431`, a
+name without a public unicast address or a failed dial `502`, too many tunnels `503`. Only counts are kept.
+
+**Not covered** (ADR-0071 Consequences): content inside allowed TLS tunnels, CPU and memory limits, macOS, and GC of
+`<data_dir>/caches`.
+
 ## 6. Compliance manifest
 
 One manifest per provider, stored in the repository (versioned data, not code), loaded and Ajv-validated at startup;
@@ -3494,6 +3560,11 @@ context kind aborts startup (NFR-SEC-06).
 
 Only the primary context is writable in this design; additional writable contexts (multi-repository changes) are deferred
 (ROADMAP §8). A context with `push.policy` other than `none` must have an `identity`.
+
+*Note (2026-10-20, Linus as design authority, [ADR-0071](../adr/0071-project-setup-step.md)):* a project (configured or
+dynamic, `host` only) may also set `"setup": { "commands": [[...]], "network": { "hosts": [...] }, "cache": "pnpm",
+"timeout_seconds": 600, "env": { "CI": "true" } }`, the dependency setup step the controller runs before the agent;
+shape, defaults, approval and the step are in [§5.3](#53-project-setup-step-adr-0071).
 
 *Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21):* the top-level `timeouts` object
 is part of the same Ajv-validated schema (strict; unknown keys abort startup) and today holds one key,

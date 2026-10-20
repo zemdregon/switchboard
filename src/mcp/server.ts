@@ -290,6 +290,8 @@ import {
   mergePolicyItem,
   type PendingRevisionAnnouncement,
   type ProjectTools,
+  setupItem,
+  snapshotSetup,
 } from "./project-tools.js";
 import { type PublishDeps, publishRun } from "./publish.js";
 import {
@@ -738,6 +740,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         ...(context.sign ? { sign: true as const } : {}),
         // T5.14 (FR-SES-07): the brief's hash, read now; an unreadable brief refuses the run (fail closed).
         ...admitBrief(project, deps.config.allowedRoots),
+        // ADR-0071: the setup step as of admission (the approved, in-force revision of a dynamic project).
+        ...snapshotSetup(project),
       },
     };
   };
@@ -2015,6 +2019,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         effective_max_profile: effectiveMaxProfile(maxTrustProfile, p),
         ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
         ...mergePolicyItem(p),
+        ...setupItem(p),
       })),
       // T9.9: this client's dynamic projects (creator-only), marked `source: "dynamic"`.
       ...(projectTools?.listForClient().map((e) => dynamicListItem(e, maxTrustProfile)) ?? []),

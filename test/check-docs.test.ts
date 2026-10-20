@@ -141,7 +141,7 @@ describe("task status markers rule (T8.8, NFR-MAINT-04)", () => {
     const roadmapText = readFileSync(ROADMAP, "utf8");
     const res = checkRoadmapTaskStatuses(roadmapText, "docs/ROADMAP.md");
     expect(res.errors).toEqual([]);
-    expect(res.ids.length).toBe(288);
+    expect(res.ids.length).toBe(289);
 
     // Hand count verification for Milestone 1 (M1):
     // 11 tasks (T1.1 through T1.11), all 11 are Done, 0 Partial, 0 Planned, 0 Blocked, 0 Deferred.

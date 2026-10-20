@@ -628,6 +628,73 @@ describe("approval (BR-32): container, push and widening wait for the operator",
     expect(bad.body.error.code).toBe("INVALID_REQUEST");
   });
 
+  it("turning setup on or changing it waits for the operator; list_projects shows it (ADR-0071)", async () => {
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
+    await call("create_project", { project: definition() });
+    const SETUP = { commands: [["corepack", "pnpm", "install", "--frozen-lockfile"]], cache: "pnpm" };
+    const on = await call("update_project", { id: "dyn-app", project: definition({ setup: SETUP }) });
+    expect(on.body).toMatchObject({
+      revision: 2,
+      status: "PENDING_APPROVAL",
+      approval_needed: ["project_setup"],
+      in_force_revision: 1,
+    });
+    // Revision 1 (no setup) stays in force until the operator decides.
+    expect((await call("list_projects")).body.projects[0].setup).toBeUndefined();
+    store.decide({ projectId: "dyn-app", decision: "APPROVED", decidedBy: "op" });
+    expect((await call("list_projects")).body.projects[0]).toMatchObject({
+      revision: 2,
+      setup: {
+        commands: [["corepack", "pnpm", "install", "--frozen-lockfile"]],
+        network: { hosts: ["registry.npmjs.org"] },
+        cache: "pnpm",
+        timeout_seconds: 600,
+      },
+    });
+    // The same setup again (defaults spelled out) is not a widening; a changed one is.
+    const same = await call("update_project", {
+      id: "dyn-app",
+      project: definition({ setup: { ...SETUP, network: { hosts: ["registry.npmjs.org"] }, timeout_seconds: 600 } }),
+    });
+    expect(same.body).toMatchObject({ revision: 3, status: "ACTIVE" });
+    const hosts = await call("update_project", {
+      id: "dyn-app",
+      project: definition({ setup: { ...SETUP, network: { hosts: ["registry.npmjs.org", "repo.yarnpkg.com"] } } }),
+    });
+    expect(hosts.body).toMatchObject({ status: "PENDING_APPROVAL", approval_needed: ["project_setup"] });
+    // Removing it narrows: no approval.
+    const off = await call("update_project", { id: "dyn-app", project: definition() });
+    expect(off.body).toMatchObject({ status: "ACTIVE" });
+
+    for (const bad of [
+      { commands: [] },
+      { commands: [["a"], ["b"], ["c"], ["d"], ["e"], ["f"], ["g"], ["h"], ["i"]] },
+      { commands: [Array.from({ length: 33 }, () => "x")] },
+      { commands: [[""]] },
+      { commands: [["pnpm"]], network: { hosts: ["*.npmjs.org"] } },
+      { commands: [["pnpm"]], network: { hosts: ["registry.npmjs.org:443"] } },
+      { commands: [["pnpm"]], network: { hosts: ["10.0.0.1"] } },
+      { commands: [["pnpm"]], network: { hosts: ["Registry.npmjs.org"] } },
+      { commands: [["pnpm"]], network: { hosts: Array.from({ length: 9 }, (_, i) => `h${i}.example.org`) } },
+      { commands: [["pnpm"]], cache: "yarn" },
+      { commands: [["pnpm"]], timeout_seconds: 1801 },
+      { commands: [["pnpm"]], env: { NPM_TOKEN: "x" } },
+      { commands: [["pnpm"]], env: { CI: "true; rm -rf /" } },
+      { commands: "pnpm install" },
+    ]) {
+      const r = await call("update_project", { id: "dyn-app", project: definition({ setup: bad }) });
+      expect(r.body.error?.code, JSON.stringify(bad)).toBe("INVALID_REQUEST");
+    }
+    const container = await call("create_project", {
+      project: definition({
+        id: "box-setup",
+        environment: { kind: "container", image_digest: `sha256:${"b".repeat(64)}` },
+        setup: SETUP,
+      }),
+    });
+    expect(container.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+  });
+
   it("a rejected revision stays unusable; widening an approved revision returns to pending with the old one in force", async () => {
     await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
     await call("create_project", { project: definition({ max_trust_profile: "inspect-untrusted" }) });

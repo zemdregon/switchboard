@@ -493,6 +493,43 @@ export interface ProjectConfig {
      */
     require_verification?: boolean;
   };
+  /**
+   * ADR-0071: dependency setup commands the controller runs in each run's worktree after it is prepared and before the
+   * agent starts (argv, no shell), with network only to `network.hosts` through the controller's allowlisting proxy.
+   * `host` environments only. A dynamic definition may carry it, but turning it on or changing it waits for operator
+   * approval (`project_setup`, FR-PRJ-10).
+   */
+  setup?: ProjectSetupConfig;
+}
+
+/** ADR-0071: `projects[].setup.cache`, the shared package-manager cache under `<data_dir>/caches`. */
+export const SETUP_CACHES = ["pnpm", "npm", "none"] as const;
+export type SetupCache = (typeof SETUP_CACHES)[number];
+/** ADR-0071: the closed allowlist of non-secret variables `setup.env` may set. */
+export const SETUP_ENV_KEYS = ["CI", "NODE_ENV", "NO_COLOR"] as const;
+export type SetupEnvKey = (typeof SETUP_ENV_KEYS)[number];
+/** ADR-0071 bounds (Delegated): commands, argv length, argument length, hosts, timeout. */
+export const MAX_SETUP_COMMANDS = 8;
+export const MAX_SETUP_ARGS = 32;
+export const MAX_SETUP_ARG_LENGTH = 1024;
+export const MAX_SETUP_HOSTS = 8;
+export const DEFAULT_SETUP_TIMEOUT_SECONDS = 600;
+export const MAX_SETUP_TIMEOUT_SECONDS = 1800;
+export const DEFAULT_SETUP_HOSTS: readonly string[] = ["registry.npmjs.org"];
+/**
+ * A DNS hostname, lower case, at least two labels, the last starting with a letter (so never an IP literal), no port,
+ * no wildcard, no trailing dot (ADR-0071; Delegated).
+ */
+export const SETUP_HOST_PATTERN =
+  "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$";
+
+/** ADR-0071: one `projects[].setup` (configuration file and dynamic definitions). */
+export interface ProjectSetupConfig {
+  commands: string[][];
+  network?: { hosts?: string[] };
+  cache?: SetupCache;
+  timeout_seconds?: number;
+  env?: Partial<Record<SetupEnvKey, string>>;
 }
 
 /** T15.8: `projects[].merge_policy.method`, one `gh pr merge` flag each; `squash` by default (LLD §20.7). */
@@ -717,6 +754,46 @@ export const projectSchema = {
         required_reports: { type: "array", uniqueItems: true, items: { enum: [...MERGE_POLICY_REPORTS] } },
         // ADR-0070: false skips the verification_result-at-head condition; turning it off waits for approval.
         require_verification: { type: "boolean" },
+      },
+    },
+    // ADR-0071: changing it in a dynamic definition waits for approval (`project_setup`).
+    setup: {
+      type: "object",
+      additionalProperties: false,
+      required: ["commands"],
+      properties: {
+        commands: {
+          type: "array",
+          minItems: 1,
+          maxItems: MAX_SETUP_COMMANDS,
+          items: {
+            type: "array",
+            minItems: 1,
+            maxItems: MAX_SETUP_ARGS,
+            items: { type: "string", minLength: 1, maxLength: MAX_SETUP_ARG_LENGTH, pattern: "^[^\\u0000]*$" },
+          },
+        },
+        network: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            hosts: {
+              type: "array",
+              maxItems: MAX_SETUP_HOSTS,
+              uniqueItems: true,
+              items: { type: "string", maxLength: 253, pattern: SETUP_HOST_PATTERN },
+            },
+          },
+        },
+        cache: { enum: [...SETUP_CACHES] },
+        timeout_seconds: { type: "integer", minimum: 1, maximum: MAX_SETUP_TIMEOUT_SECONDS },
+        env: {
+          type: "object",
+          additionalProperties: false,
+          properties: Object.fromEntries(
+            SETUP_ENV_KEYS.map((k) => [k, { type: "string", maxLength: 64, pattern: "^[A-Za-z0-9._-]{0,64}$" }]),
+          ),
+        },
       },
     },
     contexts: { type: "array", minItems: 1, items: contextSchema },
