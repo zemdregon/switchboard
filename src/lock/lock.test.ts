@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { acquireDataDirLock, LockError } from "./index.js";
+import { acquireDataDirLock, heldLocks, LockError, tryAcquireSlot } from "./index.js";
 
 let dir: string;
 beforeEach(() => {
@@ -18,6 +18,14 @@ describe("data-dir lock", () => {
     l.release();
     expect(existsSync(l.lockPath)).toBe(false);
     l.release(); // idempotent
+  });
+
+  it("is listed by heldLocks() from acquisition until release (T8.10 instrumentation)", () => {
+    expect(heldLocks()).toEqual([]);
+    const l = acquireDataDirLock(dir);
+    expect(heldLocks()).toEqual([{ kind: "data_dir", lockPath: l.lockPath }]);
+    l.release();
+    expect(heldLocks()).toEqual([]);
   });
 
   it("fails clearly on a second acquisition while the owner is alive", () => {
@@ -46,5 +54,15 @@ describe("data-dir lock", () => {
     writeFileSync(l.lockPath, "999999999\n");
     l.release();
     expect(existsSync(l.lockPath)).toBe(true);
+  });
+});
+
+describe("held-lock registry (T8.10, LLD §20.14)", () => {
+  it("lists a verification slot from acquisition until release", async () => {
+    const lease = await tryAcquireSlot({ slots: 1, scope: `h${process.pid}`, mode: "path", dir });
+    expect(lease).toBeDefined();
+    expect(heldLocks()).toEqual([{ kind: "verification_slot", index: 0 }]);
+    await lease?.release();
+    expect(heldLocks()).toEqual([]);
   });
 });
