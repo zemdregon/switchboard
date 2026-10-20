@@ -1476,7 +1476,10 @@ routing step as a `user_request` for that project. Scores, cost and load are nev
 Invariants checked by the replay test (TDD §3.13.3): `held` implies `affinity_switch_reason` is null and `scored` is
 false; a changed provider or model implies a non-null reason; `scored` is true only when there was no affinity or a
 reason applied. `explain_route` returns this object. The envelope's `route.reasons` list names the reason code when
-affinity ended.
+affinity ended. Each candidate line is labelled by its group member (`provider/model`) when it has one, so two members
+of one provider are two distinguishable lines; for a `privileged` run a candidate refused only by `PROFILE_UNSUPPORTED`
+or `CAPABILITY_MISSING` (admissible, its compile deferred to dispatch) reads `compile deferred to dispatch (<code>)`
+instead of `excluded <code>` (Linus decision, Delegated, not owner-approved; `routeReasons` in `src/mcp/envelope.ts`).
 
 **Prompt assembly order (FR-RTE-09, Could).** The delegated prompt is assembled in a fixed order: stable content first
 (project instructions, constraints, trust and tool preamble), then volatile content (task text, retrieved snippets of
@@ -6663,7 +6666,20 @@ Dequeue is implemented inside COMP-RTE (scheduler tick) calling the same admissi
    work item stays `READY` when the refusal is retryable (`QUEUE_FULL`, pause), and becomes `FAILED_ADMISSION` when not
    (`PERMISSION_BLOCKED`, `INVALID_REQUEST`).
 5. **Privileged.** `privileged` items follow WF-7: `AWAITING_APPROVAL` on the admitted run is allowed; the work item is
-   `ADMITTED` when the run row exists, and becomes `DONE` only when that run succeeds.
+   `ADMITTED` when the run row exists, and becomes `DONE` only when that run succeeds. Stage-1 eligibility compiles
+   against the request's own scope exactly as `delegate_task` does (V11, `privilegedEligibilityProfile` in
+   `src/policy/profiles.ts`, shared by both paths), and V13 refuses a `privileged_scope` without `privileged` as it
+   does there; a client configured `privileged_approval: "not_required"` is admitted under ADR-0019 and any other client
+   waits in `AWAITING_APPROVAL`. Fix 2026-10-20 (Linus decision, Delegated, not owner-approved): before it, queued
+   eligibility resolved the bare name `privileged`, which the production resolver always refuses, so every queued
+   privileged item failed `TOOL_FAILURE` (`src/queue/privileged-admission.test.ts`).
+6. **Failure reason.** The `admission_failed` event's detail is `{ code, message, reason?, field?, error_class? }`
+   (Linus decision, Delegated, not owner-approved; `AdmissionFailureDetail` in `src/queue/admission.ts`). `code` is the
+   item's `last_error_code`, mapped as `delegate_task` maps the same error (`toToolError`). `message` is the message
+   `delegate_task` would return, scrubbed as MCP output is (`createScrubber`: credential-shaped tokens redacted, paths
+   outside the allowed roots replaced) and bounded to 300 characters; `reason` and `field` are copied from the error's
+   details when present. An unexpected exception records only the fixed `TOOL_FAILURE` message and its class name in
+   `error_class`, never its own message or stack, request text or provider output.
 
 **MCP tools (T15.1).** `enqueue_work`, `list_work` and `cancel_work`, scoped as `list_runs` (§3.4.2): a `project_id`
 must name a project the client may use (unknown → `INVALID_REQUEST`, outside its `projects` list → `PERMISSION_BLOCKED`,

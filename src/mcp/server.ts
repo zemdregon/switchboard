@@ -189,7 +189,7 @@ import {
   type PrivilegedScope,
   type ProjectSnapshot,
   parsePrivilegedScope,
-  resolveTrustProfile,
+  privilegedEligibilityProfile,
 } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
 import { DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT } from "../queue/scheduler.js";
@@ -1027,7 +1027,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       trustProfile: profile,
       clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
       cwd: workspace,
-      ...(scope?.ok ? { profile: eligibilityProfile(scope.scope) } : {}),
+      ...(scope?.ok ? { profile: privilegedEligibilityProfile(scope.scope) } : {}),
       ...(minimumCapability !== undefined ? { minimumCapability } : {}),
     };
     // T7.15 (LLD §17.7): with a group or an explicit model, each member is a stage-1 candidate.
@@ -1174,7 +1174,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         trustProfile: profile,
         clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
         cwd: workspace,
-        ...(approvedScope?.ok ? { profile: eligibilityProfile(approvedScope.scope) } : {}),
+        ...(approvedScope?.ok ? { profile: privilegedEligibilityProfile(approvedScope.scope) } : {}),
         ...(minimumCapability !== undefined ? { minimumCapability } : {}),
       });
 
@@ -1727,7 +1727,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         try {
           profiles =
             p === "privileged"
-              ? REPRESENTATIVE_PRIVILEGED_SCOPES.map((sc) => eligibilityProfile(sc))
+              ? REPRESENTATIVE_PRIVILEGED_SCOPES.map((sc) => privilegedEligibilityProfile(sc))
               : [lifecycle.resolveProfile(p)];
         } catch {
           continue; // COMP-POL does not resolve this profile: unsupported, fail closed
@@ -2096,21 +2096,6 @@ const REPRESENTATIVE_PRIVILEGED_SCOPES: readonly PrivilegedScope[] = [
     bypass: false,
   },
 ];
-
-/**
- * The snapshot V11 compiles against for a `privileged` request: the scope resolved with placeholder hash and approval
- * ID (the real ones exist only inside the admission transaction). `bypassApproved` is false whatever the scope says
- * (it is known only at dispatch), so {@link admissible} defers an adapter's compile refusal to dispatch.
- */
-function eligibilityProfile(scope: PrivilegedScope): ResolvedProfile {
-  return resolveTrustProfile("privileged", {
-    privileged: {
-      scope,
-      scopeHash: "0".repeat(64),
-      approvalId: "apv_00000000000000000000000000",
-    },
-  });
-}
 
 function compileValidators(): Record<ToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });

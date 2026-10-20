@@ -68,7 +68,10 @@ export interface WorkQueueLedgerSlice {
   releaseAdmittingToReady(workItemId: string): boolean;
   completeWorkAdmission(
     workItemId: string,
-    outcome: { kind: "admitted"; runId: string } | { kind: "retry" } | { kind: "failed"; code: string },
+    outcome:
+      | { kind: "admitted"; runId: string }
+      | { kind: "retry" }
+      | { kind: "failed"; code: string; detail?: Readonly<Record<string, unknown>> },
   ): WorkItemRow | undefined;
   markWorkItemDone(workItemId: string): WorkItemRow | undefined;
   /**
@@ -402,7 +405,8 @@ export function createWorkQueueLedgerSlice(
             "FAILED_ADMISSION",
             { last_error_code: outcome.code, terminal_at: at },
             "admission_failed",
-            { code: outcome.code },
+            // The admission path's secret-free reason (`AdmissionFailureDetail`), beside the code; `code` wins.
+            { ...(outcome.detail ?? {}), code: outcome.code },
           );
           notifyQueueChange(item.project_id);
           return res;

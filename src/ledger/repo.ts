@@ -1052,7 +1052,10 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   releaseAdmittingToReady(workItemId: string): boolean;
   completeWorkAdmission(
     workItemId: string,
-    outcome: { kind: "admitted"; runId: string } | { kind: "retry" } | { kind: "failed"; code: string },
+    outcome:
+      | { kind: "admitted"; runId: string }
+      | { kind: "retry" }
+      | { kind: "failed"; code: string; detail?: Readonly<Record<string, unknown>> },
   ): WorkItemRow | undefined;
   markWorkItemDone(workItemId: string): WorkItemRow | undefined;
   closeWorkItemForRun(runId: string, runState: "SUCCEEDED" | "FAILED" | "CANCELLED"): WorkItemRow | undefined;
