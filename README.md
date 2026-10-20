@@ -821,7 +821,8 @@ Control-plane knobs live in `config.json` (no duplicate schema here):
   provider after a large diff, findings attached as untrusted text that never changes the original run; `enabled`
   default `false`, `min_diff_lines` integer 1 to 1 000 000 default 400; config-file key only (not a dynamic project
   definition); absent means off.
-- `notification_sinks[]`: webhook and ntfy kinds, filters (including the `digest` kind, T14.16) and rate
+- `notification_sinks[]`: webhook and ntfy kinds, filters (including the `digest` kind, T14.16, and the
+  `decision_requested` kind, T14.15, FR-CTL-13, which carries no decision text) and rate
   limits, plus an optional webhook `authorization`
   value sent as the `Authorization` header (FR-CTL-12, T14.14, ADR-0048); off by default.
 
@@ -834,6 +835,8 @@ See [TDD §3.1](docs/design/TDD.md#31-configuration) and [LLD §3.4](docs/design
 | `get_digest`, `list_runs`, `get_run` | yes | yes | yes (read) |
 | `delegate_task`, `cancel_run`, … | yes | subset (`delegate_task` only) | no extra |
 | `list_pending_approvals`, `decide_approval` | no | no | yes |
+| `request_decision`, `list_decisions` | yes | no | no extra (`decide` only) |
+| `decide` | no | no | yes (an `approval_proxy` client decides only decisions of its targets) |
 | `pause_project`, `resume_project`, `steer_run` | yes | yes | no |
 
 Tool outputs use closed controller fields only (no transcripts). Pending approvals expose an `approval_digest`, not
@@ -864,6 +867,11 @@ Fixtures only; no live provider CLI:
   (served-resource link).
 - Webhook authorization (T14.14, FR-CTL-12): `src/config/notification-sinks.test.ts`, `src/cli/cli.test.ts` (doctor
   `set`/`unset` suite); header-delivery and canary scans in `src/control/sinks.test.ts`.
+- Decision requests (T14.15, FR-CTL-13): `src/mcp/decisions.test.ts` (park and exactly-once resume/reroute/cancel,
+  digest `open_decisions` without text, sink payload without text, tool gating by profile and proxy flag, consent
+  links) and `src/ledger/ledger.test.ts` (migration 0030 on a version 29 database keeps every work item, event and
+  T15.7 column); operator side `switchboard decisions list`/`decide`
+  in `src/cli/decisions.ts`.
 - Scheduled digest push and progress stall (T14.16, FR-CTL-14): `src/control/digest-push.test.ts` (metadata-only
   digest on schedule, stall derivation, project-level flag on `get_digest`) and
   `src/config/digest-stall-config.test.ts` (off by default, resolution, refusal of bad cron and stall values).

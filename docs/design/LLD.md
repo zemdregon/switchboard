@@ -2195,7 +2195,8 @@ counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
   `budget_exhausted` the literal `budget_exhausted`; `project_paused` `project_paused` or `global_paused`;
   `queue_low` the literal `queue_low` (T15.4, FR-QUE-04; `run_id` null); `digest` the literal `digest` (T14.16,
   FR-CTL-14; `project_id` `*`, `run_id` null, and the integer-only `counts` object of §20.5, which no other kind may
-  carry). `project_id`
+  carry); `decision_requested` the literal `awaiting_decision` (T14.15, FR-CTL-13; `run_id` null, never decision
+  text). `project_id`
   is a project id, `-` (a run admitted without a project) or `*` (all projects). An event with any other value, or a
   `run_id` that is not `run_` + ULID, is dropped, not sent.
 - Link: the configured `public_url` resource itself when the HTTP transport is set (`sinkLink` returns it unchanged
@@ -2229,6 +2230,9 @@ counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
     and retention-gc passes record the same ledger events (so the envelope and digest still flag the run) but do not
     emit (the dispatcher does not exist yet at startup reconcile).
   - `needs_attention` / `ci_fix_stuck`: the CI poller setting the stuck flag (the 0→1 transition only), via `onStuck`.
+  - `decision_requested` / `awaiting_decision` (T14.15, FR-CTL-13): `requestDecision` committing the open row and
+    parking the item, via the decision-service announce hook wired in `src/cli/serve.ts` (one emission per
+    decision, at request time; nothing is sent on `decide`).
   - `budget_exhausted` (T14.4, unchanged): the budget refusal hook already announces it, so it is not announced again
     as `needs_attention`.
   - `stalled` and `secret_scan_blocked` have no event-time hook (both derived on read only: `findStalledRuns`
@@ -2256,7 +2260,7 @@ true`, which would otherwise be a silent no-op.
 As built (unknown-tool `details.tools`, 2026-10-20, Delegated, not owner-approved): both `tools/call`
 unknown-tool refusals report `details.tools` as exactly the names `tools/list` returns for that client, derived from
 the same descriptors (`offeredDescriptors` in `src/mcp/server.ts`), so the list can never lag the registered set
-(work-queue, skill and approval-proxy tools included when offered). Pinned by `src/mcp/unknown-tool.test.ts`
+(work-queue, skill, approval-proxy and decision tools included when offered). Pinned by `src/mcp/unknown-tool.test.ts`
 (`details.tools` equals the sorted `tools/list` names for an orchestrator and a console client).
 
 #### 3.4.11 Consent-page approval link (FR-CTL-09, ADR-0047)
@@ -7561,8 +7565,10 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
 - **Event.** One aggregate `digest` event per fire: `project_id` `*`, `reason_code` `digest`, `run_id` null, the usual
   link, and `counts` with exactly these integer leaves: `runs_by_state` (every run state, all time),
   `needs_attention_by_reason` (the run-level reasons over non-terminal runs, plus `stalled_progress` per configured
-  project), `queue_by_state` (work items of every state), `pending_approvals` and `paused_projects`. Holds by reason
-  join when T3.24 builds them; open decisions are not counted yet (§20.3 item 6). The payload builder rebuilds
+  project), `queue_by_state` (work items of every state), `pending_approvals` and `paused_projects`. Neither
+  hold-reason nor open-decision counts are in the pushed `counts` yet: hold
+  surfaces as `held[]` in `get_digest` (T3.24), and open decisions are listed as `open_decisions` in `get_digest`
+  but excluded from the closed `counts` keys (§20.3 item 6). The payload builder rebuilds
   `counts` key by key from the closed lists and drops the event when a key is missing or extra or a value is not a
   non-negative integer; `counts` on any other kind is dropped too (`src/control/sinks.ts`). The ntfy message appends
   the non-zero grouped counts and always the two scalar counts (`pending_approvals`, `paused_projects`), each as

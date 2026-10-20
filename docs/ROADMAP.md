@@ -4320,7 +4320,7 @@ Notes carried from M2:
 ### 9.2 Harness and discovery rows (2026-10-19)
 
 *Delegated sequencing, not owner-approved beyond owner decisions 76 and 77.* The rows added on 2026-10-19 were
-`Planned` when added (T3.24, T15.9, T14.16, T8.12, T8.14 and T13.10 are `Done` in §6 — T13.10 since 2026-10-19,
+`Planned` when added (T3.24, T15.9, T14.15, T14.16, T8.12, T8.14 and T13.10 are `Done` in §6 — T13.10 since 2026-10-19,
 [§6.10](#610-m13-network-mcp-transport-tasks); the rest stay `Planned`) and need no
 provider login, except the real-provider runs of T8.14 (Operator-only). Order:
 
