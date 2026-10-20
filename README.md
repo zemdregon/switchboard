@@ -2,6 +2,12 @@
 
 ![Switchboard logo](assets/switchboard-logo.png)
 
+[![CI](https://github.com/zemdregon/switchboard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zemdregon/switchboard/actions/workflows/ci.yml)
+[![Docs](https://github.com/zemdregon/switchboard/actions/workflows/docs-lint.yml/badge.svg?branch=main)](https://github.com/zemdregon/switchboard/actions/workflows/docs-lint.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Node.js 22+](https://img.shields.io/badge/node-%E2%89%A522-339933.svg)](package.json)
+[![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange.svg)](#status)
+
 **One AI agent in charge. Every AI coding CLI at its command.**
 
 Switchboard lets the agent you already work with hand coding tasks to Claude Code, Codex, Grok Build, Antigravity,
@@ -115,6 +121,18 @@ Want to try it without any provider CLI? Start the server with
 `SWITCHBOARD_TEST_FAKE_ADAPTER=enable-test-only-fake-adapter` set and tasks run on a built-in fake adapter
 ([details](docs/design/TDD.md#36-testing-strategy)).
 
+## What it looks like
+
+An illustrative session, with Claude Code as the orchestrator:
+
+> **You:** Have Codex add tests for the config parser, then have Claude Code review the diff.
+>
+> **Orchestrator:** calls `delegate_task` (Codex, `edit-untrusted`, isolated worktree), polls `get_run` until it
+> succeeds, reads the diff with `get_artifacts`, then calls `delegate_task` again (`inspect-untrusted`) to review it.
+> If the first provider runs out of quota mid-task, Switchboard routes the retry to another eligible provider.
+
+You stay in one conversation. Switchboard does the fan-out, isolation and bookkeeping.
+
 ## How it works
 
 ```text
@@ -209,7 +227,7 @@ logins, one operator per machine, and read each provider's current terms before 
 ## Contributing
 
 Contribution steps are in [CONTRIBUTING.md](CONTRIBUTING.md). AI agents working in this repository should read
-[AGENTS.md](AGENTS.md) first. Report security concerns as described in [SECURITY.md](SECURITY.md).
+[AGENTS.md](AGENTS.md) first. Need help? See [SUPPORT.md](SUPPORT.md). Report security concerns as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
