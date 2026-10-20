@@ -2195,7 +2195,8 @@ counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
   `budget_exhausted` the literal `budget_exhausted`; `project_paused` `project_paused` or `global_paused`;
   `queue_low` the literal `queue_low` (T15.4, FR-QUE-04; `run_id` null); `digest` the literal `digest` (T14.16,
   FR-CTL-14; `project_id` `*`, `run_id` null, and the integer-only `counts` object of §20.5, which no other kind may
-  carry). `project_id`
+  carry); `decision_requested` the literal `awaiting_decision` (T14.15, FR-CTL-13; `run_id` null, never decision
+  text). `project_id`
   is a project id, `-` (a run admitted without a project) or `*` (all projects). An event with any other value, or a
   `run_id` that is not `run_` + ULID, is dropped, not sent.
 - Link: the configured `public_url` resource itself when the HTTP transport is set (`sinkLink` returns it unchanged
@@ -2229,6 +2230,9 @@ counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
     and retention-gc passes record the same ledger events (so the envelope and digest still flag the run) but do not
     emit (the dispatcher does not exist yet at startup reconcile).
   - `needs_attention` / `ci_fix_stuck`: the CI poller setting the stuck flag (the 0→1 transition only), via `onStuck`.
+  - `decision_requested` / `awaiting_decision` (T14.15, FR-CTL-13): `requestDecision` committing the open row and
+    parking the item, via the decision-service announce hook wired in `src/cli/serve.ts` (one emission per
+    decision, at request time; nothing is sent on `decide`).
   - `budget_exhausted` (T14.4, unchanged): the budget refusal hook already announces it, so it is not announced again
     as `needs_attention`.
   - `stalled` and `secret_scan_blocked` have no event-time hook (both derived on read only: `findStalledRuns`
@@ -2256,7 +2260,7 @@ true`, which would otherwise be a silent no-op.
 As built (unknown-tool `details.tools`, 2026-10-20, Delegated, not owner-approved): both `tools/call`
 unknown-tool refusals report `details.tools` as exactly the names `tools/list` returns for that client, derived from
 the same descriptors (`offeredDescriptors` in `src/mcp/server.ts`), so the list can never lag the registered set
-(work-queue, skill and approval-proxy tools included when offered). Pinned by `src/mcp/unknown-tool.test.ts`
+(work-queue, skill, approval-proxy and decision tools included when offered). Pinned by `src/mcp/unknown-tool.test.ts`
 (`details.tools` equals the sorted `tools/list` names for an orchestrator and a console client).
 
 #### 3.4.11 Consent-page approval link (FR-CTL-09, ADR-0047)
@@ -2930,9 +2934,13 @@ documents.
   `PROCESS_TIMEOUT`, cancel yields `CANCELLED`.
 - **Line framing.** Stdout is decoded as UTF-8 and split on `\n` (tolerating `\r\n`); one JSON document per line for
   JSONL transports; for `json` output, the entire stdout is one document capped at the artifact limit. Max line size 1
-  MiB (proposed target): an oversize line aborts the run as `OUTPUT_PROTOCOL_ERROR` (kill group, keep captured data),
-  never truncated silently. Invalid UTF-8 or JSON on a line is a protocol error unless the adapter declares the line
-  type ignorable.
+  MiB (proposed target, `DEFAULT_MAX_LINE_BYTES`) unless the adapter's `Invocation.maxLineBytes` sets another fixed
+  bound: an oversize line aborts the run as `OUTPUT_PROTOCOL_ERROR` (kill group, keep captured data), never truncated
+  silently. Invalid UTF-8 or JSON on a line is a protocol error unless the adapter declares the line type ignorable.
+  Claude Code uses 16 MiB (`CLAUDE_STDOUT_LINE_BYTES`; Linus decision, Delegated, not owner-approved, 2026-10-20): its
+  `Edit` tool-result `user` event echoes the whole pre-edit file in `tool_use_result.originalFile`, and editing the 1.5
+  MB roadmap gave a valid 1,550,255-byte line that the 1 MiB cap rejected (run `run_01M5BST6XW3JGHKCCNW6EJ8R6V`).
+  Every line is still fully decoded and parsed, and a longer line still fails closed.
 - **Capture.** Raw stdout and stderr are streamed to files in a temp area as received, then moved into the artifact
   store and hashed on completion (`provider_stdout`, `provider_stderr`, FR-EXE-05); stderr is never parsed as protocol.
   Per-stream size cap 64 MiB (proposed target); beyond it capture stops, a `run_event` records truncation, and the run
@@ -7396,6 +7404,67 @@ Tests: `src/ci/ci-transient.test.ts` (fake `CiStatusPort`, fake `CiActionsPort` 
 - **Sinks.** Event kind `decision_requested`, reason `awaiting_decision`, the closed ADR-0048 payload; the question,
   options and note never leave the ledger except through `list_decisions`, labelled untrusted.
 
+**As built (T14.15, 2026-10-20, Delegated agent work, not owner-approved).**
+
+1. **Migration 0030** (`src/ledger/migrations/0030_decision_request.ts`, foreign keys off with a `foreign_key_check`).
+   `decision_request` has the fields above; options are numbered from 1 in stored order; `recommended_option` and
+   `decided_option` are 1 to 6; `question` and `note` are at most 2,000 characters; at most one `open` decision per
+   work item (partial unique index); a closed row names `decided_by` and `decided_at`, an open one neither. The
+   `project_work_item` and `project_work_event` CHECKs are widened by a table rebuild that keeps every row and index:
+   state `PARKED_DECISION`, `source_kind` `decision` (`source_id` is the decision id) and events `parked` and
+   `unparked`. The rebuild also carries the T15.7 columns of migration 0029 (`dedupe_key`, `hot_paths_json`,
+   `superseded_by`) and recreates its `project_work_item_dedupe` index, so a parked item keeps its dedupe key (it is
+   live, not terminal) and the hot-path check of §20.4 is unchanged. Ledger slice: `src/ledger/decisions.ts`; parking:
+   `parkWorkItem` and `unparkWorkItem` in `src/ledger/work-queue.ts`.
+2. **Request** (`requestDecision`, `src/control/decisions.ts`). The named work item must be the requester's own, in the
+   decision's project, and `PENDING` or `READY`; the check, the row and the park share one `BEGIN IMMEDIATE`
+   transaction. The §18.7 dequeue claims only `READY`, so a parked item is never admitted, and `cancel_work` returns a
+   parked item unchanged (only the decision moves it). The §20.4 poller counts a parked rebase item as live, so a parked
+   ref does not get a second rebase item (Linus decision, Delegated, not owner-approved: fail closed). Each enqueue
+   entry is `{ request, priority }`, `request` being `enqueue_work.request`; at most 8 entries (**Assumption**); each
+   passes the `enqueue_work` checks (V5 against the requester's ceiling in the project, V13, V7, V8, V15) at request
+   time, and the project's `queue.max_items_per_project` must hold them. Question, labels and note refuse control
+   characters other than tab and line breaks.
+3. **Actions** (Delegated). `resume`: the item returns to `READY` (`PENDING` while a predecessor is not `DONE`) and the
+   enqueue list is inserted. `reroute`: the item is cancelled and the list is inserted. `cancel`: the item is
+   cancelled, nothing is inserted. `none`: the item returns to the queue, nothing is inserted.
+4. **Exactly once** (`resolveDecision`). One transaction: a compare-and-set from `open` (a second resolution is
+   refused, nothing written), the action on the item, and the inserts. Each enqueued item has `creator_client_id` =
+   the requester and the idempotency key `decision:<decision_id>:<n>`, which the ledger refuses twice; the scheduler
+   admits it later as the requester, so the requester's ceiling applies, never the decider's.
+5. **Tools** (`src/mcp/decision-tools.ts`, handlers in `src/mcp/server.ts`). `request_decision` and `list_decisions`
+   for a client whose `tool_profile` is not `console`; `decide` only for an `approval_proxy` client, and outside the
+   console set (Delegated, least privilege: a console operator decides with the CLI or the consent link). They exist
+   once `serve` wires the decision service (`McpServerDeps.decisions`), on stdio and on the network transport alike
+   (the same server factory). A decision is visible to its requester; `decide` resolves only decisions requested by the
+   proxy's `approval_proxy_targets` (default itself), any other is unknown. `decided_by` is `mcp_proxy:<client_id>`.
+   No taxonomy code names a conflict, so deciding twice is `INVALID_REQUEST` with `details.reason` `CONFLICT`, as
+   `QUEUE_FULL` is carried (Delegated). `request_decision` and `decide` never echo the text; `list_decisions` returns
+   it as `{ text, label: "untrusted_client_text" }`.
+6. **Digest.** Each `get_digest` project lists the caller's open decisions as `open_decisions: [{ decision_id,
+   work_item_id, reason: "awaiting_decision", requested_at }]`, present only when non-empty. `awaiting_decision` is
+   that project-level entry and the sink reason code; it is not a run-level `needs_attention` reason, because a parked
+   item has no run. The pushed digest (§20.5) does not count open decisions yet: its closed `counts` keys would need
+   another ADR-0048 amendment.
+7. **Sinks.** `decision_requested` joins the closed kind list with the single reason `awaiting_decision`, `run_id` null
+   ([ADR-0048](../adr/0048-notification-sinks.md) item 3, amended); it is sent after the request commits. Nothing is
+   sent on a decision.
+8. **CLI** (`src/cli/decisions.ts`). `switchboard decisions list [--project <id>] [--state <state>]` (read-only, text
+   labelled untrusted) and `switchboard decisions decide <dec_id> --option <n> [--note <text>]` (`decided_by` `cli`).
+   `decide` writes one WAL transaction beside a running daemon, as `consent pair` does; error codes `NOT_FOUND`,
+   `CONFLICT` and `REFUSED`.
+9. **Consent link** (Linus decision (b), Delegated, not owner-approved). The FR-CTL-09 store and page are reused
+   unchanged: `withDecisionLinks` adds one item per option of each open decision to the page's approvals source
+   (`approval_id` `<dec_id>#<n>`, a digest over the decision id, option, action, stored options and creation time).
+   Approve decides that option as `consent_link`; Deny spends the link and writes nothing, so the decision stays open.
+   The page shows controller fields only (decision id, option number, action, recommendation), never the untrusted
+   text.
+10. **Expiry** (Linus decision (a), Delegated, not owner-approved). No timer: a decision stays open until resolved.
+    `withdrawn` is reserved for the requester or the operator CLI; this row builds no withdrawal entry point.
+
+Tests: `src/mcp/decisions.test.ts` (fake sink, fake adapters, the real queue tick), `src/ledger/ledger.test.ts`
+("0030 adds decision_request and PARKED_DECISION …").
+
 ### 20.4 Published-ref conflicts and supersede (FR-QUE-07, T15.7)
 
 - **Read.** For each watched published ref the poller reads `gh pr view <ref> --json
@@ -7500,11 +7569,14 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
 - **Event.** One aggregate `digest` event per fire: `project_id` `*`, `reason_code` `digest`, `run_id` null, the usual
   link, and `counts` with exactly these integer leaves: `runs_by_state` (every run state, all time),
   `needs_attention_by_reason` (the run-level reasons over non-terminal runs, plus `stalled_progress` per configured
-  project), `queue_by_state` (work items of every state), `pending_approvals` and `paused_projects`. Holds by reason
-  and open decisions join when T3.24 and T14.15 build them. The payload builder rebuilds `counts` key by key from the
-  closed lists and drops the event when a key is missing or extra or a value is not a non-negative integer; `counts`
-  on any other kind is dropped too (`src/control/sinks.ts`). The ntfy message appends the non-zero grouped counts
-  and always the two scalar counts (`pending_approvals`, `paused_projects`), each as `group.key=n`.
+  project), `queue_by_state` (work items of every state), `pending_approvals` and `paused_projects`. Neither
+  hold-reason nor open-decision counts are in the pushed `counts` yet: hold
+  surfaces as `held[]` in `get_digest` (T3.24), and open decisions are listed as `open_decisions` in `get_digest`
+  but excluded from the closed `counts` keys (§20.3 item 6). The payload builder rebuilds
+  `counts` key by key from the closed lists and drops the event when a key is missing or extra or a value is not a
+  non-negative integer; `counts` on any other kind is dropped too (`src/control/sinks.ts`). The ntfy message appends
+  the non-zero grouped counts and always the two scalar counts (`pending_approvals`, `paused_projects`), each as
+  `group.key=n`.
 - **Stall** reads `READY` count, the oldest `READY` item's `created_at` and the newest `DONE` item's `terminal_at`
   (`readProgressStallFacts`, `src/ledger/work-queue.ts`). "First `READY`" is the oldest `READY` item's `created_at`,
   so an item cycling `READY` → `ADMITTING` → `READY` on admission retries does not restart the window. `stall_hours` is

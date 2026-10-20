@@ -19,7 +19,8 @@
 
 /**
  * LLD §3.4.1 `sink_event_kind`: the closed list of events a sink can receive. `digest` (T14.16, FR-CTL-14) is sent only
- * when the operator configures `control_plane.digest_schedule`.
+ * when the operator configures `control_plane.digest_schedule`. `decision_requested` (T14.15, FR-CTL-13) announces an
+ * open decision request, never its text.
  */
 export const SINK_EVENT_KINDS = [
   "run_terminal",
@@ -30,6 +31,7 @@ export const SINK_EVENT_KINDS = [
   "project_paused",
   "queue_low",
   "digest",
+  "decision_requested",
 ] as const;
 export type SinkEventKind = (typeof SINK_EVENT_KINDS)[number];
 

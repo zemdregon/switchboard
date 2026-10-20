@@ -49,6 +49,11 @@ built, and the discovery note recommended this one for the same reason.
    non-negative integer. It holds no string, so no objective, agent text or decision text can travel in it. It is
    rebuilt key by key, and an event whose `counts` has a missing key, an extra key or a value that is not an integer
    is dropped, not sent.
+   *(Amended 2026-10-20 by T14.15, FR-CTL-13, Delegated agent work, not owner-approved; the ADR is Proposed, so it is
+   amended rather than superseded, as [LLD §20.3](../design/LLD.md#203-decision-requests-fr-ctl-13-t1415) requires.)*
+   The list adds `decision_requested` (reason code `awaiting_decision`, the decision's project id, `run_id` null), sent
+   when an MCP client records a decision request. Like every other kind it carries none of the request's text: the
+   question, options and note stay in the ledger.
 4. **Filter and rate limit.** Each sink names the event kinds it receives and a maximum rate. Events beyond the rate
    are dropped and counted, not queued without bound.
 5. **Links carry no secret and name only served routes.** A link is the configured MCP HTTP resource URL itself, a

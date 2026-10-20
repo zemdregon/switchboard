@@ -4,6 +4,7 @@ import { deriveOpenWork, type OpenWorkRun } from "../continuity/open-work.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import { insertChainedRunEvent, nextChainLink } from "./chain.js";
 import { type ControlPlaneLedgerSlice, createControlPlaneLedgerSlice } from "./control-plane.js";
+import { createDecisionLedgerSlice, type DecisionLedgerSlice } from "./decisions.js";
 import { DecisionRefusedError } from "./errors.js";
 import { createScheduleLedgerSlice, type ScheduleLedgerSlice } from "./schedule.js";
 import {
@@ -748,7 +749,7 @@ export interface InnerTaskStateRow {
   version: number;
 }
 
-export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
+export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, DecisionLedgerSlice {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
   createRun(input: NewRun): RunRow;
@@ -1074,6 +1075,9 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   getRunRebase(runId: string): RunRebaseRow | undefined;
   findRunRebaseForWorkItem(workItemId: string): RunRebaseRow | undefined;
   getRefConflictForWorkItem(workItemId: string): RefConflictRow | undefined;
+  // ---- T14.15 additions (decision requests, FR-CTL-13, LLD §20.3) --------------------------------------------
+  parkWorkItem(workItemId: string, decisionId: string): WorkItemRow | undefined;
+  unparkWorkItem(workItemId: string, decisionId: string, outcome: "resume" | "cancel"): WorkItemRow | undefined;
 }
 
 export {
@@ -1086,6 +1090,17 @@ export {
   OPERATOR_RESUME_REQUESTED,
   type PendingPauseRequest,
 } from "./control-plane.js";
+export {
+  DECISION_ACTIONS,
+  DECISION_STATES,
+  type DecisionAction,
+  type DecisionLedgerSlice,
+  type DecisionListFilter,
+  type DecisionOption,
+  type DecisionRequestRow,
+  type DecisionState,
+  type NewDecisionRequest,
+} from "./decisions.js";
 export type {
   CreateScheduleInput,
   ScheduleApprovalState,
@@ -2365,5 +2380,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     ...createControlPlaneLedgerSlice(db, { ids, ts, immediate }),
     // T15.2 (FR-QUE-02): schedules (migration 0019).
     ...createScheduleLedgerSlice(db, { ids, ts, immediate }),
+    // T14.15 (FR-CTL-13): decision requests (migration 0030).
+    ...createDecisionLedgerSlice(db, { ids, ts }),
   };
 }

@@ -7,6 +7,7 @@
  */
 import { parseArgs } from "node:util";
 import { ConfigError } from "../config/index.js";
+import { DecisionError } from "../control/decisions.js";
 import { ApprovalRefusedError } from "../lifecycle/approval.js";
 import { LockError } from "../lock/index.js";
 import { renderValidate, runAdaptersValidate } from "./adapters-validate.js";
@@ -14,6 +15,14 @@ import { renderAdaptersVersionCanary, runAdaptersVersionCanary } from "./adapter
 import { listAffinity, renderAffinityList, renderAffinityReset, resetAffinity } from "./affinity.js";
 import { renderCapacity, runCapacity } from "./capacity.js";
 import { consentHashPassphrase, consentPair, renderPair, renderPassphraseHash } from "./consent.js";
+import {
+  decideDecision,
+  decisionFailureCode,
+  listDecisions,
+  parseOption,
+  renderDecisionDecide,
+  renderDecisionList,
+} from "./decisions.js";
 import { renderDoctor, runDoctor } from "./doctor.js";
 import { runEvalCommand } from "./eval.js";
 import { renderGc, runGcCommand } from "./gc.js";
@@ -88,6 +97,7 @@ const OPTIONS = {
   file: { type: "string" },
   "from-repository": { type: "boolean" },
   note: { type: "string" },
+  option: { type: "string" },
   "live-budget": { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -181,11 +191,14 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       throw new UsageError("--revision and --reject are only valid with projects approve");
     }
 
-    if (
-      cmd !== "skills" &&
-      (values.all || values.body || values.file !== undefined || values["from-repository"] || values.note !== undefined)
-    ) {
-      throw new UsageError("--all, --body, --file, --from-repository and --note are only valid with skills");
+    if (cmd !== "skills" && (values.all || values.body || values.file !== undefined || values["from-repository"])) {
+      throw new UsageError("--all, --body, --file and --from-repository are only valid with skills");
+    }
+    if (cmd !== "skills" && !(cmd === "decisions" && sub === "decide") && values.note !== undefined) {
+      throw new UsageError("--note is only valid with skills and decisions decide");
+    }
+    if (!(cmd === "decisions" && sub === "decide") && values.option !== undefined) {
+      throw new UsageError("--option is only valid with decisions decide");
     }
 
     if (cmd === undefined) {
@@ -486,6 +499,30 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           `unknown schedule subcommand ${JSON.stringify(sub ?? "")}; expected list, show, enable, disable, approve, deny or create`,
         );
       }
+      case "decisions": {
+        // T14.15 (FR-CTL-13, FR-OPS-01): list is read-only; decide resolves one open decision as `cli`.
+        if (sub === "list") {
+          if (rest.length > 0) throw new UsageError("decisions list takes no positional arguments");
+          const report = listDecisions(io, loaderArgv, {
+            ...(values.project !== undefined ? { projectId: values.project } : {}),
+            ...(values.state !== undefined ? { state: values.state } : {}),
+          });
+          emit(report, renderDecisionList(report));
+          return 0;
+        }
+        if (sub === "decide") {
+          const id = rest[0];
+          if (id === undefined || rest.length > 1)
+            throw new UsageError("decisions decide requires exactly one decision id");
+          const report = decideDecision(io, loaderArgv, id, {
+            option: parseOption(values.option),
+            ...(values.note !== undefined ? { note: values.note } : {}),
+          });
+          emit(report, renderDecisionDecide(report));
+          return 0;
+        }
+        throw new UsageError(`unknown decisions subcommand ${JSON.stringify(sub ?? "")}; expected list or decide`);
+      }
       case "eval": {
         // T8.14 (FR-OPS-06, LLD §20.13): own-repository evaluation; skipped in CI, real providers need a live budget.
         const r = await runEvalCommand(io, loaderArgv, sub, rest, {
@@ -519,7 +556,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
 
 function fail(err: unknown, io: CliIo, json: boolean): number {
   const usage = err instanceof UsageError || isParseArgsError(err);
-  const code = usage
+  const base = usage
     ? "USAGE"
     : err instanceof UnknownRunError ||
         err instanceof UnknownProjectError ||
@@ -533,6 +570,8 @@ function fail(err: unknown, io: CliIo, json: boolean): number {
           : err instanceof LockError
             ? "LOCKED"
             : "ERROR";
+  // T14.15: an unknown decision is NOT_FOUND, a second decision CONFLICT, any other refusal REFUSED.
+  const code = err instanceof DecisionError ? decisionFailureCode(err) : base;
   const message = err instanceof Error ? err.message : String(err);
   if (json)
     io.stdout.write(`${JSON.stringify({ schema_version: JSON_SCHEMA_VERSION, error: { code, message } }, null, 2)}\n`);

@@ -497,12 +497,12 @@ async function watchConflict(a: {
   if (pr === null || pr.state !== "OPEN" || pr.mergeable !== "CONFLICTING" || pr.headSha !== ref.headSha) {
     return "watching";
   }
-  // One rebase item at a time: wait while one for this ref is live.
+  // One rebase item at a time: wait while one for this ref is live (one parked for a decision, T14.15, included).
   const live = db
     .prepare(
       `SELECT 1 FROM ci_ref_conflict c JOIN project_work_item w ON w.id = c.work_item_id
        WHERE c.project_id = ? AND c.publish_ref = ?
-         AND (w.state IN ('PENDING', 'READY', 'ADMITTING') OR (w.state = 'ADMITTED' AND w.terminal_at IS NULL))`,
+         AND (w.state IN ('PENDING', 'READY', 'ADMITTING', 'PARKED_DECISION') OR (w.state = 'ADMITTED' AND w.terminal_at IS NULL))`,
     )
     .get(projectId, ref.publishRef);
   if (live !== undefined) return "watching";
