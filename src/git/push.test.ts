@@ -847,6 +847,28 @@ describe("pre-push secret scan (T9.14; FR-GIT-11, FR-CTL-03; ADR-0061; LLD §20.
     expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
   });
 
+  it("ADR-0075: the refused PushResult carries each finding's rule id, path and line, never the value", async () => {
+    const a = await committedContent(`first line\n${CANARY}\n`, "creds.txt");
+    await committedContent(`token: ${TOKEN}\n`, "src/config.ts", a);
+    const r = await pusher().push({ metaSessionId: a.sessionId, requestedBy: "operator" });
+    expect(r).toMatchObject({ outcome: "REFUSED_POLICY", reason: "SECRET_SCAN_BLOCKED", pushed: false });
+    expect(r.secretScan).toEqual({
+      hits: [
+        { rule_id: CANARY_RULE, path: "creds.txt", line: 2 },
+        { rule_id: "github_token", path: "src/config.ts", line: 1 },
+      ],
+      hitCount: 2,
+    });
+    const text = JSON.stringify(r);
+    expect(text).not.toContain(CANARY);
+    expect(text).not.toContain(TOKEN);
+    // Only a secret-scan refusal carries findings: a clean push has none.
+    const clean = await committedContent("nothing secret\n", "notes.txt");
+    const ok = await pusher().push({ metaSessionId: clean.sessionId, requestedBy: "operator" });
+    expect(ok.pushed).toBe(true);
+    expect(ok.secretScan).toBeUndefined();
+  });
+
   it("only the outgoing diff is scanned: a canary already in the base tree does not block a clean push", async () => {
     writeFileSync(path.join(repo, "legacy.txt"), `${CANARY}\n`);
     g(repo, "add", "-A");

@@ -17,6 +17,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config/index.js";
 import { GitPusher, PushError, type PushResult, projectPushContextResolver } from "../git/push.js";
+import { describeSecretScanFindings, type SecretScanFindings, secretScanFindings } from "../git/secret-scan.js";
 import { createIdGenerator } from "../ids/index.js";
 import { LEDGER_FILE_NAME, openLedger } from "../ledger/index.js";
 import { acquireDataDirLock } from "../lock/index.js";
@@ -38,6 +39,10 @@ export interface GitPushReport {
   readonly commits: readonly string[];
   /** The run whose events hold the `git_push` record (`runs show <run>`). */
   readonly recorded_on_run: string;
+  /** ADR-0075: on `SECRET_SCAN_BLOCKED` only, each finding (rule id, path, line; never the value) and the exact count. */
+  readonly findings?: SecretScanFindings["findings"];
+  readonly finding_count?: number;
+  readonly findings_truncated?: true;
 }
 
 /** Thrown when the meta-session or run id is not in the ledger. */
@@ -82,6 +87,7 @@ export async function runGitPush(io: CliIo, argv: readonly string[], id: string)
         head_sha: r.headSha,
         commits: r.commits,
         recorded_on_run: r.eventRunId,
+        ...(r.reason === "SECRET_SCAN_BLOCKED" && r.secretScan !== undefined ? secretScanFindings(r.secretScan) : {}),
       };
     } finally {
       db.close();
@@ -134,6 +140,9 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   REMOTE_UNREACHABLE: "the remote could not be reached",
   TIMEOUT: "the push timed out",
   GIT_FAILED: "Git failed in the controller",
+  SECRET_SCAN_BLOCKED:
+    "the pre-push secret scan found credential-shaped values in the outgoing diff (remove them, or allow a rule at a " +
+    "path with git.secret_scan.allow)",
 };
 
 export function renderGitPush(r: GitPushReport): string {
@@ -142,8 +151,12 @@ export function renderGitPush(r: GitPushReport): string {
     const what = r.reason === "UP_TO_DATE" ? "already up to date" : `pushed ${r.commits.length} commit(s)`;
     return `${r.meta_session_id}: ${what} to ${target} at ${r.head_sha} [push ${r.push_id}; recorded on ${r.recorded_on_run}]\n`;
   }
+  const findings =
+    r.findings !== undefined && r.finding_count !== undefined
+      ? `${describeSecretScanFindings({ findings: r.findings, finding_count: r.finding_count })}; `
+      : "";
   return (
     `${r.meta_session_id}: push ${r.outcome === "REFUSED_POLICY" ? "refused" : "failed"} (${r.reason}): ` +
-    `${REASON_TEXT[r.reason] ?? "see runs show"} [target ${target}; push ${r.push_id}; recorded on ${r.recorded_on_run}]\n`
+    `${findings}${REASON_TEXT[r.reason] ?? "see runs show"} [target ${target}; push ${r.push_id}; recorded on ${r.recorded_on_run}]\n`
   );
 }

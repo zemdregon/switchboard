@@ -26,6 +26,7 @@ import { type PullRequestErrorCode, type PullRequestPort, PullRequestPortError }
 import { parseGithubRemote } from "../ci/published-refs.js";
 import type { PushContextConfig, PushResult } from "../git/push.js";
 import { isBranchPrefix, isRemoteName, remoteTargetRef } from "../git/push.js";
+import { describeSecretScanFindings, SECRET_SCAN_FIX_HINT, secretScanFindings } from "../git/secret-scan.js";
 import type { GitPushRequester, Ledger, PullRequestRow, RunRecord } from "../ledger/index.js";
 import { gitText } from "../workspace/git.js";
 import { buildEnvelope } from "./envelope.js";
@@ -203,8 +204,17 @@ function acceptedPushOf(
   return undefined;
 }
 
-function pushRefusal(r: PushResult): ToolError {
+export function pushRefusal(r: PushResult): ToolError {
   const details = { reason: r.reason, push_id: r.pushId };
+  // ADR-0075: name each finding (rule id, path, line; never the value) so the caller can fix it.
+  if (r.reason === "SECRET_SCAN_BLOCKED" && r.secretScan !== undefined) {
+    const f = secretScanFindings(r.secretScan);
+    return new ToolError(
+      "PERMISSION_BLOCKED",
+      `push refused (SECRET_SCAN_BLOCKED): ${describeSecretScanFindings(f)}. ${SECRET_SCAN_FIX_HINT}`,
+      { ...details, ...f },
+    );
+  }
   if (r.reason === "NOTHING_TO_PUSH") return invalid("the publish ref has no commit to push", details);
   // ADR-0074 (Q-112): after rebase_session the branch pushed before is not an ancestor; the controller never forces.
   if (r.reason === "NON_FAST_FORWARD") {
