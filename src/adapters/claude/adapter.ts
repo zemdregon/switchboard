@@ -73,12 +73,7 @@
  */
 import { accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join, normalize } from "node:path";
-import {
-  DEFAULT_IDLE_MS,
-  DEFAULT_KILL_GRACE_MS,
-  DEFAULT_MAX_LINE_BYTES,
-  DEFAULT_WALL_CLOCK_MS,
-} from "../../exec/index.js";
+import { DEFAULT_IDLE_MS, DEFAULT_KILL_GRACE_MS, DEFAULT_WALL_CLOCK_MS } from "../../exec/index.js";
 import { CHANNEL_MCP_CONFIG_FILE, TOOL_NAMES, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../../git/tool-protocol.js";
 import type { PrivilegedScope } from "../../policy/types.js";
 import { channelToolRule, SAFE_MODE_FLAG } from "../audit.js";
@@ -115,6 +110,16 @@ import type {
   SkillDelivery,
 } from "../types.js";
 import { parseClaudeLine } from "./parse.js";
+
+/**
+ * stdout line cap for Claude Code (LLD §8 "Line framing"). An `Edit` tool result's `user` event echoes the
+ * whole pre-edit file in `tool_use_result.originalFile`, so one valid line grows with the edited file: editing the
+ * 1.5 MB `docs/ROADMAP.md` gave a 1,550,255-byte line that the 1 MiB default rejected as OUTPUT_PROTOCOL_ERROR (run
+ * run_01M5BST6XW3JGHKCCNW6EJ8R6V, 2026-10-20). Linus decision, Delegated, not owner-approved: 16 MiB, still a fixed
+ * bound with every line fully UTF-8 and JSON validated; a longer line still fails closed as `line_too_long`. 16 MiB
+ * is a Proposed number (room for files of several MB, inside the 64 MiB capture cap), not a provider limit.
+ */
+export const CLAUDE_MAX_LINE_BYTES = 16 * 1024 * 1024;
 
 /** Native login the operator runs themselves (FR-AUTH-02). Switchboard never runs it. [HELP]: `claude auth login`. */
 export const CLAUDE_LOGIN_COMMAND = "claude auth login";
@@ -802,7 +807,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       timeouts: { ...this.#timeouts },
       policyFlags,
       expectedExitCodes: [0],
-      maxLineBytes: DEFAULT_MAX_LINE_BYTES,
+      maxLineBytes: CLAUDE_MAX_LINE_BYTES,
     };
   }
 

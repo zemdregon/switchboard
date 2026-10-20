@@ -2927,9 +2927,13 @@ documents.
   `PROCESS_TIMEOUT`, cancel yields `CANCELLED`.
 - **Line framing.** Stdout is decoded as UTF-8 and split on `\n` (tolerating `\r\n`); one JSON document per line for
   JSONL transports; for `json` output, the entire stdout is one document capped at the artifact limit. Max line size 1
-  MiB (proposed target): an oversize line aborts the run as `OUTPUT_PROTOCOL_ERROR` (kill group, keep captured data),
-  never truncated silently. Invalid UTF-8 or JSON on a line is a protocol error unless the adapter declares the line
-  type ignorable.
+  MiB (proposed target, `DEFAULT_MAX_LINE_BYTES`) unless the adapter's `Invocation.maxLineBytes` sets another fixed
+  bound: an oversize line aborts the run as `OUTPUT_PROTOCOL_ERROR` (kill group, keep captured data), never truncated
+  silently. Invalid UTF-8 or JSON on a line is a protocol error unless the adapter declares the line type ignorable.
+  Claude Code uses 16 MiB (`CLAUDE_MAX_LINE_BYTES`; Linus decision, Delegated, not owner-approved, 2026-10-20): its
+  `Edit` tool-result `user` event echoes the whole pre-edit file in `tool_use_result.originalFile`, and editing the 1.5
+  MB roadmap gave a valid 1,550,255-byte line that the 1 MiB cap rejected (run `run_01M5BST6XW3JGHKCCNW6EJ8R6V`).
+  Every line is still fully decoded and parsed, and a longer line still fails closed.
 - **Capture.** Raw stdout and stderr are streamed to files in a temp area as received, then moved into the artifact
   store and hashed on completion (`provider_stdout`, `provider_stderr`, FR-EXE-05); stderr is never parsed as protocol.
   Per-stream size cap 64 MiB (proposed target); beyond it capture stops, a `run_event` records truncation, and the run
