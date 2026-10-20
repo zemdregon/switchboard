@@ -1427,7 +1427,9 @@ ledger, no lock, no provider process. `validate` checks every project (or the on
 path is absolute, resolves under an allowed root (so `..` and symlink escapes fail) and is a Git repository, and that
 `base_ref` exists. It prints each failure with its config path and exits 1 if any check fails. A `container` project is
 also checked for a rootless runtime, a present image and no `git`/`gh` on the image `PATH` (milestone 10). `delegate_task`
-with `project` runs in the project's primary repository context, starting from its `base_ref` (or the fetched remote tip when the primary context sets `base_remote`; [LLD §5.2](docs/design/LLD.md#52-base-refresh-fr-prj-02-note-adr-0067)); a `container` project
+with `project` runs in the project's primary repository context, starting from its `base_ref`
+(or the fetched remote tip when the primary context sets `base_remote`;
+[LLD §5.2](docs/design/LLD.md#52-base-refresh-fr-prj-02-note-adr-0067)); a `container` project
 without composed placement is refused before anything is written. A meta-session stays in the project it
 was created in, and runs and meta-sessions record the project in the ledger (schema version 2).
 `projects list|show` also show dynamic projects from the ledger (read-only), with `source` `config` or `dynamic`, the
