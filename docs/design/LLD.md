@@ -7621,8 +7621,9 @@ that is an `https` URL names a Client ID Metadata Document (`src/mcp/oauth-cimd.
 `draft-ietf-oauth-client-id-metadata-document`), accepted while `transport.http.cimd` is `true` (the default;
 `false` makes such a `client_id` an unknown client with no fetch; stdio has no authorization server and is
 unaffected). The identifier must be its own WHATWG serialisation: `https`, a DNS-name host (an IP literal is refused),
-a path other than `/`, no userinfo, query, fragment or dot segments, at most 2048 characters, and not this issuer's
-own origin. The fetch happens at `GET /authorize` only: the server resolves the host itself and refuses the client when
+a path other than `/`, no userinfo, query, fragment or dot segments, at most 2048 characters; the server also refuses
+its own origin before fetching. The fetch happens at `GET /authorize` only: the server resolves the host itself and
+refuses the client when
 **any** resolved address is special-use (unspecified, loopback, private, shared address space, link-local,
 unique-local, multicast, documentation, benchmarking or reserved; the IPv4-mapped, NAT64 well-known-prefix, 6to4 and
 Teredo forms of a blocked IPv4 range are blocked too, and `64:ff9b:1::/48` whole); the TLS connection is pinned to

@@ -26,9 +26,9 @@ v2 SDK (ADR-0062) deprecates client-side DCR in favour of it. FR-MCP-19 asks for
 CIMD moves one thing across a trust boundary: the authorization server now makes an **outbound request to a URL chosen
 by an unauthenticated caller**, since anyone can open `GET /authorize?client_id=https://...`. The draft's §8.6 names
 the consequence (server-side request forgery against loopback, private and link-local services, cloud metadata
-endpoints included) and requires that such addresses are never fetched. Every table that stores an OAuth client
-identifier (`oauth_client`, `oauth_token`, `http_subject`) checks the `sbc_` form, and the `transport.http.clients`
-mapping is keyed by it.
+endpoints included) and requires that such addresses are never fetched. `oauth_client` and `http_subject` enforce
+the `sbc_` identifier form by `CHECK` (`oauth_token` keys by the same identifier without a `CHECK`), and the
+`transport.http.clients` mapping is keyed by it.
 
 Verified on 2026-10-19 from the draft's text (not from memory): the Client Identifier URL must be `https`, must have a
 path component and no userinfo or fragment, should not have a query, and is compared by simple string comparison; the
@@ -42,13 +42,15 @@ must not follow redirects when fetching it; the server should display the URL's 
    `transport.http.cimd` (default `true`) enables it; `false` makes such a `client_id` an unknown client with no fetch.
    Stdio has no authorization server and is unaffected.
 2. **The identifier is checked before anything else:** `https`, its own WHATWG serialisation, a DNS-name host (an IP
-   literal is refused), a path other than `/`, no userinfo, query, fragment or dot segments, at most 2048 characters,
-   and not this issuer's own origin.
+   literal is refused), a path other than `/`, no userinfo, query, fragment or dot segments, and at most 2048
+   characters (`checkCimdClientId`, which takes no issuer). The server then refuses its own origin (`cimd_self`)
+   before fetching, since that document would be served by Switchboard itself.
 3. **The fetch is bounded and pinned.** The server resolves the host itself and refuses the client when **any**
    resolved address is special-use: unspecified, loopback, private, shared address space, link-local, unique-local,
-   multicast, documentation, benchmarking or reserved space, and the IPv4-mapped, NAT64 (RFC 6052 well-known prefix),
-   6to4 and Teredo forms of a blocked IPv4 range (decision (c)); the NAT64 local-use prefix `64:ff9b:1::/48` is
-   blocked whole. The TLS connection is pinned to the checked address with the server name set to the host, so there is
+   multicast, documentation, benchmarking or reserved space, and the IPv4-mapped and NAT64 (RFC 6052 well-known prefix)
+   forms of a blocked IPv4 range (decision (c)), as well as the 6to4 and Teredo forms and the whole NAT64 local-use
+   prefix `64:ff9b:1::/48` (Delegated fail-closed hardening of the same policy). The TLS connection is pinned to the
+   checked address with the server name set to the host, so there is
    no second resolution to race. One `GET`; a redirect of any status is refused (the draft's MUST NOT, tightening LLD
    §20.11's Proposed "at most one"); the response must be `200` with a JSON media type; the whole fetch, resolution
    included, ends after 5 s; a body over 64 KiB, declared or received, is refused unparsed. At most two fetches run at
