@@ -153,6 +153,12 @@ async function refusedPush(sessionId: string): Promise<string> {
   const r = await run(["git", "push", sessionId, "--json"]);
   const j = JSON.parse(r.out);
   expect(j).toMatchObject({ outcome: "REFUSED_POLICY", reason: "SECRET_SCAN_BLOCKED" });
+  // ADR-0075: the JSON names each finding (rule id, path, line) and never the value.
+  expect(j).toMatchObject({
+    findings: [{ rule_id: "aws_access_key_id", path: "creds.txt", line: 1 }],
+    finding_count: 1,
+  });
+  expect(r.out).not.toContain(CANARY);
   return j.push_id as string;
 }
 
@@ -176,6 +182,15 @@ beforeEach(() => {
 afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 
 describe("switchboard git ack-secret-scan (T9.14, LLD §20.9)", () => {
+  it("ADR-0075: the human output of a refused git push names the finding, never the value", async () => {
+    const s = await seedCommit(`${CANARY}\n`);
+    const r = await run(["git", "push", s.sessionId]);
+    expect(r.out).toContain(
+      "push refused (SECRET_SCAN_BLOCKED): 1 secret-scan finding: aws_access_key_id at creds.txt:1; the pre-push",
+    );
+    expect(r.out + r.err).not.toContain(CANARY);
+  });
+
   it("clears secret_scan_blocked for the refusal, is idempotent and never lets the push through", async () => {
     const s = await seedCommit(`${CANARY}\n`);
     const pushId = await refusedPush(s.sessionId);
