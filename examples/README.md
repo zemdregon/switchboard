@@ -2,7 +2,7 @@
 
 Each file is a complete `config.json` in the shape `loadConfig` (`src/config/load.ts`) reads: strict JSON, so
 documentation lives here instead of inside the files (any comment key would stop startup as an unknown key).
-`src/config/examples.test.ts` loads every `*.json` file in this directory, so a new example is tested automatically.
+`src/config/examples.test.ts` loads every top-level `*.json` file in this directory, so a new example is tested automatically.
 
 Conventions: every path is under `/home/you/...`; replace that prefix with your own directories first. Domains are
 `*.example.test` placeholders. There are no secrets, tokens or provider bypass flags anywhere in these files.

@@ -500,8 +500,9 @@ Minimal example:
 }
 ```
 
-More complete starting points live in [`examples/`](examples/README.md): each file loads as is (replace the
-`/home/you/...` paths first).
+More complete starting points live in [`examples/`](examples/README.md): each top-level `*.json` config loads as is
+(replace the `/home/you/...` paths first). The [`mcp-clients/`](examples/mcp-clients/README.md) snippets are MCP
+client settings, not Switchboard configs.
 
 Keys (from `src/config/schema.ts`; the `projects` key is described below the table):
 
