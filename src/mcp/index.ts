@@ -2,6 +2,7 @@ export * from "./envelope.js";
 export * from "./errors.js";
 export * from "./http.js";
 export * from "./http-subjects.js";
+export * from "./oauth-cimd.js";
 export * from "./oauth-clients.js";
 export * from "./oauth-pairing.js";
 export * from "./oauth-passphrase.js";

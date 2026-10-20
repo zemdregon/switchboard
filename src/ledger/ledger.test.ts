@@ -36,6 +36,7 @@ const EXPECTED_TABLES = [
   "inner_call",
   "inner_task_state",
   "meta_session",
+  "oauth_cimd_client",
   "oauth_client",
   "oauth_pairing_code",
   "oauth_token",
@@ -585,6 +586,37 @@ describe("ledger migrations", () => {
     );
     cancel.run("crc_1", "a".repeat(40));
     expect(() => cancel.run("crc_2", "a".repeat(40))).toThrow(/UNIQUE/u);
+  });
+
+  it("0028 adds oauth_cimd_client on a version 27 database: one URL per derived sbc_ id, cascading from oauth_client (T13.11, FR-MCP-19)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const d = db;
+    const upTo27 = MIGRATIONS.filter((m) => m.version <= 27);
+    expect(migrate(d, undefined, upTo27)).toEqual(upTo27.map((m) => m.version));
+    expect(
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 28),
+      ),
+    ).toEqual([28]);
+    const client = d.prepare(
+      `INSERT INTO oauth_client (client_id, redirect_uris_json, grant_types_json, status, created_at)
+       VALUES (?, '["https://app.example/cb"]', '["authorization_code"]', 'pending', '2026-10-19T00:00:00Z')`,
+    );
+    client.run("sbc_a");
+    client.run("sbc_b");
+    const cimd = d.prepare(
+      "INSERT INTO oauth_cimd_client (client_id, url, fetched_at) VALUES (?, ?, '2026-10-19T00:00:00Z')",
+    );
+    cimd.run("sbc_a", "https://app.example/client");
+    expect(() => cimd.run("sbc_b", "https://app.example/client")).toThrow(/UNIQUE/u); // one row per URL
+    expect(() => cimd.run("sbc_b", "http://app.example/client")).toThrow(/CHECK/u); // https only
+    expect(() => cimd.run("sbc_c", "https://app.example/other")).toThrow(/FOREIGN KEY/u); // needs the client row
+    expect(() => cimd.run("x_b", "https://app.example/other")).toThrow(/CHECK|FOREIGN KEY/u);
+    d.prepare("DELETE FROM oauth_client WHERE client_id = 'sbc_a'").run();
+    expect(d.prepare("SELECT COUNT(*) AS n FROM oauth_cimd_client").get()).toEqual({ n: 0 });
   });
 
   it("0023 adds ci_trigger_event and ci_trigger_ref_state on a version 22 database (T15.5, FR-QUE-05, LLD §18.6)", () => {

@@ -24,8 +24,13 @@
  *   entry (`mcp_client`), whose maximum trust profile then applies; at most 64 entries, each OAuth client once.
  *   `default_mcp_client` optionally names the entry for an approved OAuth client with no mapping. With neither, an
  *   authenticated client is refused (403). Cross-checks against `mcp_clients` are in `load.ts`.
+ * - `cimd` (T13.11, FR-MCP-19; default true) lets a client identify itself with a Client ID Metadata Document: an
+ *   `https` URL as `client_id`, fetched under the limits in `src/mcp/oauth-cimd.ts`. `false` turns the fetch off, so
+ *   such a `client_id` is an unknown client. `oauth_client_id` in `clients` may then be that URL as well; it is mapped
+ *   under the `sbc_` identifier derived from it (`cimdInternalClientId`). Stdio is unaffected either way.
  */
 import net from "node:net";
+import { checkCimdClientId, cimdInternalClientId, looksLikeCimdClientId } from "../mcp/oauth-cimd.js";
 import { isPassphraseHash } from "../mcp/oauth-passphrase.js";
 
 export interface HttpTransportConfig {
@@ -38,6 +43,12 @@ export interface HttpTransportConfig {
   passphrase_hash?: string;
   clients?: { oauth_client_id: string; mcp_client: string }[];
   default_mcp_client?: string;
+  cimd?: boolean;
+}
+
+/** The `oauth_client_id` of a mapping as the token store keys it: a URL's derived identifier, else as written. */
+function mappedClientId(oauthClientId: string): string {
+  return looksLikeCimdClientId(oauthClientId) ? cimdInternalClientId(oauthClientId) : oauthClientId;
 }
 
 export const httpTransportSchema = {
@@ -64,12 +75,13 @@ export const httpTransportSchema = {
         additionalProperties: false,
         required: ["oauth_client_id", "mcp_client"],
         properties: {
-          oauth_client_id: { type: "string", pattern: "^sbc_[A-Za-z0-9_-]{22}$" },
+          oauth_client_id: { type: "string", maxLength: 2048, pattern: "^(sbc_[A-Za-z0-9_-]{22}|https://\\S+)$" },
           mcp_client: { type: "string", minLength: 1, maxLength: 128 },
         },
       },
     },
     default_mcp_client: { type: "string", minLength: 1, maxLength: 128 },
+    cimd: { type: "boolean" },
   },
 } as const;
 
@@ -97,6 +109,8 @@ export interface HttpTransportSettings {
   clientMap: ReadonlyMap<string, string>;
   /** The `mcp_clients` id for an approved OAuth client with no mapping; undefined refuses such a client. */
   defaultMcpClient?: string;
+  /** Client ID Metadata Documents accepted as `client_id` (T13.11, FR-MCP-19); default true. */
+  cimd: boolean;
 }
 
 const loopback = new net.BlockList();
@@ -160,8 +174,15 @@ export function checkHttpTransport(cfg: HttpTransportConfig | undefined): string
   }
   const seen = new Set<string>();
   for (const [i, c] of (cfg.clients ?? []).entries()) {
-    if (seen.has(c.oauth_client_id)) errs.push(`${at}.clients[${i}].oauth_client_id: mapped more than once`);
-    seen.add(c.oauth_client_id);
+    if (looksLikeCimdClientId(c.oauth_client_id) && checkCimdClientId(c.oauth_client_id) === undefined) {
+      errs.push(
+        `${at}.clients[${i}].oauth_client_id: a Client Identifier URL must be https with a DNS host and a path, ` +
+          "no userinfo, query or fragment, in its canonical form",
+      );
+    }
+    const key = mappedClientId(c.oauth_client_id);
+    if (seen.has(key)) errs.push(`${at}.clients[${i}].oauth_client_id: mapped more than once`);
+    seen.add(key);
   }
   if (cfg.bind !== undefined && net.isIP(cfg.bind) === 0) errs.push(`${at}.bind: must be an IP address literal`);
   const bind = cfg.bind ?? DEFAULT_HTTP_BIND;
@@ -187,7 +208,8 @@ export function resolveHttpTransport(cfg: HttpTransportConfig | undefined): Http
     mcpPath: url.pathname,
     allowedOrigins: [...(cfg.allowed_origins ?? [])],
     ...(cfg.passphrase_hash !== undefined ? { passphraseHash: cfg.passphrase_hash } : {}),
-    clientMap: new Map((cfg.clients ?? []).map((c) => [c.oauth_client_id, c.mcp_client])),
+    clientMap: new Map((cfg.clients ?? []).map((c) => [mappedClientId(c.oauth_client_id), c.mcp_client])),
     ...(cfg.default_mcp_client !== undefined ? { defaultMcpClient: cfg.default_mcp_client } : {}),
+    cimd: cfg.cimd ?? true,
   };
 }

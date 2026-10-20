@@ -61,17 +61,27 @@ export interface ConsentView {
   readonly newClient: boolean;
   /** A fixed notice such as "Wrong passphrase or pairing code." */
   readonly notice?: string;
+  /**
+   * T13.11 (FR-MCP-19): the host of the Client Identifier URL when the client identified itself with a Client ID
+   * Metadata Document. Shown on its own line, since the host is the one fact about such a client that the client's
+   * own document cannot choose (the draft's §8.5).
+   */
+  readonly metadataHost?: string;
 }
 
 export function consentPage(v: ConsentView): string {
   const name = v.clientName ?? "(unnamed client)";
+  const nameSource = v.metadataHost !== undefined ? "from the client's metadata document" : "chosen by the client";
   const body =
     (v.notice ? `<p role="alert"><strong>${escapeHtml(v.notice)}</strong></p>` : "") +
     (v.newClient
       ? "<p>A new client asks to be approved. Approve it only if you started this sign-in yourself.</p>"
       : "<p>An approved client asks for a new authorization.</p>") +
     "<dl>" +
-    `<dt>Client name (chosen by the client)</dt><dd>${escapeHtml(name)}</dd>` +
+    (v.metadataHost !== undefined
+      ? `<dt>Client metadata document host</dt><dd><code>${escapeHtml(v.metadataHost)}</code></dd>`
+      : "") +
+    `<dt>Client name (${nameSource})</dt><dd>${escapeHtml(name)}</dd>` +
     `<dt>Client id</dt><dd><code>${escapeHtml(v.clientId)}</code></dd>` +
     `<dt>Returns to</dt><dd><code>${escapeHtml(v.redirectUri)}</code></dd>` +
     `<dt>Scope</dt><dd><code>${escapeHtml(v.scopes.join(" "))}</code></dd>` +
