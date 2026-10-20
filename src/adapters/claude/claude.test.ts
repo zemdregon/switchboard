@@ -308,6 +308,140 @@ describe("claude compile: argv policy", () => {
   });
 });
 
+describe("claude compile: trusted-development shell allowlist rule form (ADR-0066)", () => {
+  // Regression: prod runs run_01M5BST5DB1MXXSRY3DM3KR1KE and run_01M5BST5YTYSQKW0KGPRCWM2F8 (Claude Code 2.1.294,
+  // dontAsk) had every Bash call with arguments denied, `npx tsc --noEmit` included, because the entry `npx` compiled
+  // to the exact rule `Bash(npx)`. The operator allowlist of profiles.trusted-development, as configured there:
+  const PROD_ALLOWLIST = [
+    "cat",
+    "cp",
+    "diff",
+    "echo",
+    "find",
+    "grep",
+    "head",
+    "ls",
+    "make",
+    "mkdir",
+    "mv",
+    "node",
+    "npm",
+    "npx",
+    "python3",
+    "rg",
+    "sed",
+    "tail",
+    "wc",
+    "go",
+    "cargo",
+  ];
+  /**
+   * The documented Bash rule matching (code.claude.com/docs/en/permissions, read 2026-10-20): "A rule with no `*`
+   * matches one exact command"; a trailing ` *` matches the bare command and the command with any arguments, and the
+   * space keeps `Bash(ls *)` from matching `lsof`. Compound commands are split before matching, so only simple
+   * commands are checked here.
+   */
+  const allows = (rules: readonly string[], command: string): boolean =>
+    rules.some((r) => {
+      const body = /^Bash\((.*)\)$/.exec(r)?.[1];
+      if (body === undefined) return false;
+      if (!body.endsWith(" *")) return command === body;
+      const prefix = body.slice(0, -2);
+      return command === prefix || command.startsWith(`${prefix} `);
+    });
+  const allowRules = (profile: ResolvedProfile): string[] => {
+    const argv = compiled(profile).argv;
+    const i = argv.indexOf("--allowedTools");
+    const end = argv.indexOf("--disallowedTools");
+    return argv.slice(i + 1, end);
+  };
+  const trusted = (shellAllowlist: string[]): ResolvedProfile => ({
+    ...TRUSTED_DEVELOPMENT,
+    shellAllowlist,
+  });
+
+  it("the prod allowlist compiles `Bash(<entry>)` and `Bash(<entry> *)` for every entry, with Bash enabled", () => {
+    const inv = compiled(trusted(PROD_ALLOWLIST));
+    expect(valuesAfter(inv.argv, "--tools")[0]).toBe("Read,Grep,Glob,Edit,Write,Bash");
+    const rules = allowRules(trusted(PROD_ALLOWLIST));
+    expect(rules.filter((r) => r.startsWith("Bash"))).toEqual(
+      PROD_ALLOWLIST.flatMap((e) => [`Bash(${e})`, `Bash(${e} *)`]),
+    );
+    // Never a bare `Bash` or a rule that is only a wildcard.
+    expect(rules).not.toContain("Bash");
+    expect(rules).not.toContain("Bash(*)");
+    expect(auditInvocation(inv)).toEqual([]);
+  });
+
+  it.each([
+    ["npx tsc --noEmit", true],
+    ["npx tsc --version", true],
+    ["npx vitest run src/adapters", true],
+    ["npm run lint", true],
+    ["node scripts/check-docs.mjs", true],
+    ["make", true],
+    ["ls", true],
+    ["ls -la", true],
+    ["lsof -i", false],
+    ["npxx tsc", false],
+    ["curl https://example.org", false],
+    ["git commit -m x", false],
+    ["git status", false],
+  ] as const)("prod allowlist: %j allowed=%s under the documented matcher", (command, expected) => {
+    expect(allows(allowRules(trusted(PROD_ALLOWLIST)), command)).toBe(expected);
+  });
+
+  it("the pre-fix exact form would not have allowed `npx tsc --noEmit` (the bug this pins)", () => {
+    expect(allows(["Bash(npx)"], "npx tsc --noEmit")).toBe(false);
+    expect(allows(["Bash(npx)", "Bash(npx *)"], "npx tsc --noEmit")).toBe(true);
+  });
+
+  it("entries with arguments keep them as the rule prefix", () => {
+    const rules = allowRules(trusted(["npm test", "npm run build"]));
+    expect(rules).toContain("Bash(npm test *)");
+    expect(allows(rules, "npm test -- --watch")).toBe(true);
+    expect(allows(rules, "npm install left-pad")).toBe(false);
+  });
+
+  it.each([["git status"], ["git log"], ["/usr/bin/git diff"], ["git-receive-pack"]])(
+    "a git entry %j stays an exact rule (appended arguments could add a write path)",
+    (entry) => {
+      const r = new ClaudeAdapter({ binaryPath: CLAUDE }).compile(request, trusted([entry]));
+      if (isIneligible(r)) return; // refused by gitWriteRisks (FR-GIT-01): also never a prefix rule
+      const rules = allowRules(trusted([entry]));
+      expect(rules).toContain(`Bash(${entry})`);
+      expect(rules).not.toContain(`Bash(${entry} *)`);
+    },
+  );
+
+  it("a bare `git` entry never becomes `Bash(git *)`", () => {
+    const rules = allowRules(trusted(["git"]));
+    expect(rules).toContain("Bash(git)");
+    expect(rules).not.toContain("Bash(git *)");
+    expect(allows(rules, "git commit -m x")).toBe(false);
+  });
+
+  it("edit-untrusted keeps exact rules for the same allowlist (SRS: edits without arbitrary execution)", () => {
+    const rules = allowRules({
+      ...EDIT_UNTRUSTED,
+      shell: "allowlist",
+      shellAllowlist: PROD_ALLOWLIST,
+    });
+    expect(rules.filter((r) => r.startsWith("Bash"))).toEqual(PROD_ALLOWLIST.map((e) => `Bash(${e})`));
+    expect(allows(rules, "npx tsc --noEmit")).toBe(false);
+  });
+
+  it("trusted-development still refuses entries that could write Git or are not plain", () => {
+    const a = new ClaudeAdapter({ binaryPath: CLAUDE });
+    for (const e of ["git commit", "gh", "env", "xargs", "npx *", "npm test; git push"]) {
+      expect(a.compile(request, trusted(["npx", e])), e).toMatchObject({
+        ineligible: true,
+        reason: "PROFILE_UNSUPPORTED",
+      });
+    }
+  });
+});
+
 describe("claude compile: no permitted Git write operation (FR-GIT-01)", () => {
   const adapter = new ClaudeAdapter({ binaryPath: CLAUDE });
   const READ_ONLY_ALLOWLIST: ResolvedProfile = {
@@ -496,14 +630,15 @@ describe("claude compile matrix (M3)", () => {
       "trusted-development",
       { shellAllowlist: ["npm test", "git status"] },
       true,
-      { argv: argvFor([...RW, "Bash"], [...RW, "Bash(npm test)", "Bash(git status)"]) },
+      // ADR-0066: command-prefix rules; the `git` entry stays exact.
+      { argv: argvFor([...RW, "Bash"], [...RW, "Bash(npm test)", "Bash(npm test *)", "Bash(git status)"]) },
     ],
     [
       "trusted-development file_access=read-only with allowlist",
       "trusted-development",
       { fileAccess: "read-only", shellAllowlist: ["npm test"] },
       true,
-      { argv: argvFor([...R, "Bash"], [...R, "Bash(npm test)"]) },
+      { argv: argvFor([...R, "Bash"], [...R, "Bash(npm test)", "Bash(npm test *)"]) },
     ],
     [
       "trusted-development shell=broad (network off)",
