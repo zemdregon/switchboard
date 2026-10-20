@@ -15,7 +15,7 @@ import { DEFAULT_SECRET_PATTERNS, PREFIXED_PATTERNS } from "../artifacts/redact.
 import { loadConfig } from "./load.js";
 
 const EXAMPLES_DIR = path.join(import.meta.dirname, "..", "..", "examples");
-const REPO_README = path.join(import.meta.dirname, "..", "..", "README.md");
+const REPO_README = path.join(import.meta.dirname, "..", "..", "docs", "guide", "getting-started.md");
 /** Placeholder prefix used by every example path; rewritten into a temp dir before loading. */
 const PLACEHOLDER_ROOT = "/home/you/";
 
@@ -87,12 +87,12 @@ describe("examples/ configs (Y9)", () => {
     }
   });
 
-  it("the README minimal example loads too (extracted between its markers)", () => {
+  it("the getting-started guide's minimal example loads too (extracted between its markers)", () => {
     const readme = readFileSync(REPO_README, "utf8");
     const m = /Minimal example:\s+```json\n([\s\S]*?)\n```/.exec(readme);
-    expect(m, "README Configure section must keep a fenced minimal JSON example").toBeDefined();
+    expect(m, "the getting-started guide Configure section must keep a fenced minimal JSON example").toBeDefined();
     const text = m?.[1] as string;
-    assertCleanText("README minimal example", text);
+    assertCleanText("guide minimal example", text);
     const loaded = stageAndLoad("readme-minimal", JSON.parse(text));
     expect(loaded.mcpClients.size).toBeGreaterThan(0);
   });

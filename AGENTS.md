@@ -73,6 +73,7 @@ state machine or schema.
 | --- | --- |
 | `assets/switchboard-logo.png` | Product logo (placeholder chosen by zemdregon, 2026-10-13); used by the README. |
 | `docs/ROADMAP.md` | Canonical roadmap. |
+| `README.md`, `docs/guide/` | The README is the short landing page (pitch, quickstart, one-shot setup prompt). The user and operator guide (configuration, MCP tool and command reference, providers, security, status, limitations, live testing) lives in `docs/guide/`; `scripts/check-docs.mjs` checks its reference tables. |
 | `docs/requirements/` | BRD, PRD, FRD, SRS. |
 | `docs/design/` | HLD, SDD, TDD, LLD. |
 | `docs/adr/` | Architecture decision records and their index. |
