@@ -1028,6 +1028,15 @@ key with different parameters fails `INVALID_REQUEST` (FR-MCP-08). A key startin
 work queue admits and fails `INVALID_REQUEST` (§20.8). `wait_seconds` is a bounded wait on run completion;
 it never holds a DB transaction and returns the current non-terminal envelope on expiry.
 
+*Workspace refusal (FR-POL-10, 2026-10-20, [ADR-0068](../adr/0068-mcp-only-project-onboarding.md), Delegated detail):*
+every failure of `workspace_path` (outside the allowed roots, missing, not a directory, not a Git repository for a
+write-capable profile, repository root outside the roots) returns one `INVALID_REQUEST` message,
+`NOT_AN_ALLOWED_WORKSPACE`: "workspace_path is not an allowed workspace (an existing directory under an allowed root;
+a Git repository for write-capable profiles)". Before this, "workspace does not exist" was answered ahead of the
+allowed-root check, so a client could probe which host paths exist. `realpath` is taken of the raw path (no lexical
+`..` normalisation, so `link/..` resolves through the link). `checkWorkspace` in `src/lifecycle/lifecycle.ts`; tests
+`src/mcp/mcp-onboarding.test.ts` (byte-identical errors) and `test/malicious/controller.test.ts`.
+
 **`continue_task`** (M2 same provider, M5 cross-provider)
 
 ```jsonc
@@ -1162,6 +1171,29 @@ a non-terminal run, or while a `delegate_task`/`continue_task` for the project i
 configured id) with `source: "dynamic"`, `revision` (the one in force, else the latest), `status`
 (`ACTIVE | PENDING_APPROVAL | REJECTED`) and `pending_revision?`; configured entries are unchanged. Implementation:
 `src/mcp/project-tools.ts`, `src/projects/`.
+
+*As built (2026-10-20, Delegated detail under owner ruling 2026-10-20, [ADR-0068](../adr/0068-mcp-only-project-onboarding.md)):*
+in `create_project` and `update_project` a `repository` context takes exactly one of `path` and `clone_url`
+(`mcpProjectDefinition` in `src/mcp/schemas.ts` publishes a `oneOf`; configuration files still require `path`).
+`clone_url` is `https://<host>/<owner>/<repo>` (optional `.git` and trailing slash) and is refused with user
+information, a port, a query, a fragment, percent-encoding, another scheme, `.` or `..` segments, characters outside
+`[A-Za-z0-9._-]` in owner or repo, a leading `-`, or more than 512 characters (`parseRepositoryUrl`,
+`src/projects/clone.ts`). The target is `<clone_root>/<host>/<owner lower>/<repo lower>` from the config key
+`project_sources` (§3.4.8 lists the keys). A missing target is cloned (`git clone --no-recurse-submodules --`, no
+shell, the server's own environment plus `GIT_TERMINAL_PROMPT=0`, stdin closed, `-c core.fsmonitor=false -c
+core.hooksPath=/dev/null` on every call, 300 s timeout) into a temporary directory beside the target and renamed into
+place; an existing target is reused only when it is a real directory and the top level of a repository whose `origin`
+normalizes to the same host, owner and repo, after a best-effort `git fetch origin`. Check order: schema, control
+characters, id ownership, `clone_url` parse and allowlist (the planned target stands in for `path`), structure, client
+limits, quotas, clone or reuse (the only side effect), filesystem checks, approval reasons, write. Closed errors, never
+git's stderr: `CLONE_URL_INVALID` (`INVALID_REQUEST`); `CLONE_SOURCE_NOT_ALLOWED`, `CLONE_NOT_CONFIGURED` and
+`CLONE_TARGET_CONFLICT` (`PERMISSION_BLOCKED`), the last when the target exists and is not that repository; and
+`CLONE_FAILED` (`TOOL_FAILURE`, `retryable: true`; `ToolError.retryable` in `src/mcp/errors.ts`). The stored
+definition keeps the resolved `path` and the normalized `clone_url` (`https://host/Owner/repo`). `list_projects`
+context items gain `source_url` (the normalized URL, never a path). The `project_event` payload of a call with a
+`clone_url` gains `clone` (`cloned | reused | failed | refused`) and `clone_sources` (`["host/owner/repo"]`, lower
+case). The `PENDING_APPROVAL` message names `decide_approval` (an approver client, §3.4.8) and `switchboard projects
+approve`. Tests: `src/projects/clone.test.ts`, `src/mcp/mcp-onboarding.test.ts`.
 
 **Error envelope** (FR-MCP-07). Delivered as an MCP tool result with `isError: true`:
 
@@ -2148,6 +2180,16 @@ Delegated, not owner-approved):**
 - Configuration: `approval_proxy` is a boolean (default false); `approval_proxy_targets` is a non-empty list of unique
   configured client ids and is refused at load without `approval_proxy: true` or when it names an unknown client.
   Without it a proxy targets only itself. `tool_profile` is not consulted.
+- `approval_proxy_kinds` ([ADR-0068](../adr/0068-mcp-only-project-onboarding.md), Delegated detail): a non-empty list
+  of unique values from `privileged_scope | dynamic_project | push_revision`, default all three, refused at load
+  without `approval_proxy: true`. `list_pending_approvals` lists and `decide_approval` decides only those kinds; any
+  other kind gets the same single refusal as an unknown id (no oracle). Implementation: `proxyKinds` in
+  `src/control/approval-proxy.ts`. The orchestrator profile offers both tools whenever `approval_proxy` is true.
+- Top-level `project_sources` (`{ clone_root, allowed_hosts?, allowed_owners }`, strict; ADR-0068): `clone_root` is
+  absolute, exists, resolves under an allowed root and is not inside `data_dir`; `allowed_hosts` defaults to
+  `["github.com"]` (lower-case host names); `allowed_owners` is non-empty and matched case-insensitively. Absent, every
+  `clone_url` is refused (`CLONE_NOT_CONFIGURED`). `src/config/schema.ts`, `resolveProjectSources` in
+  `src/config/load.ts`; tests `src/config/project-sources.test.ts`.
 - Kinds: `privileged_scope` lists a `PENDING` row whose run is AWAITING_APPROVAL and passes every §3.1 hash check
   (`approval_id` is the `apv_` row id). A dynamic project revision lists while it is the latest, `PENDING_APPROVAL` and
   undecided (`approval_id` is the `prv_` revision row id); it is `push_revision` when its approval reasons include
@@ -7518,6 +7560,20 @@ Tests: `src/ci/ci-transient.test.ts` (fake `CiStatusPort`, fake `CiActionsPort` 
    No taxonomy code names a conflict, so deciding twice is `INVALID_REQUEST` with `details.reason` `CONFLICT`, as
    `QUEUE_FULL` is carried (Delegated). `request_decision` and `decide` never echo the text; `list_decisions` returns
    it as `{ text, label: "untrusted_client_text" }`.
+   *Onboarding (2026-10-20, [ADR-0068](../adr/0068-mcp-only-project-onboarding.md), Delegated detail):*
+   `request_decision` accepts an optional `onboarding: { repository_url }`. Then `project_id` is the proposed id: it
+   must be well-formed; a configured id or another client's dynamic project is `PERMISSION_BLOCKED` (`NOT_MANAGEABLE`,
+   one message); a deleted id is `INVALID_REQUEST` (`ID_DELETED`); an id with an approved revision is
+   `INVALID_REQUEST` (`PROJECT_EXISTS`); an unknown id or this client's own `PENDING_APPROVAL` or `REJECTED` project is
+   accepted. The URL uses the `clone_url` parser (`CLONE_URL_INVALID`) and, only when `project_sources` is configured,
+   its allowlist (`CLONE_SOURCE_NOT_ALLOWED`). `onboarding` cannot be combined with `work_item_id` or `enqueue`.
+   Without it the old rule holds. The normalized URL is stored in `decision_request.onboarding_url` (migration
+   **0032**, `src/ledger/migrations/0032_decision_onboarding.ts`: `ALTER TABLE ... ADD COLUMN`, nullable, `CHECK` it
+   starts with `https://` and is 9 to 512 characters; forward-only, ADR-0005; `project_id` has no foreign key since
+   migration 0030). `request_decision`, `list_decisions`, `decide` and `switchboard decisions list` show
+   `onboarding: { repository_url }` when present; `list_decisions` takes the proposed id as its `project_id` filter and
+   `get_digest` lists the open decision under it. Sinks still carry only the project id. Tests:
+   `src/mcp/mcp-onboarding.test.ts`.
 6. **Digest.** Each `get_digest` project lists the caller's open decisions as `open_decisions: [{ decision_id,
    work_item_id, reason: "awaiting_decision", requested_at }]`, present only when non-empty. `awaiting_decision` is
    that project-level entry and the sink reason code; it is not a run-level `needs_attention` reason, because a parked

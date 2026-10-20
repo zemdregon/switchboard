@@ -115,6 +115,10 @@ function renderOne(d: DecisionListItem): string {
     `${d.decision_id}  ${d.state}  project ${d.project_id}`,
     `  requested by ${d.requester_client_id} at ${d.created_at}; work item ${d.work_item_id ?? "none"}`,
     `  enqueues ${d.enqueue_count} item(s) on resume or reroute`,
+    // ADR-0068: controller-normalised URL (no credential, query or fragment); the project does not exist yet.
+    ...("onboarding" in d && d.onboarding !== undefined
+      ? [`  onboarding: proposes a new project from ${d.onboarding.repository_url}`]
+      : []),
     `  question ${UNTRUSTED}: ${d.question.text}`,
   ];
   for (const o of d.options) {

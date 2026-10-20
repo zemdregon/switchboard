@@ -82,6 +82,11 @@ export interface RequestDecisionInput {
   readonly options: readonly DecisionOption[];
   readonly recommendedOption: number;
   readonly enqueue?: readonly DecisionEnqueueItem[];
+  /**
+   * ADR-0068: the normalised repository URL of an onboarding decision (`src/projects/clone.ts` form). The caller has
+   * already validated it; it is a controller value, not untrusted text, and never reaches an event or a sink.
+   */
+  readonly onboardingUrl?: string;
 }
 
 /** What the sinks are told about a new decision: the project only (ADR-0048 item 3 as amended). */
@@ -159,6 +164,7 @@ export function requestDecision(
       options: input.options,
       recommendedOption: input.recommendedOption,
       enqueue,
+      ...(input.onboardingUrl !== undefined ? { onboardingUrl: input.onboardingUrl } : {}),
     });
     // Same transaction as the state check above, so the park cannot miss; a miss rolls the decision back too.
     if (input.workItemId !== undefined && ledger.parkWorkItem(input.workItemId, decision.id) === undefined) {
@@ -292,6 +298,10 @@ export function decisionView(row: DecisionRequestRow) {
     decided_by: row.decided_by,
     created_at: row.created_at,
     decided_at: row.decided_at,
+    // ADR-0068: present only on an onboarding decision; the controller-normalised URL.
+    ...(row.onboarding_url !== null && row.onboarding_url !== undefined
+      ? { onboarding: { repository_url: row.onboarding_url } }
+      : {}),
   };
 }
 

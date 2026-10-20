@@ -71,7 +71,7 @@
  *   privileged approval check (T3.4) and a refused bypass flag in the argv audit.
  */
 
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import {
   AcpPlanAuditError,
   type AdapterRegistry,
@@ -328,6 +328,14 @@ export type RunPriority = "interactive" | "normal" | "batch";
 export const PRIORITY_VALUES: Readonly<Record<RunPriority, number>> = { interactive: 2, normal: 1, batch: 0 };
 
 /** Proposed default ingress bound (FR-CAP-04); configuration has no key for it yet. */
+/**
+ * ADR-0068 item 5: the one answer for every `workspace_path` the controller will not use (outside the allowed roots,
+ * missing, not a directory, not a Git repository for a write-capable profile). One text, so no existence oracle.
+ */
+export const NOT_AN_ALLOWED_WORKSPACE =
+  "workspace_path is not an allowed workspace (an existing directory under an allowed root; a Git repository for " +
+  "write-capable profiles)";
+
 export const DEFAULT_MAX_QUEUE_DEPTH = 64;
 /** Proposed: 2 x the 30-minute default wall clock (LLD §5). */
 export const DEFAULT_LEASE_TTL_MS = 60 * 60_000;
@@ -1651,28 +1659,38 @@ export class RunLifecycle {
     );
   }
 
-  /** FRD V3/V4 and C3: canonical path under an allowed root; write-capable profiles need a Git repository. */
+  /**
+   * FRD V3/V4 and C3: canonical path under an allowed root; write-capable profiles need a Git repository.
+   *
+   * ADR-0068 item 5 (no existence oracle): the resolved path must be under an allowed root before anything else is
+   * looked at (a symbolic link into a root still counts as inside), and every failure (outside the roots, missing, not a directory, not a Git repository,
+   * a repository root outside the roots) is the same {@link NOT_AN_ALLOWED_WORKSPACE} refusal, so a client cannot tell
+   * a missing path from an existing one anywhere on the host.
+   */
   private async checkWorkspace(workspace: string, profile: TrustProfile): Promise<string> {
     this.rootsCache ??= await Promise.all(this.opts.allowedRoots.map((r) => realpath(r)));
+    const refuse = () => new LifecycleError("INVALID_REQUEST", NOT_AN_ALLOWED_WORKSPACE);
     let canonical: string;
     try {
+      // Never normalise `..` lexically first: `link/..` must resolve through the link, as the kernel does.
       canonical = await realpath(workspace);
     } catch {
-      throw new LifecycleError("INVALID_REQUEST", "workspace does not exist");
+      throw refuse();
     }
-    if (!isUnderAllowedRoot(canonical, this.rootsCache)) {
-      throw new LifecycleError("INVALID_REQUEST", "workspace is not under an allowed root");
+    if (!isUnderAllowedRoot(canonical, this.rootsCache)) throw refuse();
+    try {
+      if (!(await stat(canonical)).isDirectory()) throw refuse();
+    } catch {
+      throw refuse();
     }
     if (profile !== "inspect-untrusted") {
       let top: string;
       try {
         top = await realpath(await gitText(["rev-parse", "--show-toplevel"], { cwd: canonical }));
       } catch {
-        throw new LifecycleError("INVALID_REQUEST", "write-capable profiles require a Git repository");
+        throw refuse();
       }
-      if (!isUnderAllowedRoot(top, this.rootsCache)) {
-        throw new LifecycleError("INVALID_REQUEST", "repository root is not under an allowed root");
-      }
+      if (!isUnderAllowedRoot(top, this.rootsCache)) throw refuse();
     }
     return canonical;
   }

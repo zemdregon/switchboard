@@ -1,6 +1,6 @@
 # ADR-0030: Dynamic project revisions, decisions and events in the ledger; approval on the CLI
 
-- Status: Accepted
+- Status: Accepted. Amended by [ADR-0068](0068-mcp-only-project-onboarding.md) (items 4 and 5)
 - Date: 2026-10-13
 - Decided by: Delegated (agent), under [owner decision 25](../ROADMAP.md#42-owner-decisions) (best practice for a
   decision that does not affect bypass mode). Not an zemdregon quote and not owner-approved. Recorded as decision 39 in

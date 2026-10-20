@@ -24,6 +24,13 @@
  * TDD §3.1): `approval_proxy: true` offers the client `list_pending_approvals` and `decide_approval` (default false: the
  * tools are absent). `approval_proxy_targets` (default: the client itself) lists the client ids whose approvals it may
  * decide; `load.ts` refuses it without `approval_proxy: true` and refuses an id that is not a configured client.
+ * `approval_proxy_kinds` (ADR-0068; default: all three kinds, as before) narrows which approval kinds the proxy lists
+ * and decides; `load.ts` refuses it without `approval_proxy: true`.
+ *
+ * `project_sources` (ADR-0068; FR-PRJ-10 note 2026-10-20): where `create_project` / `update_project` may clone a
+ * repository given as `clone_url`. Absent means no clone (fail closed). `clone_root` must be absolute and under an
+ * allowed root; `allowed_hosts` defaults to `["github.com"]`; `allowed_owners` is required and non-empty, matched
+ * case-insensitively. `load.ts` checks what the schema cannot.
  *
  * `mcp_clients[].tool_profile` (T14.11; FR-CTL-11, LLD §3.4.10): `orchestrator` (default, today's tool set) or `console`
  * (the closed console set; `src/mcp/tool-profile.ts`). `load.ts` refuses `console` with `manage_projects: true`.
@@ -104,6 +111,17 @@ export const PRIVILEGED_APPROVAL_MODES = ["required", "not_required"] as const;
 export type PrivilegedApprovalMode = (typeof PRIVILEGED_APPROVAL_MODES)[number];
 export const DEFAULT_PRIVILEGED_APPROVAL: PrivilegedApprovalMode = "required";
 
+/** `mcp_clients[].approval_proxy_kinds` values (ADR-0068): LLD §3.4.1 `approval_kind`. Absent means all of them. */
+export const APPROVAL_PROXY_KINDS = ["privileged_scope", "dynamic_project", "push_revision"] as const;
+export type ApprovalProxyKind = (typeof APPROVAL_PROXY_KINDS)[number];
+
+/** `project_sources.allowed_hosts` default (ADR-0068). */
+export const DEFAULT_PROJECT_SOURCE_HOSTS = ["github.com"] as const;
+/** A host name (lower case, dot-separated labels) as `project_sources.allowed_hosts` accepts it (Delegated). */
+export const SOURCE_HOST_PATTERN = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$";
+/** A repository owner or name segment (ADR-0068): `[A-Za-z0-9._-]`, not `.` or `..` (checked in `load.ts`). */
+export const SOURCE_SEGMENT_PATTERN = "^[A-Za-z0-9._-]{1,100}$";
+
 /** `mcp_clients[].tool_profile` values (FR-CTL-11, LLD §3.4.10). `orchestrator` (today's full set) is the default. */
 export const TOOL_PROFILES = ["orchestrator", "console"] as const;
 export type ToolProfile = (typeof TOOL_PROFILES)[number];
@@ -127,6 +145,8 @@ export interface SwitchboardConfig {
     approval_proxy?: boolean;
     /** T14.8: client ids whose pending approvals this proxy may decide. Default: the client itself. */
     approval_proxy_targets?: string[];
+    /** ADR-0068: the approval kinds this proxy may list and decide. Default: all three. */
+    approval_proxy_kinds?: (typeof APPROVAL_PROXY_KINDS)[number][];
     /** T14.11 (FR-CTL-11): `orchestrator` (default) or `console`. */
     tool_profile?: ToolProfile;
     /**
@@ -208,6 +228,8 @@ export interface SwitchboardConfig {
   notification_sinks?: NotificationSinkConfig[];
   /** CI-failure trigger (M15, T15.3; FR-QUE-03, LLD §18.6, ADR-0050). Absent or `enabled: false` means no `gh` call. */
   ci_trigger?: CiTriggerConfigInput;
+  /** ADR-0068: where `create_project` may clone a `clone_url`. Absent means cloning is refused. */
+  project_sources?: { clone_root: string; allowed_hosts?: string[]; allowed_owners: string[] };
   /** Optional OTLP/HTTP trace destination; absent or empty disables telemetry (LLD §7, T8.1). */
   telemetry?: { otlp_endpoint?: string; provider_otlp?: boolean };
   /**
@@ -392,6 +414,11 @@ export interface ContextConfig {
    * before a meta-session's first worktree is created. Primary context only; absent: no fetch (the local branch as is).
    */
   base_remote?: string;
+  /**
+   * ADR-0068: MCP-only. A dynamic definition stores the normalised `clone_url` its `path` was cloned from; the
+   * configuration file has no such key (`contextSchema` refuses it) and always names `path`.
+   */
+  clone_url?: string;
   primary?: boolean;
   writable?: boolean;
   push?: { policy: (typeof PUSH_POLICIES)[number]; remote?: string; branch_prefix?: string };
@@ -905,6 +932,12 @@ export const configSchema = {
             minItems: 1,
             items: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
           },
+          approval_proxy_kinds: {
+            type: "array",
+            uniqueItems: true,
+            minItems: 1,
+            items: { enum: [...APPROVAL_PROXY_KINDS] },
+          },
           tool_profile: { enum: [...TOOL_PROFILES] },
           skills: clientSkillListSchema(),
           allow_light: { type: "boolean" },
@@ -1168,6 +1201,29 @@ export const configSchema = {
     skills: skillsSectionSchema(),
     notification_sinks: notificationSinksSchema,
     ci_trigger: ciTriggerSchema,
+    // ADR-0068: bounds are Delegated sanity limits.
+    project_sources: {
+      type: "object",
+      additionalProperties: false,
+      required: ["clone_root", "allowed_owners"],
+      properties: {
+        clone_root: { type: "string", minLength: 1, maxLength: 4096 },
+        allowed_hosts: {
+          type: "array",
+          minItems: 1,
+          maxItems: 16,
+          uniqueItems: true,
+          items: { type: "string", maxLength: 253, pattern: SOURCE_HOST_PATTERN },
+        },
+        allowed_owners: {
+          type: "array",
+          minItems: 1,
+          maxItems: 64,
+          uniqueItems: true,
+          items: { type: "string", pattern: SOURCE_SEGMENT_PATTERN },
+        },
+      },
+    },
     telemetry: {
       type: "object",
       additionalProperties: false,

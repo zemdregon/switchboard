@@ -1418,6 +1418,8 @@ async function runDaemon(
         // T9.9 (FR-PRJ-10, ADR-0030): no dynamic project inside the data directory; disabled providers are off-limits.
         dataDir: config.dataDir,
         providers: config.providers,
+        // ADR-0068: `create_project` may clone a `clone_url` only where the operator configured project_sources.
+        ...(config.projectSources !== undefined ? { projectSources: config.projectSources } : {}),
         // T5.6: handoff bundle bounds (`continuity.*`, LLD §15.4).
         continuity: config.continuity,
         // T6.3: `get_capacity` settings and slot limits (LLD §16.1, §16.3).
