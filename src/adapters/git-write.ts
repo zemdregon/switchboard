@@ -294,6 +294,92 @@ export function splitSimpleCommands(command: string): string[][] {
 
 const isDynamic = (w: string): boolean => /[$`*?[]/.test(w);
 
+/**
+ * Whether a launcher argument names a Git subprogram (`git-receive-pack`, `/usr/lib/git-core/git-push`,
+ * `git-lfs.exe`). Git subprograms carry no file extension except `.exe`, so a source path such as
+ * `src/cli/git-push.test.ts` passed to `timeout 600 npx vitest run` is an argument, not the wrapped program.
+ */
+const isGitSubprogram = (name: string): boolean => /^git-[^.]*(\.exe)?$/.test(name);
+
+/** `git branch` flags that only list or select what is listed (Git 2.43.0 `git branch -h`). */
+const BRANCH_LIST_FLAGS = new Set([
+  "-a",
+  "--all",
+  "-r",
+  "--remotes",
+  "-v",
+  "-vv",
+  "--verbose",
+  "-l",
+  "--list",
+  "-i",
+  "--ignore-case",
+  "-q",
+  "--quiet",
+  "--show-current",
+  "--no-color",
+  "--no-column",
+  "--no-abbrev",
+  "--omit-empty",
+]);
+/** Short flags that may be bundled in one word (`-av`, `-vv`, `-rl`). */
+const BRANCH_LIST_SHORT = /^-[arvliq]+$/;
+/** Options whose value may be the next word (`--sort refname`); `=` forms are matched by name. */
+const BRANCH_VALUE_OPTIONS = new Set(["--sort", "--format", "--points-at"]);
+/** Options whose value, if any, must be inline (`--color=always`, `--abbrev=7`). */
+const BRANCH_INLINE_OPTIONS = new Set(["--color", "--column", "--abbrev"]);
+/**
+ * Filters that put `git branch` in list mode, so later positional words are patterns, not new branch names. Their
+ * commit argument is optional and may be the next word, which is then a pattern either way.
+ */
+const BRANCH_LIST_MODE = new Set([
+  "-l",
+  "--list",
+  "--contains",
+  "--no-contains",
+  "--merged",
+  "--no-merged",
+  "--points-at",
+]);
+
+/**
+ * Whether `git branch <args>` is a write. Read-only only when every option is a known listing option and either no
+ * positional word is given or list mode is set (`--list`, `-l`, or a filter such as `--merged`), as in Git's
+ * `builtin/branch.c`. Anything else (create, `-d`/`-D`, `-m`/`-M`, `-c`/`-C`, `-u`, `--unset-upstream`, `-f`,
+ * `--edit-description`, `--track`, an abbreviated or unknown option, a positional after `--`) is a write: fail closed.
+ */
+function branchVerdict(args: readonly string[]): GitCommandVerdict | undefined {
+  let listMode = false;
+  let positional = false;
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i] as string;
+    if (isDynamic(w)) return { level: "uncertain", reason: `dynamic \`git branch\` argument \`${w}\`` };
+    if (w === "--") {
+      positional ||= i + 1 < args.length;
+      break;
+    }
+    if (!w.startsWith("-") || w === "-") {
+      positional = true;
+      continue;
+    }
+    const name = w.split("=", 1)[0] as string;
+    if (BRANCH_LIST_MODE.has(name)) listMode = true;
+    if (BRANCH_LIST_FLAGS.has(w) || BRANCH_LIST_SHORT.test(w)) {
+      if (/^-[a-z]*l/.test(w) && !w.startsWith("--")) listMode = true;
+    } else if (BRANCH_VALUE_OPTIONS.has(name)) {
+      if (name === w) i++;
+    } else if (BRANCH_INLINE_OPTIONS.has(name) || BRANCH_LIST_MODE.has(name)) {
+      // value inline or absent; a following word is a pattern (list mode) or makes the command a create
+    } else {
+      return { level: "write", reason: `\`git branch ${w}\` can create, delete, move or copy a branch` };
+    }
+  }
+  if (positional && !listMode) {
+    return { level: "write", reason: "`git branch <name>` creates a branch" };
+  }
+  return undefined;
+}
+
 function gitVerdict(words: readonly string[]): GitCommandVerdict | undefined {
   let i = 1;
   while (i < words.length) {
@@ -317,6 +403,7 @@ function gitVerdict(words: readonly string[]): GitCommandVerdict | undefined {
   const sub = words[i];
   if (sub === undefined) return undefined;
   if (isDynamic(sub)) return { level: "uncertain", reason: `dynamic git subcommand \`${sub}\`` };
+  if (sub === "branch") return branchVerdict(words.slice(i + 1));
   if (GIT_WRITE_SUBCOMMANDS.includes(sub))
     return { level: "write", reason: `\`git ${sub}\` can create commits, change refs or push` };
   if (!GIT_READ_ONLY_SUBCOMMANDS.includes(sub)) {
@@ -369,13 +456,14 @@ function programVerdict(words: readonly string[], depth: number): GitCommandVerd
   }
   if (PREFIX_LAUNCHERS.has(name)) {
     // The launcher's own options may take values (`sudo -u root`, `nice -n 5`): the wrapped command starts at the
-    // first word that is itself a program this check understands.
+    // first word that is itself a program this check understands. File paths with an extension (`git-push.test.ts`)
+    // are ordinary arguments here, not Git subprograms.
     let j = 1;
     while (j < words.length) {
       const w = basename(words[j] as string);
       if (
         w === "git" ||
-        w.startsWith("git-") ||
+        isGitSubprogram(w) ||
         GIT_PUBLISHING_PROGRAMS.includes(w) ||
         SHELLS.has(w) ||
         w === "eval" ||
@@ -408,7 +496,10 @@ function commandVerdict(command: string, depth: number): GitCommandVerdict | und
  * `eval` recursively, program paths (`/usr/bin/git`), and Git global options before the subcommand.
  *
  * `write`: a known write path (subcommand in {@link GIT_WRITE_SUBCOMMANDS}, `git-<name>`, a `-c` that defines an alias
- * or hook, `GIT_CONFIG_*` set). `uncertain`: the check cannot tell (a dynamic program or subcommand, an unknown
+ * or hook, `GIT_CONFIG_*` set). Two exceptions keep read-only work running (Linus decision, Delegated, not
+ * owner-approved, 2026-10-20): the listing forms of `git branch` (bare, `--show-current`, `--list`, `-a`, `-r`, `-v`,
+ * `--contains`, `--merged`, ...; see `branchVerdict`) are not writes, and behind a launcher a `git-` word with a file
+ * extension (`timeout 600 npx vitest run src/cli/git-push.test.ts`) is an argument, not a Git subprogram. `uncertain`: the check cannot tell (a dynamic program or subcommand, an unknown
  * subcommand that may be an alias, `gh`). Not covered, by design: scripts and interpreters (`python -c`, `make`);
  * the FR-GIT-03 ref snapshot is the backstop for those.
  */

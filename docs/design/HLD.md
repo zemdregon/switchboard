@@ -308,7 +308,9 @@ component-level outcome. Mirrors the Grok Build declaration ([TDD
   FINALIZING when the project opts in. Both are reported through `list_capabilities`.
 - **Compile guard.** Before any other check, a shell allowlist entry that could write Git (`gitWriteRisks`) makes the
   profile `Ineligible` `PROFILE_UNSUPPORTED` citing FR-GIT-01, including on an approved `privileged` scope with `bypass`
-  ([ADR-0017](../adr/0017-approved-privileged-scope-bypass.md)); read-only entries do not trigger it.
+  ([ADR-0017](../adr/0017-approved-privileged-scope-bypass.md)); read-only `git status` / `git diff` entries
+  do not trigger it
+  (`git branch` in any form still does; [ADR-0039](../adr/0039-switchboard-side-tool-call-guard.md)).
 - **Tests:** `src/adapters/antigravity/antigravity.test.ts` ("antigravity Git declaration (T4.37, FR-GIT-01, FR-GIT-02,
   FR-GIT-09)": declaration constants, `list_capabilities` over MCP, the FR-GIT-01 argv test with the prompt in the one
   `--prompt=` word and no `git` or `gh` in argv, policy flags or environment, Git-write shell allowlist entries refused,

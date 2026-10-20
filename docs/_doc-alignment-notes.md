@@ -1021,33 +1021,24 @@ as history.
   AGENTS.md forbids editing it, and its status line already records the ADR-0066 amendment).
 - `node scripts/check-docs.mjs` passes. It does not block PR #782.
 
-## 57. LLD §3.3 stated the HTTP subject-binding rule without the admitted-runs exception (from PR #790, fixed in this gate)
+## 57. HLD "read-only entries" vs the `git branch` listing-form reclassification (from PR #788, fixed in this gate)
 
-- PR #790 (`fix(mcp): HTTP clients see admitted runs`, superseding #781) changes `ownSubject` in
-  `src/mcp/server.ts` so a meta-session the controller opened to admit the caller's own queued work item
-  (no `http_subject` row, first run's idempotency key `queue:<work_item_id>`, controller-written
-  `admitted_run_id`) is visible to the item's creating client over either transport, and refuses a
-  caller-supplied `idempotency_key` starting with the new `QUEUE_IDEMPOTENCY_PREFIX` (`"queue:"`,
-  `src/queue/scheduler.ts`) with `INVALID_REQUEST` (`details.field: "idempotency_key"`). The PR itself
-  documents both in [LLD §10 and §20.8](design/LLD.md#208-work-queue-over-http-fr-que-08-t159), with
-  Delegated rationale, and pins them in `src/mcp/mcp.test.ts` ("runs admitted from queued work, over
-  stdio and HTTP": owner-visible over both transports for `get_run`, `list_runs`, `get_artifacts`,
-  `steer_run`, `cancel_run` and `get_digest`; unknown-id answers for every other client; prefix
-  refusal). Verified against the code: every read path (`ownRun`, `list_runs` paging, digest
-  `visible`) goes through the new `ownSubject`, and only the controller writes `admitted_run_id`, so a
-  caller-chosen key alone never makes a run visible.
-- [LLD §3.3](design/LLD.md#33-network-mcp-transport-m13) still stated the absolute rule ("over stdio
-  there must be no row", unbound reads as stdio-only), which this PR carves the exception into.
-- Fixed in this gate (docs only, no owner decision needed — the exception grants nothing to a
-  non-owner, so the threat posture is unchanged and no owner document disagrees on intent): §3.3 now
-  carries the exception with a pointer to §20.8.
-- Checked and left unchanged: the ROADMAP Q-78 answer and ADR-0041 item 7 keep the original wording
-  (a dated answered question and an Accepted decision, respectively; both describe sessions a caller
-  opens, not controller-opened admissions, so neither is contradicted — cf. items 19 and 41 for the
-  historical-text precedent); HLD TB-12 stays a loose summary (cf. item 9); SRS FR-MCP-08, FR-MCP-15,
-  FR-QUE-01 and FR-QUE-08 need no rewording (the prefix reservation and owner-visibility are LLD-level
-  detail under them); no ROADMAP task row exists for this fix, so no status or evidence field is
-  touched. `node scripts/check-docs.mjs` passes. It does not block PR #790.
+- PR #788 reclassifies the listing forms of `git branch` (bare, `--show-current`, `--list`/`-l`, `-a`, `-r`, `-v`,
+  `--contains`, `--merged`, `--points-at`, `--sort`, `--format`, ...) as read-only in `gitWriteInCommand`, while the
+  shell-allowlist check (`gitWriteRisk`) still refuses `git branch` in any form (pinned by
+  `src/adapters/git-write.test.ts`; recorded in [ADR-0039](adr/0039-switchboard-side-tool-call-guard.md) by the PR
+  itself).
+- The HLD T4.37 compile-guard sentence ("read-only entries do not trigger it") was true before the PR, when every
+  `git branch` form counted as a could-write entry; after the reclassification it read as if a read-only
+  `git branch --show-current` allowlist entry were admitted, contradicting the code.
+- Fixed in this gate (docs only, no owner decision needed — code is the source of truth, and ADR-0039 already
+  records the split): the sentence now names the admitted read-only forms (`git status` / `git diff`, matching the
+  LLD §2 wording) and notes that `git branch` in any form still triggers the refusal, citing ADR-0039. Checked and
+  left unchanged: the TDD Grok/OpenCode/Antigravity compile-guard lines (no read-only blanket claim), the T8.11 and
+  TDD §3.6.3 property-test summaries ("every generated Git write ... refused" — the property tests `branch` in its
+  write form `-D x`), the README hostile-matrix line naming `git branch -D` (a write form, still refused), and TDD
+  §3 row 1 (`git branch sneaky` creates a ref, still blocked).
+- `node scripts/check-docs.mjs` passes. It does not block PR #788.
 
 ## 58. Decision requests (T14.15, PR #789): SRS as-built notes fixed here; two stragglers left for other lanes
 
@@ -1086,3 +1077,31 @@ as history.
   update for `PARKED_DECISION`), the README Status M14 bullet and the §11 frozen log (per §11, later status lives
   in §6 and the README Status block; the M14 row carries T14.15 with evidence).
 - `node scripts/check-docs.mjs` passes. It does not block PR #789.
+
+## 59. LLD §3.3 stated the HTTP subject-binding rule without the admitted-runs exception (from PR #790, fixed in this gate)
+
+- PR #790 (`fix(mcp): HTTP clients see admitted runs`, superseding #781) changes `ownSubject` in
+  `src/mcp/server.ts` so a meta-session the controller opened to admit the caller's own queued work item
+  (no `http_subject` row, first run's idempotency key `queue:<work_item_id>`, controller-written
+  `admitted_run_id`) is visible to the item's creating client over either transport, and refuses a
+  caller-supplied `idempotency_key` starting with the new `QUEUE_IDEMPOTENCY_PREFIX` (`"queue:"`,
+  `src/queue/scheduler.ts`) with `INVALID_REQUEST` (`details.field: "idempotency_key"`). The PR itself
+  documents both in [LLD §10 and §20.8](design/LLD.md#208-work-queue-over-http-fr-que-08-t159), with
+  Delegated rationale, and pins them in `src/mcp/mcp.test.ts` ("runs admitted from queued work, over
+  stdio and HTTP": owner-visible over both transports for `get_run`, `list_runs`, `get_artifacts`,
+  `steer_run`, `cancel_run` and `get_digest`; unknown-id answers for every other client; prefix
+  refusal). Verified against the code: every read path (`ownRun`, `list_runs` paging, digest
+  `visible`) goes through the new `ownSubject`, and only the controller writes `admitted_run_id`, so a
+  caller-chosen key alone never makes a run visible.
+- [LLD §3.3](design/LLD.md#33-network-mcp-transport-m13) still stated the absolute rule ("over stdio
+  there must be no row", unbound reads as stdio-only), which this PR carves the exception into.
+- Fixed in this gate (docs only, no owner decision needed — the exception grants nothing to a
+  non-owner, so the threat posture is unchanged and no owner document disagrees on intent): §3.3 now
+  carries the exception with a pointer to §20.8.
+- Checked and left unchanged: the ROADMAP Q-78 answer and ADR-0041 item 7 keep the original wording
+  (a dated answered question and an Accepted decision, respectively; both describe sessions a caller
+  opens, not controller-opened admissions, so neither is contradicted — cf. items 19 and 41 for the
+  historical-text precedent); HLD TB-12 stays a loose summary (cf. item 9); SRS FR-MCP-08, FR-MCP-15,
+  FR-QUE-01 and FR-QUE-08 need no rewording (the prefix reservation and owner-visibility are LLD-level
+  detail under them); no ROADMAP task row exists for this fix, so no status or evidence field is
+  touched. `node scripts/check-docs.mjs` passes. It does not block PR #790.
