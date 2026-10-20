@@ -282,7 +282,7 @@ import { assembleDigest, type OpenDecisionItem } from "./digest.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
 import type { SubjectBindings } from "./http-subjects.js";
-import { type MergeRunDeps, mergeRunPr } from "./merge-run-pr.js";
+import { type MergeRunDeps, mergeRunPr, updateRunBranch, updateRunOffered } from "./merge-run-pr.js";
 import {
   admitBrief,
   createProjectTools,
@@ -2155,14 +2155,26 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ownRun(a.run_id as string),
       a.expected_head_sha as string | undefined,
     );
+  // ADR-0073 (LLD §3.4.14): `update_run_branch`, offered with `merge_run_pr` when the update port is wired too.
+  const updateBranchOffered = mergeRunOffered && updateRunOffered(deps.mergeRun);
+  const updateRunBranchTool = async (a: Args) =>
+    updateRunBranch(
+      { ledger, clientId: deps.clientId, clientProjects: client.projects ?? [] },
+      deps.publish as PublishDeps,
+      deps.mergeRun as MergeRunDeps,
+      ownRun(a.run_id as string),
+      a.expected_head_sha as string | undefined,
+    );
   const publishHandlers: Record<PublishToolName, (a: Args) => Promise<object>> = {
     publish_run: publishRunTool,
     merge_run_pr: mergeRunPrTool,
+    update_run_branch: updateRunBranchTool,
   };
   const publishToolOffered = (name: string) =>
     (PUBLISH_TOOL_NAMES as readonly string[]).includes(name) &&
     publishOffered &&
-    (name !== "merge_run_pr" || mergeRunOffered);
+    (name !== "merge_run_pr" || mergeRunOffered) &&
+    (name !== "update_run_branch" || updateBranchOffered);
   const skillGate = (profile: TrustProfile): SkillGate => ({
     profile,
     allowDraftInTrusted: deps.skills?.settings.allowDraftInTrusted === true,
@@ -2268,6 +2280,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         skills: skillsOffered,
         publish: publishOffered,
         mergeRunPr: mergeRunOffered,
+        updateRunBranch: updateBranchOffered,
       }),
       // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
       ...(approvalProxy !== undefined
@@ -2352,7 +2365,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       }
       if (publishToolOffered(name)) {
         // ADR-0069: when not offered (no publish port, or max_push_policy none) it is answered like an unknown tool;
-        // ADR-0070: `merge_run_pr` also without the merge port.
+        // ADR-0070: `merge_run_pr` also without the merge port; ADR-0073: `update_run_branch` also without the update
+        // port.
         const tool = name as PublishToolName;
         const args = structuredClone(rawArgs ?? {}) as Args;
         const validate = publishValidators[tool];

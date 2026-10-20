@@ -151,6 +151,15 @@ export interface CiMergePort {
   }): Promise<void>;
 }
 
+/**
+ * ADR-0073 (MCP `update_run_branch`): G15, GitHub's "Update branch" for one pull request, pinned to the head the
+ * controller read (`expected_head_sha`). Resolves when `gh` exits 0 (GitHub accepted the request; the merge commit
+ * appears on the branch shortly after). Throws {@link CiStatusError}.
+ */
+export interface CiBranchUpdatePort {
+  updatePullRequestBranch(q: { owner: string; repo: string; prNumber: number; expectedHeadSha: string }): Promise<void>;
+}
+
 export type CiStatusErrorReason = "AUTH_REQUIRED" | "GH_FAILED" | "GH_MISSING" | "PARSE_FAILED" | "TIMEOUT";
 
 export class CiStatusError extends Error {

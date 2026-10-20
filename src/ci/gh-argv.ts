@@ -44,6 +44,14 @@
  * | --- | --- |
  * | G13 | `pr create --repo {owner}/{repo} --head {branch} --base {base} --title {title} --body {body} [--draft]` (write) |
  * | G14 | `pr view {branch} --repo {owner}/{repo} --json {G14_FIELDS}` |
+ *
+ * ADR-0073 (MCP `update_run_branch`, LLD §3.4.14). G15 is the one branch-update write verb: GitHub merges the base
+ * branch into the pull request's branch, pinned to the head the controller read. Spawned only by `update_run_branch`
+ * for a project whose merge policy is in force and on, after the head was accepted by the merge gate's head check:
+ *
+ * | ID | argv (after the binary) |
+ * | --- | --- |
+ * | G15 | `api --method PUT repos/{owner}/{repo}/pulls/{number}/update-branch -f expected_head_sha={sha} --silent` (write) |
  */
 
 export const G1_FIELDS = "databaseId,conclusion,headBranch,status,headSha";
@@ -280,8 +288,16 @@ export function ghPrLinkViewArgv(owner: string, repo: string, branch: string): s
   return audited(["pr", "view", branch, "--repo", repoArg(owner, repo), "--json", G14_FIELDS]);
 }
 
+/** G15: ask GitHub to merge the base branch into the pull request's branch, pinned to `sha` (ADR-0073 write verb). */
+export function ghPrUpdateBranchArgv(owner: string, repo: string, prNumber: string, sha: string): string[] {
+  if (!isPrNumber(prNumber)) throw new GhArgvError("invalid pull request number");
+  if (!isFullLowerSha(sha)) throw new GhArgvError("invalid commit id");
+  const path = `repos/${repoArg(owner, repo)}/pulls/${prNumber}/update-branch`;
+  return audited(["api", "--method", "PUT", path, "-f", `expected_head_sha=${sha}`, "--silent"]);
+}
+
 /**
- * The argv audit: true only for an argv that is exactly one of G1 to G14 with validated values in the value cells.
+ * The argv audit: true only for an argv that is exactly one of G1 to G15 with validated values in the value cells.
  * Builders call it before returning, so a template edit that drifts fails closed.
  */
 export function isAllowedGhArgv(argv: readonly string[]): boolean {
@@ -384,6 +400,20 @@ export function isAllowedGhArgv(argv: readonly string[]): boolean {
       MERGE_METHODS.some((m) => argv[5] === `--${m}`) &&
       argv[6] === "--match-head-commit" &&
       isFullLowerSha(argv[7] ?? "")
+    );
+  }
+  if (argv[0] === "api" && argv[1] === "--method") {
+    const m = /^repos\/([^/]+)\/([^/]+)\/pulls\/([^/]+)\/update-branch$/u.exec(argv[3] ?? "");
+    const sha = /^expected_head_sha=([0-9a-f]{40})$/u.exec(argv[5] ?? "");
+    return (
+      argv.length === 7 &&
+      argv[2] === "PUT" &&
+      m !== null &&
+      ownerRepo(`${m[1]}/${m[2]}`) &&
+      isPrNumber(m[3] ?? "") &&
+      argv[4] === "-f" &&
+      sha !== null &&
+      argv[6] === "--silent"
     );
   }
   if (argv[0] === "api") {

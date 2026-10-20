@@ -2,6 +2,9 @@
 
 - Status: Accepted (built 2026-10-20).
 - Date: 2026-10-20
+- Amended by [ADR-0073](0073-merge-gate-accepts-pure-base-merges.md) (2026-10-20): the head check also accepts a chain
+  of pure base merges on the published tip, `expected_head_sha` may be that accepted head and the result gains
+  `head_kind`; the decision above is otherwise unchanged.
 - Decided by: Linus (design authority) on owner approval of auto-merge for whumpo-website, 2026-10-20. The design
   below is Linus's; the refinements marked **Delegated** were made while building it and are not owner-approved.
 - Related: FR-SUB-02, FR-GIT-12, FR-PRJ-10, FR-EXE-10, FR-MCP-15, [ADR-0060](0060-opt-in-head-pinned-merge-policy.md)

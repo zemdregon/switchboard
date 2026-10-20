@@ -12,6 +12,7 @@ import {
   ghPrGateViewArgv,
   ghPrMergeArgv,
   ghPrRequiredChecksArgv,
+  ghPrUpdateBranchArgv,
   ghPrViewArgv,
   ghRunCancelArgv,
   ghRunHeadArgv,
@@ -33,6 +34,7 @@ import {
 } from "./gh-argv.js";
 import {
   type CiActionsPort,
+  type CiBranchUpdatePort,
   type CiConclusion,
   type CiMergePort,
   type CiPullRequestGateView,
@@ -114,7 +116,7 @@ export interface GhCiStatusPortOptions {
   readonly useCheckRunsFallback?: boolean;
 }
 
-export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullRequestPort, CiMergePort {
+export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullRequestPort, CiMergePort, CiBranchUpdatePort {
   private readonly binary: string;
   private readonly runner: GhRunner;
   private readonly sourceEnv: Readonly<Record<string, string | undefined>>;
@@ -262,6 +264,15 @@ export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullReques
     headSha: string;
   }): Promise<void> {
     await this.run(ghPrMergeArgv(q.owner, q.repo, String(q.prNumber), q.method, q.headSha.toLowerCase()));
+  }
+
+  async updatePullRequestBranch(q: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    expectedHeadSha: string;
+  }): Promise<void> {
+    await this.run(ghPrUpdateBranchArgv(q.owner, q.repo, String(q.prNumber), q.expectedHeadSha.toLowerCase()));
   }
 
   private async run(argv: string[]): Promise<string> {

@@ -2448,6 +2448,52 @@ after `gh_error` is safe), and a pending check is refused at once (`check_pendin
 and sink event), so it appears in `get_digest` `ref_events`; the G10 read records `ref_event` rows as the poller's does.
 A refusal for a project without any policy records method `squash`. No new table, reason or migration.
 
+*Note 2026-10-20 (ADR-0073, Linus, design authority; not owner-approved):* the head check also accepts a chain of pure
+base merges on the published tip (§20.7.1). `expected_head_sha` may then be the published tip or the accepted head, the
+result gains `head_kind: "published" | "base_merge"`, `head_sha` in the result is the merged (accepted) head, and an
+already merged pull request whose head is a base merge head this gate merged is reported merged. Migration 0035 records
+`head_kind` and `pr_head_sha` on `merge_event`. `update_run_branch` is §3.4.14.
+
+#### 3.4.14 `update_run_branch` (FR-SUB-02, FR-GIT-12, ADR-0073)
+
+*Added 2026-10-20 (Linus, design authority, after production refusals of whumpo-website pull requests #299 and #300;
+details not owner-approved).* Code: `updateRunBranch` in `src/mcp/merge-run-pr.ts`, `updateBranchOnRequest` in
+`src/ci/branch-update.ts`, G15 in `src/ci/gh-argv.ts` (`ghPrUpdateBranchArgv`), schemas in `src/mcp/schemas.ts`
+(`PUBLISH_TOOL_NAMES`), wired in `src/cli/serve.ts`. Decision record:
+[ADR-0073](../adr/0073-merge-gate-accepts-pure-base-merges.md).
+
+**Offered** exactly when `merge_run_pr` is (§3.4.13) and the server also has the branch-update port and the pull-head
+reader (§20.7.1; `serve` always wires both); otherwise it is answered exactly like an unknown tool. Scope is
+`publish_run`'s: the run must be the caller's (another client's run is `unknown run`), the project one the client may
+publish (`max_push_policy: branch`), and the run must have a published branch (`INVALID_REQUEST`, `NOT_PUBLISHED`); a
+remote that is not github.com is `INVALID_REQUEST` `REMOTE_NOT_GITHUB`.
+
+**Input** (closed): `{ run_id, expected_head_sha?: 40 lowercase hex }`. **Output** (closed): `{ run_id, pull_request: {
+number, url }, updated: boolean, previous_head_sha }`; `updated: false` means the base head is already an ancestor of
+the pull request head and nothing was asked of GitHub.
+
+**Gating (Delegated, Linus, not owner-approved).** Only for a project whose merge policy is in force and enabled, not
+paused, and whose ref is not superseded (`policy_off` / `head_moved`). Reason: updating the branch is a write to the pull
+request branch that only matters for the merge path, so tying it to the opt-in policy keeps the GitHub write surface to
+projects the operator approved for merging.
+
+**Steps.** G10 read. No pull request or one not `OPEN` is `not_mergeable`; a head branch other than the published branch
+is `head_moved`; a base other than the configured base is `base_mismatch`; an `expected_head_sha` that is not the
+current head is `head_moved`. Then the controller's Git inspection (§20.7.1, the same hardened fetch): an error is
+`gh_error`; a head that is not the published tip or a pure base merge chain on it is `head_moved` (Switchboard only
+updates a branch whose content it vouches for); a base already contained is `updated: false`; a merge of the base into
+the head that would conflict (local `merge-tree`) is `not_mergeable` before any write. Otherwise G15: `api --method PUT
+repos/{owner}/{repo}/pulls/{number}/update-branch -f expected_head_sha=<head> --silent`, through the operator's `gh`
+login (`ci_trigger.gh_binary`, the `merge_run_pr` port, also when `ci_trigger` is off). GitHub answers 202 and the merge
+commit appears shortly after; that head is a pure base merge the gate accepts once required checks pass. Drafts are
+allowed. A G15 failure is `TOOL_FAILURE` `gh_error`, `retryable: true`. Refusals are `PERMISSION_BLOCKED` with
+`details.reason` from the closed `merge_event` list (§20.7 item 5).
+
+**Records.** No `merge_event` (nothing merged). Each outcome except `NOT_PUBLISHED` and `REMOTE_NOT_GITHUB` appends one
+`branch_update` run event on the run: `{ publish_ref, outcome: "requested" | "current" | "refused", previous_head_sha |
+head_sha, pr_number, reason? }` (ids, SHAs and codes only). Tests: `src/mcp/update-run-branch.test.ts`,
+`src/mcp/tools-list-callable.test.ts`, the G15 audit in `src/ci/gh-argv.test.ts`.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added
@@ -4288,6 +4334,9 @@ silent:
   (that run non-terminal, or its session `ARCHIVED`); another session's publish ref may move to one of its intents.
   A remote-tracking ref may move to the SHA the newest `fetched` daemon base refresh recorded for it (2026-10-20,
   [§5.2](#52-base-refresh-fr-prj-02-note-adr-0067), [ADR-0067](../adr/0067-daemon-base-refresh-into-remote-tracking-ref.md)).
+  Refs under `refs/switchboard/merge-gate/` (the merge gate's controller-owned fetch namespace, 2026-10-20,
+  [§20.7.1](#2071-pure-base-merges-adr-0073), [ADR-0073](../adr/0073-merge-gate-accepts-pure-base-merges.md)) are ignored:
+  neither a violation nor trusted, in the per-ref comparison and in the tail digest.
 - **Concurrent runs in one repository (T9.11, Delegated).** The checkpoint commit moves a run branch before its `post`
   row exists, so another run's check in that window would report the move as a `switchboard` violation. The lifecycle
   therefore runs each run's check, mutation assessment and checkpoint as one critical section per repository root
@@ -7980,7 +8029,9 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
    <branch> --json number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName`; G11 `pr checks <n> --required
    --json bucket` (only the required checks' buckets, so non-required checks are never read and cannot block or pass a
    merge); G12 `pr merge <n> --repo <o>/<r> --<method> --match-head-commit <sha>`. Never `--admin`, `--auto` or
-   `--delete-branch`. The flags and fields were checked against the `gh` manual pages (`gh_pr_merge`,
+   `--delete-branch`. G15 (ADR-0073, §3.4.14) `api --method PUT repos/{owner}/{repo}/pulls/{n}/update-branch -f
+   expected_head_sha=<sha> --silent` is the only write besides G12 and the publish templates, used by `update_run_branch`
+   only. The flags and fields were checked against the `gh` manual pages (`gh_pr_merge`,
    `gh_pr_checks`, `gh_pr_view` on cli.github.com, 2026-10-20); `gh --help` could not be run on the build host, so the
    check against the installed `gh` that ADR-0050 asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from
    the manual's exit code 8 for pending checks): with `--json`, `gh pr checks` prints the array also when it exits 1
@@ -8029,6 +8080,51 @@ dynamic revision setting it `false` waits for approval with `approval_needed` `m
 step 4's policy re-read refuses `policy_off` when verification was turned back on after the pass skipped it.
 `list_projects` shows each project's `merge_policy` (in force) as `{ enabled, method, required_reports,
 require_verification }` when the project sets one.
+
+### 20.7.1 Pure base merges (ADR-0073)
+
+*Added 2026-10-20 (Linus, design authority, after production refusals of whumpo-website pull requests #299 and #300;
+details not owner-approved; refinements Delegated).* Code: `src/ci/base-merge.ts` (`GitPullHeadPort`,
+`classifyPullHead`), `applyMergeGate` in `src/ci/merge-policy.ts`, `src/ci/branch-update.ts`, the exemption in
+`src/git/ref-guard.ts`, migration `src/ledger/migrations/0035_merge_head_kind.ts`. Decision record:
+[ADR-0073](../adr/0073-merge-gate-accepts-pure-base-merges.md).
+
+1. **Acceptable head.** Step 1 of the gate (item 4) accepts the pull request head when it equals the published tip or is
+   a chain of 1 to 10 (`MAX_BASE_MERGE_CHAIN`, Delegated) pure base merges on it. A commit C is a pure base merge iff it
+   has exactly two parents; the first parent is the published tip or the previous commit of the chain; the second parent
+   is reachable from the base branch head on the remote (fetched now); and C's tree equals the tree of a clean local
+   merge of its parents (`git merge-tree --write-tree --no-messages <p1> <p2>`, no conflicts). Anything else (extra file
+   change, conflict resolution, non-merge commit, octopus, second parent not on the base, longer chain) is `head_moved`.
+   Classification is attempted only when the pull request is open, not a draft, its head branch is the published branch,
+   its base the configured base branch, and the head is not the published tip; in `poll` mode an earlier `attempted` row
+   at that head skips it first (no fetch).
+2. **Fetch and namespace.** Verification runs in the project's primary context repository (configured, or the dynamic
+   project in force). The only write is one hardened fetch (the ADR-0067 base refresh and ADR-0028 push hardening:
+   allowlisted environment, own session, 60 s timeout, hooks off, https, ssh and file transports only, refusal of unsafe
+   repository config and credential URLs) of `+refs/pull/<n>/head` and `+refs/heads/<base>` from the published ref's
+   remote into `refs/switchboard/merge-gate/<remote>/pr-<n>/{head,base}`, with `--porcelain --verbose --refmap=
+   --no-tags --no-prune --no-write-fetch-head --no-recurse-submodules --no-auto-maintenance` (`--refmap=` so
+   `refs/remotes/<remote>/<base>` is not opportunistically updated). The SHAs used are those the fetch prints, never a
+   later read of the refs. Everything else is read-only through the hardened `git` helper. Never an agent worktree or
+   an operator branch.
+3. **Fail closed.** Git older than 2.41 (`fetch --porcelain`; `merge-tree --write-tree` needs 2.38), unsafe repository
+   config, a custom `merge.<driver>.driver`, a remote URL that is not ok, an unknown project, or a fetched head different
+   from the head `gh` reported is `foreign`: `head_moved`. A failed or timed-out fetch, or a Git failure, is the refusal
+   `gh_error` (a read failure, retried next poll; `merge_run_pr` returns retryable `TOOL_FAILURE`). Delegated: the reason
+   list is closed (item 5), so `gh_error` also covers the controller's Git read.
+4. **Pin and conditions.** G12 is pinned to the accepted head (`--match-head-commit <accepted head>`) and step 4's
+   re-read must show that same head. Step 2's `verification_result` and `required_reports` stay keyed to the published
+   tip SHA; G11 is read at the actual head.
+5. **Ref guard.** `refs/switchboard/merge-gate/` is neither a violation nor trusted in §12.5's per-ref comparison and
+   tail digest (Delegated). `ref_event` is unchanged: a base merge head is still `foreign_commit` (Delegated).
+6. **Ledger** (migration **0035**; 0034 is reserved for PR #809's project setup step). `merge_event` gains nullable
+   `head_kind` (`published`, `base_merge`) and `pr_head_sha`, set together (`CHECK`) on rows written after the head check
+   held; `head_sha` stays the published tip. The refusal-once unique index keys on `(project_id, publish_ref, head_sha,
+   ifnull(pr_head_sha, ''), reason)`, so a refusal at a new accepted head is recorded again. Step 1's refusals
+   (`draft`, `head_moved`, `base_mismatch`, `not_mergeable`) are always written without the head, so the first read and
+   the step 4 re-read share one row. The `merge_event` run event payload gains `head_kind` and `pr_head_sha` when set.
+   `alreadyAttempted` (one G12 per head) is keyed on `coalesce(pr_head_sha, head_sha)`.
+7. **Tests.** `src/ci/base-merge.test.ts` (real local repositories and bare remotes), `src/ci/merge-policy.test.ts`.
 
 ### 20.8 Work queue over HTTP (FR-QUE-08, T15.9)
 
