@@ -6755,13 +6755,16 @@ Dequeue is implemented inside COMP-RTE (scheduler tick) calling the same admissi
    waits in `AWAITING_APPROVAL`. Fix 2026-10-20 (Linus decision, Delegated, not owner-approved): before it, queued
    eligibility resolved the bare name `privileged`, which the production resolver always refuses, so every queued
    privileged item failed `TOOL_FAILURE` (`src/queue/privileged-admission.test.ts`).
-6. **Failure reason.** The `admission_failed` event's detail is `{ code, message, reason?, field?, error_class? }`
+6. **Failure reason.** The `admission_failed` event's detail is `{ code, message?, reason?, field?, error_class? }`
    (Linus decision, Delegated, not owner-approved; `AdmissionFailureDetail` in `src/queue/admission.ts`). `code` is the
-   item's `last_error_code`, mapped as `delegate_task` maps the same error (`toToolError`). `message` is the message
-   `delegate_task` would return, scrubbed as MCP output is (`createScrubber`: credential-shaped tokens redacted, paths
-   outside the allowed roots replaced) and bounded to 300 characters; `reason` and `field` are copied from the error's
-   details when present. An unexpected exception records only the fixed `TOOL_FAILURE` message and its class name in
-   `error_class`, never its own message or stack, request text or provider output.
+   item's `last_error_code`: a skill or lifecycle refusal keeps its own code, anything else maps as `delegate_task`
+   maps the same error (`toToolError`; an unexpected exception maps to `TOOL_FAILURE`). `message`, when the failure
+   came out of the admission attempt, is the message `delegate_task` would return, scrubbed as MCP output is
+   (`createScrubber`: credential-shaped tokens redacted, paths outside the allowed roots replaced) and bounded to 300
+   characters; a refusal before any attempt (unknown client) records only `code`. `reason` and `field` are copied from
+   the error's details when present, scrubbed and bounded like `message`. An unexpected exception records only the
+   fixed `TOOL_FAILURE` message and its class name in `error_class`, never its own message or stack, request text or
+   provider output.
 
 **MCP tools (T15.1).** `enqueue_work`, `list_work` and `cancel_work`, scoped as `list_runs` (§3.4.2): a `project_id`
 must name a project the client may use (unknown → `INVALID_REQUEST`, outside its `projects` list → `PERMISSION_BLOCKED`,
