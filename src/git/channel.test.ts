@@ -275,11 +275,24 @@ describe("per-call checks (FR-GIT-02; stale, foreign, malformed calls refused wi
     const ch = await openFor(service(), r);
     const ans = await raw(ch.socketPath, req(tokenOf(ch), { message: "Add b", paths: ["b.txt"] }));
     expect(ans).toMatchObject({ ok: true, result: { files_changed: 1 } });
+    expect(ans.result).not.toHaveProperty("secret_scan_warnings");
     expect(refSha(repo, publishRefFor(r.sessionId))).toBe(ans.result.sha);
     expect(await raw(ch.socketPath, req(tokenOf(ch), { message: "Again", paths: ["b.txt"] }))).toMatchObject({
       ok: false,
       error: { code: "NOTHING_TO_COMMIT" },
     });
+  });
+
+  it("T9.14: a commit whose lines match a secret rule succeeds and reports a warning count, never the value", async () => {
+    const canary = "AKIACANARY0000000000"; // synthetic AWS access-key-id shape
+    const r = await running();
+    writeFileSync(path.join(r.wt, "creds.txt"), `${canary}\n`);
+    const ch = await openFor(service(), r);
+    const ans = await raw(ch.socketPath, req(tokenOf(ch), { message: "Add creds", paths: ["creds.txt"] }));
+    expect(ans).toMatchObject({ ok: true, result: { files_changed: 1, secret_scan_warnings: 1 } });
+    expect(refSha(repo, publishRefFor(r.sessionId))).toBe(ans.result.sha);
+    expect(JSON.stringify(ans)).not.toContain(canary);
+    expect(JSON.stringify(ledger.listRunEvents(r.runId))).not.toContain(canary);
   });
 
   it("refuses a wrong token, another run's token and a token-shaped forgery, recording only the code", async () => {

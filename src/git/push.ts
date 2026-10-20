@@ -57,6 +57,7 @@ import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish
 import { isBranchPrefix, isRemoteName } from "./push-names.js";
 import {
   compileSecretScanAllow,
+  MAX_SECRET_SCAN_HIT_EVENTS,
   SECRET_SCAN_HIT_EVENT,
   type SecretScanAllow,
   type SecretScanAllowEntry,
@@ -65,6 +66,7 @@ import {
 } from "./secret-scan.js";
 
 export { isBranchPrefix, isRemoteName } from "./push-names.js";
+export { MAX_SECRET_SCAN_HIT_EVENTS } from "./secret-scan.js";
 
 /** Reason codes recorded in `git_push.detail` and the event (fixed vocabulary; nothing from Git's output). */
 export type PushReason =
@@ -197,8 +199,6 @@ export const DEFAULT_PUSH_TIMEOUT_MS = 90_000;
 export const MAX_PUSH_COMMITS = 10_000;
 /** Most commit SHAs listed in one `git_push` event (the count is always recorded). */
 export const MAX_EVENT_COMMITS = 500;
-/** Most `secret_scan_hit` events appended for one refused push (the exact count is in the `git_push` event). */
-export const MAX_SECRET_SCAN_HIT_EVENTS = 50;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
 /**

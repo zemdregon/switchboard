@@ -721,7 +721,16 @@ export class GitToolService {
           : {}),
       });
       state.commits += 1;
-      return { ok: true, result: { sha: result.sha, files_changed: result.filesChanged } };
+      // T9.14 (LLD §20.9): a warning count only when the commit-time secret scan found something; the commit stands,
+      // and the pre-push scan refuses the same lines. Rule ids and paths are in the run's events, never the value.
+      return {
+        ok: true,
+        result: {
+          sha: result.sha,
+          files_changed: result.filesChanged,
+          ...(result.secretScanHits ? { secret_scan_warnings: result.secretScanHits } : {}),
+        },
+      };
     } catch (err) {
       if (err instanceof CommitError) {
         const message =

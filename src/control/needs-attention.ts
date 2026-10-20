@@ -30,9 +30,10 @@
  * T9.14 (FR-GIT-11, FR-CTL-03, LLD §20.9, ADR-0061; Delegated, not owner-approved beyond owner decision 77):
  * `secret_scan_blocked` holds while the meta-session's newest decisive `git_push` event is a `SECRET_SCAN_BLOCKED`
  * refusal (`src/git/secret-scan.ts`, `secretScanBlockedFromPushEvents`): an accepted push of the ref clears it, a
- * refusal for another reason leaves it. Like `ci_fix_stuck`, a terminal run shows it only when it is the newest of its
+ * refusal for another reason leaves it, and an operator acknowledgement of that refusal (`switchboard git
+ * ack-secret-scan`, a `secret_scan_acknowledged` event naming its `push_id`) clears it until the next refusal. Like `ci_fix_stuck`, a terminal run shows it only when it is the newest of its
  * meta-session. It ranks second: publication of the meta-session is refused until the operator allowlists the finding
- * or pushes by hand.
+ * or pushes by hand; the acknowledgement only clears the flag, never the refusal.
  */
 
 import type Database from "better-sqlite3";
@@ -175,7 +176,7 @@ function secretScanBlocked(ledger: Ledger, metaSessionId: string): boolean {
       return undefined;
     }
   });
-  return secretScanBlockedFromPushEvents(payloads);
+  return secretScanBlockedFromPushEvents(payloads, new Set(ledger.listSecretScanAcknowledgedPushIds(metaSessionId)));
 }
 
 /** T16.6: the newest `skill_removed` event (LLD §19.11) reports an entry not `verified`, or is malformed. */

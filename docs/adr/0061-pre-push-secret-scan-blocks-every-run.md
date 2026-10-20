@@ -3,7 +3,8 @@
 - Status: Accepted for the direction (owner decision 77, answer 2, 2026-10-19). Mechanism: points 1 to 3 (the push
   side) are built by ROADMAP T9.14 (2026-10-19, Delegated agent work, not owner-approved;
   [LLD §20.9](../design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061) "Implemented"); point 4 (the
-  commit-time warning) stays Proposed until a later change builds it
+  commit-time warning) and the operator acknowledgement of the 2026-10-20 amendment are built by the T9.14 remainder
+  (2026-10-20, Linus decision, Delegated, not owner-approved)
 - Date: 2026-10-19
 - Decided by: zemdregon for the direction. The question in the
   [enhancement discovery](../research/enhancement-discovery-2026-10-19.md) §9 was "Should the pre-push secret scan block
@@ -66,3 +67,20 @@ The earlier Consequences line "A secret in a binary file or in an encoding the r
 superseded. The implementation diffs every file with `git diff --text --no-textconv --no-ext-diff`, so
 binary-counted files ARE scanned and their hits are listed in the event. The Decision is unchanged. No other part of
 this ADR is changed.
+
+## Amendment 2026-10-20 (Linus decision, Delegated, not owner-approved; T9.14 remainder)
+
+Adds one operator-only ledger write: `switchboard git ack-secret-scan <gps_id>` appends a `secret_scan_acknowledged
+{push_id, acknowledged_by, ref, head_sha}` event on the run that owns a refused push, so the operator can clear the
+derived `secret_scan_blocked` flag. This is an amendment, not a superseding ADR, because the Decision above is
+unchanged and the new command only narrows what the flag shows: it follows the 2026-10-19 amendment's precedent and
+adds no table, migration or component. Point 3 holds as written: the acknowledgement never allows a push, the scan still
+refuses the same content in every profile including approved bypass runs, and no MCP tool, request field, privileged
+scope or other worker-facing surface can reach the command, so a run cannot clear its own block. It is repeatable
+without effect (a second acknowledgement writes nothing), only the latest refusal of a meta-session and ref can be
+acknowledged, and there is no un-acknowledge; the next refusal re-raises the flag.
+
+Point 4 is built as written, with two Delegated details: the commit-time scan applies the same operator allowlist as
+the push, and the agent's `commit` result carries a `secret_scan_warnings` count (never a rule id, path or value) when
+it is not zero, so the agent can remove the line before it asks for a push. The full contracts are in
+[LLD §20.9](../design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061).

@@ -749,10 +749,13 @@ describe("pre-push secret scan (T9.14; FR-GIT-11, FR-CTL-03; ADR-0061; LLD §20.
     return { ...run, sha: c.sha };
   }
 
-  const hitEvents = () =>
+  const hitEvents = (stage: "push" | "commit" = "push") =>
     db
-      .prepare("SELECT run_id, payload_json FROM run_event WHERE type = 'secret_scan_hit' ORDER BY ts, id")
-      .all()
+      .prepare(
+        `SELECT run_id, payload_json FROM run_event WHERE type = 'secret_scan_hit'
+         AND json_extract(payload_json, '$.stage') = ? ORDER BY ts, id`,
+      )
+      .all(stage)
       .map((r) => {
         const row = r as { run_id: string; payload_json: string };
         return { run_id: row.run_id, p: JSON.parse(row.payload_json) as Record<string, unknown> };
@@ -908,6 +911,78 @@ describe("pre-push secret scan (T9.14; FR-GIT-11, FR-CTL-03; ADR-0061; LLD §20.
         new GitPusher({
           db,
           resolveContext: () => ctx,
+          secretScanAllow: [{ rule_id: "no_such_rule", path: "**" }],
+        }),
+    ).toThrow(SecretScanAllowError);
+  });
+
+  it("commit time: a canary commit succeeds with a warning event (rule id, path, line; never the value)", async () => {
+    const r = await running();
+    writeFileSync(path.join(r.wt, "creds.txt"), `first\n${CANARY}\n`);
+    const c = await publisher.commit({
+      runId: r.runId,
+      message: "Add creds.txt",
+      identity: IDENTITY,
+      projectId: "web",
+      contextId: "main",
+    });
+    expect(c.secretScanHits).toBe(1);
+    expect(refSha(repo, publishRefFor(r.sessionId))).toBe(c.sha);
+    expect(hitEvents("commit")).toEqual([
+      {
+        run_id: r.runId,
+        p: {
+          stage: "commit",
+          rule_id: CANARY_RULE,
+          path: "creds.txt",
+          line: 2,
+          ref: publishRefFor(r.sessionId),
+          commit_sha: c.sha,
+        },
+      },
+    ]);
+    expect(ledgerText()).not.toContain(CANARY);
+    // A warning only: no needs_attention until a push is refused.
+    expect(attention(r.runId)).toEqual({ active: false });
+
+    // A clean follow-up commit scans only its own lines: no new warning.
+    writeFileSync(path.join(r.wt, "notes.txt"), "clean\n");
+    const clean = await publisher.commit({
+      runId: r.runId,
+      message: "Add notes",
+      identity: IDENTITY,
+      projectId: "web",
+      contextId: "main",
+    });
+    expect(clean.secretScanHits).toBe(0);
+    expect(hitEvents("commit")).toHaveLength(1);
+  });
+
+  it("commit time: the operator allowlist applies, and an invalid entry refuses at construction", async () => {
+    const allowing = new GitPublisher({
+      db,
+      scratchDir: path.join(root, "scratch-allow"),
+      secretScanAllow: [{ rule_id: CANARY_RULE, path: "fixtures/**" }],
+      ids: createIdGenerator(),
+      now: () => NOW,
+    });
+    const r = await running();
+    mkdirSync(path.join(r.wt, "fixtures"), { recursive: true });
+    writeFileSync(path.join(r.wt, "fixtures", "sample.txt"), `${CANARY}\n`);
+    const c = await allowing.commit({
+      runId: r.runId,
+      message: "Add fixture",
+      identity: IDENTITY,
+      projectId: "web",
+      contextId: "main",
+    });
+    expect(c.secretScanHits).toBe(0);
+    expect(hitEvents("commit")).toEqual([]);
+    expect(
+      () =>
+        new GitPublisher({
+          db,
+          scratchDir: path.join(root, "scratch-bad"),
           secretScanAllow: [{ rule_id: "no_such_rule", path: "**" }],
         }),
     ).toThrow(SecretScanAllowError);

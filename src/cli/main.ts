@@ -66,6 +66,7 @@ import {
   showSchedule,
   UnknownScheduleError,
 } from "./schedule.js";
+import { renderSecretScanAck, runSecretScanAck, SecretScanAckRefusedError } from "./secret-scan-ack.js";
 import { serve } from "./serve.js";
 import { runSkillsCommand, UnknownSkillError } from "./skills.js";
 
@@ -346,8 +347,20 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         );
       }
       case "git": {
+        if (sub === "ack-secret-scan") {
+          // T9.14 (FR-GIT-11, LLD §20.9): clears `secret_scan_blocked` for one refusal; never allows a push.
+          const pushId = rest[0];
+          if (pushId === undefined || rest.length > 1) {
+            throw new UsageError("git ack-secret-scan requires exactly one push id (gps_...)");
+          }
+          const report = runSecretScanAck(io, loaderArgv, pushId);
+          emit(report, renderSecretScanAck(report));
+          return 0;
+        }
         // T9.6 (FR-GIT-05, LLD §12.6, ADR-0028): the operator push; holds the data-directory lock while it runs.
-        if (sub !== "push") throw new UsageError(`unknown git subcommand ${JSON.stringify(sub ?? "")}; expected push`);
+        if (sub !== "push") {
+          throw new UsageError(`unknown git subcommand ${JSON.stringify(sub ?? "")}; expected push or ack-secret-scan`);
+        }
         const id = rest[0];
         if (id === undefined || rest.length > 1) {
           throw new UsageError("git push requires exactly one meta-session or run id");
@@ -526,7 +539,7 @@ function fail(err: unknown, io: CliIo, json: boolean): number {
         err instanceof UnknownScheduleError ||
         err instanceof UnknownSkillError
       ? "NOT_FOUND"
-      : err instanceof ApprovalRefusedError
+      : err instanceof ApprovalRefusedError || err instanceof SecretScanAckRefusedError
         ? "REFUSED"
         : err instanceof ConfigError
           ? "CONFIG"

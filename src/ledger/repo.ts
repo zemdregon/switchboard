@@ -1018,6 +1018,11 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
    * `limit` (T9.14, FR-CTL-03 `secret_scan_blocked`: operator pushes record on a run of the meta-session too).
    */
   listGitPushEventPayloadsForMetaSession(metaSessionId: string, limit: number): string[];
+  /**
+   * `push_id`s named by the `secret_scan_acknowledged` run events of a meta-session (T9.14, operator
+   * `git ack-secret-scan`, LLD §20.9). Unreadable payloads are skipped.
+   */
+  listSecretScanAcknowledgedPushIds(metaSessionId: string): string[];
 
   // ---- T11.2 additions (inner-agent call pipeline, LLD §13.3, §13.4 step 13, §13.8) --------------------------------
   /**
@@ -2227,6 +2232,25 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           )
           .all(metaSessionId, limit) as { payload_json: string }[]
       ).map((row) => row.payload_json);
+    },
+
+    listSecretScanAcknowledgedPushIds(metaSessionId) {
+      const out: string[] = [];
+      const rows = db
+        .prepare(
+          `SELECT e.payload_json AS payload_json FROM run_event e JOIN run r ON r.id = e.run_id
+           WHERE r.meta_session_id = ? AND e.type = 'secret_scan_acknowledged'`,
+        )
+        .all(metaSessionId) as { payload_json: string }[];
+      for (const row of rows) {
+        try {
+          const p = JSON.parse(row.payload_json) as { push_id?: unknown };
+          if (typeof p.push_id === "string") out.push(p.push_id);
+        } catch {
+          // skipped: an unreadable acknowledgement clears nothing
+        }
+      }
+      return out;
     },
 
     getMetaSessionBaseCommit(metaSessionId) {

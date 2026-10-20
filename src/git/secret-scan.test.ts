@@ -180,6 +180,18 @@ describe("secretScanBlockedFromPushEvents (FR-CTL-03 secret_scan_blocked)", () =
     expect(secretScanBlockedFromPushEvents([blocked, accepted])).toBe(true);
     expect(secretScanBlockedFromPushEvents([null, "x", other])).toBe(false);
   });
+
+  it("an acknowledged refusal clears the flag until a newer refusal (operator git ack-secret-scan)", () => {
+    const first = { outcome: "REFUSED_POLICY", reason: "SECRET_SCAN_BLOCKED", push_id: "gps_1" };
+    const second = { outcome: "REFUSED_POLICY", reason: "SECRET_SCAN_BLOCKED", push_id: "gps_2" };
+    const other = { outcome: "REFUSED_POLICY", reason: "POLICY_NONE", push_id: "gps_3" };
+    expect(secretScanBlockedFromPushEvents([first], new Set(["gps_1"]))).toBe(false);
+    expect(secretScanBlockedFromPushEvents([other, first], new Set(["gps_1"]))).toBe(false);
+    expect(secretScanBlockedFromPushEvents([second, first], new Set(["gps_1"]))).toBe(true);
+    expect(secretScanBlockedFromPushEvents([second, first], new Set(["gps_1", "gps_2"]))).toBe(false);
+    // A refusal without a push id cannot be acknowledged.
+    expect(secretScanBlockedFromPushEvents([{ reason: "SECRET_SCAN_BLOCKED" }], new Set(["gps_1"]))).toBe(true);
+  });
 });
 
 describe("scanOutgoingDiff over a real repository (hardened helper, LLD §20.9 scope)", () => {
