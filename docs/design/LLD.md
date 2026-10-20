@@ -1024,7 +1024,8 @@ artifacts are operator-CLI only.
 Behaviour: validation, path and profile checks, then in one transaction insert `meta_session` (new), `run` (`QUEUED`, or
 `AWAITING_APPROVAL` for `privileged`, with its `PENDING` approval row, §3.1) and the first `run_event`; only then return
 or wait (§10). A repeated `(client, idempotency_key)` with identical `request_hash` returns the original run; the same
-key with different parameters fails `INVALID_REQUEST` (FR-MCP-08). `wait_seconds` is a bounded wait on run completion;
+key with different parameters fails `INVALID_REQUEST` (FR-MCP-08). A key starting `queue:` is reserved for runs the
+work queue admits and fails `INVALID_REQUEST` (§20.8). `wait_seconds` is a bounded wait on run completion;
 it never holds a DB transaction and returns the current non-terminal envelope on expiry.
 
 **`continue_task`** (M2 same provider, M5 cross-provider)
@@ -1672,15 +1673,19 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
 - **Session binding as built (T13.5, Q-78, Delegated).** A request with an `Mcp-Session-Id` header is refused with 400
   `{"error":"invalid_request"}` before a server is built. What a caller returns to is a meta-session and its runs, so
   those are bound: the server for an HTTP request carries the token's OAuth client id as its subject, and every
-  meta-session that `delegate_task` opens is recorded in `http_subject` (migration 0013, DDL below) right after
-  admission. A meta-session, and every run in it (automatic retry successors included), is then known only to its own
-  configured MCP client and its own subject: over HTTP the row must name the caller's OAuth client, over stdio there
-  must be no row. `get_run`, `cancel_run`, `get_artifacts` and `continue_task` from another subject, from another
+  meta-session that a caller's `delegate_task` opens is recorded in `http_subject` (migration 0013, DDL below) right
+  after admission (controller-admitted queued work opens its meta-session through the queue pipeline instead, with no
+  row; see the Exception below). A meta-session, and every run in it (automatic retry successors included), is then known
+  only to its own configured MCP client and its own subject: over HTTP the row must name the caller's OAuth client, over
+  stdio there must be no row. `get_run`, `cancel_run`, `get_artifacts` and `continue_task` from another subject, from another
   client or from stdio get exactly the `INVALID_REQUEST` "unknown run" or "unknown meta-session" answer of an id that
   does not exist, with nothing changed (not the 403 above: a different status would be an existence oracle). An
   idempotency key another subject used gets the same answer as a key reused with different parameters. A binding never
   changes hands, and an HTTP server built without the binding store refuses to start. Dynamic projects (T9.9) stay per
-  MCP client. Code: `src/mcp/http-subjects.ts`, `src/mcp/server.ts`, `src/mcp/http.ts`, `src/cli/serve.ts`.
+  MCP client. Exception (bug fix 2026-10-20, PR #790, Delegated, not owner-approved): a meta-session the controller
+  opens to admit the caller's own queued work item carries no `http_subject` row and is visible to the item's creating
+  client over either transport ([§20.8](#208-work-queue-over-http-fr-que-08-t159)).
+  Code: `src/mcp/http-subjects.ts`, `src/mcp/server.ts`, `src/mcp/http.ts`, `src/cli/serve.ts`.
 
 ```sql
 CREATE TABLE http_subject (              -- migration 0013 (T13.5); insert-only, no foreign key (retention GC)
@@ -1771,9 +1776,11 @@ rows. When `active` is false, `reason` is absent. Derivation rules are in §3.4.
 ```
 
 **Scoping.** Same rules as `get_run` (T14.1 corrected the earlier wording, Delegated): the caller sees only runs it
-started (`client_id` match, and over HTTP only meta-sessions of its own subject, FR-MCP-15), so every row is the
-envelope `get_run` returns for that run and no row exists that `get_run` would refuse. A run of another client is never
-listed, even in a project both clients may use. The project rule narrows the filter, not the rows: `project_id` must
+started (`client_id` match, and over HTTP only meta-sessions of its own subject, FR-MCP-15, except a
+controller-admitted queued item's meta-session, which carries no subject row and is visible to the item's creating
+client (§20.8)), so every row is the envelope `get_run` returns for that run and no row exists that
+`get_run` would refuse. A run of another client is never listed, even in a project both clients may use. The project
+rule narrows the filter, not the rows: `project_id` must
 name a project the caller may use (`mcp_clients[].projects`, or a dynamic project it created and has not deleted). An
 id that is neither configured nor one of the caller's dynamic projects (including another client's dynamic project) →
 `INVALID_REQUEST`; a configured project outside the caller's list → `PERMISSION_BLOCKED`. Rows are ordered by
@@ -7718,7 +7725,19 @@ and calls none of them over either transport (answered exactly like an unknown t
 authenticated client id (the mapped MCP client over HTTP): `list_work` returns only the caller's own items and
 `cancel_work` of another client's item fails exactly like an unknown id, so ids are not an existence oracle; an item
 with no recorded owner is operator-owned and therefore invisible and uncancellable over HTTP. Admission stays under
-the creating client's ceiling (§18.4).
+the creating client's ceiling (§18.4). The run an item admits is owned the same way: its meta-session is opened by the
+controller, carries no HTTP subject binding (§3.3, FR-MCP-15), and belongs to the item's creating client over either
+transport, so `get_run`, `list_runs`, `get_artifacts`, `steer_run`, `cancel_run` and `get_digest` show it to that client
+(stdio or any OAuth client mapped to it) and answer every other client exactly like an unknown id. The link is the
+controller-written `admitted_run_id` of an item whose `creator_client_id` is the caller's client, matched against the
+first run of the meta-session (its idempotency key `queue:<work_item_id>`); a caller-chosen idempotency key alone never
+makes a run visible. A rebase item (§20.4) is the exception: its run continues the publishing meta-session, which keeps
+that meta-session's own subject binding and visibility. The `queue:` prefix is reserved for the controller:
+`delegate_task` refuses an `idempotency_key` that starts with it (`INVALID_REQUEST`, `details.field` `idempotency_key`)
+over either transport, so a direct run is never replayed as an item's admission and a stdio run never becomes visible
+over HTTP that way (Linus decision, Delegated, not owner-approved: least privilege, and it makes §18.2 "do not collide
+with the client's direct `delegate_task` keys" hold by construction). (Bug fix 2026-10-20: before it, an HTTP client got
+`unknown run` for its own admitted runs.)
 
 ### 20.9 Pre-push secret scan (FR-GIT-11, T9.14, ADR-0061)
 

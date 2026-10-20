@@ -1078,7 +1078,49 @@ as history.
   in §6 and the README Status block; the M14 row carries T14.15 with evidence).
 - `node scripts/check-docs.mjs` passes. It does not block PR #789.
 
-## 57. Claude 16 MiB stdout line cap (PR #794, no doc drift, checked 2026-10-20)
+## 59. LLD §3.3 stated the HTTP subject-binding rule without the admitted-runs exception (from PR #790, fixed in this gate)
+
+- PR #790 (`fix(mcp): HTTP clients see admitted runs`, superseding #781) changes `ownSubject` in
+  `src/mcp/server.ts` so a meta-session the controller opened to admit the caller's own queued work item
+  (no `http_subject` row, first run's idempotency key `queue:<work_item_id>`, controller-written
+  `admitted_run_id`) is visible to the item's creating client over either transport, and refuses a
+  caller-supplied `idempotency_key` starting with the new `QUEUE_IDEMPOTENCY_PREFIX` (`"queue:"`,
+  `src/queue/scheduler.ts`) with `INVALID_REQUEST` (`details.field: "idempotency_key"`). The PR itself
+  documents both in [LLD §10 and §20.8](design/LLD.md#208-work-queue-over-http-fr-que-08-t159), with
+  Delegated rationale, and pins them in `src/mcp/mcp.test.ts` ("runs admitted from queued work, over
+  stdio and HTTP": owner-visible over both transports for `get_run`, `list_runs`, `get_artifacts`,
+  `steer_run`, `cancel_run` and `get_digest`; unknown-id answers for every other client; prefix
+  refusal). Verified against the code: every read path (`ownRun`, `list_runs` paging, digest
+  `visible`) goes through the new `ownSubject`, and only the controller writes `admitted_run_id`, so a
+  caller-chosen key alone never makes a run visible.
+- [LLD §3.3](design/LLD.md#33-network-mcp-transport-m13) still stated the absolute rule ("over stdio
+  there must be no row", unbound reads as stdio-only), which this PR carves the exception into.
+- Fixed in this gate (docs only, no owner decision needed — the exception grants nothing to a
+  non-owner, so the threat posture is unchanged and no owner document disagrees on intent): §3.3 now
+  carries the exception with a pointer to §20.8.
+- Checked and left unchanged: the ROADMAP Q-78 answer and ADR-0041 item 7 keep the original wording
+  (a dated answered question and an Accepted decision, respectively; both describe sessions a caller
+  opens, not controller-opened admissions, so neither is contradicted — cf. items 19 and 41 for the
+  historical-text precedent); HLD TB-12 stays a loose summary (cf. item 9); SRS FR-MCP-08, FR-MCP-15,
+  FR-QUE-01 and FR-QUE-08 need no rewording (the prefix reservation and owner-visibility are LLD-level
+  detail under them); no ROADMAP task row exists for this fix, so no status or evidence field is
+  touched. `node scripts/check-docs.mjs` passes. It does not block PR #790.
+
+## 60. LLD `list_runs` scoping restated the subject rule without the admitted-runs exception (PR #790)
+
+- Item 59 fixed [LLD §3.3](design/LLD.md#33-network-mcp-transport-m13) and §10/§20.8 for PR #790 but missed the
+  parenthetical restatement in the `list_runs` **Scoping** paragraph ("over HTTP only meta-sessions of its own
+  subject"), which `get_run`'s other dependents (`steer_run`, `cancel_run`, `get_artifacts`, `continue_task`,
+  `get_digest`) do not repeat — they all defer to `get_run`/§3.3, so they inherit the exception.
+- Fixed in this gate (docs only, no owner decision needed — same reasoning as item 59: the exception grants nothing
+  to a non-owner): the parenthetical now names the controller-admitted queued item's meta-session (no subject row,
+  visible to the item's creating client) with a pointer to §20.8.
+- Re-verified against the code: `cancel_run`, `steer_run` and `get_artifacts` go through `ownRun` (which enforces
+  `ownSubject`), `list_runs` paging and the digest `visible` callback call `ownSubject` directly
+  (`src/mcp/server.ts`); `admitted_run_id` is written only in `src/ledger/work-queue.ts` (controller queue path),
+  never from the MCP handler. `node scripts/check-docs.mjs` passes. It does not block PR #790.
+
+## 61. Claude 16 MiB stdout line cap (PR #794, no doc drift, checked 2026-10-20)
 
 - PR #794 raises only the Claude adapter's compiled `maxLineBytes` from the
   1 MiB default to 16 MiB (`CLAUDE_STDOUT_LINE_BYTES` in
@@ -1112,7 +1154,41 @@ as history.
   `docs/ROADMAP.md` on disk is now 1,520,314 bytes (growth from merged main work), still the "1.5 MB
   roadmap" of the LLD text.
 
-## 59. Merge policy (T15.8, supersedes PR #793): migration renumbered 0030 → 0031 after T14.15
+## 62. Doc-align gate pass on PR #790 (checked 2026-10-20, one inline precision fix)
+
+- Verified items 59 and 60 against the code: every read path (`ownRun` for `get_run`/`cancel_run`/`steer_run`/
+  `get_artifacts`/`continue_task`, `list_runs` paging, digest `visible`) goes through the new `ownSubject`
+  (`src/mcp/server.ts`); the queue pipeline (`src/queue/admission.ts` → `lifecycle.submit`, never the MCP
+  `delegate_task` handler) writes no `http_subject` row, so controller-admitted meta-sessions are unbound as
+  §20.8 says; `admitted_run_id` is written only in `src/ledger/work-queue.ts` (controller queue path), never
+  from the MCP handler, so a caller-chosen key alone never grants visibility; the `queue:` reservation is
+  refused in `delegate_task` over either transport. The exception grants nothing to another client, so the
+  threat posture is unchanged and no owner document disagrees on intent: SRS FR-QUE-01 ("admitted exactly as
+  a `delegate_task` from the client that created it ... never under another client's ceiling") and FR-QUE-08
+  positively support the fix; SRS FR-MCP-15, ADR-0041 item 7, ROADMAP Q-78/T13.5 and HLD TB-12 all describe
+  caller-opened sessions, so their original wording stands (cf. items 19, 41, 59); SDD FR-QUE-08 already
+  points at LLD §20.8; README tool rows ("Runs visible to this client"), FRD, operations/, CONTRIBUTING.md
+  and SECURITY.md state no fact this PR touches.
+- One inline precision fix in the owner document (LLD owns tool contracts): §3.3 said "every meta-session
+  that `delegate_task` opens is recorded in `http_subject`", which a reader could extend to queue admissions
+  (FR-QUE-01's "admitted exactly as a `delegate_task`"). It now says "every meta-session that a caller's
+  `delegate_task` opens", with a pointer to the Exception paragraph, same class of fix as item 60.
+- `node scripts/check-docs.mjs` passes. It does not block PR #790.
+
+## 63. Final doc-align gate pass on PR #790 head cb66827 (checked 2026-10-20, no changes needed)
+
+- Re-verified items 59, 60 and 62 against the code at this head: `bindSubject` is called only from
+  the `delegate_task` handler (`src/mcp/server.ts` line 1194), so controller-admitted meta-sessions
+  are unbound as LLD §20.8 says; `ownRun`, `list_runs` paging and digest `visible` all go through the
+  new `ownSubject`; the `queue:` refusal carries `details.field: "idempotency_key"` over either
+  transport (`src/mcp/errors.ts` `invalid` puts the second argument under `details`); `steer_run`
+  and `explain_route` scoping defer to `get_run`, so they inherit the exception with no restatement
+  to fix. HLD TB-12, ADR-0041 item 7, ROADMAP Q-78, SRS FR-MCP-08/FR-MCP-15/FR-QUE-01/FR-QUE-08,
+  SDD, README, FRD, operations/, CONTRIBUTING.md and SECURITY.md state no fact this PR contradicts.
+- No drift found, no owner decision needed, nothing to edit. `node scripts/check-docs.mjs` passes.
+  It does not block PR #790.
+
+## 64. Merge policy (T15.8, supersedes PR #793): migration renumbered 0030 → 0031 after T14.15
 
 - PR #793 built T15.8 (opt-in head-pinned merge policy and ref events, [ADR-0060](adr/0060-opt-in-head-pinned-merge-policy.md))
   on a base before T14.15 (PR #789), which took migration 0030 (`decision_request`). This superseding change re-applies
