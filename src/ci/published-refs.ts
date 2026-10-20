@@ -66,3 +66,25 @@ export async function resolveGithubRemote(
     return undefined;
   }
 }
+
+/**
+ * T15.7 (LLD §20.4): the superseded ref's change, `git diff <base>...<head>` (from their merge base), read-only in the
+ * project's repository through the hardened helper (no external diff or textconv drivers). Undefined when either side
+ * does not resolve or Git fails; the caller attaches it as untrusted context only.
+ */
+export async function supersededDiffOf(
+  repoPath: string,
+  baseRef: string,
+  headSha: string,
+): Promise<string | undefined> {
+  if (!isFullLowerSha(headSha)) return undefined;
+  try {
+    const base = await gitText(["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`], { cwd: repoPath });
+    if (!isFullLowerSha(base)) return undefined;
+    return await gitText(["diff", "--no-ext-diff", "--no-textconv", "--no-color", `${base}...${headSha}`, "--"], {
+      cwd: repoPath,
+    });
+  } catch {
+    return undefined;
+  }
+}

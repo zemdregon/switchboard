@@ -151,6 +151,12 @@ export async function admitWorkItemRequest(
   projectId: string,
   request: Record<string, unknown>,
   idempotencyKey: string,
+  /**
+   * T15.7 (LLD §20.4): a rebase item continues the meta-session that published the conflicting ref and asks the
+   * lifecycle to merge the current base into its worktree (`run_rebase`). Continuations take no idempotency key; the
+   * scheduler checks `run_rebase` for the item first instead.
+   */
+  rebase?: { workItemId: string; metaSessionId: string; publishRef: string; headSha: string },
 ): Promise<AdmitWorkOutcome> {
   const client = deps.config.mcpClients.get(creatorClientId);
   if (!client) return { kind: "failed", code: "PERMISSION_BLOCKED" };
@@ -558,7 +564,12 @@ export async function admitWorkItemRequest(
       routeDecision: routed.record,
       ...(model !== undefined ? { model } : {}),
       project: resolved.snapshot,
-      idempotencyKey,
+      ...(rebase === undefined
+        ? { idempotencyKey }
+        : {
+            metaSessionId: rebase.metaSessionId,
+            rebase: { workItemId: rebase.workItemId, publishRef: rebase.publishRef, headSha: rebase.headSha },
+          }),
       ...(skillsOn && deps.skills !== undefined
         ? {
             skills: skillAdmissionPort({

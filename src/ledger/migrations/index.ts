@@ -26,6 +26,7 @@ import { sql as sql0023 } from "./0023_ci_fix_cap.js";
 import { sql as sql0024 } from "./0024_ci_transient.js";
 import { sql as sql0025 } from "./0025_eval_result.js";
 import { postSql as postSql0026, sql as sql0026 } from "./0026_ledger_chain.js";
+import { sql as sql0027 } from "./0027_published_ref_conflicts.js";
 
 export interface Migration {
   readonly version: number;
@@ -70,4 +71,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 24, name: "ci_transient", sql: sql0024 },
   { version: 25, name: "eval_result", sql: sql0025 },
   { version: 26, name: "ledger_chain", sql: sql0026, backfill: backfillChains, postSql: postSql0026 },
+  { version: 27, name: "published_ref_conflicts", sql: sql0027 },
 ];

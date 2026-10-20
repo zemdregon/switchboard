@@ -9,6 +9,7 @@ import {
   branchOfPublishRef,
   ghCheckRunsArgv,
   ghEnv,
+  ghPrViewArgv,
   ghRunCancelArgv,
   ghRunHeadArgv,
   ghRunJobsArgv,
@@ -18,6 +19,7 @@ import {
   ghRunViewArgv,
   isFullLowerSha,
   parseCheckRuns,
+  parsePrView,
   parseQueuedRuns,
   parseRunHead,
   parseRunJobs,
@@ -27,6 +29,8 @@ import {
 import {
   type CiActionsPort,
   type CiConclusion,
+  type CiPullRequestPort,
+  type CiPullRequestState,
   type CiQueuedRun,
   type CiRunJob,
   type CiRunQuery,
@@ -100,7 +104,7 @@ export interface GhCiStatusPortOptions {
   readonly useCheckRunsFallback?: boolean;
 }
 
-export class GhCiStatusPort implements CiStatusPort, CiActionsPort {
+export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullRequestPort {
   private readonly binary: string;
   private readonly runner: GhRunner;
   private readonly sourceEnv: Readonly<Record<string, string | undefined>>;
@@ -175,8 +179,35 @@ export class GhCiStatusPort implements CiStatusPort, CiActionsPort {
     await this.run(ghRunCancelArgv(q.owner, q.repo, q.runId));
   }
 
-  private async run(argv: string[]): Promise<string> {
+  /**
+   * G9 (T15.7). `gh pr view` exits 1 when the branch has no pull request; stderr is never read, so exit 1 resolves null
+   * (Delegated: nothing is admitted either way, fail closed). Any other failure throws as for the other templates.
+   */
+  async pullRequestForPublishedRef(q: {
+    owner: string;
+    repo: string;
+    publishRef: string;
+  }): Promise<CiPullRequestState | null> {
+    const branch = branchOfPublishRef(q.publishRef);
+    if (branch === undefined) throw new CiStatusError("PARSE_FAILED", "invalid published ref");
+    const argv = ghPrViewArgv(q.owner, q.repo, branch);
     const r = await this.runner(this.binary, argv, { env: ghEnv(this.sourceEnv), timeoutMs: this.timeoutMs });
+    if (r.exitCode === 1 && r.notFound !== true && r.timedOut !== true) return null;
+    const pr = this.parse(this.check(r), parsePrView);
+    return {
+      number: pr.number,
+      state: pr.state,
+      isDraft: pr.isDraft,
+      mergeable: pr.mergeable,
+      headSha: pr.headRefOid,
+    };
+  }
+
+  private async run(argv: string[]): Promise<string> {
+    return this.check(await this.runner(this.binary, argv, { env: ghEnv(this.sourceEnv), timeoutMs: this.timeoutMs }));
+  }
+
+  private check(r: GhRunResult): string {
     if (r.notFound) throw new CiStatusError("GH_MISSING", "gh binary not found");
     if (r.timedOut) throw new CiStatusError("TIMEOUT", "gh timed out");
     if (r.exitCode === GH_EXIT_AUTH_REQUIRED) throw new CiStatusError("AUTH_REQUIRED", "gh requires authentication");

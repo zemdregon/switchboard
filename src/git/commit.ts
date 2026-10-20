@@ -45,6 +45,14 @@ import {
  * `commit-tree`; the sanitiser is the only producer of the text Git receives. No usable draft and no agent message is
  * `MESSAGE_REQUIRED`; the controller never writes a stand-in. Without a task nothing about this path changes.
  *
+ * Rebase runs (T15.7, FR-QUE-07, LLD §20.4): when the run has a `prepared` `run_rebase` row (the controller merged the
+ * base into the worktree, `src/git/rebase-prep.ts`), the run's first commit records that base commit as its second
+ * parent (`commit-tree -p <old> -p <base>`, signed or not). It is added only while it is a full SHA of a commit in the
+ * repository that is not yet an ancestor of the first parent, so later commits of the run and retries stay single
+ * parent. The message, sanitiser, compare-and-swap and provenance path are the same; the lineage check also excludes
+ * the merge parent and still requires exactly one new commit, and `merge_parent_sha` is added to the intent and the
+ * `git_commit` event. Without such a row nothing about this path changes.
+ *
  * A crash before 3 leaves an unfinished intent and no published commit; a crash between 3 and 4 leaves a published
  * commit with an unfinished intent. {@link GitPublisher.recover} resolves each unfinished intent from the repository:
  * the commit is on the publish ref (roll forward: write the row) or it is not (append `git_commit_aborted`).
@@ -224,6 +232,8 @@ export interface CommitResult {
   readonly provenanceId: string;
   /** T11.4: `inner` when the committed message was drafted by the inner agent. */
   readonly messageSource: "agent" | "inner";
+  /** T15.7: the second parent (the merged base) of a rebase run's first commit; absent otherwise. */
+  readonly mergeParentSha?: string;
 }
 
 export interface RecoveryReport {
@@ -266,6 +276,8 @@ interface IntentRecord {
   /** T9.7: present only for a finalize-only commit. */
   readonly via?: "finalize";
   readonly finalizing_event_id?: string;
+  /** T15.7: present only for a rebase run's two-parent commit (the second parent). */
+  readonly merge_parent_sha?: string;
   readonly record: {
     readonly commitSha: string;
     readonly treeSha: string;
@@ -548,6 +560,7 @@ export class GitPublisher {
     const old = await resolveCommit(ctx.repoRoot, publishRef);
     const parent = old ?? (await resolveCommit(ctx.repoRoot, ctx.baseCommit));
     if (!parent) throw new CommitError("NO_WORKTREE", "the session's base commit is not in the repository");
+    const mergeParent = await this.mergeParentFor(ctx, parent);
     const parentTree = await gitText(["rev-parse", "--verify", "--end-of-options", `${parent}^{tree}`], { cwd });
 
     const tmp = await mkdtemp(path.join(this.options.scratchDir, "idx-"));
@@ -640,6 +653,7 @@ export class GitPublisher {
         cwd,
         tree,
         parent,
+        ...(mergeParent !== undefined ? { extraParents: [mergeParent] } : {}),
         message: `${sanitized.message}\n`,
         identityEnv,
         sourceEnv: this.options.signingEnv ?? process.env,
@@ -650,11 +664,14 @@ export class GitPublisher {
       sha = signed.sha;
     } else {
       sha = (
-        await git(["commit-tree", tree, "-p", parent, "-F", "-"], {
-          cwd,
-          input: `${sanitized.message}\n`,
-          env: identityEnv,
-        })
+        await git(
+          ["commit-tree", tree, "-p", parent, ...(mergeParent !== undefined ? ["-p", mergeParent] : []), "-F", "-"],
+          {
+            cwd,
+            input: `${sanitized.message}\n`,
+            env: identityEnv,
+          },
+        )
       ).stdout
         .toString("utf8")
         .trim();
@@ -662,8 +679,9 @@ export class GitPublisher {
     await this.options.testHooks?.afterStep?.("commit_created");
 
     // Defence in depth: the new commit must add exactly itself on top of the base and the old head, so no checkpoint
-    // or other run-branch commit can be reachable from the publish ref (FR-GIT-08).
-    const excluded = old ? [ctx.baseCommit, old] : [ctx.baseCommit];
+    // or other run-branch commit can be reachable from the publish ref (FR-GIT-08). T15.7: the merge parent is the
+    // controller-resolved base, so its history is excluded too; still exactly one new commit.
+    const excluded = [ctx.baseCommit, ...(old ? [old] : []), ...(mergeParent !== undefined ? [mergeParent] : [])];
     const added = Number(await gitText(["rev-list", "--count", sha, "--not", ...excluded], { cwd }));
     if (added !== 1) {
       throw new CommitError(
@@ -687,6 +705,7 @@ export class GitPublisher {
             ...(input.finalizingEventId !== undefined ? { finalizing_event_id: input.finalizingEventId } : {}),
           }
         : {}),
+      ...(mergeParent !== undefined ? { merge_parent_sha: mergeParent } : {}),
       record: {
         commitSha: sha,
         treeSha: tree,
@@ -751,10 +770,27 @@ export class GitPublisher {
         sanitizer: sanitized.report,
         provenanceId: row.id,
         messageSource: sanitized.source,
+        ...(mergeParent !== undefined ? { mergeParentSha: mergeParent } : {}),
       };
     } finally {
       this.inFlight.delete(sha);
     }
+  }
+
+  /**
+   * T15.7: the second parent of this commit, or undefined. Only a `prepared` `run_rebase` row of the run with a full
+   * SHA that names a commit in the repository and is not yet an ancestor of `parent` (so only the run's first commit,
+   * and every retry of it, carries it). Any other row leaves the commit single parent.
+   */
+  private async mergeParentFor(ctx: RunContext, parent: string): Promise<string | undefined> {
+    const row = this.options.db
+      .prepare("SELECT merge_parent_sha FROM run_rebase WHERE run_id = ? AND state = 'prepared'")
+      .get(ctx.runId) as { merge_parent_sha: string | null } | undefined;
+    const candidate = row?.merge_parent_sha;
+    if (typeof candidate !== "string" || !/^[0-9a-f]{40}([0-9a-f]{24})?$/u.test(candidate)) return undefined;
+    if ((await resolveCommit(ctx.repoRoot, candidate)) !== candidate) return undefined;
+    const r = await git(["merge-base", "--is-ancestor", candidate, parent], { cwd: ctx.repoRoot, okCodes: [1] });
+    return r.code === 1 ? candidate : undefined;
   }
 
   /** The outcome step: `git_commit` event and row in one transaction (idempotent per run and commit). */
@@ -768,6 +804,8 @@ export class GitPublisher {
         commit_sha: r.commitSha,
         tree_sha: r.treeSha,
         parent_sha: intent.parent_sha,
+        // T15.7: present only for a rebase run's two-parent commit, so every other event is unchanged.
+        ...(intent.merge_parent_sha !== undefined ? { merge_parent_sha: intent.merge_parent_sha } : {}),
         publish_ref: r.publishRef,
         files_changed: intent.files_changed,
         origin: r.origin,

@@ -360,6 +360,12 @@ export interface SubmitRequest {
   /** Continue this provider-native session (WF-2, FR-SES-03); requires `metaSessionId`. */
   readonly resume?: { readonly nativeSessionId: string };
   /**
+   * T15.7 (FR-QUE-07, LLD §20.4): a rebase run of a queued rebase item; requires `metaSessionId`. Recorded as a pending
+   * `run_rebase` row in the admission transaction; {@link RunLifecycleOptions.rebasePrep} merges the current base into
+   * the worktree before the provider starts.
+   */
+  readonly rebase?: { readonly workItemId: string; readonly publishRef: string; readonly headSha: string };
+  /**
    * Required with `trustProfile: "privileged"`, refused otherwise (FRD V13, C7; LLD §3.1). `scope` (new meta-session
    * only): T2, AWAITING_APPROVAL with a new `PENDING` approval; with `approvedByClientPolicy` (the client is configured
    * `privileged_approval: "not_required"`, ADR-0019; the caller checks the configuration) T1, QUEUED with the new
@@ -601,6 +607,17 @@ export interface NeedsAttentionNotice {
 
 export interface RunLifecycleOptions {
   readonly ledger: Ledger;
+  /**
+   * T15.7 (LLD §20.4): controller Git preparation of a rebase run (`prepareRebaseMerge`, `src/git/rebase-prep.ts`):
+   * merges the current base into the new worktree, conflict markers left for the agent. Without it a rebase run fails
+   * before spawn (fail closed).
+   */
+  readonly rebasePrep?: (q: {
+    runId: string;
+    worktreePath: string;
+    repoRoot: string;
+    baseRef: string;
+  }) => Promise<{ ok: true; mergeParentSha: string; conflictedPaths: number } | { ok: false; reason: string }>;
   /** Must share the ledger's database handle. */
   readonly workspace: WorkspaceManager;
   readonly artifacts: ArtifactStore;
@@ -1139,6 +1156,15 @@ export class RunLifecycle {
         priority: PRIORITY_VALUES[stored.priority],
         ...(req.successorOf ? { parentRunId: req.successorOf.runId, attempt: req.successorOf.attempt + 1 } : {}),
       });
+      // T15.7 (LLD §20.4): a rebase run's controller Git preparation, pending until the worktree exists.
+      if (req.rebase !== undefined) {
+        this.ledger.insertRunRebase({
+          runId: run.id,
+          workItemId: req.rebase.workItemId,
+          publishRef: req.rebase.publishRef,
+          headSha: req.rebase.headSha,
+        });
+      }
       const byPolicy = priv?.kind === "request" && priv.clientPolicy;
       if (priv?.kind === "request" && privileged) {
         // FRD T2 / LLD §3.1: the PENDING row, in the same transaction as the run and its first event.
@@ -1970,6 +1996,27 @@ export class RunLifecycle {
     }
     if (exec.cancelRequested) return this.cancelEarly(runId);
     crashPoint("leased");
+    if (this.ledger.getRunRebase(runId)?.state === "pending") {
+      // T15.7 (LLD §20.4): agents never run Git writes (FR-GIT-01), so the controller merges the current base into
+      // the worktree here, before the provider can touch it. Any failure ends the run before spawn (fail closed).
+      const prep =
+        ws.mode === "worktree" && this.opts.rebasePrep !== undefined && req.base_ref !== undefined
+          ? await this.opts
+              .rebasePrep({ runId, worktreePath: ws.worktreePath, repoRoot: ws.repoRoot, baseRef: req.base_ref })
+              .catch(() => ({ ok: false as const, reason: "MERGE_FAILED" }))
+          : { ok: false as const, reason: "NOT_AVAILABLE" };
+      if (!prep.ok) {
+        return this.fail(runId, "TOOL_FAILURE", `rebase preparation failed (${prep.reason})`, {
+          reason: "REBASE_PREP_FAILED",
+          rebase_reason: prep.reason,
+        });
+      }
+      this.ledger.appendRunEvent({
+        runId,
+        type: "rebase_prepared",
+        payload: { merge_parent_sha: prep.mergeParentSha, conflicted_paths: prep.conflictedPaths },
+      });
+    }
     if (ws.mode === "worktree") {
       // T9.5 (FR-GIT-03, LLD §12.5): the controller-visible Git state, recorded before the provider can touch it. A
       // repository that cannot be read here cannot be checked later, so the run fails before spawn (fail closed).

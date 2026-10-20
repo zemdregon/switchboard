@@ -19,6 +19,7 @@ const EXPECTED_TABLES = [
   "adapter_version",
   "approval",
   "artifact",
+  "ci_ref_conflict",
   "ci_rerun",
   "ci_run_cancel",
   "ci_trigger_event",
@@ -54,6 +55,7 @@ const EXPECTED_TABLES = [
   "route_decision",
   "run",
   "run_event",
+  "run_rebase",
   "run_skill",
   "schema_migrations",
   "skill_event",
@@ -418,6 +420,8 @@ describe("ledger migrations", () => {
         )
         .run(),
     ).toThrow(/CHECK/u);
+    // The current writer reads migration 27's columns (T15.7), so the ledger behaviour is checked on the latest schema.
+    migrate(d);
     const item = ledger.enqueueWorkItem({
       projectId: "p",
       creatorClientId: "c",
@@ -461,13 +465,13 @@ describe("ledger migrations", () => {
     expect(migrate(d, undefined, upTo19)).toEqual(upTo19.map((m) => m.version));
     const ledger = createLedger(d);
 
-    // Existing work queue item on v19
-    const item = ledger.enqueueWorkItem({
-      projectId: "proj-1",
-      creatorClientId: "client-a",
-      request: { objective: "task 1", trust_profile: "inspect-untrusted", project: "proj-1" },
-      sourceKind: "mcp",
-    });
+    // Existing work queue item on v19: a plain insert, as a writer of this schema version did (the current writer
+    // needs migration 27's columns, T15.7).
+    d.prepare(
+      `INSERT INTO project_work_item (id, project_id, creator_client_id, state, priority, request_json, source_kind,
+         created_at, updated_at) VALUES ('que_v19', 'proj-1', 'client-a', 'READY', 0, '{}', 'mcp', 't', 't')`,
+    ).run();
+    const item = { id: "que_v19" };
 
     // Migrate to 20
     expect(
@@ -479,7 +483,7 @@ describe("ledger migrations", () => {
     ).toEqual([20]);
 
     // Existing work item preserved
-    expect(ledger.getWorkItem(item.id)?.id).toBe(item.id);
+    expect(d.prepare("SELECT id FROM project_work_item WHERE id = ?").get(item.id)).toEqual({ id: item.id });
 
     // Table constraints on project_schedule
     expect(() =>
