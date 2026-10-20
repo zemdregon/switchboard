@@ -1119,6 +1119,7 @@ as history.
   `ownSubject`), `list_runs` paging and the digest `visible` callback call `ownSubject` directly
   (`src/mcp/server.ts`); `admitted_run_id` is written only in `src/ledger/work-queue.ts` (controller queue path),
   never from the MCP handler. `node scripts/check-docs.mjs` passes. It does not block PR #790.
+
 ## 61. Claude 16 MiB stdout line cap (PR #794, no doc drift, checked 2026-10-20)
 
 - PR #794 raises only the Claude adapter's compiled `maxLineBytes` from the

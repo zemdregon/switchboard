@@ -1674,9 +1674,9 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
   those are bound: the server for an HTTP request carries the token's OAuth client id as its subject, and every
   meta-session that a caller's `delegate_task` opens is recorded in `http_subject` (migration 0013, DDL below) right
   after admission (controller-admitted queued work opens its meta-session through the queue pipeline instead, with no
-  row; see the Exception below). A meta-session, and every run in it (automatic retry successors included), is then known only to its own
-  configured MCP client and its own subject: over HTTP the row must name the caller's OAuth client, over stdio there
-  must be no row. `get_run`, `cancel_run`, `get_artifacts` and `continue_task` from another subject, from another
+  row; see the Exception below). A meta-session, and every run in it (automatic retry successors included), is then known
+  only to its own configured MCP client and its own subject: over HTTP the row must name the caller's OAuth client, over
+  stdio there must be no row. `get_run`, `cancel_run`, `get_artifacts` and `continue_task` from another subject, from another
   client or from stdio get exactly the `INVALID_REQUEST` "unknown run" or "unknown meta-session" answer of an id that
   does not exist, with nothing changed (not the 403 above: a different status would be an existence oracle). An
   idempotency key another subject used gets the same answer as a key reused with different parameters. A binding never
