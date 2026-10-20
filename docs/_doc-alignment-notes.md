@@ -1039,6 +1039,7 @@ as history.
   write form `-D x`), the README hostile-matrix line naming `git branch -D` (a write form, still refused), and TDD
   §3 row 1 (`git branch sneaky` creates a ref, still blocked).
 - `node scripts/check-docs.mjs` passes. It does not block PR #788.
+
 ## 56. Decision requests (T14.15, PR #789): SRS as-built notes fixed here; two stragglers left for other lanes
 
 - This PR builds T14.15 (Done 2026-10-20) and updates the ROADMAP T14.15 row, the M14 row (`FR-CTL-13 (T14.15, Done)`),
