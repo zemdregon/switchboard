@@ -659,6 +659,8 @@ export class ClaudeAdapter implements ProviderAdapter {
   readonly id = "claude" as const;
   readonly transports = ["subprocess-jsonl"] as const;
   readonly gitWriteControl = CLAUDE_GIT_WRITE_CONTROL;
+  /** ADR-0068: `claude -p` reports its final result and then waits for background shells it started. */
+  readonly settlesAfterFinalResult = true as const;
   /**
    * T5.12 cell 2 (2026-10-17, Claude Code 2.1.294; docs/research/live-checks-2026-10-17-claude.md): session found from
    * a second worktree and from an unrelated empty directory (not tied to cwd), so resumeCwd is `independent`

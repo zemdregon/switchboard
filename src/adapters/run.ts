@@ -80,6 +80,38 @@ export interface AdapterRunOutcome {
   stderr: Buffer;
   /** `acp-stdio` only: every message the client wrote (for a `provider_stdin` artifact after the redactor, item 3). */
   stdin?: Buffer;
+  /**
+   * The bound that ended a process which had already reported its final successful result; `result` is then the
+   * adapter's verdict as if it had exited cleanly at that result ({@link settleAfterFinalResult}). Absent otherwise.
+   */
+  settledAfterResult?: NonNullable<ExitInfo["timeoutKind"]>;
+}
+
+/** Events that may follow a final result without meaning the agent kept working (bookkeeping only). */
+const AFTER_RESULT_KINDS: ReadonlySet<NormalizedEvent["kind"]> = new Set(["unknown", "usage"]);
+
+/**
+ * FR-EXE-01 (LLD §8, ADR-0068; Delegated, not owner-approved): a wall-clock or idle timeout that ends a process after its final
+ * successful `result` does not fail the run, for an adapter that declares `settlesAfterFinalResult`. Claude Code, for one, reports `result` and then stays alive while a
+ * background shell it started is still running (prod run run_01M5BZDDH2S2ANYFX32R337ER5). Returns the adapter's own
+ * `extractResult` over the same events with a clean expected exit, so every fail-closed rule of the adapter (provider
+ * errors, denials, guard violations) still applies, when: the outcome is `timeout`, the last `result` is `ok`, and only
+ * bookkeeping events (`unknown`, `usage`) follow it. Undefined otherwise: the timeout stands.
+ */
+export function settleAfterFinalResult(
+  adapter: Pick<ProviderAdapter, "extractResult" | "settlesAfterFinalResult">,
+  events: readonly NormalizedEvent[],
+  exit: ExitInfo,
+): RunResult | undefined {
+  if (adapter.settlesAfterFinalResult !== true || exit.outcome !== "timeout") return undefined;
+  const at = events.findLastIndex((e) => e.kind === "result");
+  const final = events[at];
+  if (final?.kind !== "result" || !final.ok) return undefined;
+  if (!events.slice(at + 1).every((e) => AFTER_RESULT_KINDS.has(e.kind))) return undefined;
+  const { timeoutKind: _bound, ...rest } = exit;
+  const clean: ExitInfo = { ...rest, outcome: "exited", exitCode: exit.expectedExitCodes[0] ?? 0, signal: null };
+  const settled = adapter.extractResult(events, clean);
+  return settled.ok ? settled : undefined;
 }
 
 /** What an `acp-stdio` run needs beyond the invocation (ADR-0036 item 9; T4.8). */
@@ -193,14 +225,16 @@ export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts:
       ...(r.timeoutKind ? { timeoutKind: r.timeoutKind } : {}),
       expectedExitCodes: inv.expectedExitCodes,
     };
+    const settled = settleAfterFinalResult(adapter, events, exit);
     return {
-      result: adapter.extractResult(events, exit),
+      result: settled ?? adapter.extractResult(events, exit),
       events,
       exit,
       stderrTail: r.stderr.subarray(Math.max(0, r.stderr.length - STDERR_TAIL_BYTES)).toString("utf8"),
       groupEmpty: r.groupEmpty,
       stdout: r.stdout,
       stderr: r.stderr,
+      ...(settled !== undefined && r.timeoutKind !== undefined ? { settledAfterResult: r.timeoutKind } : {}),
     };
   });
   return { cancel: () => run.cancel(), done };

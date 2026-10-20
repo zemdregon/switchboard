@@ -1216,3 +1216,18 @@ as history.
   `LifecycleError` refusal's own code and maps anything else via `toToolError` (`mapError`), and `reason`/`field` are
   scrubbed and bounded to 300 characters like `message` (`failureDetail`).
 - Docs only; no owner decision needed.
+
+## 66. Idle timeout no longer downgrades completed runs (PR #796 via PR #799, re-applied on main, checked 2026-10-20)
+
+- PR #796 ([ADR-0068](adr/0068-final-result-decides-a-timed-out-run.md)) conflicted with main in two
+  places, both resolved by keeping both sides: the SRS FR-CTL-03 row now lists `idle_timeout_work_kept`
+  in the closed reason list and carries its 2026-10-20 amendment alongside the T14.15 doc-align gate's
+  rewrite of the 2026-10-19 note; the LLD sink list keeps the T14.15 `decision_requested` /
+  `awaiting_decision` entry and adds the `idle_timeout_work_kept` entry after `ci_fix_stuck`.
+- Rebased again (superseding draft PR #799) onto main at ed770ec, which had meanwhile taken ADR-0067 (daemon base
+  refresh) and T15.8's `merge_policy`: the ADR is renumbered 0067 → **0068** and every reference this change adds
+  (SRS FR-EXE-01/FR-CTL-03, SDD, LLD §3.4.5/§3.4.9/§8/§11.1, ROADMAP T1.6, the `src/` comments) points at 0068; main's
+  ADR-0067 references (LLD §5.2, base refresh) are untouched. `ResolvedProject`, `ProjectConfig` and
+  `resolveProjects` keep both `mergePolicy` and `providerIdleMs` / `timeouts`.
+- Numbering: this file already holds two items numbered 57 (PR #786 and PR #794); they are left as they are, and this
+  item takes the next free number, 66.

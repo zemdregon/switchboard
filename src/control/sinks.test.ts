@@ -177,6 +177,7 @@ describe("closed payload (ADR-0048 item 3)", () => {
       "ci_fix_stuck",
       "skill_cleanup_failed",
       "secret_scan_blocked",
+      "idle_timeout_work_kept",
     ]);
     // The sink filter and the T14.2 derivation agree as a set (FR-CTL-03); a reason added to one must reach the other.
     expect([...SINK_REASON_CODES.needs_attention].sort()).toEqual([...NEEDS_ATTENTION_PRIORITY].sort());
