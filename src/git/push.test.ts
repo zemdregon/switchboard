@@ -749,10 +749,14 @@ describe("pre-push secret scan (T9.14; FR-GIT-11, FR-CTL-03; ADR-0061; LLD §20.
     return { ...run, sha: c.sha };
   }
 
-  const hitEvents = () =>
+  /** Hit events of one stage: `push` (the refusal) or `commit` (the commit tool's warning, which never refuses). */
+  const hitEvents = (stage: "push" | "commit" = "push") =>
     db
-      .prepare("SELECT run_id, payload_json FROM run_event WHERE type = 'secret_scan_hit' ORDER BY ts, id")
-      .all()
+      .prepare(
+        `SELECT run_id, payload_json FROM run_event WHERE type = 'secret_scan_hit'
+           AND json_extract(payload_json, '$.stage') = ? ORDER BY ts, id`,
+      )
+      .all(stage)
       .map((r) => {
         const row = r as { run_id: string; payload_json: string };
         return { run_id: row.run_id, p: JSON.parse(row.payload_json) as Record<string, unknown> };
@@ -920,6 +924,84 @@ describe("pre-push secret scan (T9.14; FR-GIT-11, FR-CTL-03; ADR-0061; LLD §20.
     expect(r).toMatchObject({ outcome: "REFUSED_POLICY", reason: "POLICY_NONE" });
     expect(pushEvents()[0]?.p.secret_scan).toBeUndefined();
     expect(hitEvents()).toEqual([]);
+  });
+
+  // Commit-time warning (ADR-0061 point 4, LLD §20.9 `stage: "commit"`): the same scanner, warn only.
+  it("a commit containing a canary succeeds and emits a commit-stage warning event; the push is still refused", async () => {
+    const r = await running();
+    writeFileSync(path.join(r.wt, "creds.txt"), `first line\n${CANARY}\n`);
+    const c = await publisher.commit({
+      runId: r.runId,
+      message: "Add creds.txt",
+      identity: IDENTITY,
+      projectId: "web",
+      contextId: "main",
+    });
+    // The commit is made and published as without a scan.
+    expect(refSha(repo, c.publishRef)).toBe(c.sha);
+    expect(c.filesChanged).toBe(1);
+    expect(hitEvents("commit")).toEqual([
+      {
+        run_id: r.runId,
+        p: { stage: "commit", rule_id: CANARY_RULE, path: "creds.txt", line: 2, ref: c.publishRef, commit_sha: c.sha },
+      },
+    ]);
+    expect(ledgerText()).not.toContain(CANARY);
+    // A warning is not a refusal: no needs_attention until a push is refused.
+    expect(attention(r.runId)).toEqual({ active: false });
+    // The push side is unchanged: refused with SECRET_SCAN_BLOCKED and the remote does not move.
+    const p = await pusher().push({ metaSessionId: r.sessionId, requestedBy: "operator" });
+    expect(p).toMatchObject({ outcome: "REFUSED_POLICY", reason: "SECRET_SCAN_BLOCKED", pushed: false });
+    expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+    expect(hitEvents("push").map((e) => e.p.rule_id)).toEqual([CANARY_RULE]);
+    expect(attention(r.runId)).toEqual({ active: true, reason: "secret_scan_blocked" });
+  });
+
+  it("a clean commit emits no warning event, and a later commit warns only about its own added lines", async () => {
+    const r = await committedContent("nothing secret\n", "notes.txt");
+    expect(hitEvents("commit")).toEqual([]);
+    const second = await committedContent(`token: ${TOKEN}\n`, "src/config.ts", r);
+    const third = await committedContent("still clean\n", "more.txt", r);
+    expect(hitEvents("commit").map((e) => e.p)).toEqual([
+      {
+        stage: "commit",
+        rule_id: "github_token",
+        path: "src/config.ts",
+        line: 1,
+        ref: publishRefFor(r.sessionId),
+        commit_sha: second.sha,
+      },
+    ]);
+    expect(refSha(repo, publishRefFor(r.sessionId))).toBe(third.sha);
+    expect(ledgerText()).not.toContain(TOKEN);
+  });
+
+  it("the commit warning honours the operator allowlist, and an invalid entry refuses at construction", async () => {
+    const allowing = new GitPublisher({
+      db,
+      scratchDir: path.join(root, "scratch"),
+      now: () => NOW,
+      secretScanAllow: [{ rule_id: CANARY_RULE, path: "fixtures/**" }],
+    });
+    const r = await running();
+    mkdirSync(path.join(r.wt, "fixtures"));
+    writeFileSync(path.join(r.wt, "fixtures", "sample.txt"), `${CANARY}\n`);
+    await allowing.commit({
+      runId: r.runId,
+      message: "Add fixture",
+      identity: IDENTITY,
+      projectId: "web",
+      contextId: "main",
+    });
+    expect(hitEvents("commit")).toEqual([]);
+    expect(
+      () =>
+        new GitPublisher({
+          db,
+          scratchDir: path.join(root, "scratch"),
+          secretScanAllow: [{ rule_id: "no_such_rule", path: "**" }],
+        }),
+    ).toThrow(SecretScanAllowError);
   });
 });
 
