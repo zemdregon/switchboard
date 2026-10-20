@@ -5,6 +5,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { acceptedProviderNames, canonicalProviderId } from "../adapters/providers.js";
 import {
   bindingPacingWindow,
   type CapacityProjection,
@@ -21,10 +22,14 @@ import { type CliIo, UsageError } from "./io.js";
 export function runCapacity(io: CliIo, argv: readonly string[], provider?: string): CapacityProjection {
   const cfg = loadConfig({ argv, env: io.env, ...(io.homedir !== undefined ? { homedir: io.homedir } : {}) });
   const ids: string[] = (io.adapters ?? defaultAdapters()).list().map((a) => a.id);
-  if (provider !== undefined && !ids.includes(provider)) {
-    throw new UsageError(`unknown provider ${JSON.stringify(provider)}; expected one of ${ids.join(", ")}`);
+  // ADR-0076: `--provider` takes either spelling (`claude`, `claude-code`); the projection names the canonical one.
+  const named = provider === undefined ? undefined : (canonicalProviderId(provider) ?? provider);
+  if (named !== undefined && !ids.includes(named)) {
+    throw new UsageError(
+      `unknown provider ${JSON.stringify(provider)}; expected one of ${acceptedProviderNames(ids).join(", ")}`,
+    );
   }
-  return projectCapacity(cfg, provider === undefined ? ids : [provider], (io.now ?? (() => new Date()))());
+  return projectCapacity(cfg, named === undefined ? ids : [named], (io.now ?? (() => new Date()))());
 }
 
 /** The projection for `ids` from the configured data directory (shared by `capacity` and `doctor`). */

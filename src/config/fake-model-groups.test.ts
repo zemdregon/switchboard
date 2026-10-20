@@ -94,16 +94,21 @@ describe("fake in model_groups and capacity.subscriptions only with the test-onl
     expect(memberProviderIds(true)).toEqual([...configProviderIds(), "fake"]);
   });
 
-  it("with it, only fake is added: adapter ids, providers.fake and allowed_providers fake are still refused", () => {
+  it("with it, only fake is added: unknown names, providers.fake and allowed_providers fake are still refused", () => {
+    // ADR-0076: an adapter id is an accepted spelling and loads as the config id; an unknown name is still refused.
     write({ model_groups: { g: { members: [{ provider: "grok", model: "m" }] } } });
+    expect(loadConfig({ configPath, testFakeAdapter: true }).modelGroups).toEqual({
+      g: { members: [{ provider: "grok-build", model: "m" }] },
+    });
+    write({ model_groups: { g: { members: [{ provider: "nope", model: "m" }] } } });
     expect(messageOf(() => loadConfig({ configPath, testFakeAdapter: true }))).toBe(
       `Invalid config file ${configPath}:\n  $.model_groups.g.members[0].provider: must be one of ${BUILTIN_ENUM}, fake`,
     );
     write({
-      capacity: { subscriptions: { s: { ...SUBSCRIPTION.subscriptions["dev-fake-sub"], providers: ["grok"] } } },
+      capacity: { subscriptions: { s: { ...SUBSCRIPTION.subscriptions["dev-fake-sub"], providers: ["nope"] } } },
     });
     expect(messageOf(() => loadConfig({ configPath, testFakeAdapter: true }))).toBe(
-      `Invalid config:\n  $.capacity.subscriptions.s.providers[0]: "grok" is not a configured provider id`,
+      `Invalid config:\n  $.capacity.subscriptions.s.providers[0]: "nope" is not a configured provider id`,
     );
     write({ providers: { fake: { enabled: true } } });
     expect(messageOf(() => loadConfig({ configPath, testFakeAdapter: true }))).toMatch(/providers/);

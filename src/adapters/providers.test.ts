@@ -46,9 +46,12 @@ import {
   ScratchAdapter,
 } from "./fixtures/scratch-provider.js";
 import {
+  acceptedProviderNames,
   adapterIdForConfigId,
   BUILTIN_PROVIDERS,
+  canonicalProviderId,
   configIdForAdapterId,
+  configIdForProviderName,
   declaredBypassFlags,
   type ProviderEntry,
   ProviderRegistrationError,
@@ -76,6 +79,51 @@ const register = (entry: ProviderEntry) => {
 };
 afterEach(() => {
   for (const off of cleanups.splice(0).reverse()) off();
+});
+
+describe("provider name aliases (ADR-0076)", () => {
+  it("every built-in provider is named by its adapter id (canonical) and its config id (alias)", () => {
+    for (const e of BUILTIN_PROVIDERS) {
+      expect(canonicalProviderId(e.id), e.id).toBe(e.id);
+      if ("configId" in e) {
+        expect(canonicalProviderId(e.configId), e.configId).toBe(e.id);
+        expect(configIdForProviderName(e.id), e.id).toBe(e.configId);
+        expect(configIdForProviderName(e.configId), e.configId).toBe(e.configId);
+      }
+    }
+    expect(canonicalProviderId("claude-code")).toBe("claude");
+    expect(canonicalProviderId("grok-build")).toBe("grok");
+    expect(canonicalProviderId("kimi-code")).toBe("kimi");
+    expect(canonicalProviderId("muse-code")).toBe("muse");
+    expect(configIdForProviderName("fake")).toBeUndefined(); // test-only: no config spelling
+  });
+
+  it("unknown names, other cases and padded names name nothing (exact, lower-case match)", () => {
+    for (const n of ["", "nope", "Claude", "CLAUDE-CODE", " claude", "claude-cod", "claude_code"]) {
+      expect(canonicalProviderId(n), n).toBeUndefined();
+      expect(configIdForProviderName(n), n).toBeUndefined();
+    }
+  });
+
+  it("acceptedProviderNames lists both spellings, canonical first, and keeps unknown names", () => {
+    expect(acceptedProviderNames(["claude", "grok-build", "fake", "other"])).toEqual([
+      "claude",
+      "claude-code",
+      "grok",
+      "grok-build",
+      "fake",
+      "other",
+    ]);
+    expect(acceptedProviderNames()).toContain("muse-code");
+  });
+
+  it("a runtime-registered provider gets the same alias, and loses it when removed", () => {
+    const off = register(SCRATCH_PROVIDER);
+    expect(canonicalProviderId(SCRATCH_CONFIG_ID)).toBe(SCRATCH_ID);
+    expect(configIdForProviderName(SCRATCH_ID)).toBe(SCRATCH_CONFIG_ID);
+    off();
+    expect(canonicalProviderId(SCRATCH_CONFIG_ID)).toBeUndefined();
+  });
 });
 
 describe("derived constants equal the pre-T4.1 values", () => {

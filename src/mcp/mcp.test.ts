@@ -686,6 +686,26 @@ describe("Claude and Codex adapters on recorded replay fixtures", () => {
     expect(resumed?.argv).toEqual(expect.arrayContaining(["--resume", DEFAULT_SESSION_ID]));
   });
 
+  it("ADR-0076: provider_preference accepts the alias claude-code and runs, routes and reports the canonical claude", async () => {
+    const claude = recorded(claudeReplay("success-edit.jsonl", { write: "hello.txt", timeouts: { idleMs: 5_000 } }));
+    await setup({ adapters: [claude.adapter] });
+    const d = await call(
+      "delegate_task",
+      delegateArgs({ routing: { provider_preference: "claude-code", require_provider: true } }),
+    );
+    expect(d.isError).toBe(false);
+    const done = await pollTerminal(d.body.run_id);
+    expect(done).toMatchObject({ status: "SUCCEEDED", provider: { adapter: "claude" } });
+    expect(done.route.reasons[0]).toBe("selected claude (provider_preference)");
+    // An unknown name is refused with the accepted spellings of the registered providers.
+    const bad = await call("delegate_task", delegateArgs({ routing: { provider_preference: "claude-cod" } }));
+    expect(bad.body.error).toMatchObject({
+      code: "INVALID_REQUEST",
+      details: { field: "routing.provider_preference", providers: ["claude", "claude-code"] },
+    });
+    expect(bad.body.error.message).toContain("accepted names: claude, claude-code");
+  });
+
   it("claude logged out: require_provider fails AUTH_REQUIRED naming the native login, and no run starts", async () => {
     claudeLoggedIn = false;
     await setup({ adapters: [recorded(claudeReplay("success-edit.jsonl")).adapter, fakeWriter()] });

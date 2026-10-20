@@ -3,12 +3,7 @@
  * `creator_client_id`. Shared by the scheduler; MCP `server.ts` may adopt this module in a later lane.
  */
 import type Database from "better-sqlite3";
-import {
-  type AdapterRegistry,
-  acceptsReportedModel,
-  adapterIdForConfigId,
-  type ProviderId,
-} from "../adapters/index.js";
+import { type AdapterRegistry, acceptsReportedModel, canonicalProviderId, type ProviderId } from "../adapters/index.js";
 import {
   CONTAINER_NOT_IMPLEMENTED,
   DEFAULT_CAPACITY_CONFIDENCE_RUNS,
@@ -369,7 +364,8 @@ export async function admitWorkItemRequest(
     const all = candidates();
     const allowed = project?.project.allowedProviders;
     if (allowed === undefined) return { candidates: all, excluded: [] };
-    const set = new Set<string>(allowed.flatMap((id) => adapterIdForConfigId(id) ?? []));
+    // ADR-0076: either spelling is compared by canonical name; a name no entry knows is never allowed.
+    const set = new Set<string>(allowed.flatMap((id) => canonicalProviderId(id) ?? []));
     if (required !== undefined && !set.has(required)) {
       throw new ToolError("PERMISSION_BLOCKED", `provider not allowed in project`, { project: project?.snapshot.id });
     }
@@ -531,13 +527,17 @@ export async function admitWorkItemRequest(
     if (verificationProblem !== undefined) throw invalid(verificationProblem, { field: "verification_commands" });
 
     stage = "routing";
-    const routing = (request.routing ?? {}) as {
+    const routing = { ...((request.routing ?? {}) as object) } as {
       require_provider?: boolean;
       provider_preference?: ProviderId;
       minimum_capability?: ModelCapability;
       model_group?: string;
       model?: string;
     };
+    // ADR-0076: enqueue_work stores the canonical name; an item stored by another path is normalised here on read.
+    if (routing.provider_preference !== undefined) {
+      routing.provider_preference = canonicalProviderId(routing.provider_preference) ?? routing.provider_preference;
+    }
 
     // T7.14 (FR-RTE-11, LLD §17.7, FRD V14, BR-49)
     const modelGroups: ResolvedModelGroups = modelGroupsOf(deps.config);

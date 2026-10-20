@@ -4,7 +4,7 @@
  * resolves defaults. Every default is an Assumption with no source behind it (Q-80, Q-81).
  */
 import { readFileSync } from "node:fs";
-import { adapterIdForConfigId } from "../adapters/providers.js";
+import { canonicalProviderId } from "../adapters/providers.js";
 import { DEFAULT_WEIGHTS, SCORE_TERMS, type Weights } from "../routing/score.js";
 import type { ModelGroupsConfigInput, RoutingConfigInput, SwitchboardConfig } from "./schema.js";
 
@@ -114,5 +114,7 @@ export function modelGroupsOf(config: {
  * mapping (the test-only fake) is compared as is.
  */
 export function groupMembersFor(group: ResolvedModelGroup, provider: string): ResolvedModelGroupMember[] {
-  return group.members.filter((m) => (adapterIdForConfigId(m.provider) ?? m.provider) === provider);
+  // ADR-0076: both sides by canonical name, so either spelling of `provider` selects the same members.
+  const wanted = canonicalProviderId(provider) ?? provider;
+  return group.members.filter((m) => (canonicalProviderId(m.provider) ?? m.provider) === wanted);
 }
