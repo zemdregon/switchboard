@@ -1021,7 +1021,26 @@ as history.
   AGENTS.md forbids editing it, and its status line already records the ADR-0066 amendment).
 - `node scripts/check-docs.mjs` passes. It does not block PR #782.
 
-## 56. Decision requests (T14.15, PR #789): SRS as-built notes fixed here; two stragglers left for other lanes
+## 57. HLD "read-only entries" vs the `git branch` listing-form reclassification (from PR #788, fixed in this gate)
+
+- PR #788 reclassifies the listing forms of `git branch` (bare, `--show-current`, `--list`/`-l`, `-a`, `-r`, `-v`,
+  `--contains`, `--merged`, `--points-at`, `--sort`, `--format`, ...) as read-only in `gitWriteInCommand`, while the
+  shell-allowlist check (`gitWriteRisk`) still refuses `git branch` in any form (pinned by
+  `src/adapters/git-write.test.ts`; recorded in [ADR-0039](adr/0039-switchboard-side-tool-call-guard.md) by the PR
+  itself).
+- The HLD T4.37 compile-guard sentence ("read-only entries do not trigger it") was true before the PR, when every
+  `git branch` form counted as a could-write entry; after the reclassification it read as if a read-only
+  `git branch --show-current` allowlist entry were admitted, contradicting the code.
+- Fixed in this gate (docs only, no owner decision needed — code is the source of truth, and ADR-0039 already
+  records the split): the sentence now names the admitted read-only forms (`git status` / `git diff`, matching the
+  LLD §2 wording) and notes that `git branch` in any form still triggers the refusal, citing ADR-0039. Checked and
+  left unchanged: the TDD Grok/OpenCode/Antigravity compile-guard lines (no read-only blanket claim), the T8.11 and
+  TDD §3.6.3 property-test summaries ("every generated Git write ... refused" — the property tests `branch` in its
+  write form `-D x`), the README hostile-matrix line naming `git branch -D` (a write form, still refused), and TDD
+  §3 row 1 (`git branch sneaky` creates a ref, still blocked).
+- `node scripts/check-docs.mjs` passes. It does not block PR #788.
+
+## 58. Decision requests (T14.15, PR #789): SRS as-built notes fixed here; two stragglers left for other lanes
 
 - This PR builds T14.15 (Done 2026-10-20) and updates the ROADMAP T14.15 row, the M14 row (`FR-CTL-13 (T14.15, Done)`),
   the SDD FR-CTL-13 row (Proposed to Done), ADR-0048 item 3 (`decision_requested`), LLD §20.3 ("As built") and the
