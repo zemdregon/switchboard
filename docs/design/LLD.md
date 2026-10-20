@@ -1672,8 +1672,9 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
 - **Session binding as built (T13.5, Q-78, Delegated).** A request with an `Mcp-Session-Id` header is refused with 400
   `{"error":"invalid_request"}` before a server is built. What a caller returns to is a meta-session and its runs, so
   those are bound: the server for an HTTP request carries the token's OAuth client id as its subject, and every
-  meta-session that `delegate_task` opens is recorded in `http_subject` (migration 0013, DDL below) right after
-  admission. A meta-session, and every run in it (automatic retry successors included), is then known only to its own
+  meta-session that a caller's `delegate_task` opens is recorded in `http_subject` (migration 0013, DDL below) right
+  after admission (controller-admitted queued work opens its meta-session through the queue pipeline instead, with no
+  row; see the Exception below). A meta-session, and every run in it (automatic retry successors included), is then known only to its own
   configured MCP client and its own subject: over HTTP the row must name the caller's OAuth client, over stdio there
   must be no row. `get_run`, `cancel_run`, `get_artifacts` and `continue_task` from another subject, from another
   client or from stdio get exactly the `INVALID_REQUEST` "unknown run" or "unknown meta-session" answer of an id that

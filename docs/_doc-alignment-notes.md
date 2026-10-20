@@ -1152,3 +1152,24 @@ as history.
   diff. The conclusion is unchanged: no model or group name moves anywhere, nothing to align.
   `docs/ROADMAP.md` on disk is now 1,520,314 bytes (growth from merged main work), still the "1.5 MB
   roadmap" of the LLD text.
+
+## 62. Doc-align gate pass on PR #790 (checked 2026-10-20, one inline precision fix)
+
+- Verified items 59 and 60 against the code: every read path (`ownRun` for `get_run`/`cancel_run`/`steer_run`/
+  `get_artifacts`/`continue_task`, `list_runs` paging, digest `visible`) goes through the new `ownSubject`
+  (`src/mcp/server.ts`); the queue pipeline (`src/queue/admission.ts` → `lifecycle.submit`, never the MCP
+  `delegate_task` handler) writes no `http_subject` row, so controller-admitted meta-sessions are unbound as
+  §20.8 says; `admitted_run_id` is written only in `src/ledger/work-queue.ts` (controller queue path), never
+  from the MCP handler, so a caller-chosen key alone never grants visibility; the `queue:` reservation is
+  refused in `delegate_task` over either transport. The exception grants nothing to another client, so the
+  threat posture is unchanged and no owner document disagrees on intent: SRS FR-QUE-01 ("admitted exactly as
+  a `delegate_task` from the client that created it ... never under another client's ceiling") and FR-QUE-08
+  positively support the fix; SRS FR-MCP-15, ADR-0041 item 7, ROADMAP Q-78/T13.5 and HLD TB-12 all describe
+  caller-opened sessions, so their original wording stands (cf. items 19, 41, 59); SDD FR-QUE-08 already
+  points at LLD §20.8; README tool rows ("Runs visible to this client"), FRD, operations/, CONTRIBUTING.md
+  and SECURITY.md state no fact this PR touches.
+- One inline precision fix in the owner document (LLD owns tool contracts): §3.3 said "every meta-session
+  that `delegate_task` opens is recorded in `http_subject`", which a reader could extend to queue admissions
+  (FR-QUE-01's "admitted exactly as a `delegate_task`"). It now says "every meta-session that a caller's
+  `delegate_task` opens", with a pointer to the Exception paragraph, same class of fix as item 60.
+- `node scripts/check-docs.mjs` passes. It does not block PR #790.
