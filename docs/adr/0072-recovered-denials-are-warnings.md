@@ -63,7 +63,7 @@ command the profile does not allow, and then works around it, failed the whole r
      a person would be denied the same way); `rule` -> `git_write` (the only `--disallowedTools` rules Switchboard
      passes are the FR-GIT-01 Git deny rules; *narrowed 2026-10-20, see the Follow-up below*); `other` ->
      `outside_worktree` (seen only for `--restricted` file-tool confinement); `subcommandResults` (a compound command
-     one of whose parts was denied; the part's reason is not reported; seen for Git and `gh` deny rules) and anything
+     one of whose parts was denied; *classified like `rule` since Follow-up 2*) and anything
      else -> unclassified. A `result.permission_denials` entry
      with no `system` event before it carries no reason and stays unclassified.
    - The fake adapter's JSONL mode takes the class from its plan (test seam).
@@ -115,7 +115,20 @@ program is the first word after shell keywords (`do`, `then`, ...) and `NAME=val
 | `rule` on any tool other than `Bash` | `git_write` (fail) |
 
 Unchanged: `mode` on `Bash` -> `profile`; `other` (file tool outside the worktree) -> `outside_worktree`; every
-unknown reason, `subcommandResults` and result-only denials -> unclassified (fail). The FR-GIT-03 ref check at
+unknown reason and result-only denials -> unclassified (fail); `subcommandResults` was unclassified here until
+Follow-up 2 below. The FR-GIT-03 ref check at
 FINALIZING still fails a run with recovered denials when any ref moved, and the tool-call guard, sandbox, channel and
 provider-failure rules of items 3 and 4 still apply. `fetch` and `pull` are security-class whatever their arguments
 (**Delegated**: simpler and stricter than "with a URL or remote write").
+
+## Follow-up 2 (2026-10-20): `subcommandResults` is classified like `rule` (Linus)
+
+Ruling: whumpo-website run `run_01M5D74KSXB5VVC4FZD0D3Q92C` (the #301 refresh) failed `PERMISSION_BLOCKED` on a single
+denial: `git branch -a --contains <sha>`, reported with `decision_reason_type` `subcommandResults` rather than `rule`.
+The agent recovered and the provider reported success. Claude Code reports `subcommandResults` when a deny rule
+matched one part of a shell command, so the denial has the same source as `rule` (the FR-GIT-01 Git deny rules).
+It is now classified the same way: on `Bash`, the whole denied command goes through `gitDenyRuleSecurityReason`.
+Only when every part is a Git read or local ref verb is the class `git_rule_local` (warning
+`GIT_RULE_DENIED_RECOVERED`). Everything else is `git_write` and fails, including a part that is not Git, any `gh`,
+no command found, and another tool. Previously these failed as unclassified, so no outcome becomes more permissive
+except the local-read case.

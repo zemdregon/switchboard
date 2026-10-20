@@ -162,14 +162,18 @@ function systemDenialEvents(e: Json, state: ParseState): NormalizedEvent[] {
  *   {@link gitDenyRuleSecurityReason}; when every Git invocation in it is a read or a local ref verb (`git branch -a`,
  *   `git log`) -> `git_rule_local` (recoverable). Otherwise (push, remote, config, `gh`, `-C`/`--git-dir`, ..., or no
  *   command found or parsed) -> `git_write`.
+ * - `subcommandResults`: a compound or single shell command one of whose parts a deny rule matched (the part's own
+ *   reason is not reported; seen for Git and `gh` deny rules, for example `git branch -a --contains <sha>` in
+ *   run_01M5D74KSXB5VVC4FZD0D3Q92C). Treated exactly like `rule`: on `Bash` the whole denied command is checked by
+ *   {@link gitDenyRuleSecurityReason}, so every part must be a Git read or local ref verb for `git_rule_local`;
+ *   anything else, including no Git invocation, no command found, or another tool -> `git_write` (fails the run).
  * - `other`: seen only for a file tool outside the working directory (`--restricted` confinement) -> `outside_worktree`.
- * - anything else, including `subcommandResults` (a compound command one of whose parts was denied; the part's own
- *   reason is not reported; seen for Git and `gh` deny rules) -> unclassified, which fails the run (fail closed).
+ * - anything else -> unclassified, which fails the run (fail closed).
  * A `result.permission_denials` entry with no `system` event before it carries no reason and stays unclassified.
  */
 export function claudeDenialClass(tool: string, reason: string | undefined, command?: string): DenialClass | undefined {
   if (reason === "mode") return tool === "Bash" ? "profile" : undefined;
-  if (reason === "rule") {
+  if (reason === "rule" || reason === "subcommandResults") {
     return tool === "Bash" && gitDenyRuleSecurityReason(command) === undefined ? "git_rule_local" : "git_write";
   }
   if (reason === "other") return "outside_worktree";
