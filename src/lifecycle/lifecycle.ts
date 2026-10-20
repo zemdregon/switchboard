@@ -227,6 +227,11 @@ import {
   requirementsFor,
 } from "../routing/index.js";
 import type { Telemetry } from "../telemetry/index.js";
+import {
+  type ProviderOtlpRunSession,
+  startProviderOtlpForRun,
+  withProviderOtlpEnv,
+} from "../telemetry/provider-otlp.js";
 import { type DelegateSpanFacts, SpanTracker } from "../telemetry/spans.js";
 import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
@@ -632,6 +637,11 @@ export interface RunLifecycleOptions {
    * absent from the config) means no span emission; either way emission is fire-and-forget and never fails a run.
    */
   readonly telemetry?: Telemetry;
+  /**
+   * T8.15 (FR-TEL-06, LLD §20.13, ADR-0062): per-run loopback OTLP metrics receiver. Unset or `enabled: false`
+   * means no listener for any run; `manifestDir` overrides the manifest directory (tests only).
+   */
+  readonly providerOtlp?: { enabled: boolean; manifestDir?: string };
   /** Injectable clock for `started_at` / `finished_at`. */
   readonly now?: () => Date;
   /**
@@ -2247,6 +2257,26 @@ export class RunLifecycle {
       return this.cancelEarly(runId);
     }
 
+    // T8.15 (FR-TEL-06, LLD §20.13, ADR-0062): the per-run loopback OTLP metrics receiver. Off by default; a
+    // provider whose manifest declares no `otlp_metrics` gets no listener and no extra environment. A receiver
+    // that cannot start never fails the run: the run proceeds with no provider telemetry.
+    let providerOtlp: ProviderOtlpRunSession | undefined;
+    try {
+      providerOtlp = await startProviderOtlpForRun({
+        enabled: this.opts.providerOtlp?.enabled === true,
+        provider: req.provider,
+        runId,
+        sessionId: run0.meta_session_id,
+        ...(this.opts.providerOtlp?.manifestDir !== undefined
+          ? { manifestDir: this.opts.providerOtlp.manifestDir }
+          : {}),
+      });
+    } catch {
+      // A receiver that cannot bind never fails the run (commented, not empty: the fallback is `undefined`).
+      providerOtlp = undefined;
+    }
+    inv = withProviderOtlpEnv(inv, providerOtlp);
+
     // RUNNING (T9): pid/pgid persisted in the same transaction, before any output is read (LLD §8).
     let spawned = false;
     // T8.2: the provider.spawn span covers the observed process lifetime (onSpawn to process exit).
@@ -2363,7 +2393,10 @@ export class RunLifecycle {
         let turnInv: Invocation;
         try {
           await environment.teardown(environmentRun);
-          turnInv = (await environment.prepare(environmentRun, withChannel(compiled))).invocation;
+          turnInv = withProviderOtlpEnv(
+            (await environment.prepare(environmentRun, withChannel(compiled))).invocation,
+            providerOtlp,
+          );
         } catch (err) {
           if (!(err instanceof EnvironmentRefusal)) throw err;
           this.steerUndelivered(runId, "resume_refused", notes.length, { stage: "environment", reason: err.reason });
@@ -2431,6 +2464,8 @@ export class RunLifecycle {
     } finally {
       // LLD §12.2: the socket is closed and removed when the run leaves RUNNING; calls in progress finish first.
       await channel?.close();
+      // T8.15: the per-run OTLP listener closes with the run's other per-run resources; totals are drained below.
+      await providerOtlp?.close();
       // T10.1 (FR-PRJ-05): the container is removed when the run ends, whatever ended it; idempotent, never throws.
       await environment.teardown(environmentRun);
     }
@@ -2511,6 +2546,7 @@ export class RunLifecycle {
         nativeSessionIds: nativeIds,
       },
       verification?.summary,
+      providerOtlp,
     );
   }
 
@@ -2761,6 +2797,7 @@ export class RunLifecycle {
     streams: Record<string, string>,
     git: { commitChannel: "injected" | "finalize-only" | "none"; nativeSessionIds: readonly string[] },
     verification?: readonly Record<string, unknown>[],
+    providerOtlp?: ProviderOtlpRunSession,
   ): Promise<void> {
     let outcome = pending;
     const artifacts: Record<string, string> = { ...streams };
@@ -2872,6 +2909,11 @@ export class RunLifecycle {
         provider: run.provider ?? "unknown",
         model: run.model,
       })) {
+        this.ledger.insertUsageObservation(obs);
+      }
+      // T8.15 (FR-TEL-06, FR-CAP-01): figures the provider's OTLP export reported are stored as `provider_reported`
+      // observations for the run in the same transaction; no figures means no rows (null, never zero).
+      for (const obs of providerOtlp?.drain({ runId, provider: run.provider ?? "unknown", model: run.model }) ?? []) {
         this.ledger.insertUsageObservation(obs);
       }
       if (outcome.kind === "success") this.move(run, "SUCCEEDED", { finished_at: finished }, payload);

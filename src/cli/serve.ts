@@ -935,6 +935,8 @@ async function runDaemon(
     skillDeliveryMode: config.skills.delivery,
     // T8.2 (FR-TEL-02, LLD §7): wrapper-boundary span export; inert when no OTLP endpoint is configured.
     telemetry,
+    // T8.15 (FR-TEL-06, LLD §20.13, ADR-0062): per-run loopback OTLP metrics receiver; off unless explicitly on.
+    ...(config.telemetry?.providerOtlp === true ? { providerOtlp: { enabled: true as const } } : {}),
     allowedRoots: config.allowedRoots,
     globalConcurrency: config.limits.globalConcurrency,
     perProviderConcurrency: config.limits.perProviderConcurrency,

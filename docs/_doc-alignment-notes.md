@@ -885,7 +885,61 @@ as history.
   CI, so the verification method still holds; narrowing it is the SRS owner's call. SDD NFR-PORT-02 row
   still points at TDD §2, which still documents the CI history.
 
-## 50. SRS FR-EXE-09 note vs LLD §20.14 on the write lease during a slot wait (pre-existing, not from PR #775)
+## 50. HLD COMP-TEL row still cites `FR-TEL-01..03` (from PR #769, not blocking)
+
+- [HLD §2](design/HLD.md) COMP-TEL cites `FR-TEL-01..03`, while [SDD](design/SDD.md) (updated by this PR) maps
+  FR-TEL-06 to COMP-TEL, COMP-ADP and COMP-RTE. FR-TEL-05/FR-TEL-06 postdate the HLD row (both added 2026-10-19
+  by the enhancement discovery), so this PR widens a coverage gap it did not create: the row already excluded
+  both IDs before the branch.
+- Left unchanged: extending the HLD component range is the HLD owner's call (cf. items 8 and 9 for the same
+  precedent), the SDD covers FR-TEL-06, and `node scripts/check-docs.mjs` passes. The TB-6 mitigation cell on
+  the same page is scoped in this pass ("no export listener; the T8.15 receiver is separate") because this PR
+  otherwise makes its "no listener" parenthetical read as global. It does not block PR #769 (the T8.15 status,
+  evidence and as-built behaviour are cited in the ROADMAP T8.15 row, the M8 row, LLD §20.13, the SDD FR-TEL-06
+  row, the SRS FR-TEL-06 note, TDD §3.1, the README telemetry section and config table, and ADR-0063
+  (renumbered from 0062 in this pass; see item 51).
+
+## 51. Duplicate ADR number 0062 fixed by renumbering the new ADR to 0063 (PR #769, fixed, not blocking)
+
+- This branch added `docs/adr/0062-per-run-provider-otlp-metrics-receiver.md` (commit `d98dc74`) while
+  `origin/main` already carried `docs/adr/0062-mcp-sdk-v2-dual-era-http.md` (T13.10, PR #771), so the ADR
+  index and the "ADR-0062" citations each named two different decisions. That violates the ADR README
+  rule ("numbered sequentially. Numbers are never reused"), and this PR introduced it.
+- Fixed in this doc-align pass (docs only, no decision change): the new file is now
+  `docs/adr/0063-per-run-provider-otlp-metrics-receiver.md` (next sequential number; no 0063 existed),
+  titled ADR-0063; the index row and every docs reference (README twice, HLD
+  TB-6, SDD FR-TEL-06 and NFR-PRIV-01 rows, TDD §3.1, LLD §7 table and §20.13, ROADMAP T8.15, SRS
+  FR-TEL-06 note) now cite ADR-0063. ADR-0063 itself is now Accepted (T8.15 built), Delegated, matching the
+  ADR-0064 precedent (Accepted when its T8.13 implementation landed); no decision text changed. The
+  pre-existing ADR-0062 (MCP SDK v2, accepted direction) is
+  untouched, as are all T13.10 citations to it.
+- Follow-up outside this gate (code side, non-blocking): `src/` comments still cite "ADR-0062" for the
+  OTLP receiver (`src/telemetry/provider-otlp.ts`, `src/lifecycle/lifecycle.ts`, `src/config/load.ts`,
+  `src/cli/serve.ts`, `src/adapters/manifest/schema.ts`, and the T8.15 tests), while "ADR-0062" in
+  `src/mcp/` means the SDK-v2 decision. Updating those comment citations needs a code change, which this
+  gate does not make; behaviour is unaffected (the number is a citation, not a branch condition).
+- Also in this pass: the SDD NFR-PRIV-01 row's "No network listener" is scoped the same way HLD TB-6
+  was ("except the off-by-default loopback-only T8.15 receiver"), since this PR otherwise makes it read
+  as global. The SRS NFR-PRIV-01 requirement text itself is unchanged and still holds (loopback traffic
+  stays on the host; the receiver only runs when the operator explicitly configures it).
+
+## 52. T8.15 follow-up scoping in LLD; BRD "no network listener" and T8.1 history left as-is (PR #769, fixed/not blocking)
+
+- Fixed in this doc-align pass (docs only): LLD §7 `telemetry.otlp_endpoint` row said "opens no telemetry
+  listener", which this PR made read as global now that the T8.15 per-run provider-OTLP receiver exists; it now
+  says "no trace-export listener" and points at the `telemetry.provider_otlp` row (same scoping this PR already
+  applied to HLD TB-6 and the SDD NFR-PRIV-01 row). LLD §6 (compliance manifest) now documents the optional
+  `otlp_metrics` declaration the code schema added (`src/adapters/manifest/schema.ts`), including that no
+  shipped manifest declares it yet.
+- Left unchanged, deliberately: BRD §8 ("no network listener", from owner decision 2026-10-12) and the SRS
+  FR-TEL-06 requirement text. The T8.15 receiver binds `127.0.0.1` with an ephemeral port only, so all traffic
+  stays on the host and the SRS NFR-PRIV-01 posture still holds; same precedent as the M13 network transport,
+  which BRD already coexists with. Changing BRD's owner-decision wording is the SRS/BRD owners' call.
+- Historical rows not rewritten: T8.1's "no listener and no export when unset" describes the exporter scope
+  that was true when T8.1 was Done (2026-10-16); the T8.15 row carries the new behaviour. `node
+  scripts/check-docs.mjs` passes.
+
+## 53. SRS FR-EXE-09 note vs LLD §20.14 on the write lease during a slot wait (pre-existing, not from PR #775)
 
 - [SRS FR-EXE-09](requirements/SRS.md) (note 2026-10-19, owner decision 76, harness report) says "a slot wait
   never holds another lock (write lease, data-directory lock or test lock) while it waits".

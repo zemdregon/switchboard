@@ -129,10 +129,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#558](https://github.com/zemdregon/switchboard/pull/558)), export-time allowlist enforcement (T8.4,
   [#549](https://github.com/zemdregon/switchboard/pull/549)), the operator version canary (T8.5) and a CI test that
   excludes routing after a synthetic binary version bump until `adapters validate` records the version (T8.6) are done
-  on fakes. Own-repository evaluation (T8.14) is also `Done` on fakes (see
-  [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
-  [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks)). M8 acceptance closure (T8.7) is `Done`; M8 stays
-  `Partial` until the operator records a dry run of the scheduled version canary on a real CLI upgrade. See
+  on fakes. Own-repository evaluation (T8.14) is also `Done` on fakes, and the per-run provider OTLP receiver
+  (T8.15, `telemetry.provider_otlp`, off by default) is also done on fakes. M8 acceptance closure (T8.7) is
+  `Done`; M8 stays `Partial` until the operator records a dry run of the scheduled version canary on a real CLI
+  upgrade. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
@@ -533,6 +533,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `model_groups` | no | Operator-named groups of models across providers (T7.13, FR-RTE-10): `{ "<name>": { "members": [{ "provider": "<config provider id>", "model": "<model id or alias>" }] } }`. Names match `^[a-z][a-z0-9_-]{0,31}$`, at most 32 groups; each group lists 1 to 32 members in order (order is the last tie-break). Startup refuses an unknown provider id, a duplicate pair, an empty group, a malformed name or model, and unknown keys; the one exception is the test-only `fake` adapter id, accepted as a member `provider` (and in `capacity.subscriptions.<name>.providers`) only when that adapter is registered (`serve` with the test-only fake switch, TDD §3.6), and refused as before otherwise. A member whose model the registry cannot resolve is accepted and reported by `doctor` (below), not refused. Names and members are configuration only. Full shape: [LLD §17.7](docs/design/LLD.md#177-model-groups-fr-rte-10-fr-rte-11). |
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `telemetry.otlp_endpoint` | no | `http` or `https` URL for OTLP/HTTP trace export. When omitted or empty, Switchboard does not load OpenTelemetry at startup and makes no outbound telemetry connection. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [LLD §7](docs/design/LLD.md#7-telemetry-spans). |
+| `telemetry.provider_otlp` | no | Boolean (default off). When `true`, a run whose provider manifest cites `otlp_metrics` gets a per-run loopback OTLP/HTTP-JSON metrics receiver (`127.0.0.1:0`, T8.15, FR-TEL-06); anything else means no receiver opens for any run. No shipped manifest declares `otlp_metrics` yet, so the switch alone changes nothing. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [ADR-0063](docs/adr/0063-per-run-provider-otlp-metrics-receiver.md). |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
 | `git.secret_scan.allow` | no | Up to 64 entries `{ "rule_id", "path" }` for the pre-push secret scan ([LLD §20.9](docs/design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061)). Every push, by the agent's `push` tool or `git push` on the CLI and in every profile including an approved bypass run, scans the added lines it would publish with the built-in rules (`src/artifacts/redact.ts`: private-key blocks, AWS, GitHub, `sk-`, Slack and JWT shapes, Switchboard's own tokens, `Bearer` headers and `password=`-style assignments) and refuses with `SECRET_SCAN_BLOCKED` on a hit, recording the rule id, path and line and never the value. An entry lets a hit of `rule_id` through at paths the glob matches (`fixtures/**`); an unknown rule id stops startup. There is no other switch: to publish anyway, push by hand. |
 | `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query, and `shares_subscription_with` must be one of the provider config ids listed below this table (`claude-code`, `codex`, ...) or `null`: any other string stops startup, so `doctor` fails its config check naming the key and `inner test` exits 1 before sending anything. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
@@ -701,7 +702,9 @@ landed.
 
 **Trace export (T8.0, T8.1).** Set `telemetry.otlp_endpoint` to an `http` or `https` URL when you want OTLP/HTTP traces.
 When the key is absent or empty, `serve` behaves as before M8: no OpenTelemetry packages load at startup and nothing
-listens for telemetry. Invalid URLs are rejected at config load without echoing the value. Spans are intended to carry
+listens for trace export. (The per-run provider OTLP receiver below is separate: it stays shut unless
+`telemetry.provider_otlp` is `true`.) Invalid URLs are rejected at config load without echoing the value. Spans are
+intended to carry
 only allowlisted attributes from controller-observed facts (prompts, commands and credentials never belong on spans);
 see [LLD §7](docs/design/LLD.md#7-telemetry-spans) and [ADR-0012](docs/adr/0012-telemetry-at-wrapper-boundary.md).
 
@@ -751,8 +754,19 @@ corrections in [#571](https://github.com/zemdregon/switchboard/pull/571) and req
 [#575](https://github.com/zemdregon/switchboard/pull/575). M8 itself stays `Partial` until the operator records a dry
 run of the scheduled canary on a real CLI upgrade (T8.5).
 
+**Per-run provider OTLP receiver (T8.15).** `Done` on fakes (2026-10-19, Delegated agent work, not owner-approved):
+with `telemetry.provider_otlp: true`, a run whose provider manifest declares `otlp_metrics` (with a
+provider-documentation citation) gets a loopback-only OTLP/HTTP-JSON metrics receiver (`127.0.0.1` ephemeral port)
+for the run's lifetime; token and cost figures it accepts become `provider_reported` usage observations for that run,
+forbidden attributes are dropped, and run/task ids are injected by the controller, never trusted from the payload.
+With the switch off (the default) no listener opens; a provider without a declaration gets no listener and no extra
+environment. No shipped manifest declares `otlp_metrics` yet. No protobuf, no gRPC, no new dependency. See
+[ADR-0063](docs/adr/0063-per-run-provider-otlp-metrics-receiver.md) and
+[LLD §20.13](docs/design/LLD.md#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417).
+
 Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`,
 `src/telemetry/allowlist.test.ts`, `src/telemetry/collector-lifecycle.test.ts`, `src/telemetry/collector.test.ts`,
+`src/telemetry/provider-otlp.test.ts`, `src/lifecycle/lifecycle.test.ts` (T8.15 block),
 `src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
 [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 

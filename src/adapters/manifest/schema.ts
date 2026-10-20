@@ -14,6 +14,21 @@ export interface ComplianceManifest {
   commercial_multi_user_status: "requires-review" | "reviewed-permitted" | "reviewed-prohibited";
   source_revision: string;
   notes?: string;
+  /**
+   * Provider-declared OTLP metrics export (T8.15, FR-TEL-06, ADR-0062). Absent unless the provider's documented OTLP
+   * variables were checked against the provider's documentation; the `docs` citation names that source. An absent
+   * declaration means the provider gets no per-run OTLP listener and no extra environment.
+   */
+  otlp_metrics?: {
+    /** Environment variable carrying the OTLP/HTTP metrics endpoint (set to the run's loopback receiver). */
+    endpoint_env: string;
+    /** Optional environment variable pinned to `http/json` (set only when the provider documents it). */
+    protocol_env?: string;
+    /** Optional environment variable carrying `run.id`/`session.id` resource attributes (provider-documented). */
+    resource_attributes_env?: string;
+    /** Where the provider documents these variables (URL or document section). Required when declared. */
+    docs: string;
+  };
 }
 
 /**
@@ -55,5 +70,16 @@ export const manifestSchema = {
     commercial_multi_user_status: { enum: ["requires-review", "reviewed-permitted", "reviewed-prohibited"] },
     source_revision: { type: "string" },
     notes: { type: "string" },
+    otlp_metrics: {
+      type: "object",
+      additionalProperties: false,
+      required: ["endpoint_env", "docs"],
+      properties: {
+        endpoint_env: { type: "string", pattern: "^[A-Z][A-Z0-9_]*$" },
+        protocol_env: { type: "string", pattern: "^[A-Z][A-Z0-9_]*$" },
+        resource_attributes_env: { type: "string", pattern: "^[A-Z][A-Z0-9_]*$" },
+        docs: { type: "string", minLength: 1 },
+      },
+    },
   },
 } as const;
