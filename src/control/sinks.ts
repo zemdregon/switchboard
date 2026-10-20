@@ -41,8 +41,8 @@ export const NO_PROJECT_ID = "-";
 export const ALL_PROJECTS_ID = "*";
 
 /**
- * FR-CTL-03 / LLD §3.4.1 `needs_attention_reason` (eight values; `skill_cleanup_failed` from T16.6, `secret_scan_blocked`
- * from T9.14).
+ * FR-CTL-03 / LLD §3.4.1 `needs_attention_reason` (nine values; `skill_cleanup_failed` from T16.6, `secret_scan_blocked`
+ * from T9.14, `idle_timeout_work_kept` from FR-EXE-01).
  */
 export const NEEDS_ATTENTION_REASONS = [
   "awaiting_approval",
@@ -53,6 +53,7 @@ export const NEEDS_ATTENTION_REASONS = [
   "ci_fix_stuck",
   "skill_cleanup_failed",
   "secret_scan_blocked",
+  "idle_timeout_work_kept",
 ] as const;
 /** ADR-0047 / LLD §3.4.1 `approval_kind`. */
 export const APPROVAL_KINDS = ["privileged_scope", "dynamic_project", "push_revision"] as const;

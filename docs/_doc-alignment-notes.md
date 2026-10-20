@@ -1111,3 +1111,13 @@ as history.
   diff. The conclusion is unchanged: no model or group name moves anywhere, nothing to align.
   `docs/ROADMAP.md` on disk is now 1,520,314 bytes (growth from merged main work), still the "1.5 MB
   roadmap" of the LLD text.
+
+## 59. Idle timeout no longer downgrades completed runs (PR #796, re-applied on main, checked 2026-10-20)
+
+- PR #796 ([ADR-0067](adr/0067-final-result-decides-a-timed-out-run.md)) conflicted with main in two
+  places, both resolved by keeping both sides: the SRS FR-CTL-03 row now lists `idle_timeout_work_kept`
+  in the closed reason list and carries its 2026-10-20 amendment alongside the T14.15 doc-align gate's
+  rewrite of the 2026-10-19 note; the LLD sink list keeps the T14.15 `decision_requested` /
+  `awaiting_decision` entry and adds the `idle_timeout_work_kept` entry after `ci_fix_stuck`.
+- Numbering: this file already holds two items numbered 57 (PR #786 and PR #794); they
+  are left as they are, and this item takes the next free number, 59.

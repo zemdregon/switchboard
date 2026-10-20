@@ -513,6 +513,12 @@ export interface ProviderAdapter {
   readonly gitCapabilities: GitCapabilities;
   /** T7.12 declaration ({@link ReportedModelFlag}); absent means `not_accepted`. */
   readonly reportedModelFlag?: ReportedModelFlag;
+  /**
+   * ADR-0067 declaration: a final `ok` result followed only by bookkeeping is the run's verdict even when a timeout then
+   * ends the process (`settleAfterFinalResult`). Absent means the timeout decides, as the T4.23, T4.35 and T4.55
+   * conformance cases pin for Grok Build, Antigravity and OpenCode.
+   */
+  readonly settlesAfterFinalResult?: true;
   /** T16.5/T16.6 declaration ({@link SkillDelivery}), pure, per compiled cell; absent means `prompt_prefix` for every cell. */
   skillDelivery?(request: CompileRequest, profile: ResolvedProfile): SkillDelivery;
 

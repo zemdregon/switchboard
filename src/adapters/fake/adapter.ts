@@ -136,6 +136,8 @@ const str = (v: unknown): string | undefined => (typeof v === "string" ? v : und
 export class FakeAdapter implements ProviderAdapter {
   readonly id = "fake" as const;
   readonly transports: readonly Transport[];
+  /** ADR-0067: the `linger` plan replays the Claude Code result-then-background-task shape. */
+  readonly settlesAfterFinalResult = true as const;
   /** Test double: no provider exists, so there is no provider control to declare (FR-GIT-01). */
   readonly gitWriteControl: GitWriteControl = {
     kind: "none-documented",

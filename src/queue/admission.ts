@@ -279,6 +279,7 @@ export async function admitWorkItemRequest(
               ...(context.sign ? { sign: true as const } : {}),
             }),
         ...admitBrief(project, deps.config.allowedRoots),
+        ...(project.providerIdleMs !== undefined ? { provider_idle_ms: project.providerIdleMs } : {}),
       },
     };
   };

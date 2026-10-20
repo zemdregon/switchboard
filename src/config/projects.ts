@@ -111,6 +111,8 @@ export interface ResolvedProject {
   readonly briefFile?: string;
   /** T14.17 (FR-CTL-15, LLD §20.13): present only when the project sets `critic`. Absent means off. */
   readonly critic?: ProjectCriticConfig;
+  /** FR-EXE-01: `timeouts.provider_idle_seconds` in milliseconds; absent means the adapter default. */
+  readonly providerIdleMs?: number;
 }
 
 /** T14.17 (FR-CTL-15, LLD §20.13): the advisory critic of a project. */
@@ -329,6 +331,9 @@ export function resolveProjects(
               minDiffLines: p.critic.min_diff_lines ?? DEFAULT_CRITIC_MIN_DIFF_LINES,
             },
           }
+        : {}),
+      ...(p.timeouts?.provider_idle_seconds !== undefined
+        ? { providerIdleMs: p.timeouts.provider_idle_seconds * 1000 }
         : {}),
     };
   });
