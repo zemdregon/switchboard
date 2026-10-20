@@ -29,6 +29,7 @@ import { postSql as postSql0026, sql as sql0026 } from "./0026_ledger_chain.js";
 import { sql as sql0027 } from "./0027_verification_result.js";
 import { sql as sql0028 } from "./0028_oauth_cimd_client.js";
 import { sql as sql0029 } from "./0029_published_ref_conflicts.js";
+import { sql as sql0030 } from "./0030_decision_request.js";
 
 export interface Migration {
   readonly version: number;
@@ -76,4 +77,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 27, name: "verification_result", sql: sql0027, foreignKeysOff: true },
   { version: 28, name: "oauth_cimd_client", sql: sql0028 },
   { version: 29, name: "published_ref_conflicts", sql: sql0029 },
+  { version: 30, name: "decision_request", sql: sql0030, foreignKeysOff: true },
 ];

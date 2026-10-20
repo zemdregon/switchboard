@@ -579,6 +579,21 @@ const DIGEST = {
               properties: { run_id: RUN_ID, reason: { const: "held_load" }, envelope: ENVELOPE },
             },
           },
+          // T14.15 (FR-CTL-13, LLD §20.3): this client's open decisions; present only when there is one. No text.
+          open_decisions: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["decision_id", "work_item_id", "reason", "requested_at"],
+              properties: {
+                decision_id: { type: "string" },
+                work_item_id: NULLABLE_STRING,
+                reason: { const: "awaiting_decision" },
+                requested_at: { type: "string" },
+              },
+            },
+          },
           pending_approvals: {
             type: "array",
             items: {
@@ -785,7 +800,8 @@ const INPUTS = {
 const WORK_ITEM_ID = { type: "string", pattern: "^que_[0-9A-HJKMNP-TV-Z]{26}$", maxLength: 30 } as const;
 const WORK_STATE = {
   type: "string",
-  enum: ["PENDING", "READY", "ADMITTING", "ADMITTED", "DONE", "CANCELLED", "FAILED_ADMISSION"],
+  // T14.15 (FR-CTL-13): PARKED_DECISION, an item waiting for its open decision.
+  enum: ["PENDING", "READY", "ADMITTING", "ADMITTED", "DONE", "CANCELLED", "FAILED_ADMISSION", "PARKED_DECISION"],
 } as const;
 const DELEGATE = INPUTS.delegate_task.properties;
 const WORK_INPUTS = {
@@ -830,7 +846,7 @@ const WORK_INPUTS = {
     additionalProperties: false,
     properties: {
       project_id: PROJECT_REF,
-      state_in: { type: "array", items: WORK_STATE, minItems: 1, maxItems: 7, uniqueItems: true },
+      state_in: { type: "array", items: WORK_STATE, minItems: 1, maxItems: 8, uniqueItems: true },
       limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
     },
   },
@@ -1386,7 +1402,7 @@ const WORK_ITEM = {
     state: WORK_STATE,
     priority: { type: "integer" },
     trust_profile: NULLABLE_STRING,
-    source_kind: { type: "string", enum: ["mcp", "schedule", "ci_trigger"] },
+    source_kind: { type: "string", enum: ["mcp", "schedule", "ci_trigger", "decision"] },
     depends_on: { type: "array", items: { type: "string" } },
     admitted_run_id: NULLABLE_STRING,
     last_error_code: NULLABLE_STRING,

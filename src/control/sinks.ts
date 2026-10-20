@@ -67,6 +67,8 @@ export const SINK_REASON_CODES: { readonly [K in SinkEventKind]: readonly string
   project_paused: ["project_paused", "global_paused"],
   queue_low: ["queue_low"],
   digest: ["digest"],
+  // T14.15 (FR-CTL-13, ADR-0048 item 3 as amended): an open decision request; `run_id` null, never its text.
+  decision_requested: ["awaiting_decision"],
 };
 
 /** Reasons a pushed digest counts: the run-level list plus the project-level `stalled_progress` (FR-CTL-14). */

@@ -2,9 +2,17 @@ import type Database from "better-sqlite3";
 import type { IdGenerator } from "../ids/index.js";
 import { hotPathsOverlap, hotPathsProblem, storedHotPaths } from "../queue/hot-paths.js";
 
-export type WorkItemState = "PENDING" | "READY" | "ADMITTING" | "ADMITTED" | "DONE" | "CANCELLED" | "FAILED_ADMISSION";
+export type WorkItemState =
+  | "PENDING"
+  | "READY"
+  | "ADMITTING"
+  | "ADMITTED"
+  | "DONE"
+  | "CANCELLED"
+  | "FAILED_ADMISSION"
+  | "PARKED_DECISION";
 
-/** Every {@link WorkItemState}, in migration 0017's CHECK order. */
+/** Every {@link WorkItemState}, in migration 0017's CHECK order (`PARKED_DECISION` from migration 0030, T14.15). */
 export const WORK_ITEM_STATES: readonly WorkItemState[] = [
   "PENDING",
   "READY",
@@ -13,11 +21,21 @@ export const WORK_ITEM_STATES: readonly WorkItemState[] = [
   "DONE",
   "CANCELLED",
   "FAILED_ADMISSION",
+  "PARKED_DECISION",
 ];
 
-export type WorkSourceKind = "mcp" | "schedule" | "ci_trigger";
+/** `decision`: an item a decision enqueued on resolution (T14.15, migration 0030). */
+export type WorkSourceKind = "mcp" | "schedule" | "ci_trigger" | "decision";
 
-export type WorkEventType = "enqueued" | "ready" | "admitted" | "done" | "cancelled" | "admission_failed";
+export type WorkEventType =
+  | "enqueued"
+  | "ready"
+  | "admitted"
+  | "done"
+  | "cancelled"
+  | "admission_failed"
+  | "parked"
+  | "unparked";
 
 export interface WorkItemRow {
   id: string;
@@ -128,6 +146,16 @@ export interface WorkQueueLedgerSlice {
   findRunRebaseForWorkItem(workItemId: string): RunRebaseRow | undefined;
   /** T15.7: the `ci_ref_conflict` row that enqueued a work item, if any. */
   getRefConflictForWorkItem(workItemId: string): RefConflictRow | undefined;
+  /**
+   * T14.15 (FR-CTL-13, LLD §20.3): park a PENDING or READY item for decision `decisionId` (`PARKED_DECISION`, which
+   * the §18.7 dequeue never claims). Undefined, and nothing written, for any other state. Joins a caller's transaction.
+   */
+  parkWorkItem(workItemId: string, decisionId: string): WorkItemRow | undefined;
+  /**
+   * T14.15: end the parking of a `PARKED_DECISION` item: `resume` returns it to READY (PENDING while a predecessor is
+   * not DONE, as at enqueue), `cancel` ends it CANCELLED. Undefined for an item that is not parked.
+   */
+  unparkWorkItem(workItemId: string, decisionId: string, outcome: "resume" | "cancel"): WorkItemRow | undefined;
 }
 
 /** T15.7 (migration 0029): one `run_rebase` row. */
@@ -432,6 +460,8 @@ export function createWorkQueueLedgerSlice(
         if (item === undefined) return undefined;
         if (!operator && item.creator_client_id !== byClientId) return undefined;
         if (item.state === "DONE" || item.state === "CANCELLED" || item.state === "FAILED_ADMISSION") return undefined;
+        // T14.15: a parked item belongs to its open decision; only resolving the decision moves it (fail closed).
+        if (item.state === "PARKED_DECISION") return undefined;
         // ADMITTING: the scheduler is admitting it now; cancelling here could leave a run behind a CANCELLED item.
         if (item.state === "ADMITTED" || item.state === "ADMITTING") return undefined;
         const at = ts();
@@ -601,6 +631,41 @@ export function createWorkQueueLedgerSlice(
       return db.prepare("SELECT * FROM ci_ref_conflict WHERE work_item_id = ?").get(workItemId) as
         | RefConflictRow
         | undefined;
+    },
+
+    parkWorkItem(workItemId, decisionId) {
+      return immediate(() => {
+        const item = getWorkItemFixed(workItemId);
+        if (item === undefined || (item.state !== "PENDING" && item.state !== "READY")) return undefined;
+        const res = setState(workItemId, "PARKED_DECISION", {}, "parked", {
+          decision_id: decisionId,
+          from: item.state,
+        });
+        if (res !== undefined) notifyQueueChange(item.project_id);
+        return res;
+      });
+    },
+
+    unparkWorkItem(workItemId, decisionId, outcome) {
+      return immediate(() => {
+        const item = getWorkItemFixed(workItemId);
+        if (item === undefined || item.state !== "PARKED_DECISION") return undefined;
+        const detail = { decision_id: decisionId };
+        let res: WorkItemRow | undefined;
+        if (outcome === "cancel") {
+          res = setState(workItemId, "CANCELLED", { terminal_at: ts() }, "cancelled", detail);
+        } else {
+          const preds = db
+            .prepare(`SELECT predecessor_id FROM project_work_dependency WHERE successor_id = ?`)
+            .all(workItemId) as { predecessor_id: string }[];
+          // As at enqueue: only DONE predecessors release the item (a CANCELLED one keeps it PENDING, fail closed).
+          const blocked = preds.some((p) => isBlockingPredecessor(p.predecessor_id));
+          res = setState(workItemId, blocked ? "PENDING" : "READY", {}, "unparked", detail);
+          if (res !== undefined && !blocked) appendEvent(workItemId, "ready", detail);
+        }
+        if (res !== undefined) notifyQueueChange(item.project_id);
+        return res;
+      });
     },
 
     countAdmissibleWorkItems(projectId) {

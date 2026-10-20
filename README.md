@@ -1037,6 +1037,9 @@ Only one `serve` can hold a data directory at a time.
 | `delete_project` | project management | Remove a dynamic project once none of its runs is going; its history stays. | Only with `manage_projects: true` |
 | `list_pending_approvals` | approval | Pending approvals for this client, with digests (never scope bodies). | Only with `approval_proxy: true`; `console` sees it |
 | `decide_approval` | approval | Decide a pending approval with its matching digest. | Only with `approval_proxy: true`; `console` sees it |
+| `request_decision` | decision | Ask the operator a question with two to six options and a recommendation; optionally park one of this client's work items (`PARKED_DECISION`) and carry work items to enqueue on the decision. Sinks hear `decision_requested`, never the text. | Orchestrator profile only (stdio and network transport); `console` sees none |
+| `list_decisions` | decision | Decisions this client requested, with question, options and note labelled `untrusted_client_text`. | Orchestrator profile only (stdio and network transport); `console` sees none |
+| `decide` | decision | Decide one open decision of a client this proxy may act for: the item resumes or is cancelled and the enqueue list is added once, as the requesting client; deciding twice is refused (`CONFLICT`). | Only with `approval_proxy: true`, orchestrator profile; `console` sees none |
 
 A `console` tool-profile client sees only `get_digest`, `list_runs`, `get_run`, `delegate_task`, `steer_run`,
 `pause_project` and `resume_project`, plus the two approval tools when it has `approval_proxy`; every other tool needs
@@ -1300,6 +1303,7 @@ subsections below give the full behaviour; `switchboard --help` prints the same 
 | `resume` | Lift the operator pause set by `pause` (a project paused by an MCP client stays paused) | `--json` | [Control plane](#control-plane-milestone-14) |
 | `consent hash-passphrase`, `consent pair` | Hash the HTTP consent-page passphrase for config; print a one-time pairing code (Switchboard's own secrets, never a provider sign-in) | `--json` | [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks) |
 | `schedule list`, `schedule show <id>`, `schedule enable <id>`, `schedule disable <id>`, `schedule approve <id>`, `schedule deny <id>`, `schedule create <cron> <project> <template_json>` | List, inspect, enable, disable, approve, reject and create UTC cron schedules (off by default) | `--project` (list), `--json` | [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks) |
+| `decisions list`, `decisions decide <dec_id> --option <n>` | List decision requests with their (untrusted) question and options; decide one as the operator: its work item resumes or is cancelled and its enqueue list is added once; deciding twice is refused | `--project`, `--state` (list), `--option`, `--note` (decide), `--json` | [LLD §20.3](docs/design/LLD.md#203-decision-requests-fr-ctl-13-t1415) |
 | `skills list`, `skills show <name>[@n]`, `skills add <name>`, `skills approve <name>@<n>`, `skills revoke <name>@<n>`, `skills retire <name>`, `skills unretire <name>`, `skills diff <name>@<a> <name>@<b>` | Skill store: list, inspect, validate and store a version, approve, revoke, retire and diff | `--all`, `--body`, `--file`, `--from-repository`, `--note`, `--json` | [Switchboard-controlled skills](#switchboard-controlled-skills-milestone-16) |
 
 ### Operator commands
