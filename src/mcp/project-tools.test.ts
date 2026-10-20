@@ -561,7 +561,9 @@ describe("approval (BR-32): container, push and widening wait for the operator",
       approval_needed: ["push_policy", "commit_identity"],
     });
     expect(c.body.in_force_revision).toBeUndefined();
-    expect(c.body.message).toMatch(/operator's approval/);
+    // ADR-0068: the message names the MCP approval path and the CLI one.
+    expect(c.body.message).toMatch(/decide_approval from an approver client/);
+    expect(c.body.message).toMatch(/switchboard projects approve/);
     expect(JSON.stringify(c.body)).not.toMatch(/decided_by|operator user/);
     const listed = await call("list_projects");
     expect(listed.body.projects[0]).toMatchObject({ id: "dyn-app", status: "PENDING_APPROVAL", revision: 1 });
@@ -571,6 +573,7 @@ describe("approval (BR-32): container, push and widening wait for the operator",
       code: "PERMISSION_BLOCKED",
       details: { project: "dyn-app", reason: "approval_required" },
     });
+    expect(blocked.body.error.message).toMatch(/decide_approval from an approver client.*switchboard projects approve/);
     expect(count("run")).toBe(0);
 
     store.decide({ projectId: "dyn-app", decision: "APPROVED", decidedBy: "op" }); // what `projects approve` does

@@ -31,6 +31,8 @@
  * (`boundedSchema`: strings at most 4096 characters, arrays at most 32 items), so an oversized definition fails V1.
  * `list_projects` entries for dynamic projects carry `source: "dynamic"`, `revision` and `status` (Proposed additions;
  * configured entries are unchanged and have no `source`).
+ * ADR-0068: in these tools only, a repository context takes exactly one of `path` and `clone_url` (`oneOf`; the
+ * configuration file keeps requiring `path`); a dynamic context cloned from a URL lists `source_url` (never a path).
  *
  * T14.1 (FR-CTL-01, LLD §3.4.2): `list_runs` is appended to the tool list; its rows are the `get_run` envelope. Proposed
  * (Delegated): `since`/`until` must be ISO-8601 date-times with a zone (`Z` or an offset); `status` and `status_in` are
@@ -79,6 +81,7 @@ import {
 import { NEEDS_ATTENTION_PRIORITY } from "../control/needs-attention.js";
 import { MODEL_ID_PATTERN } from "../models/registry.js";
 import { PRIVILEGED_SCOPE_SCHEMA } from "../policy/scope.js";
+import { MAX_CLONE_URL_LENGTH } from "../projects/clone.js";
 
 /** Bumped on any incompatible change to a published tool schema (Proposed). */
 export const TOOL_SCHEMA_VERSION = 1;
@@ -261,7 +264,27 @@ export function boundedSchema(schema: unknown): unknown {
   return out;
 }
 
-const PROJECT_DEFINITION = boundedSchema(projectSchema) as Record<string, unknown>;
+/**
+ * ADR-0068: the MCP-only definition. Each context takes exactly one of `path` and `clone_url` (an HTTPS repository URL,
+ * parsed and allow-listed by `src/projects/clone.ts`).
+ */
+function mcpProjectDefinition(): Record<string, unknown> {
+  const def = boundedSchema(projectSchema) as Record<string, unknown>;
+  const props = def.properties as Record<string, Record<string, unknown>>;
+  const contexts = props.contexts as Record<string, unknown>;
+  const item = contexts.items as Record<string, unknown>;
+  item.properties = {
+    ...(item.properties as Record<string, unknown>),
+    clone_url: { type: "string", minLength: 1, maxLength: MAX_CLONE_URL_LENGTH },
+  };
+  item.required = (item.required as string[]).filter((r) => r !== "path");
+  item.oneOf = [
+    { properties: { path: true }, required: ["path"] },
+    { properties: { clone_url: true }, required: ["clone_url"] },
+  ];
+  return def;
+}
+const PROJECT_DEFINITION = mcpProjectDefinition();
 const PROJECT_REF = { type: "string", pattern: PROJECT_ID_PATTERN, maxLength: 41 } as const;
 
 /** Artifact kinds an MCP client may read; `provider_stdout`/`provider_stderr` are operator-CLI only (LLD §3). */
@@ -1301,6 +1324,8 @@ const PROJECTS = {
                 kind: { type: "string", enum: ["repository"] },
                 primary: { type: "boolean" },
                 push_policy: { type: "string", enum: ["none", "branch"] },
+                // ADR-0068: a dynamic context cloned from a URL; the normalised URL, never a path.
+                source_url: { type: "string" },
               },
             },
           },
@@ -1665,10 +1690,13 @@ const SEARCH_DESCRIPTIONS: Readonly<Record<SearchToolName, string>> = {
 
 const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
   create_project:
-    "Create a dynamic project for this client (shape as list_projects describes, plus repository contexts with path " +
-    "and base_ref). The repository must be a Git repository under an allowed root; trust ceiling, providers and push " +
-    "policy may not exceed this client's. A container environment, a push policy other than none, a commit identity, " +
-    "signing or a widening returns PENDING_APPROVAL: the operator must approve it on the CLI before it can start runs.",
+    "Create a dynamic project for this client (shape as list_projects describes, plus repository contexts with base_ref " +
+    "and exactly one of path and clone_url). path must be a Git repository under an allowed root. clone_url " +
+    "(https://<host>/<owner>/<repo>, an owner the operator allows in project_sources) makes the server clone it with " +
+    "its own git credentials, or reuse its earlier clone. Trust ceiling, providers and push policy may not exceed this " +
+    "client's. A container environment, a push policy other than none, a commit identity, signing or a widening " +
+    "returns PENDING_APPROVAL: approve it with decide_approval from an approver client (list_pending_approvals), or " +
+    "the operator runs `switchboard projects approve`, before it can start runs.",
   update_project:
     "Write a new revision of a dynamic project this client created, under the same rules as create_project. A " +
     "revision that needs approval stays PENDING_APPROVAL and the previous revision stays in force until then.",

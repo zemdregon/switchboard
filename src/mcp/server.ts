@@ -220,7 +220,13 @@ import {
   parsePrivilegedScope,
   privilegedEligibilityProfile,
 } from "../policy/index.js";
-import type { DynamicProjectStore } from "../projects/index.js";
+import {
+  type DynamicProjectStore,
+  type GitRunner,
+  normalizedUrl,
+  parseRepositoryUrl,
+  sourceAllowed,
+} from "../projects/index.js";
 import { hotPathsProblem, storedHotPaths } from "../queue/hot-paths.js";
 import { DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT, QUEUE_IDEMPOTENCY_PREFIX } from "../queue/scheduler.js";
 import { deleteRagStore } from "../retrieval/store.js";
@@ -340,6 +346,8 @@ export interface McpServerDeps {
     readonly projects?: readonly ResolvedProject[];
     /** T9.9: no dynamic project may lie inside the data directory. */
     readonly dataDir?: string;
+    /** ADR-0068: where `create_project` may clone a `clone_url`. Absent: every `clone_url` is refused. */
+    readonly projectSources?: ResolvedConfig["projectSources"];
     /** T9.9: providers the operator disabled are outside every client's provider set. */
     readonly providers?: ResolvedConfig["providers"];
     /** T5.6: handoff bundle bounds (`continuity.*`, LLD §15.4). Absent means the LLD defaults. */
@@ -361,6 +369,8 @@ export interface McpServerDeps {
   readonly models?: ModelRegistry;
   /** T9.9 (FR-PRJ-10): dynamic projects. Required when the client has `manage_projects`; absent means none resolve. */
   readonly projectStore?: DynamicProjectStore;
+  /** ADR-0068: the Git runner `create_project` clones with. Absent: `git` from `PATH` (tests inject a local one). */
+  readonly projectGit?: GitRunner;
   /**
    * T12.6 (FR-RAG-06): `search_project_context`. Absent (no embedding backend configured) means the tool is never
    * listed; present, it is listed only while retrieval is on for at least one project this client may use.
@@ -519,6 +529,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           client,
           allowedRoots: deps.config.allowedRoots,
           ...(deps.config.dataDir !== undefined ? { dataDir: deps.config.dataDir } : {}),
+          ...(deps.config.projectSources !== undefined ? { projectSources: deps.config.projectSources } : {}),
+          ...(deps.projectGit !== undefined ? { git: deps.projectGit } : {}),
           configuredIds: () => new Set((deps.config.projects ?? []).map((p) => p.id)),
           disabledProviders: new Set(
             [...(deps.config.providers ?? new Map())].filter(([, v]) => !v.enabled).map(([id]) => id),
@@ -1478,6 +1490,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         projectIds: [
           ...projectsForClient(deps.config.projects ?? [], client).map((p) => p.id),
           ...(projectTools?.listForClient().map((e) => e.project.id) ?? []),
+          // ADR-0068: an open onboarding decision is visible under the project it proposes.
+          ...(decisionsOffered ? ownOnboardingIds() : []),
         ],
       },
       a.since_cursor as string | undefined,
@@ -1731,9 +1745,64 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     });
   };
 
+  /**
+   * ADR-0068: the project an onboarding decision proposes. `project_id` must not be a configured id or another
+   * client's dynamic project (one message for both, as for `create_project`), nor a deleted or usable project of this
+   * client; it may be unknown or this client's own project waiting for approval or rejected. The URL is parsed by the
+   * clone rules and, when `project_sources` is configured, must be allowed there. Returns the normalised URL.
+   */
+  const checkOnboarding = (projectId: string, a: Args): string => {
+    if (a.work_item_id !== undefined || a.enqueue !== undefined) {
+      throw invalid("onboarding cannot be combined with work_item_id or enqueue (the project does not exist yet)", {
+        field: a.work_item_id !== undefined ? "work_item_id" : "enqueue",
+      });
+    }
+    const taken = () =>
+      new ToolError("PERMISSION_BLOCKED", `project ${projectId} cannot be proposed by this client`, {
+        project: projectId,
+        reason: "NOT_MANAGEABLE",
+      });
+    if ((deps.config.projects ?? []).some((p) => p.id === projectId)) throw taken();
+    const st = deps.projectStore?.state(projectId);
+    if (st !== undefined) {
+      if (st.clientId !== deps.clientId) throw taken();
+      if (st.deleted) {
+        throw invalid(`project ${projectId} was deleted; project ids are not reused`, {
+          field: "project_id",
+          reason: "ID_DELETED",
+        });
+      }
+      if (st.inForce !== undefined) {
+        throw invalid(`project ${projectId} already has an approved revision; ask without onboarding`, {
+          field: "project_id",
+          reason: "PROJECT_EXISTS",
+        });
+      }
+    }
+    const onboarding = a.onboarding as { repository_url: string };
+    const src = parseRepositoryUrl(onboarding.repository_url);
+    if (src === undefined) {
+      throw invalid(
+        "onboarding.repository_url must be https://<host>/<owner>/<repo> (optional .git), without " +
+          "credentials, port, query or fragment",
+        { field: "onboarding.repository_url", reason: "CLONE_URL_INVALID" },
+      );
+    }
+    const sources = deps.config.projectSources;
+    if (sources !== undefined && !sourceAllowed(src, sources)) {
+      throw new ToolError(
+        "PERMISSION_BLOCKED",
+        "the repository host or owner is not in this server's project_sources",
+        { field: "onboarding.repository_url", reason: "CLONE_SOURCE_NOT_ALLOWED" },
+      );
+    }
+    return normalizedUrl(src);
+  };
+
   const requestDecisionTool = async (a: Args) => {
     const projectId = a.project_id as string;
-    checkListProject(projectId);
+    const onboardingUrl = a.onboarding !== undefined ? checkOnboarding(projectId, a) : undefined;
+    if (onboardingUrl === undefined) checkListProject(projectId);
     const enqueue = (a.enqueue as { request: Args; priority: number }[] | undefined) ?? [];
     enqueue.forEach((e, i) => {
       checkQueuedRequest(projectId, e.request, `enqueue[${i}].request.`);
@@ -1757,6 +1826,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           options: a.options as DecisionOption[],
           recommendedOption: a.recommended_option as number,
           enqueue,
+          ...(onboardingUrl !== undefined ? { onboardingUrl } : {}),
         },
         deps.decisions?.announce,
       );
@@ -1766,8 +1836,24 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     }
   };
 
+  /**
+   * ADR-0068: project ids of this client's open onboarding decisions (the projects may not exist yet), for the digest.
+   * Bounded like `openDecisionsOf` (Delegated: the 200 oldest open decisions).
+   */
+  const ownOnboardingIds = (): Set<string> =>
+    new Set(
+      ledger
+        .listDecisions({ requesterClientIds: [deps.clientId], states: ["open"], limit: 200 })
+        .filter((d) => d.onboarding_url !== null)
+        .map((d) => d.project_id),
+    );
+
   const listDecisionsTool = async (a: Args) => {
-    if (a.project_id !== undefined) checkListProject(a.project_id as string);
+    // ADR-0068: a project id this client asked a decision about (an onboarding proposal) is a valid filter too; the
+    // rows are this client's own either way.
+    const ownDecision = (id: string) =>
+      ledger.listDecisions({ requesterClientIds: [deps.clientId], projectId: id, limit: 1 }).length > 0;
+    if (a.project_id !== undefined && !ownDecision(a.project_id as string)) checkListProject(a.project_id as string);
     const rows = ledger.listDecisions({
       requesterClientIds: [deps.clientId],
       ...(a.project_id !== undefined ? { projectId: a.project_id as string } : {}),

@@ -31,6 +31,7 @@ import { sql as sql0028 } from "./0028_oauth_cimd_client.js";
 import { sql as sql0029 } from "./0029_published_ref_conflicts.js";
 import { sql as sql0030 } from "./0030_decision_request.js";
 import { sql as sql0031 } from "./0031_merge_policy.js";
+import { sql as sql0032 } from "./0032_decision_onboarding.js";
 
 export interface Migration {
   readonly version: number;
@@ -80,4 +81,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 29, name: "published_ref_conflicts", sql: sql0029 },
   { version: 30, name: "decision_request", sql: sql0030, foreignKeysOff: true },
   { version: 31, name: "merge_policy", sql: sql0031 },
+  { version: 32, name: "decision_onboarding", sql: sql0032 },
 ];

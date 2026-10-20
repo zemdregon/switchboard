@@ -43,12 +43,15 @@ import {
   resolveRouting,
 } from "./routing.js";
 import {
+  APPROVAL_PROXY_KINDS,
+  type ApprovalProxyKind,
   currentConfigSchema,
   DEFAULT_CONTINUITY_MAX_BUNDLE_BYTES,
   DEFAULT_CONTINUITY_MAX_DIFF_EXCERPT_BYTES,
   DEFAULT_CONTINUITY_MAX_TEXT_CHARS,
   DEFAULT_PREFLIGHT_TTL_SECONDS,
   DEFAULT_PRIVILEGED_APPROVAL,
+  DEFAULT_PROJECT_SOURCE_HOSTS,
   DEFAULT_RETENTION_DAYS,
   DEFAULT_RETENTION_INTERVAL,
   DEFAULT_SKILL_DELIVERY,
@@ -91,6 +94,14 @@ function resolveVerificationLimits(limits: SwitchboardConfig["limits"]): {
       env: { ...env },
     },
   };
+}
+
+/** Resolved `project_sources` (ADR-0068). */
+export interface ProjectSourcesSettings {
+  readonly cloneRoot: string;
+  readonly allowedHosts: readonly string[];
+  /** Lower case. */
+  readonly allowedOwners: readonly string[];
 }
 
 export interface ResolvedConfig {
@@ -197,6 +208,12 @@ export interface ResolvedConfig {
    * outbound notification is made. Holds operator destinations and tokens: never log or serialise it (FR-TEL-03).
    */
   notificationSinks: NotificationSinkSettings[];
+  /**
+   * `project_sources` (ADR-0068): where `create_project` / `update_project` may clone a `clone_url`. Absent unless the
+   * config sets the section; absent means every clone is refused. `cloneRoot` is canonical and under an allowed root;
+   * hosts are lower case, owners are compared case-insensitively (kept lower case here).
+   */
+  projectSources?: ProjectSourcesSettings;
   /** `ci_trigger` (T15.3; FR-QUE-03, LLD §18.6), always set; disabled unless the operator turns it on. */
   ciTrigger: CiTriggerSettings;
   /** Validated OTLP settings (LLD §7, LLD §20.13); absent means no export, no per-run receiver, no dependency load. */
@@ -257,6 +274,11 @@ export interface ResolvedMcpClient {
    * it with `approvalProxy` (default: the client itself); a hand-built proxy entry without it targets only itself.
    */
   readonly approvalProxyTargets?: readonly string[];
+  /**
+   * `approval_proxy_kinds` (ADR-0068): the approval kinds this proxy may list and decide. `loadConfig` sets it with
+   * `approvalProxy` (default: all three, ADR-0047 as before); a hand-built proxy entry without it means all three.
+   */
+  readonly approvalProxyKinds?: readonly ApprovalProxyKind[];
   /**
    * `tool_profile` (FR-CTL-11, T14.11, LLD §3.4.10): which tools `tools/list` offers. `loadConfig` always sets it
    * (default `orchestrator`); a hand-built entry without it is read as `orchestrator`, today's set.
@@ -413,6 +435,41 @@ export function validateConfig(
   throw new ConfigError(`Invalid ${source}:\n${lines.map((l) => `  ${l}`).join("\n")}`);
 }
 
+/**
+ * ADR-0068 (fail closed, NFR-SEC-06): `project_sources` as the schema cannot check it. `clone_root` must be written as
+ * an absolute path, resolve (it must exist) under an allowed root and not lie inside the data directory; an owner may
+ * not be `.` or `..`. Owners are kept lower case (GitHub owners are case-insensitive).
+ */
+function resolveProjectSources(
+  src: SwitchboardConfig["project_sources"],
+  allowedRoots: readonly string[],
+  dataDir: string,
+  baseDir: string,
+): ProjectSourcesSettings | undefined {
+  if (src === undefined) return undefined;
+  if (!path.isAbsolute(src.clone_root)) {
+    throw new ConfigError("Invalid config: $.project_sources.clone_root: must be an absolute path");
+  }
+  const cloneRoot = canonical(src.clone_root, "$.project_sources.clone_root", baseDir);
+  if (!isUnderAllowedRoot(cloneRoot, allowedRoots)) {
+    throw new ConfigError("Invalid config: $.project_sources.clone_root: must lie under one of allowed_roots");
+  }
+  if (isUnderAllowedRoot(cloneRoot, [dataDir])) {
+    throw new ConfigError("Invalid config: $.project_sources.clone_root: may not lie inside data_dir");
+  }
+  for (const [i, o] of src.allowed_owners.entries()) {
+    if (o === "." || o === "..") {
+      throw new ConfigError(`Invalid config: $.project_sources.allowed_owners[${i}]: not a repository owner`);
+    }
+  }
+  const owners = [...new Set(src.allowed_owners.map((o) => o.toLowerCase()))];
+  return {
+    cloneRoot,
+    allowedHosts: [...(src.allowed_hosts ?? DEFAULT_PROJECT_SOURCE_HOSTS)],
+    allowedOwners: owners,
+  };
+}
+
 function canonical(p: string, label: string, baseDir: string): string {
   const abs = path.resolve(baseDir, p);
   try {
@@ -483,6 +540,13 @@ export function loadConfig(
     if (c.approval_proxy_targets !== undefined && c.approval_proxy !== true) {
       throw new ConfigError(
         `Invalid config: $.mcp_clients[${i}].approval_proxy_targets: applies only to a client with approval_proxy: ` +
+          `true (client ${JSON.stringify(c.id)}); remove it or set approval_proxy`,
+      );
+    }
+    // ADR-0068 (Delegated, fail closed): approval kinds mean nothing without approval_proxy.
+    if (c.approval_proxy_kinds !== undefined && c.approval_proxy !== true) {
+      throw new ConfigError(
+        `Invalid config: $.mcp_clients[${i}].approval_proxy_kinds: applies only to a client with approval_proxy: ` +
           `true (client ${JSON.stringify(c.id)}); remove it or set approval_proxy`,
       );
     }
@@ -664,10 +728,13 @@ export function loadConfig(
     throw new ConfigError(`Invalid config:\n${sinkErrors.map((l) => `  ${l}`).join("\n")}`);
   }
 
+  const projectSources = resolveProjectSources(cfg.project_sources, allowedRoots, dataDir, baseDir);
+
   return {
     configPath,
     dataDir,
     ...(httpTransport !== undefined ? { httpTransport } : {}),
+    ...(projectSources !== undefined ? { projectSources } : {}),
     projects: resolveProjects(cfg, briefFiles),
     sanitizePatterns: [...(cfg.git?.sanitize_patterns ?? [])],
     secretScanAllow,
@@ -684,7 +751,12 @@ export function loadConfig(
           manageProjects: c.manage_projects === true,
           maxPushPolicy: c.max_push_policy ?? "none",
           approvalProxy: c.approval_proxy === true,
-          ...(c.approval_proxy === true ? { approvalProxyTargets: [...(c.approval_proxy_targets ?? [c.id])] } : {}),
+          ...(c.approval_proxy === true
+            ? {
+                approvalProxyTargets: [...(c.approval_proxy_targets ?? [c.id])],
+                approvalProxyKinds: [...(c.approval_proxy_kinds ?? APPROVAL_PROXY_KINDS)],
+              }
+            : {}),
           toolProfile: c.tool_profile ?? DEFAULT_TOOL_PROFILE,
           ...(c.skills !== undefined ? { skills: [...c.skills] } : {}),
           ...(c.allow_light === true ? { allowLight: true } : {}),

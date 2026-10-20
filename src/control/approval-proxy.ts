@@ -10,6 +10,10 @@
  *   (ADR-0030). `approval_id` is the revision row id (`prv_…`). `push_revision` when the revision needs approval for a
  *   push policy, a commit identity or commit signing; `dynamic_project` otherwise.
  *
+ * Kinds a proxy serves (ADR-0068): `mcp_clients[].approval_proxy_kinds` (default all three, ADR-0047 as before). An
+ * approval of a kind outside the list is neither listed nor decidable, and is refused with the same single message as
+ * every other failed check. So an operator can let a client approve dynamic project revisions but not privileged runs.
+ *
  * Delegated choices (not owner-approved; recorded in LLD §3.4.8):
  * - `revision_hash` (ADR-0030 names no stored hash): hex SHA-256 over the canonical JSON of the revision row's
  *   controller-stored fields `{ v: 1, project_id, revision, client_id, definition_json, approval_reasons_json,
@@ -26,7 +30,7 @@
  *   project revision decision are announced through `announce` after the transaction commits.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { ResolvedMcpClient } from "../config/index.js";
+import { APPROVAL_PROXY_KINDS, type ResolvedMcpClient } from "../config/index.js";
 import type { ApprovalRow, Ledger, RunRecord, RunState } from "../ledger/index.js";
 import {
   ApprovalRefusedError,
@@ -108,6 +112,12 @@ export interface ApprovalProxy {
 export function proxyTargets(clientId: string, client: ResolvedMcpClient): ReadonlySet<string> {
   if (client.approvalProxy !== true) return new Set();
   return new Set(client.approvalProxyTargets ?? [clientId]);
+}
+
+/** The approval kinds `client` may list and decide (ADR-0068; default all three). Empty without `approval_proxy`. */
+export function proxyKinds(client: ResolvedMcpClient): ReadonlySet<ApprovalKind> {
+  if (client.approvalProxy !== true) return new Set();
+  return new Set(client.approvalProxyKinds ?? APPROVAL_PROXY_KINDS);
 }
 
 /** LLD §3.4.8 `approval_digest`: hex SHA-256 over the canonical JSON of ledger-only fields. */
@@ -207,10 +217,11 @@ type Candidate = PrivilegedCandidate | RevisionCandidate;
 export function createApprovalProxy(deps: ApprovalProxyDeps): ApprovalProxy {
   const { ledger, clientId, client } = deps;
   const targets = proxyTargets(clientId, client);
+  const kinds = proxyKinds(client);
   const decider = `${MCP_PROXY_DECIDER_PREFIX}${clientId}`;
 
   const privilegedCandidate = (row: ApprovalRow): PrivilegedCandidate | undefined => {
-    if (row.status !== "PENDING") return undefined;
+    if (!kinds.has("privileged_scope") || row.status !== "PENDING") return undefined;
     const run = ledger.getRunRecord(row.run_id);
     if (!run || !targets.has(run.client_id)) return undefined;
     try {
@@ -278,6 +289,12 @@ export function createApprovalProxy(deps: ApprovalProxyDeps): ApprovalProxy {
     return { kind, item, row };
   };
 
+  /** A pending revision row as a candidate of a kind this proxy serves, or undefined (ADR-0068). */
+  const servedRevision = (row: ProjectRevisionRow): RevisionCandidate | undefined => {
+    const c = revisionCandidate(row);
+    return kinds.has(c.kind) ? c : undefined;
+  };
+
   /** The decidable approval named `approvalId` for this client, or undefined. Reads only. */
   const find = (approvalId: string): Candidate | undefined => {
     if (targets.size === 0) return undefined;
@@ -289,9 +306,8 @@ export function createApprovalProxy(deps: ApprovalProxyDeps): ApprovalProxy {
       const row = deps.projectStore.revisionRow(approvalId);
       if (row === undefined) return undefined;
       // Only the latest, undecided, pending revision of a project is decidable (store rules); same listing path.
-      return pendingRevisionRows(row.project_id)
-        .filter((r) => r.id === row.id)
-        .map(revisionCandidate)[0];
+      const pending = pendingRevisionRows(row.project_id).find((r) => r.id === row.id);
+      return pending === undefined ? undefined : servedRevision(pending);
     }
     return undefined;
   };
@@ -305,7 +321,10 @@ export function createApprovalProxy(deps: ApprovalProxyDeps): ApprovalProxy {
         .filter((c): c is PrivilegedCandidate => c !== undefined)
         .filter((c) => input.project_id === undefined || c.run.project_id === input.project_id)
         .map((c) => c.item);
-      const revisions = pendingRevisionRows(input.project_id).map((r) => revisionCandidate(r).item);
+      const revisions = pendingRevisionRows(input.project_id)
+        .map(servedRevision)
+        .filter((c): c is RevisionCandidate => c !== undefined)
+        .map((c) => c.item);
       const approvals = [...privileged, ...revisions].sort(
         (a, b) => a.requested_at.localeCompare(b.requested_at) || a.approval_id.localeCompare(b.approval_id),
       );
@@ -431,7 +450,7 @@ export const APPROVAL_PROXY_OUTPUTS: Record<ApprovalProxyToolName, Record<string
 export const APPROVAL_PROXY_DESCRIPTIONS: Record<ApprovalProxyToolName, string> = {
   list_pending_approvals:
     "List the pending approvals this client may decide for the operator: privileged scopes and dynamic project " +
-    "revisions of the clients the operator listed for it. Each item has an approval_id and an approval_digest computed " +
+    "revisions of the clients the operator listed for it, of the kinds the operator allows it. Each item has an approval_id and an approval_digest computed " +
     "by the controller from ledger state, plus controller-generated fields only. Optional project_id filters the list.",
   decide_approval:
     "Approve or deny one pending approval for the operator. Pass the exact approval_id and the approval_digest that " +
