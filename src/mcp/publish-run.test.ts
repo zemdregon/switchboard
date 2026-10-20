@@ -34,6 +34,7 @@ import type { AdmitWorkDeps } from "../queue/admission.js";
 import { runProjectWorkQueueTick } from "../queue/scheduler.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { SubjectBindingStore } from "./http-subjects.js";
+import { AGENT_TEXT_LABEL } from "./publish.js";
 import { createSwitchboardServer } from "./server.js";
 
 const GIT_ENV = {
@@ -86,6 +87,7 @@ interface Fixture {
   ledger: Ledger;
   lifecycle: RunLifecycle;
   pulls: FakePulls;
+  artifacts: ArtifactStore;
   queue: AdmitWorkDeps;
   bindings: SubjectBindingStore;
   store: DynamicProjectStore;
@@ -103,6 +105,8 @@ interface Fixture {
     content?: string;
     file?: string;
     succeed?: boolean;
+    /** The run's result summary (the terminal transition's `summary`, as `get_run` shows it). */
+    summary?: string;
   }): Promise<{
     runId: string;
     sessionId: string;
@@ -245,6 +249,7 @@ async function start(): Promise<Fixture> {
     ledger,
     lifecycle,
     pulls,
+    artifacts,
     bindings,
     queue: { lifecycle, ledger, registry, config } as unknown as AdmitWorkDeps,
     connect,
@@ -300,7 +305,13 @@ async function start(): Promise<Fixture> {
       });
       if (o.succeed !== false) {
         const row = ledger.getRunRecord(r.id);
-        ledger.casRunState({ runId: r.id, from: "RUNNING", to: "SUCCEEDED", expectedVersion: row?.version as number });
+        ledger.casRunState({
+          runId: r.id,
+          from: "RUNNING",
+          to: "SUCCEEDED",
+          expectedVersion: row?.version as number,
+          ...(o.summary !== undefined ? { payload: { summary: o.summary } } : {}),
+        });
       }
       return { runId: r.id, sessionId: session.id };
     },
@@ -374,6 +385,85 @@ describe("publish_run (ADR-0069)", () => {
     const digest = (await call("get_digest", {})).body;
     const finished = digest.projects.find((p: Json) => p.project_id === "web").finished;
     expect(finished.find((e: Json) => e.run_id === runId).publications).toEqual([publication]);
+  });
+
+  const PROPOSING_SUMMARY = [
+    "All done! Here is a PR title and description you can use:",
+    "",
+    "---",
+    "",
+    "## Fix broken relative Markdown links and anchors (docs only)",
+    "",
+    "Fixes relative links, cc @octocat.",
+    "",
+    "### Changes",
+    "",
+    "| File | Fix |",
+    "| --- | --- |",
+    "| README.md | anchor |",
+  ].join("\n");
+
+  it("titles and describes the pull request from the run summary's proposal, with the metadata underneath", async () => {
+    f = await start();
+    const call = await f.connect("linus");
+    const { runId, sessionId } = await f.seedRun({ summary: PROPOSING_SUMMARY });
+    const r = await call("publish_run", { run_id: runId });
+    expect(r.isError, JSON.stringify(r.body)).toBe(false);
+    const create = f.pulls.calls.find((c) => c.op === "create")?.args as Json;
+    expect(create.title).toBe("switchboard: Fix broken relative Markdown links and anchors (docs only)");
+    const body = create.body as string;
+    expect(body.startsWith("Fixes relative links, cc \uff20octocat.\n\n### Changes\n\n| File | Fix |")).toBe(true);
+    expect(body).not.toContain("All done!");
+    expect(body).not.toContain("@octocat");
+    const [description, metadata] = body.split("\n\n---\n\n");
+    expect(description).toContain("| README.md | anchor |");
+    expect(metadata).toBe(
+      [
+        AGENT_TEXT_LABEL.run_summary,
+        "",
+        "Opened by Switchboard `publish_run` with the operator's GitHub login.",
+        "",
+        `- Run: \`${runId}\``,
+        `- Meta-session: \`${sessionId}\``,
+        "- Provider: fake",
+        "- Project: `web`",
+        `- Head: \`${r.body.publication.head_sha}\``,
+      ].join("\n"),
+    );
+  });
+
+  it("a pr_draft artifact still wins over the run summary's proposal", async () => {
+    f = await start();
+    const call = await f.connect("linus");
+    const { runId, sessionId } = await f.seedRun({ summary: PROPOSING_SUMMARY });
+    const stored = await f.artifacts.put(JSON.stringify({ title: "Draft title", body: "Draft body." }));
+    f.ledger.insertArtifact({
+      runId,
+      metaSessionId: sessionId,
+      kind: "pr_draft",
+      sha256: stored.sha256,
+      sizeBytes: stored.sizeBytes,
+      mediaType: "application/json",
+    });
+    expect((await call("publish_run", { run_id: runId })).isError).toBe(false);
+    const create = f.pulls.calls.find((c) => c.op === "create")?.args as Json;
+    expect(create.title).toBe("switchboard: Draft title");
+    expect(create.body.startsWith(`Draft body.\n\n---\n\n${AGENT_TEXT_LABEL.pr_draft}\n\nOpened by Switchboard`)).toBe(
+      true,
+    );
+    expect(create.body).not.toContain("Fix broken relative");
+  });
+
+  it("a summary without a proposal keeps the run-id title and the metadata-only body", async () => {
+    f = await start();
+    const call = await f.connect("linus");
+    const { runId } = await f.seedRun({ summary: "I fixed the links.\n\n## Notes\n\nAll tests pass." });
+    expect((await call("publish_run", { run_id: runId })).isError).toBe(false);
+    const create = f.pulls.calls.find((c) => c.op === "create")?.args as Json;
+    expect(create.title).toBe(`switchboard: ${runId}`);
+    expect(create.body.startsWith("Opened by Switchboard `publish_run`")).toBe(true);
+    expect(create.body).not.toContain("---");
+    expect(create.body).not.toContain("I fixed the links");
   });
 
   it("is idempotent: publishing again pushes nothing new and reuses the open pull request", async () => {

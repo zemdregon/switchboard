@@ -2382,9 +2382,16 @@ push, as the operator's). A refusal is `PERMISSION_BLOCKED` (policy reasons, `SE
 **Pull request** (when `open_pull_request`): `owner/repo` from `git remote get-url --push <remote>` (github.com https,
 `ssh://git@github.com/` or `git@github.com:` only; else `REMOTE_NOT_GITHUB`); base = `base_ref` without `refs/heads/`,
 `refs/remotes/<remote>/` or `<remote>/` (`BASE_INVALID` unless a safe branch name). G14 first; an `OPEN` pull request is
-reused. Otherwise G13 with title `switchboard: <pr_draft title or run id>` (control characters removed, at most 120
-characters of run text) and a body of the controller footer (run, meta-session, provider, project, head) plus the
-`pr_draft` body capped at 16 KiB under the heading "Agent-written description (untrusted; ...)". A `gh` failure leaves
+reused (never edited). Otherwise G13 with the run's proposed text (ADR-0069 amendment 2026-10-20): the newest
+non-empty `pr_draft` artifact, else the proposal `extractProposal` finds in the run's scrubbed `result.summary` (the
+first level 1/2 ATX heading after a `---`/`***`/`___` line, else a level 1/2 heading on the first non-blank line; the
+heading is the title, the rest the body; fenced code is skipped; never a title from prose). Title
+`switchboard: <proposed title or run id>` (control characters removed, whitespace collapsed, wrapping emphasis or code
+markers and a trailing period removed, mentions neutralised, at most 120 characters of run text). Body: the proposed
+description (control characters removed, `@name` rewritten to `＠name`, capped at 16 KiB and so that the footer fits,
+an open fence or HTML comment closed) first, then `---`, a label naming it agent-written and untrusted and its source
+(`pr_draft` artifact or run result summary), then the controller footer (run, meta-session, provider, project, head);
+with no proposal, the footer alone. A `gh` failure leaves
 the push in place and returns `pull_request: null` with `pull_request_error` from the closed list `GH_MISSING`,
 `AUTH_REQUIRED`, `TIMEOUT`, `GH_FAILED`, `PARSE_FAILED`, `REMOTE_NOT_GITHUB`, `BASE_INVALID`.
 

@@ -2134,7 +2134,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   const publishRunTool = async (a: Args) => {
     const run = ownRun(a.run_id as string);
     return publishRun(
-      { ledger, artifacts: deps.artifacts, clientId: deps.clientId, clientProjects: client.projects ?? [] },
+      { ledger, artifacts: deps.artifacts, clientId: deps.clientId, clientProjects: client.projects ?? [], scrub },
       deps.publish as PublishDeps,
       run,
       { openPullRequest: a.open_pull_request !== false, draft: a.draft === true },
