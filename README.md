@@ -241,6 +241,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   when every required check is green at its head, it is mergeable and a passing verification is recorded at that SHA.
   Every merge and refusal is a `merge_event` row; CI results, foreign commits, conflicts, merges and closes of published
   refs are `ref_event` rows, shown to the publishing client in `get_digest` and sent to sinks as metadata only.
+  Since ADR-0070 a client that may `publish_run` can also ask for that merge at once with MCP `merge_run_pr` (the same
+  gate, not waiting for the poller, also when `ci_trigger` is off), and `merge_policy.require_verification: false`
+  (default `true`; turning it off waits for approval like turning the policy on) skips the verification condition only.
   A project may set a queue low-water mark (T15.4: `projects.<id>.queue.low_water`, off by default): when the
   admissible count (`READY` items, or `PENDING` items whose dependencies can still be met) drops below the mark, one
   `queue_low` sink event fires, re-armed only when the count rises back to the mark. The detector is covered on fakes
@@ -847,6 +850,7 @@ See [TDD §3.1](docs/design/TDD.md#31-configuration) and [LLD §3.4](docs/design
 | `decide` | no | no | yes (an `approval_proxy` client decides only decisions of its targets) |
 | `pause_project`, `resume_project`, `steer_run` | yes | yes | no |
 | `publish_run` (push a SUCCEEDED run's branch, open a pull request with the operator's `gh` login; ADR-0069) | only with `max_push_policy: "branch"` | no | no extra |
+| `merge_run_pr` (merge a published run's pull request through the project's merge policy gate; ADR-0070) | only with `max_push_policy: "branch"` | no | no extra |
 
 Tool outputs use closed controller fields only (no transcripts). Pending approvals expose an `approval_digest`, not
 scope bodies.
@@ -1046,6 +1050,8 @@ Only one `serve` can hold a data directory at a time.
 | `enqueue_work` | queue | Queue a `delegate_task` request on one project this client may use; the controller admits it later under the creating client's ceiling. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `list_work` | queue | Work items this client queued, highest priority first, then oldest, with optional project and state filters. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `cancel_work` | queue | Cancel a `PENDING` or `READY` item this client queued; an admitted item stops with `cancel_run` on its run. | Orchestrator profile only (stdio and network transport); `console` sees none |
+| `publish_run` | publication | Push one of this client's SUCCEEDED runs' branch with the operator-push rules and the pre-push secret scan, then open (or reuse) a pull request with the operator's `gh` login. Idempotent. See [ADR-0069](docs/adr/0069-mcp-publish-run-and-dynamic-project-push.md). | Only with `max_push_policy: "branch"` (orchestrator profile) |
+| `merge_run_pr` | publication | Merge the pull request of one of this client's published runs with the operator's `gh` login, only through the project's merge policy gate (T15.8: policy in force and on, not paused, open, not draft, published head, base branch, mergeable, every required check passed, verification and reports as the policy says), pinned to the head (`--match-head-commit`). Refusals are `PERMISSION_BLOCKED` with a closed `details.reason`; every decision is a `merge_event` in `get_digest`. Idempotent. See [ADR-0070](docs/adr/0070-mcp-merge-run-pr.md). | With `publish_run` (the server's `gh` merge port on `ci_trigger.gh_binary`, also when `ci_trigger` is off) |
 | `search_project_context` | retrieval | Read-only semantic search over a project's indexed contexts. See [Retrieval index](#retrieval-index-milestone-12). | Only when retrieval is on for at least one of the client's projects |
 | `list_skills` | skills | Operator-approved skill names this client may inject, with the newest usable version's metadata (no bodies). | Only when `skills.enabled` |
 | `get_skill` | skills | The text of one visible skill version. | Only when `skills.enabled` |

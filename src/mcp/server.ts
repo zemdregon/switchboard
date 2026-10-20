@@ -282,10 +282,12 @@ import { assembleDigest, type OpenDecisionItem } from "./digest.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
 import type { SubjectBindings } from "./http-subjects.js";
+import { type MergeRunDeps, mergeRunPr } from "./merge-run-pr.js";
 import {
   admitBrief,
   createProjectTools,
   dynamicListItem,
+  mergePolicyItem,
   type PendingRevisionAnnouncement,
   type ProjectTools,
 } from "./project-tools.js";
@@ -425,6 +427,11 @@ export interface McpServerDeps {
    * `max_push_policy` is `branch`.
    */
   readonly publish?: PublishDeps;
+  /**
+   * ADR-0070 (LLD §3.4.13): the T15.8 merge port and gate inputs behind `merge_run_pr`. Offered exactly when
+   * `publish_run` is and this is present; absent, the tool does not exist for this server.
+   */
+  readonly mergeRun?: MergeRunDeps;
 }
 
 /** T16.9: what the skill tools read. Nothing here is written. */
@@ -2007,6 +2014,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
         effective_max_profile: effectiveMaxProfile(maxTrustProfile, p),
         ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
+        ...mergePolicyItem(p),
       })),
       // T9.9: this client's dynamic projects (creator-only), marked `source: "dynamic"`.
       ...(projectTools?.listForClient().map((e) => dynamicListItem(e, maxTrustProfile)) ?? []),
@@ -2132,7 +2140,24 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       { openPullRequest: a.open_pull_request !== false, draft: a.draft === true },
     );
   };
-  const publishHandlers: Record<PublishToolName, (a: Args) => Promise<object>> = { publish_run: publishRunTool };
+  // ADR-0070 (LLD §3.4.13): `merge_run_pr`, offered exactly when `publish_run` is and the merge port is wired.
+  const mergeRunOffered = publishOffered && deps.mergeRun !== undefined;
+  const mergeRunPrTool = async (a: Args) =>
+    mergeRunPr(
+      { ledger, clientId: deps.clientId, clientProjects: client.projects ?? [] },
+      deps.publish as PublishDeps,
+      deps.mergeRun as MergeRunDeps,
+      ownRun(a.run_id as string),
+      a.expected_head_sha as string | undefined,
+    );
+  const publishHandlers: Record<PublishToolName, (a: Args) => Promise<object>> = {
+    publish_run: publishRunTool,
+    merge_run_pr: mergeRunPrTool,
+  };
+  const publishToolOffered = (name: string) =>
+    (PUBLISH_TOOL_NAMES as readonly string[]).includes(name) &&
+    publishOffered &&
+    (name !== "merge_run_pr" || mergeRunOffered);
   const skillGate = (profile: TrustProfile): SkillGate => ({
     profile,
     allowDraftInTrusted: deps.skills?.settings.allowDraftInTrusted === true,
@@ -2237,6 +2262,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         workQueue: workQueueOffered,
         skills: skillsOffered,
         publish: publishOffered,
+        mergeRunPr: mergeRunOffered,
       }),
       // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
       ...(approvalProxy !== undefined
@@ -2319,8 +2345,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         if (!validate(args)) throw schemaError(validate.errors ?? []);
         return ok(await skillHandlers[tool](args));
       }
-      if ((PUBLISH_TOOL_NAMES as readonly string[]).includes(name) && publishOffered) {
-        // ADR-0069: when not offered (no publish port, or max_push_policy none) it is answered like an unknown tool.
+      if (publishToolOffered(name)) {
+        // ADR-0069: when not offered (no publish port, or max_push_policy none) it is answered like an unknown tool;
+        // ADR-0070: `merge_run_pr` also without the merge port.
         const tool = name as PublishToolName;
         const args = structuredClone(rawArgs ?? {}) as Args;
         const validate = publishValidators[tool];

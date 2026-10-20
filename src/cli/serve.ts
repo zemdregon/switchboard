@@ -1497,6 +1497,23 @@ async function runDaemon(
         resolveContext: resolvePushContext,
         pulls: new GhPullRequestPort({ binary: config.ciTrigger.ghBinary, sourceEnv: io.env }),
       },
+      // ADR-0070 (LLD §3.4.13): `merge_run_pr`, offered with `publish_run`: the T15.8 gate on the poller's port, or,
+      // when `ci_trigger.enabled` is false, the same G10 to G12 port on `ci_trigger.gh_binary`. Not limited to
+      // `ci_trigger.projects`; the project's own merge policy in force decides.
+      mergeRun: {
+        db,
+        merge:
+          ciPort ??
+          new GhCiStatusPort({
+            binary: config.ciTrigger.ghBinary,
+            sourceEnv: io.env,
+            useCheckRunsFallback: config.ciTrigger.useCheckRunsFallback,
+          }),
+        targets: mergeTargets,
+        resolveRemote: resolveCiRemote,
+        nowMs: () => (now ? now() : new Date()).getTime(),
+        ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
+      },
     };
     mcp = await startStdioServer({ ...mcpDeps, clientId });
     mcp.server.onclose = () => resolveStop("mcp transport closed");

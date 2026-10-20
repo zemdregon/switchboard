@@ -2402,6 +2402,42 @@ at least one ACCEPTED `git_push` event recorded on it (agent `push` tool, an ope
 `publish_run`); one `{ branch, head_sha, pushed_at, pull_request_url?, pull_request_number? }` per branch and head,
 oldest first; the pull request fields come from the newest `pull_request` row of the run for that branch.
 
+#### 3.4.13 `merge_run_pr` (FR-SUB-02, FR-GIT-12, ADR-0070)
+
+*Added 2026-10-20 (Linus, design authority, on owner approval of auto-merge for whumpo-website; details not
+owner-approved).* Code: `src/mcp/merge-run-pr.ts`, `applyMergeGate` and `mergeOnRequest` in `src/ci/merge-policy.ts`,
+schemas in `src/mcp/schemas.ts`, wired in `src/cli/serve.ts`. Decision record: [ADR-0070](../adr/0070-mcp-merge-run-pr.md).
+
+**Offered** exactly when `publish_run` is (§3.4.12: the publish port and `max_push_policy: branch`, never a `console`
+profile) and the server also has the merge port (`serve` always wires it: the CI poller's `gh` port, or the same port on
+`ci_trigger.gh_binary` when `ci_trigger.enabled` is false). Otherwise it is answered exactly like an unknown tool;
+`tools/list` and `callTool` read the same `offeredDescriptors`.
+
+**Input** (closed): `{ run_id, expected_head_sha?: 40 lowercase hex }`.
+
+**Checks, in order.** `run_id` names a run of this client and HTTP subject (as `get_run`; otherwise `INVALID_REQUEST
+"unknown run <id>"`); its project is one the client may publish (`publishableContext`, §3.4.12: `PERMISSION_BLOCKED`
+`NO_PROJECT`, `CONTEXT_UNKNOWN` or `POLICY_NONE`); the run has an ACCEPTED `git_push` of a `refs/heads/*` ref recorded on
+it (`publish_run` or the agent `push` tool; else `INVALID_REQUEST`, `NOT_PUBLISHED`). Then `mergeOnRequest`: the ref's
+published tip is the newest ACCEPTED push of that remote and ref for the project (§18.6); the project's merge policy must
+be in force and enabled (`mergeTargetsFrom`, §20.7 item 1) and the project not paused (§3.4.4), else `policy_off`; a
+superseded ref (§20.4) is `head_moved`; a remote that is not github.com is `INVALID_REQUEST` `REMOTE_NOT_GITHUB`. Then
+§20.7's gate (`applyMergeGate`, `request` mode), the same function the poller runs: no pull request or a `CLOSED` one is
+`not_mergeable`; a `MERGED` one at the published tip returns `merged: true` without G12 (idempotent), at another head
+`head_moved`; `expected_head_sha` other than the published tip is `head_moved`; then draft, head, base, mergeable,
+verification (unless `require_verification` is false), reports, G11, the policy and G10 re-read, then G12 exactly as
+§20.7 item 4. Unlike the poller, an earlier `attempted` row at the head does not stop a new G12 (head-pinned, so a retry
+after `gh_error` is safe), and a pending check is refused at once (`check_pending`), never waited for.
+
+**Output** (closed): `{ run_id, pull_request: { number, url }, merged: true, head_sha, method }`; the URL is
+`https://github.com/<owner>/<repo>/pull/<number>` of the resolved remote. A refusal is `PERMISSION_BLOCKED` with
+`details.reason` from the closed `merge_event` list (§20.7 item 5), `details.head_sha` and, once read,
+`details.pull_request_number`; `gh_error` is `TOOL_FAILURE` with `retryable: true`.
+
+**Records.** Every refusal, attempt and merge is the poller's `merge_event` row (and run event on the publishing run,
+and sink event), so it appears in `get_digest` `ref_events`; the G10 read records `ref_event` rows as the poller's does.
+A refusal for a project without any policy records method `squash`. No new table, reason or migration.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added
@@ -7904,6 +7940,15 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
    "queued" on GitHub's side, recorded as `merged`; the later `merged` ref event is the fact (ADR-0060 revisit clause).
 8. **Tests.** `src/ci/merge-policy.test.ts` (fake `CiMergePort` and fake `GhRunner`; every done-when clause), the
    approval wait in `src/mcp/project-tools.test.ts`, the migration in `src/ledger/ledger.test.ts`.
+
+*Note 2026-10-20 (ADR-0070, Linus, design authority; not owner-approved):* the per-ref gate of item 4 is one function,
+`applyMergeGate`, called by the poller (`poll` mode) and by MCP `merge_run_pr` (§3.4.13, `request` mode); behaviour of
+the poller is unchanged. `merge_policy.require_verification` (boolean, default `true`) is added: `false` skips the
+`verification_result`-at-head condition only (`required_reports`, the checks and every G10 condition still apply); a
+dynamic revision setting it `false` waits for approval with `approval_needed` `merge_policy`, like `enabled: true`, and
+step 4's policy re-read refuses `policy_off` when verification was turned back on after the pass skipped it.
+`list_projects` shows each project's `merge_policy` (in force) as `{ enabled, method, required_reports,
+require_verification }` when the project sets one.
 
 ### 20.8 Work queue over HTTP (FR-QUE-08, T15.9)
 
