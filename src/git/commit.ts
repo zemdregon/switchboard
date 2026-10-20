@@ -8,7 +8,15 @@ import { nativeExcludePathspecs, recordedNativePaths } from "../workspace/native
 import { findNestedRepositories, nestedPathspecArgs } from "../workspace/nested.js";
 import type { CredentialReach } from "./credential-reach.js";
 import { DEFAULT_PUBLISH_PREFIX, PublishRefError, publishRefFor } from "./publish-ref.js";
+import { MAX_SECRET_SCAN_HIT_EVENTS } from "./push.js";
 import { createSanitizer, type SanitizeReport, type Sanitizer, SanitizerError } from "./sanitize.js";
+import {
+  compileSecretScanAllow,
+  SECRET_SCAN_HIT_EVENT,
+  type SecretScanAllow,
+  type SecretScanAllowEntry,
+  scanOutgoingDiff,
+} from "./secret-scan.js";
 import {
   DEFAULT_SIGN_TIMEOUT_MS,
   repoSigningConfigUnsafe,
@@ -44,6 +52,13 @@ import {
  * that passes {@link GitPublisher}'s own sanitiser (the same built-in and operator rules as an agent message) before
  * `commit-tree`; the sanitiser is the only producer of the text Git receives. No usable draft and no agent message is
  * `MESSAGE_REQUIRED`; the controller never writes a stand-in. Without a task nothing about this path changes.
+ *
+ * Commit-time secret scan (T9.14; FR-GIT-11; ADR-0061 point 4; LLD §20.9). Once the commit is published and recorded,
+ * the added lines of `parent..commit` are scanned with the push's scanner (`src/git/secret-scan.ts`, the same rules and
+ * the same operator allowlist, {@link GitPublisherOptions.secretScanAllow}) and each hit is one `secret_scan_hit` event
+ * `{stage: "commit", rule_id, path, line, ref, commit_sha}` (never the value). It only WARNS: it runs after the commit
+ * exists, it never refuses, and a scan or ledger failure is swallowed, so the commit and its result are unchanged. The
+ * push still scans and refuses on its own.
  *
  * A crash before 3 leaves an unfinished intent and no published commit; a crash between 3 and 4 leaves a published
  * commit with an unfinished intent. {@link GitPublisher.recover} resolves each unfinished intent from the repository:
@@ -133,6 +148,11 @@ export interface GitPublisherOptions {
   readonly signingEnv?: Readonly<Record<string, string | undefined>>;
   /** T9.10: bound of one signing step (default {@link DEFAULT_SIGN_TIMEOUT_MS}). */
   readonly signTimeoutMs?: number;
+  /**
+   * T9.14: the operator allowlist of the secret scan (`git.secret_scan.allow`), the same entries the push uses, so an
+   * allowlisted fixture does not warn at every commit. An unknown rule id throws when the publisher is constructed.
+   */
+  readonly secretScanAllow?: readonly SecretScanAllowEntry[];
 }
 
 /** Run event appended when a signed commit is refused or signing fails (T9.10). Reason codes only, never key data. */
@@ -306,6 +326,7 @@ export class GitPublisher {
   private readonly now: () => Date;
   private readonly sanitizer: Sanitizer;
   private readonly allowedStates: ReadonlySet<string>;
+  private readonly secretScanAllow: SecretScanAllow;
   /** Commit SHAs between intent and outcome in this process; {@link recover} must not touch them. */
   private readonly inFlight = new Set<string>();
 
@@ -315,6 +336,7 @@ export class GitPublisher {
     this.ledger = createLedger(options.db, { ids: this.ids, now: this.now });
     this.sanitizer = createSanitizer({ operatorPatterns: options.sanitizePatterns ?? [] });
     this.allowedStates = new Set(options.allowedStates ?? ["RUNNING"]);
+    this.secretScanAllow = compileSecretScanAllow(options.secretScanAllow ?? []);
   }
 
   /** The publish ref name for a meta-session under this publisher's prefix. */
@@ -741,6 +763,7 @@ export class GitPublisher {
         );
       }
       await this.options.testHooks?.afterStep?.("outcome_recorded");
+      await this.warnSecrets(ctx, parent, sha, publishRef);
       return {
         sha,
         treeSha: tree,
@@ -754,6 +777,33 @@ export class GitPublisher {
       };
     } finally {
       this.inFlight.delete(sha);
+    }
+  }
+
+  /**
+   * T9.14 (LLD §20.9): the commit-time warning. Scans the added lines of `parent..sha` and appends one
+   * `secret_scan_hit` event per hit (at most {@link MAX_SECRET_SCAN_HIT_EVENTS}). Never throws: the commit is already
+   * published and recorded, and a warning must not change its outcome.
+   */
+  private async warnSecrets(ctx: RunContext, parent: string, sha: string, publishRef: string): Promise<void> {
+    try {
+      const report = await scanOutgoingDiff(ctx.worktreePath, parent, sha, this.secretScanAllow);
+      for (const hit of report.hits.slice(0, MAX_SECRET_SCAN_HIT_EVENTS)) {
+        this.ledger.appendRunEvent({
+          runId: ctx.runId,
+          type: SECRET_SCAN_HIT_EVENT,
+          payload: {
+            stage: "commit",
+            rule_id: hit.rule_id,
+            path: hit.path,
+            line: hit.line,
+            ref: publishRef,
+            commit_sha: sha,
+          },
+        });
+      }
+    } catch {
+      // Warn only (ADR-0061 point 4): a failed scan records nothing and leaves the commit as it is.
     }
   }
 

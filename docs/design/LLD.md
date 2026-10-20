@@ -7518,13 +7518,13 @@ the creating client's ceiling (§18.4).
 - **Outcome.** A hit refuses the push with `SECRET_SCAN_BLOCKED`, appends `secret_scan_hit {stage: "push", rule_id,
   path, line}` (never the value) and flags `secret_scan_blocked` until a clean push of that ref (an operator
   acknowledgement through the CLI is Proposed, not built). The commit tool appends the same event with `stage:
-  "commit"` and does not refuse (Proposed, not built by T9.14: the commit tool has no content scan).
+  "commit"` and does not refuse (built by the T9.14 split, part 1; see below).
 - **No override in-band.** The only allowlist is operator configuration (`git.secret_scan.allow`, rule id and path
   glob); no MCP field, privileged scope or bypass flag changes the result. The operator can always push by hand.
 
 **Implemented (T9.14, 2026-10-19, Delegated agent work, not owner-approved beyond owner decision 77).** The push side
-is built; the commit-time warning (`stage: "commit"`) and the operator acknowledgement through the CLI are not (the row
-stays `Partial` for them).
+is built, and so is the commit-time warning (`stage: "commit"`, T9.14 split part 1, 2026-10-20); the operator
+acknowledgement through the CLI is not (the row stays `Partial` for it).
 
 - **Scanner.** `src/git/secret-scan.ts`. The rule set is exactly the artifact redactor's (`SECRET_RULES` and
   `PREFIXED_RULES` in `src/artifacts/redact.ts`, which gained stable ids; no second pattern set): `pem_private_key`,
@@ -7556,6 +7556,12 @@ stays `Partial` for them).
   entry. Tests: `src/git/secret-scan.test.ts`, the "pre-push secret scan" block of `src/git/push.test.ts`, the
   `secret_scan_blocked` block of `src/control/needs-attention.test.ts`, `git.secret_scan.allow` in
   `src/config/config.test.ts`.
+- **Commit-time warning.** `GitPublisher.warnSecrets` in `src/git/commit.ts`, after the commit is published and its
+  outcome recorded: the same scanner and the same `git.secret_scan.allow` entries over the added lines of
+  `parent..commit`, at most 50 `secret_scan_hit` events `{stage: "commit", rule_id, path, line, ref, commit_sha}` on
+  the committing run. It never throws and never refuses; a scan or ledger failure records nothing and leaves the
+  commit unchanged, and it raises no `needs_attention`. Tests: the commit-time cases in the "pre-push secret scan"
+  block of `src/git/push.test.ts`.
 
 ### 20.10 Repository-configuration preflight (FR-POL-11, T3.25)
 
