@@ -1020,3 +1020,41 @@ as history.
   statements), the README Trust profiles section (generic, no rule-form claims) and the ADR-0015 body (Accepted;
   AGENTS.md forbids editing it, and its status line already records the ADR-0066 amendment).
 - `node scripts/check-docs.mjs` passes. It does not block PR #782.
+
+## 56. Decision requests (T14.15, PR #789): SRS as-built notes fixed here; two stragglers left for other lanes
+
+- This PR builds T14.15 (Done 2026-10-20) and updates the ROADMAP T14.15 row, the M14 row (`FR-CTL-13 (T14.15, Done)`),
+  the SDD FR-CTL-13 row (Proposed to Done), ADR-0048 item 3 (`decision_requested`), LLD §20.3 ("As built") and the
+  README tool/CLI tables. Verified against the code in this gate: migration 0030 after 0029 in
+  `src/ledger/migrations/index.ts`; 2–6 options, recommendation 1–n, labels 200 chars, question/note 2000 chars, at
+  most 8 enqueue entries (`src/control/decisions.ts` `MIN/MAX_DECISION_*`); actions `resume`/`reroute`/`cancel`/`none`
+  (`src/ledger/decisions.ts`); tool gating (`decisionsOffered` excludes `console`, `decideOffered` needs
+  `approval_proxy`, same server factory for stdio and network transport); consent links via `withDecisionLinks`;
+  no expiry timer; CLI states `open|decided|withdrawn` (`DECISION_STATES`); second resolution refused
+  (`CONFLICT`); `serve.ts` announces `decision_requested` / `awaiting_decision` with `run_id` null after the
+  request commits. The PR's own LLD §20.3 "As built" claims all match.
+- Fixed in this gate (docs only, Delegated, code as source of truth): the SRS FR-CTL-03 note predicted
+  `awaiting_decision` would join the run-level `needs_attention` list when T14.15 is built — as built it is a
+  project-level `open_decisions` digest entry and the `decision_requested` sink reason instead (a parked item has
+  no run; `NEEDS_ATTENTION_PRIORITY` has no such entry; LLD §20.3 item 6). SRS FR-CTL-13 ("raise `needs_attention`
+  with reason `awaiting_decision`") and the SRS FR-CTL-14 Built note ("hold-reason and open-decision counts join
+  when T3.24 and T14.15 build them") carried the same prediction; both now carry as-built notes pointing at
+  LLD §20.3 item 6 and §20.5. LLD §20.5's "join when T3.24 builds them" sentence (T3.24 is Done 2026-10-19 and the
+  counts still lack hold-reason leaves) now states the as-built exclusion for both hold and open decisions; LLD
+  §3.4.9 gains the `decision_requested` reason code and its producer bullet; LLD §3.4.10's conditional-tools
+  parenthetical gains decision tools; the README control-plane section gains the `decision_requested` filter kind,
+  the decision surface-table rows and the T14.15 test list; TDD §3.1's `notification_sinks[]` row gains the
+  `decision_requested` kind and FR-CTL-13; ROADMAP §9.2 lists T14.15 among the Done 2026-10-19 rows (cf. item 46
+  for the precedent). The SRS requirement sentences themselves (FR-CTL-13/14) are unchanged: they state intent,
+  and the as-built notes record current coverage.
+- Left unchanged (other lanes, out of this gate's scope): the `DigestCounts` comment in `src/control/sinks.ts`
+  ("Hold and open-decision counts join when T3.24 and T14.15 build them") is now stale the same way LLD §20.5 was,
+  but it lives in `src/**` and this gate edits documentation only — a code-lane follow-up should sync it
+  (cf. items 15, 25 and 28 for the same manifest/manifest-comment precedent). The HLD component rows still cite
+  COMP-MCP `FR-CTL-01..11` while the SDD maps FR-CTL-13 to COMP-MCP/COMP-PRJ/COMP-LED/COMP-OPS; this PR does not
+  widen that class (the mapping predates the branch — only the SDD status word flipped), so it stays with the
+  HLD owner per item 9. Checked and left unchanged: the SDD FR-CTL-03 row (no SDD row enumerates the
+  needs-attention reason list, so nothing cites the old prediction), the FRD (no work-item state enumeration to
+  update for `PARKED_DECISION`), the README Status M14 bullet and the §11 frozen log (per §11, later status lives
+  in §6 and the README Status block; the M14 row carries T14.15 with evidence).
+- `node scripts/check-docs.mjs` passes. It does not block PR #789.

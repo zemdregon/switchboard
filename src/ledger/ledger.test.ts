@@ -27,6 +27,7 @@ const EXPECTED_TABLES = [
   "control_plane_event",
   "control_plane_state",
   "decision",
+  "decision_request",
   "dependency_seed",
   "dependency_seed_use",
   "eval_result",
@@ -621,6 +622,63 @@ describe("ledger migrations", () => {
     expect(() => cimd.run("x_b", "https://app.example/other")).toThrow(/CHECK|FOREIGN KEY/u);
     d.prepare("DELETE FROM oauth_client WHERE client_id = 'sbc_a'").run();
     expect(d.prepare("SELECT COUNT(*) AS n FROM oauth_cimd_client").get()).toEqual({ n: 0 });
+  });
+
+  it("0030 adds decision_request and PARKED_DECISION on a version 29 database, keeping every work item, event and T15.7 column (T14.15, FR-CTL-13)", () => {
+    db = new Database(path.join(dir, LEDGER_FILE_NAME));
+    db.pragma("foreign_keys = ON");
+    const d = db;
+    const upTo29 = MIGRATIONS.filter((m) => m.version <= 29);
+    expect(migrate(d, undefined, upTo29)).toEqual(upTo29.map((m) => m.version));
+    const at = "2026-10-20T00:00:00.000Z";
+    const item = d.prepare(
+      `INSERT INTO project_work_item (id, project_id, creator_client_id, state, request_json, source_kind, created_at,
+         updated_at, dedupe_key, hot_paths_json) VALUES (?, 'web', 'orch', ?, '{}', 'mcp', ?, ?, ?, ?)`,
+    );
+    item.run("que_A", "READY", at, at, "ref:a", '["src/**"]');
+    item.run("que_B", "PENDING", at, at, null, null);
+    d.prepare("INSERT INTO project_work_dependency (successor_id, predecessor_id) VALUES ('que_B', 'que_A')").run();
+    d.prepare(
+      "INSERT INTO project_work_event (id, work_item_id, type, created_at) VALUES ('pwe_1', 'que_A', 'enqueued', ?)",
+    ).run(at);
+    expect(migrate(d, undefined, MIGRATIONS)).toEqual([30]);
+
+    // Rows, dependencies, events and the 0029 columns survive the rebuild; the foreign keys still hold.
+    expect(
+      d.prepare("SELECT id, state, dedupe_key, hot_paths_json, superseded_by FROM project_work_item ORDER BY id").all(),
+    ).toEqual([
+      { id: "que_A", state: "READY", dedupe_key: "ref:a", hot_paths_json: '["src/**"]', superseded_by: null },
+      { id: "que_B", state: "PENDING", dedupe_key: null, hot_paths_json: null, superseded_by: null },
+    ]);
+    // The 0029 dedupe index is recreated: a second live item with the same key is refused.
+    expect(() => item.run("que_C", "READY", at, at, "ref:a", null)).toThrow(/UNIQUE/u);
+    expect(d.prepare("SELECT COUNT(*) AS n FROM project_work_dependency").get()).toEqual({ n: 1 });
+    expect(d.prepare("SELECT type FROM project_work_event").all()).toEqual([{ type: "enqueued" }]);
+    expect(d.pragma("foreign_key_check")).toEqual([]);
+    const setState = (s: string) => d.prepare("UPDATE project_work_item SET state = ? WHERE id = 'que_A'").run(s);
+    setState("PARKED_DECISION");
+    expect(() => setState("PARKED")).toThrow(/CHECK/u);
+    d.prepare(
+      "INSERT INTO project_work_event (id, work_item_id, type, created_at) VALUES ('pwe_2', 'que_A', 'parked', ?)",
+    ).run(at);
+
+    const decision = d.prepare(
+      `INSERT INTO decision_request (id, project_id, work_item_id, requester_client_id, question, options_json,
+         recommended_option, state, created_at) VALUES (?, 'web', ?, 'orch', ?, '[]', 1, 'open', ?)`,
+    );
+    decision.run("dec_1", "que_A", "Which way?", at);
+    // At most one open decision per work item; the item must exist; the question is capped.
+    expect(() => decision.run("dec_2", "que_A", "Again?", at)).toThrow(/UNIQUE/u);
+    expect(() => decision.run("dec_3", "que_Z", "Unknown item?", at)).toThrow(/FOREIGN KEY/u);
+    expect(() => decision.run("dec_4", null, "x".repeat(2001), at)).toThrow(/CHECK/u);
+    expect(() => decision.run("bad_5", null, "Prefix?", at)).toThrow(/CHECK/u);
+    // A closed decision names who closed it and when; an open one names neither.
+    const close = d.prepare(
+      "UPDATE decision_request SET state = 'decided', decided_option = 1, decided_by = ?, decided_at = ? WHERE id = ?",
+    );
+    expect(() => close.run(null, null, "dec_1")).toThrow(/CHECK/u);
+    close.run("cli", at, "dec_1");
+    decision.run("dec_6", "que_A", "A new question once the first is decided", at);
   });
 
   it("0023 adds ci_trigger_event and ci_trigger_ref_state on a version 22 database (T15.5, FR-QUE-05, LLD §18.6)", () => {
