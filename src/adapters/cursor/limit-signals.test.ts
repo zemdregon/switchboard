@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import type { ExitInfo, FailureEvidence, NormalizedEvent } from "../types.js";
 import { CursorAdapter, cursorQuotaClassification } from "./adapter.js";
 
-const adapter = () => new CursorAdapter({ executable: "/usr/bin/false", bwrap: "/opt/synthetic/bwrap" });
+const adapter = () => new CursorAdapter({ executable: "/usr/bin/false" });
 const EXIT_OK: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
 const EXIT_1: ExitInfo = { ...EXIT_OK, exitCode: 1 };
 const evidence = (

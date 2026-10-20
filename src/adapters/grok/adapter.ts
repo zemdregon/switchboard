@@ -12,7 +12,9 @@
  *   profile needs is shown to hold (FR-POL-02, FR-POL-06);
  * - `privileged` compiles only when its scope sets `bypass` and the run is approved (owner decision 46: the bypass
  *   cell does not wait for Git-write denial to be shown to hold). Sandbox profile and permission mode are compiled
- *   together, never one without the other ([R2] L613 to L615): `--always-approve` always with `--sandbox`;
+ *   together, never one without the other ([R2] L613 to L615): `--always-approve` always with `--sandbox`. Since
+ *   ADR-0077 (owner ruling 2026-10-20) the worktree-files bypass cell is not confined to its worktree: it compiles
+ *   `--sandbox off`; read-only files keep `--sandbox read-only`;
  * - the parser reads the `streaming-json` fields the 2026-10-14 live check recorded (T4.23): `tool_call` lines with
  *   synthetic fields are parsed and guarded (ADR-0039, T4.27), while unrecorded tool lines are `unknown` events;
  *   resume is `-r <id>` through the same matrix; a second `end`, a session id that changes mid-run or is not a safe
@@ -27,6 +29,7 @@ import {
   DEFAULT_MAX_LINE_BYTES,
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
+import { MODEL_ID_PATTERN } from "../../models/registry.js";
 import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
@@ -67,6 +70,7 @@ import {
   GROK_BINARY,
   GROK_LOGIN_COMMAND,
   HELP_FLAG,
+  MODEL_FLAG,
   NO_AUTO_UPDATE_FLAG,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
   OUTPUT_FORMAT_FLAG,
@@ -74,9 +78,8 @@ import {
   REQUIRED_HELP_FLAGS,
   RESUME_SHORT_FLAG,
   SANDBOX_FLAG,
+  SANDBOX_OFF,
   SANDBOX_READ_ONLY,
-  SANDBOX_STRICT,
-  SANDBOX_WORKSPACE,
   SINGLE_FLAG,
   STOP_REASON_END_TURN,
   USAGE_KEYS,
@@ -91,6 +94,8 @@ import {
 export const GROK_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
 const PROBE_TIMEOUT_MS = 10_000;
+/** A model id passed as one argv word (the registry's `MODEL_ID_PATTERN` shape; never read as a flag). */
+const MODEL_ID_RE = new RegExp(MODEL_ID_PATTERN);
 const MAX_SUMMARY_CHARS = 2_000;
 const MAX_TARGET_CHARS = 512;
 /** Native ids are passed as one argv element; refuse anything that could be read as a flag (Proposed). */
@@ -294,9 +299,11 @@ export class GrokAdapter implements ProviderAdapter {
    *    `off` (the `read-only` profile blocks child network on Linux only, [SBX], so `on` cannot be guaranteed);
    * 6. repository_config `disabled` or `approved`: CAPABILITY_MISSING (project sources were not shown inert without
    *    trust, and the CLI has no per-item approval); only `enabled` compiles (owner decision 26, Q-37);
-   * 7. a requested model: CAPABILITY_MISSING (the model registry has no Grok data yet, T4.5; `-m` is not emitted).
-   * Then the sandbox profile: read-only files or workspace `read-only`; worktree files with network `off` `strict`,
-   * with network `on` `workspace`; `--disable-web-search` with network `off`.
+   * 7. worktree files with network `off`: CAPABILITY_MISSING (ADR-0077: the cell is `--sandbox off`, which keeps no
+   *    child network off);
+   * 8. a requested model that is not a plain id: CAPABILITY_MISSING; otherwise it is `--model <id>`.
+   * Then the sandbox profile: read-only files or workspace `read-only` (with `--disable-web-search`, network `off`);
+   * worktree files `off` (ADR-0077: bypass is not confined to the worktree).
    */
   #build(request: CompileRequest, profile: ResolvedProfile, tail: string[]): Invocation | Ineligible {
     const gitWrites = gitWriteRisks(profile.shellAllowlist ?? []);
@@ -346,17 +353,24 @@ export class GrokAdapter implements ProviderAdapter {
           "in an approved bypass run",
       );
     }
-    if (request.model !== undefined) {
-      return ineligible("CAPABILITY_MISSING", "no model registry data for Grok Build yet (T4.5; -m is not emitted)");
+    if (!readOnly && network === "off") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        "privileged worktree files with network=off and bypass: the bypass cell is --sandbox off (ADR-0077, not " +
+          "confined to the worktree), which keeps no child network off",
+      );
+    }
+    if (request.model !== undefined && !MODEL_ID_RE.test(request.model)) {
+      return ineligible("CAPABILITY_MISSING", "requested model is not a plain model id");
     }
     if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${GROK_BINARY} not found on PATH`);
 
-    const sandbox = readOnly ? SANDBOX_READ_ONLY : network === "off" ? SANDBOX_STRICT : SANDBOX_WORKSPACE;
     const policyFlags = [
       SANDBOX_FLAG,
-      sandbox,
+      readOnly ? SANDBOX_READ_ONLY : SANDBOX_OFF,
       ...(network === "off" ? ["--disable-web-search"] : []),
       ALWAYS_APPROVE_FLAG,
+      ...(request.model !== undefined ? [MODEL_FLAG, request.model] : []),
     ];
     return {
       transport: "subprocess-jsonl",

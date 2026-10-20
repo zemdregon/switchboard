@@ -1,6 +1,7 @@
 /**
- * ADR-0059 (T4.48 fix, owner ruling 2026-10-19 06:41 CDT): the Cursor bypass cell runs only inside bubblewrap.
- * SYNTHETIC and hermetic: a fake `cursor-agent` shell script and random canary tokens in a temp leg, never a real
+ * ADR-0059 (T4.48 fix, owner ruling 2026-10-19 06:41 CDT): the Cursor bubblewrap wrapper module. Since ADR-0077 the
+ * adapter's bypass cell no longer uses it (it is kept for a future lower-tier cell), so these tests exercise the module
+ * functions directly. SYNTHETIC and hermetic: a fake `cursor-agent` shell script and random canary tokens in a temp leg, never a real
  * provider or a real credential. The real-wrapper tests run where this host's bwrap can start a sandbox and are skipped
  * otherwise; the refusal tests (bwrap missing, probe failing) run everywhere.
  */
@@ -20,26 +21,10 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { ArtifactStore } from "../../artifacts/index.js";
 import { BWRAP_PROBE_ARGS, findOnPath } from "../../exec/outer-sandbox.js";
-import { createIdGenerator } from "../../ids/index.js";
-import { createLedger, openLedger } from "../../ledger/index.js";
-import { RunLifecycle } from "../../lifecycle/index.js";
-import { resolveTrustProfile } from "../../policy/profiles.js";
-import { WorkspaceManager } from "../../workspace/index.js";
-import { replayLauncher } from "../fixtures/replay.js";
-import { AdapterRegistry } from "../registry.js";
 import { createProbeRunner } from "../run.js";
-import type { CompileRequest, Invocation, ProbeRunner } from "../types.js";
-import { CursorAdapter } from "./adapter.js";
-import {
-  CURSOR_BWRAP_MISSING,
-  CURSOR_CONFINEMENT_FAILED,
-  cursorBwrapArgs,
-  cursorConfinementPlan,
-  probeConfinement,
-} from "./confinement.js";
-import { BYPASS_SCOPE, fixturePath, PRIVILEGED_BYPASS_PROFILE } from "./fixtures/cases.js";
+import type { ProbeRunner } from "../types.js";
+import { CURSOR_BWRAP_MISSING, cursorBwrapArgs, cursorConfinementPlan, probeConfinement } from "./confinement.js";
 
 const dirs: string[] = [];
 const scratch = (prefix: string) => {
@@ -52,18 +37,22 @@ afterAll(() => {
 });
 
 const TMP = realpathSync(tmpdir());
-const APPROVED = { ...PRIVILEGED_BYPASS_PROFILE, bypassApproved: true };
-const request = (cwd: string): CompileRequest => ({
-  runId: "run_cursor_confinement",
-  objective: "synthetic confinement objective",
-  constraints: [],
-  workspace: { cwd, writable: true },
-  bypassApproved: true,
-});
-const compileOk = (a: CursorAdapter, cwd: string): Invocation => {
-  const r = a.compile(request(cwd), APPROVED);
-  if ("ineligible" in r) throw new Error(r.detail);
-  return r;
+/** The wrapped launch the module builds (a future lower-tier cell): bwrap, its arguments, then the resolved executable. */
+interface Launch {
+  argv: string[];
+  cwd: string;
+  stdin: { kind: "text"; value: string };
+}
+const wrappedLaunch = (bwrap: string, home: string, executable: string, cwd: string): Launch => {
+  const plan = cursorConfinementPlan({ bwrap, home, tmpDir: TMP, executable });
+  if ("refused" in plan) throw new Error(plan.refused);
+  const args = cursorBwrapArgs(plan, cwd);
+  if (!Array.isArray(args)) throw new Error(args.refused);
+  return {
+    argv: [plan.bwrap, ...args, plan.executable, "--print", "--output-format", "stream-json", "--trust", "--force"],
+    cwd,
+    stdin: { kind: "text", value: "synthetic confinement objective" },
+  };
 };
 
 describe("cursor bwrap wrapper arguments (ADR-0059)", () => {
@@ -127,36 +116,12 @@ describe("cursor bwrap wrapper arguments (ADR-0059)", () => {
       refused: expect.stringMatching(/install directory/),
     });
   });
-
-  it("the compiled bypass cell is bwrap first, then Cursor with --trust --force after the wrapper's --", () => {
-    const a = new CursorAdapter({ executable: "/opt/c/agent", bwrap: "/opt/synthetic/bwrap", home, tmpDir: TMP });
-    const inv = compileOk(a, path.join(TMP, "leg", "repo"));
-    expect(inv.argv[0]).toBe("/opt/synthetic/bwrap");
-    expect(inv.argv.slice(inv.argv.indexOf("--") + 1)).toEqual([
-      "/opt/c/agent",
-      "--print",
-      "--output-format",
-      "stream-json",
-      "--trust",
-      "--force",
-    ]);
-    expect(inv.policyFlags).toEqual(["--trust", "--force"]);
-  });
 });
 
-describe("cursor bypass cell fails closed without a working wrapper (ADR-0059)", () => {
+describe("cursor confinement probe fails closed without a working wrapper (ADR-0059)", () => {
   const home = scratch("sb-cursor-home-");
-  const wt = path.join(TMP, "leg", "repo");
 
-  it("bwrap unavailable: compile is Ineligible and the probe's confinement step fails", async () => {
-    const a = new CursorAdapter({ executable: "/opt/c/agent", bwrap: null, home, tmpDir: TMP });
-    expect(a.compile(request(wt), APPROVED)).toEqual({
-      ineligible: true,
-      reason: "CAPABILITY_MISSING",
-      detail: CURSOR_BWRAP_MISSING,
-    });
-    const resumed = a.resumeArgs({ provider: "cursor", nativeSessionId: "s-1" }, request(wt), APPROVED);
-    expect(resumed).toMatchObject({ ineligible: true, detail: CURSOR_BWRAP_MISSING });
+  it("bwrap unavailable: the plan is refused and the probe's confinement step fails", async () => {
     const none: ProbeRunner = async () => ({ stdout: "", stderr: "", exitCode: 2, timedOut: false });
     const step = await probeConfinement(
       cursorConfinementPlan({ bwrap: null, home, tmpDir: TMP, executable: "/opt/c/agent" }),
@@ -195,108 +160,6 @@ describe("cursor bypass cell fails closed without a working wrapper (ADR-0059)",
       const step = await probeConfinement(plan, runner, TMP);
       expect(step, why).toMatchObject({ step: "confinement", ok: false, detail: expect.stringContaining(why) });
     }
-  });
-
-  it("after a failed probe the adapter refuses to compile the cell", async () => {
-    const a = new CursorAdapter({ executable: "/opt/c/agent", bwrap: "/opt/synthetic/bwrap", home, tmpDir: TMP });
-    expect("ineligible" in a.compile(request(wt), APPROVED)).toBe(false);
-    const runner: ProbeRunner = async (argv) =>
-      argv[1] === "--version"
-        ? { stdout: "2026.10.12-d47ca18\n", stderr: "", exitCode: 0, timedOut: false }
-        : { stdout: "", stderr: "", exitCode: 1, timedOut: false };
-    const probe = await a.probe(runner);
-    expect(probe.steps.find((s) => s.step === "confinement")).toMatchObject({ ok: false, detail: "bwrap exit 1" });
-    expect(a.compile(request(wt), APPROVED)).toEqual({
-      ineligible: true,
-      reason: "CAPABILITY_MISSING",
-      detail: CURSOR_CONFINEMENT_FAILED,
-    });
-  });
-
-  /** One run through RunLifecycle with the given bwrap; the provider (a replay) must never start. */
-  const runThroughLifecycle = async (bwrap: string | null) => {
-    const root = scratch("sb-cursor-lc-");
-    const repo = path.join(root, "repo");
-    mkdirSync(repo);
-    const g = (...args: string[]) =>
-      execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
-        cwd: repo,
-        env: {
-          PATH: process.env.PATH ?? "",
-          GIT_CONFIG_GLOBAL: "/dev/null",
-          GIT_CONFIG_NOSYSTEM: "1",
-          GIT_AUTHOR_NAME: "Cursor Dev",
-          GIT_AUTHOR_EMAIL: "cursor@example.test",
-          GIT_COMMITTER_NAME: "Cursor Dev",
-          GIT_COMMITTER_EMAIL: "cursor@example.test",
-        },
-      });
-    g("init", "-q", "-b", "main");
-    writeFileSync(path.join(repo, "README.md"), "initial\n");
-    g("add", "-A");
-    g("commit", "-q", "-m", "init");
-    const dataDir = path.join(root, "data");
-    mkdirSync(dataDir);
-    const db = openLedger(dataDir);
-    const ids = createIdGenerator();
-    const ledger = createLedger(db, { ids });
-    const artifacts = new ArtifactStore(path.join(dataDir, "artifacts"));
-    const adapter = new CursorAdapter({
-      executable: process.execPath,
-      launcherArgs: replayLauncher("cursor", fixturePath("success_edit"), []),
-      bwrap,
-      home,
-      tmpDir: TMP,
-    });
-    const lifecycle = new RunLifecycle({
-      ledger,
-      workspace: new WorkspaceManager({ db, artifacts, dataDir, allowedRoots: [root], ids }),
-      artifacts,
-      adapters: new AdapterRegistry().register(adapter),
-      allowedRoots: [root],
-      globalConcurrency: 1,
-      resolveProfile: (name) => resolveTrustProfile(name),
-    });
-    lifecycle.start();
-    try {
-      const { runId } = await lifecycle.submit({
-        clientId: "c",
-        objective: "synthetic objective",
-        workspace: repo,
-        trustProfile: "privileged",
-        provider: "cursor",
-        privileged: { scope: BYPASS_SCOPE, approvedByClientPolicy: true },
-      });
-      const done = await lifecycle.waitForTerminal(runId);
-      const started = db
-        .prepare("SELECT payload_json FROM run_event WHERE run_id = ? AND type = 'state_transition'")
-        .all(runId)
-        .some((r) => JSON.parse((r as { payload_json: string }).payload_json)?.to === "RUNNING");
-      return { done, started, written: existsSync(path.join(repo, "hello.txt")) };
-    } finally {
-      await lifecycle.shutdown();
-      db.close();
-    }
-  };
-
-  it("a run with bwrap unavailable ends ELIGIBILITY_NONE before the provider starts", async () => {
-    const r = await runThroughLifecycle(null);
-    expect(r.done.state).toBe("FAILED");
-    expect(r.done.failure_code).toBe("ELIGIBILITY_NONE");
-    expect(r.done.failure_detail).toMatch(/confinement/);
-    expect(r.started).toBe(false);
-  });
-
-  it("a run whose bwrap probe fails ends ELIGIBILITY_NONE before the provider starts", async () => {
-    const bin = scratch("sb-cursor-badbwrap-");
-    const bad = path.join(bin, "bwrap");
-    writeFileSync(bad, "#!/bin/sh\necho 'bwrap: setting up uid map: Permission denied' >&2\nexit 1\n");
-    chmodSync(bad, 0o755);
-    const r = await runThroughLifecycle(bad);
-    expect(r.done.state).toBe("FAILED");
-    expect(r.done.failure_code).toBe("ELIGIBILITY_NONE");
-    expect(r.done.failure_detail).toMatch(/confinement/);
-    expect(r.started).toBe(false);
   });
 });
 
@@ -362,21 +225,19 @@ describe.runIf(hostBwrapWorks)("cursor bypass cell inside this host's bwrap (ADR
     chmodSync(fake, 0o755);
     return { root, repo, home, fake, tokens, files };
   };
-  const spawnInv = (inv: Invocation, home: string) =>
+  const spawnInv = (inv: Launch, home: string) =>
     spawnSync(inv.argv[0] as string, inv.argv.slice(1), {
       cwd: inv.cwd,
       env: { PATH: process.env.PATH ?? "", HOME: home },
-      input: inv.stdin?.kind === "text" ? inv.stdin.value : "",
+      input: inv.stdin.value,
       encoding: "utf8",
       timeout: 10_000,
     });
 
-  it("the adapter's own confinement probe passes on this host", async () => {
+  it("the module's confinement probe passes on this host", async () => {
     const l = leg();
-    const a = new CursorAdapter({ executable: l.fake, bwrap, home: l.home, tmpDir: TMP });
     const plan = cursorConfinementPlan({ bwrap, home: l.home, tmpDir: TMP, executable: l.fake });
     expect(await probeConfinement(plan, createProbeRunner(), TMP)).toEqual({ step: "confinement", ok: true });
-    expect("ineligible" in a.compile(request(l.repo), APPROVED)).toBe(false);
   });
 
   it("control: without the wrapper the fake CLI reaches every canary (the check is not vacuous)", () => {
@@ -392,8 +253,7 @@ describe.runIf(hostBwrapWorks)("cursor bypass cell inside this host's bwrap (ADR
 
   it("inside the wrapper the out-of-worktree and fake-HOME canaries are unreadable; only the worktree and state are writable", () => {
     const l = leg();
-    const a = new CursorAdapter({ executable: l.fake, bwrap, home: l.home, tmpDir: TMP });
-    const inv = compileOk(a, l.repo);
+    const inv = wrappedLaunch(bwrap, l.home, l.fake, l.repo);
     const r = spawnInv(inv, l.home);
     expect(r.status, r.stderr).toBe(0);
     const out = r.stdout;
@@ -472,8 +332,7 @@ describe.runIf(hostBwrapWorks)("cursor bypass cell inside this host's bwrap (ADR
     chmodSync(path.join(version, "node"), 0o755);
     symlinkSync(path.join(version, "cursor-agent"), shim);
 
-    const a = new CursorAdapter({ executable: shim, bwrap, home: l.home, tmpDir: TMP });
-    const inv = compileOk(a, wt);
+    const inv = wrappedLaunch(bwrap, l.home, shim, wt);
     // The resolved launcher is argv[0] inside: the `~/.local/bin` symlink sits under the hidden HOME.
     expect(inv.argv).toContain(path.join(version, "cursor-agent"));
     const r = spawnInv(inv, l.home);

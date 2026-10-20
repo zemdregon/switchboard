@@ -170,10 +170,14 @@ describe("opencode compile matrix (T4.52)", () => {
     expect(auditInvocation(compiled({ objective: "--auto" }))).toEqual(["--auto"]);
   });
 
-  it("a requested model, an unapproved bypass and a missing binary are Ineligible with a reason", () => {
+  it("an option-like model, an unapproved bypass and a missing binary are Ineligible with a reason", () => {
     const profile = privilegedProfile(BYPASS_SCOPE);
     const approved = { ...profile, bypassApproved: true };
+    // ADR-0077: a plain model id compiles to `--model <id>` before `--`; an option-like one is refused.
     expect(adapter().compile(request({ model: "x/y", bypassApproved: true }), approved)).toMatchObject({
+      policyFlags: ["--standalone", "--model", "x/y"],
+    });
+    expect(adapter().compile(request({ model: "-x", bypassApproved: true }), approved)).toMatchObject({
       reason: "CAPABILITY_MISSING",
     });
     expect(adapter().compile(request(), profile)).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });
@@ -1138,7 +1142,7 @@ describe("opencode parser and result (T4.53)", () => {
     expect(
       a.resumeArgs(
         { provider: "opencode", nativeSessionId: id },
-        request({ model: "custom-model", bypassApproved: true }),
+        request({ model: "-x", bypassApproved: true }),
         approved,
       ),
     ).toMatchObject({

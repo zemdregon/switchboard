@@ -37,6 +37,9 @@ export const TRUST_FLAG = "--trust";
 /** The bypass-class flag compiled only for an approved privileged scope with `bypass` ([C1] `-f, --force`; ADR-0017). */
 export const FORCE_FLAG = "--force";
 
+/** Model selection ([C1] `--model <model>`); emitted only for an explicitly requested plain model id. */
+export const MODEL_FLAG = "--model";
+
 /**
  * Sandbox switch ([C1] `--sandbox enabled|disabled`). Not emitted by T4.42: `enabled` exits 1 on the operator's host
  * ([LIVE] 9, AppArmor user-namespace restriction) and what `--force` does to it was not observed (TDD §4.5.1).

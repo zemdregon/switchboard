@@ -72,7 +72,7 @@ const EXE = "/opt/synthetic/grok";
 const BYPASS_SCOPE = {
   files: { access: "worktree" },
   shell: { mode: "broad" },
-  network: { mode: "off" },
+  network: { mode: "on" },
   repository_config: { mode: "enabled" },
   bypass: true,
 } as const;
@@ -109,6 +109,8 @@ describe("grok compile matrix (T4.22)", () => {
           scope.shell.mode === "broad" &&
           scope.network.mode !== "allowlist" &&
           !(readOnly && scope.network.mode !== "off") &&
+          // ADR-0077: the worktree bypass cell is `--sandbox off`, so network `off` cannot be kept.
+          !(!readOnly && scope.network.mode === "off") &&
           scope.repository_config.mode === "enabled";
         if (!expectOk) {
           expect(r, label).toMatchObject({ ineligible: true });
@@ -121,24 +123,22 @@ describe("grok compile matrix (T4.22)", () => {
         expect(r.policyFlags, label).toContain("--always-approve");
         const i = r.policyFlags.indexOf("--sandbox");
         expect(i, label).toBeGreaterThanOrEqual(0);
-        expect(["strict", "read-only", "workspace"], label).toContain(r.policyFlags[i + 1]);
-        expect(r.policyFlags[i + 1], label).toBe(
-          readOnly ? "read-only" : scope.network.mode === "off" ? "strict" : "workspace",
-        );
+        // ADR-0077: worktree files are not confined to the worktree (`off`); read-only files stay `read-only`.
+        expect(r.policyFlags[i + 1], label).toBe(readOnly ? "read-only" : "off");
         expect(r.policyFlags.includes("--disable-web-search"), label).toBe(scope.network.mode === "off");
         // The one bypass flag is audited as such: refused without the approved context, permitted with it.
         expect(auditInvocation(r), label).toEqual(["--always-approve"]);
         expect(auditInvocation(r, { profile, bypassApproved: true }), label).toEqual([]);
       }
     }
-    expect(compiled).toBe(3); // worktree + broad + (off | on) + enabled, and read-only + broad + off + enabled
+    expect(compiled).toBe(2); // worktree + broad + on + enabled, and read-only + broad + off + enabled
   });
 
   it("never emits a flag the TDD §4.3.1 rules exclude, and keeps the prompt in one `--single=` word", () => {
     const profile = privilegedProfile({
       files: { access: "worktree" },
       shell: { mode: "broad" },
-      network: { mode: "off" },
+      network: { mode: "on" },
       repository_config: { mode: "enabled" },
       bypass: true,
     });
@@ -159,7 +159,7 @@ describe("grok compile matrix (T4.22)", () => {
     expect(r.outputFormat).toBe("jsonl");
   });
 
-  it("a requested model, an unapproved bypass and a missing binary are Ineligible with a reason", () => {
+  it("an option-like model, an unapproved bypass and a missing binary are Ineligible with a reason", () => {
     const profile = privilegedProfile({
       files: { access: "worktree" },
       shell: { mode: "broad" },
@@ -168,7 +168,10 @@ describe("grok compile matrix (T4.22)", () => {
       bypass: true,
     });
     const approved = { ...profile, bypassApproved: true };
-    expect(adapter().compile(request({ model: "x", bypassApproved: true }), approved)).toMatchObject({
+    // A plain model id compiles to `--model <id>` (ADR-0077); an option-like one is refused.
+    const withModel = adapter().compile(request({ model: "grok-4.7", bypassApproved: true }), approved);
+    expect(withModel).toMatchObject({ policyFlags: ["--sandbox", "off", "--always-approve", "--model", "grok-4.7"] });
+    expect(adapter().compile(request({ model: "-x", bypassApproved: true }), approved)).toMatchObject({
       reason: "CAPABILITY_MISSING",
     });
     expect(adapter().compile(request(), profile)).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });
@@ -332,7 +335,7 @@ describe("grok probe and resume (T4.22, T4.23)", () => {
         }
       }
     }
-    expect(compiled).toBe(3);
+    expect(compiled).toBe(2);
   });
 
   it("resumeArgs rejects foreign provider bindings and ineligible profiles with exact reasons", () => {

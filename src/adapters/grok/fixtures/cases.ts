@@ -16,11 +16,14 @@ export const fixturePath = (name: string): string => fileURLToPath(new URL(`./${
 export const DEFAULT_SESSION_ID = "00000000-0000-4000-8000-000000000001";
 export const RESUMED_SESSION_ID = "00000000-0000-4000-8000-000000000042";
 
-/** An approved bypass scope Grok Build compiles (T4.22, owner decision 46): `--sandbox strict`, network off. */
+/**
+ * An approved bypass scope Grok Build compiles (T4.22, owner decision 46): network on, `--sandbox off` (ADR-0077: the
+ * worktree-files bypass cell is not confined to its worktree).
+ */
 export const BYPASS_SCOPE = {
   files: { access: "worktree" },
   shell: { mode: "broad" },
-  network: { mode: "off" },
+  network: { mode: "on" },
   repository_config: { mode: "enabled" },
   bypass: true,
 } as const;
