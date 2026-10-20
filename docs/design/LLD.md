@@ -1774,9 +1774,11 @@ rows. When `active` is false, `reason` is absent. Derivation rules are in §3.4.
 ```
 
 **Scoping.** Same rules as `get_run` (T14.1 corrected the earlier wording, Delegated): the caller sees only runs it
-started (`client_id` match, and over HTTP only meta-sessions of its own subject, FR-MCP-15), so every row is the
-envelope `get_run` returns for that run and no row exists that `get_run` would refuse. A run of another client is never
-listed, even in a project both clients may use. The project rule narrows the filter, not the rows: `project_id` must
+started (`client_id` match, and over HTTP only meta-sessions of its own subject, FR-MCP-15, except a
+controller-admitted queued item's meta-session, which carries no subject row and is visible to the item's creating
+client (§20.8)), so every row is the envelope `get_run` returns for that run and no row exists that
+`get_run` would refuse. A run of another client is never listed, even in a project both clients may use. The project
+rule narrows the filter, not the rows: `project_id` must
 name a project the caller may use (`mcp_clients[].projects`, or a dynamic project it created and has not deleted). An
 id that is neither configured nor one of the caller's dynamic projects (including another client's dynamic project) →
 `INVALID_REQUEST`; a configured project outside the caller's list → `PERMISSION_BLOCKED`. Rows are ordered by

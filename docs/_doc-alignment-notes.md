@@ -1105,3 +1105,17 @@ as history.
   FR-QUE-01 and FR-QUE-08 need no rewording (the prefix reservation and owner-visibility are LLD-level
   detail under them); no ROADMAP task row exists for this fix, so no status or evidence field is
   touched. `node scripts/check-docs.mjs` passes. It does not block PR #790.
+
+## 60. LLD `list_runs` scoping restated the subject rule without the admitted-runs exception (from PR #790, fixed in this gate)
+
+- Item 59 fixed [LLD §3.3](design/LLD.md#33-network-mcp-transport-m13) and §10/§20.8 for PR #790 but missed the
+  parenthetical restatement in the `list_runs` **Scoping** paragraph ("over HTTP only meta-sessions of its own
+  subject"), which `get_run`'s other dependents (`steer_run`, `cancel_run`, `get_artifacts`, `continue_task`,
+  `get_digest`) do not repeat — they all defer to `get_run`/§3.3, so they inherit the exception.
+- Fixed in this gate (docs only, no owner decision needed — same reasoning as item 59: the exception grants nothing
+  to a non-owner): the parenthetical now names the controller-admitted queued item's meta-session (no subject row,
+  visible to the item's creating client) with a pointer to §20.8.
+- Re-verified against the code: `cancel_run`, `steer_run` and `get_artifacts` go through `ownRun` (which enforces
+  `ownSubject`), `list_runs` paging and the digest `visible` callback call `ownSubject` directly
+  (`src/mcp/server.ts`); `admitted_run_id` is written only in `src/ledger/work-queue.ts` (controller queue path),
+  never from the MCP handler. `node scripts/check-docs.mjs` passes. It does not block PR #790.
