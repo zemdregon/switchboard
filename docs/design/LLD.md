@@ -1024,7 +1024,8 @@ artifacts are operator-CLI only.
 Behaviour: validation, path and profile checks, then in one transaction insert `meta_session` (new), `run` (`QUEUED`, or
 `AWAITING_APPROVAL` for `privileged`, with its `PENDING` approval row, §3.1) and the first `run_event`; only then return
 or wait (§10). A repeated `(client, idempotency_key)` with identical `request_hash` returns the original run; the same
-key with different parameters fails `INVALID_REQUEST` (FR-MCP-08). `wait_seconds` is a bounded wait on run completion;
+key with different parameters fails `INVALID_REQUEST` (FR-MCP-08). A key starting `queue:` is reserved for runs the
+work queue admits and fails `INVALID_REQUEST` (§20.8). `wait_seconds` is a bounded wait on run completion;
 it never holds a DB transaction and returns the current non-terminal envelope on expiry.
 
 **`continue_task`** (M2 same provider, M5 cross-provider)
@@ -7501,7 +7502,18 @@ and calls none of them over either transport (answered exactly like an unknown t
 authenticated client id (the mapped MCP client over HTTP): `list_work` returns only the caller's own items and
 `cancel_work` of another client's item fails exactly like an unknown id, so ids are not an existence oracle; an item
 with no recorded owner is operator-owned and therefore invisible and uncancellable over HTTP. Admission stays under
-the creating client's ceiling (§18.4).
+the creating client's ceiling (§18.4). The run an item admits is owned the same way: its meta-session is opened by the
+controller, carries no HTTP subject binding (§3.3, FR-MCP-15), and belongs to the item's creating client over either
+transport, so `get_run`, `list_runs`, `get_artifacts`, `steer_run`, `cancel_run` and `get_digest` show it to that
+client (stdio or any OAuth client mapped to it) and answer every other client exactly like an unknown id. The link is
+the controller-written `admitted_run_id` of an item whose `creator_client_id` is the caller's client, matched against
+the first run of the meta-session (its idempotency key `queue:<work_item_id>`); a caller-chosen idempotency key alone
+never makes a run visible. The `queue:` prefix is reserved for the controller: `delegate_task` refuses an
+`idempotency_key` that starts with it (`INVALID_REQUEST`, `details.field` `idempotency_key`) over either transport, so
+a direct run is never replayed as an item's admission and a stdio run never becomes visible over HTTP that way (Linus
+decision, Delegated, not owner-approved: least privilege, and it makes §18.2 "do not collide with the client's direct
+`delegate_task` keys" hold by construction). (Bug fix 2026-10-20: before it, an HTTP client got `unknown run` for its
+own admitted runs.)
 
 ### 20.9 Pre-push secret scan (FR-GIT-11, T9.14, ADR-0061)
 

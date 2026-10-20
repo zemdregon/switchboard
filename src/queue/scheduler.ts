@@ -6,6 +6,8 @@ import { type AdmitWorkDeps, admitWorkItemRequest } from "./admission.js";
 
 export const DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT = 500;
 export const DEFAULT_QUEUE_DEQUEUE_BATCH = 1;
+/** The idempotency key of a run admitted from a work item is this prefix and the item id. */
+export const QUEUE_IDEMPOTENCY_PREFIX = "queue:";
 
 export interface QueueSchedulerSettings {
   maxItemsPerProject: number;
@@ -41,7 +43,7 @@ export async function runProjectWorkQueueTick(
         failed++;
         continue;
       }
-      const idem = `queue:${item.id}`;
+      const idem = `${QUEUE_IDEMPOTENCY_PREFIX}${item.id}`;
       const outcome = await admitWorkItemRequest(admission, item.creator_client_id, item.project_id, request, idem);
       if (outcome.kind === "admitted") {
         ledger.completeWorkAdmission(item.id, { kind: "admitted", runId: outcome.runId });

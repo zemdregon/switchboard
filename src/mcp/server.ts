@@ -45,8 +45,10 @@
  *   reported as unknown (INVALID_REQUEST), so ids are not an existence oracle across clients. Over the network
  *   transport (T13.5, FR-MCP-15, Q-78) the same holds per subject: a meta-session opened over HTTP is bound to the
  *   caller's OAuth client (`subject`) and is unknown to every other subject and to stdio; one opened over stdio is
- *   unknown over HTTP. A run belongs to its meta-session. An idempotency key another subject used is reported exactly
- *   like a key reused with different parameters.
+ *   unknown over HTTP. A run belongs to its meta-session. A meta-session the controller opened to admit a queued work
+ *   item has no subject and belongs, like the item, to the client that created the item, over either transport
+ *   (FR-QUE-01, FR-QUE-08). An idempotency key another subject used is reported exactly like a key reused with
+ *   different parameters.
  * - `continue_task` (T5.6; FRD BR-18, WF-2, WF-3; LLD §15.7; ADR-0038) chooses between a native resume and a handoff.
  *   With no other provider named, the session provider `P0` (latest binding, else latest run) resumes its native
  *   session when it is eligible and its origin directory is usable (T5.7); it is a handoff preferring `P0` when there
@@ -192,7 +194,7 @@ import {
   resolveTrustProfile,
 } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
-import { DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT } from "../queue/scheduler.js";
+import { DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT, QUEUE_IDEMPOTENCY_PREFIX } from "../queue/scheduler.js";
 import { deleteRagStore } from "../retrieval/store.js";
 import {
   buildRouteDecision,
@@ -533,9 +535,30 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return order.filter((id) => registered.has(id));
   };
 
-  /** T13.5 (Q-78): the meta-session's subject is this caller's (its OAuth client over HTTP, none over stdio). */
-  const ownSubject = (metaSessionId: string): boolean =>
-    deps.subjectBindings === undefined || deps.subjectBindings.subjectOf(metaSessionId) === deps.subject;
+  /**
+   * FR-QUE-01, FR-QUE-08 (LLD §20.8): an unbound meta-session the controller opened to admit this client's own work
+   * item. Its first run carries the queue's idempotency key, and the item names that run as its admission; only the
+   * controller writes `admitted_run_id`, so a caller cannot claim a meta-session by choosing an idempotency key.
+   */
+  const queuedForClient = (metaSessionId: string): boolean => {
+    const first = ledger.listRunsForMetaSession(metaSessionId)[0];
+    const key = first?.idempotency_key;
+    if (first === undefined || first.client_id !== deps.clientId || !key?.startsWith(QUEUE_IDEMPOTENCY_PREFIX)) {
+      return false;
+    }
+    const item = ledger.getWorkItem(key.slice(QUEUE_IDEMPOTENCY_PREFIX.length));
+    return item !== undefined && item.creator_client_id === deps.clientId && item.admitted_run_id === first.id;
+  };
+  /**
+   * T13.5 (Q-78): the meta-session's subject is this caller's (its OAuth client over HTTP, none over stdio). A
+   * meta-session admitted from this client's queued work item has no subject and belongs to the item's owner, the
+   * mapped client, over either transport (like the item itself).
+   */
+  const ownSubject = (metaSessionId: string): boolean => {
+    if (deps.subjectBindings === undefined) return true;
+    const bound = deps.subjectBindings.subjectOf(metaSessionId);
+    return bound === deps.subject || (bound === undefined && queuedForClient(metaSessionId));
+  };
   /** Bind a meta-session opened by this request to its HTTP subject (stdio records nothing). */
   const bindSubject = (metaSessionId: string): void => {
     if (deps.subject !== undefined) deps.subjectBindings?.bind(metaSessionId, deps.subject);
@@ -1010,6 +1033,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const hash = requestHash(canonical);
     const key = a.idempotency_key as string | undefined;
     if (key !== undefined) {
+      // LLD §20.8: the queue's keys are the controller's, so a direct run never becomes a queued item's admission.
+      if (key.startsWith(QUEUE_IDEMPOTENCY_PREFIX)) {
+        throw invalid(`idempotency_key prefix ${QUEUE_IDEMPOTENCY_PREFIX} is reserved for queued work`, {
+          field: "idempotency_key",
+        });
+      }
       const prior = lifecycle.findIdempotentRun(deps.clientId, key, hash); // V10
       // T13.5: another subject's key reads exactly like a key reused with different parameters.
       if (prior && !ownSubject(prior.meta_session_id)) throw invalid(IDEMPOTENCY_CONFLICT);
