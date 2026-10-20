@@ -81,6 +81,7 @@ import {
   type ChannelAuditContext,
   createProbeRunner,
   type FailureCode,
+  IDLE_TIMEOUT_DETAIL,
   type Invocation,
   IsolationAuditError,
   isIneligible,
@@ -609,7 +610,7 @@ export interface ApprovalPendingNotice {
 export interface NeedsAttentionNotice {
   readonly runId: string;
   readonly projectId: string | null;
-  readonly reason: "parked_loop" | "failed_after_retry" | "skill_cleanup_failed";
+  readonly reason: "parked_loop" | "failed_after_retry" | "skill_cleanup_failed" | "idle_timeout_work_kept";
 }
 
 export interface RunLifecycleOptions {
@@ -720,7 +721,8 @@ export interface RunLifecycleOptions {
   readonly onApprovalPending?: (notice: ApprovalPendingNotice) => void;
   /**
    * T14.9 (FR-CTL-10, ADR-0048): observer for a `needs_attention` reason set where the controller already acts (the
-   * loop-breaker park, a successor-cap failure, a failed skill removal pass). Must not throw.
+   * loop-breaker park, a successor-cap failure, a failed skill removal pass, an idle timeout that left changed files).
+   * Must not throw.
    */
   readonly onNeedsAttention?: (notice: NeedsAttentionNotice) => void;
   /**
@@ -2156,6 +2158,7 @@ export class RunLifecycle {
         },
       );
     }
+    inv = withProjectIdle(inv, snapshotProject);
     // ADR-0039 (Q-62, Q-63): Switchboard's own pre-spawn refusals, whatever the provider's policy or trust would do.
     // A working directory that holds a provider state directory is refused for every run; repo-local agent config
     // (MCP servers, hooks) is refused while repoConfig is `disabled`.
@@ -2441,7 +2444,8 @@ export class RunLifecycle {
         try {
           await environment.teardown(environmentRun);
           turnInv = withProviderOtlpEnv(
-            (await environment.prepare(environmentRun, withChannel(compiled))).invocation,
+            (await environment.prepare(environmentRun, withProjectIdle(withChannel(compiled), snapshotProject)))
+              .invocation,
             providerOtlp,
           );
         } catch (err) {
@@ -2542,7 +2546,12 @@ export class RunLifecycle {
     const alignment = await this.collectDocsAlignment(runId, meta, ws);
     let pending = pendingOf(exec, out);
     const exitFields = { exit_code: out.exit.exitCode, exit_signal: out.exit.signal };
-    const exitPayload = { exit_outcome: out.exit.outcome, group_empty: out.groupEmpty };
+    const exitPayload = {
+      exit_outcome: out.exit.outcome,
+      group_empty: out.groupEmpty,
+      // FR-EXE-01: the bound that ended a process after its final successful result (the run is judged on the result).
+      ...(out.settledAfterResult !== undefined ? { settled_after_result: out.settledAfterResult } : {}),
+    };
     const commands = req.verification_commands ?? [];
     let verification: VerificationOutcomeRecord | undefined;
     if (pending.kind === "success" && commands.length > 0) {
@@ -2990,6 +2999,10 @@ export class RunLifecycle {
       // Same rule as the T14.2 derivation (`needs-attention.ts`): at the cap, or parked.
       if (failedRun.attempt >= cap || parked) {
         this.attention({ runId: failedRun.id, projectId, reason: "failed_after_retry" });
+      }
+      // FR-EXE-01: same rule as the derivation (`idleTimeoutWorkKept`): an idle timeout that left changed files behind.
+      if (outcome.kind === "failure" && outcome.code === "PROCESS_TIMEOUT" && outcome.detail === IDLE_TIMEOUT_DETAIL) {
+        if (changedFiles > 0) this.attention({ runId: failedRun.id, projectId, reason: "idle_timeout_work_kept" });
       }
     }
     // T6.6 (BR-6 step 2 and 3, BR-8, BR-9): after the terminal transaction, because a failover builds a bundle.
@@ -4006,6 +4019,15 @@ function redactTextCounted(text: string): { text: string; count: number } {
   const out = redactText(text);
   const markers = (t: string) => t.split(REDACTION_MARKER).length - 1;
   return { text: out, count: markers(out) - markers(text) };
+}
+
+/**
+ * FR-EXE-01 (Delegated): the project's `timeouts.provider_idle_seconds`, frozen in the snapshot at admission, replaces
+ * the adapter's idle window. Without it the adapter's window (`DEFAULT_IDLE_MS`) stands.
+ */
+function withProjectIdle(inv: Invocation, project: ProjectSnapshot | undefined): Invocation {
+  const idleMs = project?.provider_idle_ms;
+  return idleMs === undefined ? inv : { ...inv, timeouts: { ...inv.timeouts, idleMs } };
 }
 
 function pendingOf(exec: Execution, out: AdapterRunOutcome): Pending {

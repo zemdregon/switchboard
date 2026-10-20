@@ -129,6 +129,11 @@ export interface ProjectSnapshot {
    * not change the run. Absent when the project has no `brief_file` (also on snapshots written before T5.14). Never the text.
    */
   readonly brief_sha256?: string;
+  /**
+   * FR-EXE-01 (Delegated): the project's `timeouts.provider_idle_seconds` in milliseconds, frozen at admission. It
+   * replaces the adapter's idle window for the provider process. Absent means the adapter default (`DEFAULT_IDLE_MS`).
+   */
+  readonly provider_idle_ms?: number;
 }
 
 /**
