@@ -1682,7 +1682,8 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
   changes hands, and an HTTP server built without the binding store refuses to start. Dynamic projects (T9.9) stay per
   MCP client. Exception (bug fix 2026-10-20, PR #790, Delegated, not owner-approved): a meta-session the controller
   opens to admit the caller's own queued work item carries no `http_subject` row and is visible to the item's creating
-  client over either transport ([§20.8](#208-work-queue-over-http-fr-que-08-t159)). Code: `src/mcp/http-subjects.ts`, `src/mcp/server.ts`, `src/mcp/http.ts`, `src/cli/serve.ts`.
+  client over either transport ([§20.8](#208-work-queue-over-http-fr-que-08-t159)).
+  Code: `src/mcp/http-subjects.ts`, `src/mcp/server.ts`, `src/mcp/http.ts`, `src/cli/serve.ts`.
 
 ```sql
 CREATE TABLE http_subject (              -- migration 0013 (T13.5); insert-only, no foreign key (retention GC)
