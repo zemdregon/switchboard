@@ -1253,3 +1253,16 @@ as history.
   `src/git/push.ts` definition both call sites use. Both dead exports were removed; no document named them.
 - `node scripts/check-docs.mjs` passes with no document edits in this gate beyond this entry. It does not block
   PR #792.
+
+## 67. Idle timeout no longer downgrades completed runs (PR #796 via #799 and #803, re-applied on main at 3f190b5)
+
+- PR #803 (itself superseding #799 and #796) conflicted with main at 3f190b5, after PR #802 (T9.14), in
+  `src/control/needs-attention.ts`, the SRS FR-CTL-03 row, the LLD §3.4.5 reason table and this file. All were
+  resolved by keeping both sides: the module comment keeps the T9.14 `secret_scan_blocked` paragraph (with its
+  operator acknowledgement) and adds the `idle_timeout_work_kept` paragraph; FR-CTL-03 lists `idle_timeout_work_kept`
+  in the closed reason list and carries its 2026-10-20 amendment after the T9.14 split, part 2 amendment; the LLD
+  table keeps the T9.14 `secret_scan_blocked` row with `secret_scan_acknowledged` and adds the
+  `idle_timeout_work_kept` row, and the priority order lists it just above `failed_after_retry`.
+- ADR-0068 is reserved for PR #798, so the ADR is renumbered 0068 → **0069** and every reference this change adds
+  (SRS, SDD, LLD, ROADMAP T1.6, ADR index, the `src/` comments) points at 0069. No migration is added.
+- Numbering: item 66 on main is the T9.14 superseder (PR #800), so this item takes the next free number, 67.
