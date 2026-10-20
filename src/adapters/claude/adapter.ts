@@ -45,9 +45,10 @@
  * --strict-mcp-config`, all documented in [HELP]. TDD §4.1 needs updating to match (reported, not edited here).
  *
  * Profiles (T3.5, TDD §4.1.1 matrix): `inspect-untrusted` and `edit-untrusted` (T2.2), and `trusted-development` with the
- * same flags as `edit-untrusted`, no new flag; `test-sandboxed` and the trusted-development cells with no documented
- * control are `Ineligible` (see matrixIneligible). `privileged` (T3.5, T3.17) compiles from the approved scope (see
- * privilegedPlan), and only there may the one bypass flag below appear:
+ * same flags as `edit-untrusted`, no new flag, but command-prefix shell allow rules (ADR-0066, see shellRules);
+ * `test-sandboxed` and the trusted-development cells with no documented control are `Ineligible` (see
+ * matrixIneligible). `privileged` (T3.5, T3.17) compiles from the approved scope (see privilegedPlan), and only there
+ * may the one bypass flag below appear:
  *   --dangerously-skip-permissions  [HELP]: "Bypass all permission checks. Recommended only for sandboxes with no
  *                                   internet access." Emitted only when the profile is `privileged`, the scope sets
  *                                   `bypass` and the run's bypassApproved is true (owner decision 13, ADR-0017,
@@ -180,8 +181,9 @@ export const CLAUDE_GIT_WRITE_CONTROL: GitWriteControl = {
   kind: "provider-deny-rules",
   detail:
     "Layered, all from `claude --help` 2.1.296: (1) no Bash tool in --tools for inspect-untrusted and edit-untrusted " +
-    "unless the operator allowlists exact commands, and any allowlist entry that could write Git (commit, ref change, " +
-    "push, config, git global options, gh, command launchers, non-read-only subcommands) makes the run Ineligible; " +
+    "unless the operator allowlists commands (exact; command prefixes in trusted-development), and any allowlist " +
+    "entry that could write Git (commit, ref change, push, config, git global options, gh, command launchers, " +
+    "non-read-only subcommands) makes the run Ineligible; " +
     "(2) --disallowedTools Git write deny rules on every invocation (`Bash(git commit)`, `Bash(git commit *)`, ...); " +
     "(3) --restricted with --permission-prompts none denies file-tool writes to git files. Limits: rule matching " +
     "(`*` semantics, deny-over-allow) is an Assumption; deny rules are lexical and cannot see aliases, scripts run by " +
@@ -211,9 +213,8 @@ const REQUIRED_HELP: Readonly<Record<"command" | "output_format" | "flags", read
 };
 
 /**
- * Proposed: an `edit-untrusted` shell allowlist entry must be a plain command with plain arguments (no wildcard, no
- * shell metacharacters). Each compiles to an exact-match `Bash(<entry>)` rule; the rule syntax `Bash(git *)` is the
- * [HELP] example, and that a rule without `*` matches only the exact command is an Assumption.
+ * Proposed: a shell allowlist entry must be a plain command with plain arguments (no wildcard, no shell
+ * metacharacters); see shellRules for the rules it compiles to.
  */
 const SHELL_ENTRY = /^[A-Za-z0-9_./-]+( [A-Za-z0-9_./=:@-]+)*$/;
 /** Session ids and model names go into argv as option values; refuse anything that could read as an option. */
@@ -279,8 +280,8 @@ export const CLAUDE_BYPASS_NOT_APPROVED =
  *    - repository configuration `approved-only` or `allowlisted`: CAPABILITY_MISSING. [H] has no per-item control for
  *      approved hooks or instructions; `--setting-sources` selects whole sources, and `--mcp-config` (approved MCP
  *      servers) is barred by ADR-0015.
- *    What remains compiles as `edit-untrusted` (file access, exact shell allowlist, network off at the tool level,
- *    repository configuration disabled with `--safe-mode --restricted --strict-mcp-config`).
+ *    What remains compiles as `edit-untrusted` (file access, shell allowlist as command prefixes per ADR-0066, network
+ *    off at the tool level, repository configuration disabled with `--safe-mode --restricted --strict-mcp-config`).
  * `inspect-untrusted` and `edit-untrusted` keep their M2 behaviour (T2.2; Q-34: network off at the tool level).
  */
 export function matrixIneligible(profile: ResolvedProfile, bypassApproved = false): Ineligible | undefined {
@@ -342,8 +343,19 @@ interface ClaudePlan {
   readonly isolation?: readonly string[];
 }
 
-/** Exact `Bash(<entry>)` allow rules for an operator shell allowlist, or the specific refusal (FR-GIT-01). */
-function shellRules(entries: readonly string[]): string[] | Ineligible {
+/**
+ * `Bash` allow rules for an operator shell allowlist, or the specific refusal (FR-GIT-01). The rule syntax
+ * `Bash(git *)` is the [HELP] example; the Claude Code permissions page (code.claude.com/docs/en/permissions, read
+ * 2026-10-20) says "A rule with no `*` matches one exact command" and that `Bash(ls *)` matches `ls` and `ls -la` but
+ * not `lsof`.
+ * - `exact` (edit-untrusted, the privileged scope's exact argv entries, LLD §3.1): one `Bash(<entry>)` per entry.
+ * - `prefix` (trusted-development, ADR-0066): `Bash(<entry>)` and `Bash(<entry> *)`, so the entry `npx` allows
+ *   `npx tsc --noEmit`. An exact rule alone made Claude Code deny every call with arguments under dontAsk (prod runs
+ *   run_01M5BST5DB1MXXSRY3DM3KR1KE and run_01M5BST5YTYSQKW0KGPRCWM2F8, Claude Code 2.1.294). An entry whose program is
+ *   `git` or a `git-` subprogram stays exact: appended arguments could add a write path (bare `git` passes
+ *   gitWriteRisks, `git grep` could gain `-O<cmd>`).
+ */
+function shellRules(entries: readonly string[], form: "exact" | "prefix" = "exact"): string[] | Ineligible {
   const bad = entries.filter((e) => !SHELL_ENTRY.test(e));
   if (bad.length > 0) {
     return ineligible("PROFILE_UNSUPPORTED", `shell allowlist entries not expressible narrowly: ${bad.join("; ")}`);
@@ -356,7 +368,12 @@ function shellRules(entries: readonly string[]): string[] | Ineligible {
       `shell allowlist entries could write Git (FR-GIT-01): ${gitWrites.map((g) => `${g.command} (${g.reason})`).join("; ")}`,
     );
   }
-  return entries.map((e) => `Bash(${e})`);
+  if (form === "exact") return entries.map((e) => `Bash(${e})`);
+  return entries.flatMap((e) => {
+    const word = e.split(" ")[0] ?? "";
+    const program = word.slice(word.lastIndexOf("/") + 1);
+    return program === "git" || program.startsWith("git-") ? [`Bash(${e})`] : [`Bash(${e})`, `Bash(${e} *)`];
+  });
 }
 
 /** The M2/T3.5 profiles: inspect-untrusted, edit-untrusted and the compilable trusted-development cells. */
@@ -373,7 +390,11 @@ function standardPlan(request: CompileRequest, profile: ResolvedProfile): Claude
       allow.push(...CLAUDE_EDIT_TOOLS);
     }
     if (profile.shell === "allowlist") {
-      const rules = shellRules(profile.shellAllowlist ?? []);
+      // ADR-0066: trusted-development entries are command prefixes; edit-untrusted entries stay exact commands.
+      const rules = shellRules(
+        profile.shellAllowlist ?? [],
+        profile.name === "trusted-development" ? "prefix" : "exact",
+      );
       if (refused(rules)) return rules;
       if (rules.length > 0) {
         tools.push("Bash");
