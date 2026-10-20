@@ -498,7 +498,9 @@ same versions in the receiving provider's way with a native resume re-delivering
 `src/lifecycle/lifecycle.ts`; `src/continuity/skill-continuity.test.ts`, `src/continuity/bundle.test.ts`), and the
 malicious-fixture leg that T16.11 built (`test/malicious/skills-leg.test.ts` over the production store, admission and
 delivery ports: untrusted runs load no repository skill, the canary reaches no event, span, log, artifact or sink,
-and the R-69 copy behaves as recorded); the four limit
+and the R-69 copy behaves as recorded), and the FR-SKL-11 example skill that T8.10 built
+(`examples/skills/docs-alignment.md`, added and approved like any skill and admitted through the normal skills path;
+`src/skills/docs-alignment-example.test.ts`); the four limit
 defaults stay Assumptions and their ranges are Delegated (LLD §19.3).
 
 | ID | Requirement | Priority | Source | Verify | Milestone |

@@ -47,6 +47,7 @@ export {
   makeFinalizeCommit,
   sessionHasGitPolicyViolation,
 } from "./finalize.js";
+export { type HeadPin, readHeadPin } from "./head-pin.js";
 export { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, PublishRefError, publishRefFor } from "./publish-ref.js";
 export {
   classifyPush,

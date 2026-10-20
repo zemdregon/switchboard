@@ -58,7 +58,7 @@ must not follow redirects when fetching it; the server should display the URL's 
    rest passes the same checks as RFC 7591 registration (public client, `https` redirect URIs only, the code grant).
    Nothing from the document is trusted beyond that.
 5. **A CIMD client is keyed internally by `sbc_` + 128 bits of the URL's SHA-256**, stored in `oauth_client` like a
-   registered client with the URL beside it in a new, additive table `oauth_cimd_client` (migration 0027). Tokens,
+   registered client with the URL beside it in a new, additive table `oauth_cimd_client` (migration 0028). Tokens,
    meta-session bindings and the `transport.http.clients` mapping keep working unchanged; `oauth_client_id` in that
    mapping may be the URL itself, which config load maps to the derived identifier.
 6. **Consent decides, as before (FR-MCP-17).** A new URL creates a `pending` client under the same registration cap as
@@ -78,8 +78,8 @@ must not follow redirects when fetching it; the server should display the URL's 
   operator would not want contacted; the fetch reveals only that Switchboard asked for a metadata document.
 - A host that is *meant* to be private (a development client on loopback) cannot be a CIMD client: the draft's
   development-only loopback exception is not implemented (fail closed). Such a client registers through DCR instead.
-- The table is migration 0027 because `0026_ledger_chain` (T8.13) reached `main` first; the next additive migration
-  takes 0028.
+- The table is migration 0028: `0027_verification_result` (T8.10) reached `main` first, so the CIMD table took the
+  next free number on the merge.
 
 ## Alternatives considered
 
