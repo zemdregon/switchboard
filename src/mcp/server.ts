@@ -1898,6 +1898,28 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     get_skill: getSkill,
   };
 
+  /**
+   * Every descriptor this client is offered right now, in `tools/list` order: the single source of truth for the
+   * `tools/list` handler below and for the unknown-tool error in `callTool`. Built from the same registered
+   * descriptors (`toolDescriptors` plus the approval-proxy descriptors) filtered by the client's tool profile, so
+   * `details.tools` can never drift stale again (mcp-test 20261019T195233Z finding 1).
+   */
+  const offeredDescriptors = () =>
+    applyToolProfile(client.toolProfile, [
+      ...toolDescriptors({
+        manageProjects: client.manageProjects === true && projectTools !== undefined,
+        searchContext: searchOffered(),
+        workQueue: workQueueOffered,
+        skills: skillsOffered,
+      }),
+      // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
+      ...(approvalProxy !== undefined
+        ? approvalProxyToolDescriptors().map((d) => ({ ...d, outputSchema: withError(d.outputSchema) }))
+        : []),
+    ]);
+  /** The names `tools/list` returns right now; what the unknown-tool error reports in `details.tools`. */
+  const offeredToolNames = (): string[] => offeredDescriptors().map((d) => d.name);
+
   const handlers: Record<ToolName, (a: Args) => Promise<object>> = {
     delegate_task: delegateTask,
     continue_task: continueTask,
@@ -1932,7 +1954,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           projectTools?.recordNotOffered(name as ProjectToolName, rawArgs);
         }
         throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, {
-          tools: TOOL_NAMES.filter((n) => profileOffers(client.toolProfile, n)),
+          tools: offeredToolNames(),
         });
       }
       if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
@@ -1978,7 +2000,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         return ok(await workHandlers[tool](args));
       }
       if (!(TOOL_NAMES as readonly string[]).includes(name)) {
-        throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, { tools: [...TOOL_NAMES] });
+        throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, { tools: offeredToolNames() });
       }
       const tool = name as ToolName;
       const args = structuredClone(rawArgs ?? {}) as Args; // defaults are filled in place by Ajv
@@ -2008,20 +2030,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   );
   server.setRequestHandler("tools/list", async () => ({
     // T14.11 (FR-CTL-11): a console client sees only the console set; an orchestrator list is unchanged.
-    tools: applyToolProfile(client.toolProfile, [
-      ...toolDescriptors({
-        manageProjects: client.manageProjects === true && projectTools !== undefined,
-        searchContext: searchOffered(),
-        workQueue: workQueueOffered,
-        skills: skillsOffered,
-      }),
-      // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
-      ...(approvalProxy !== undefined
-        ? approvalProxyToolDescriptors().map((d) => ({ ...d, outputSchema: withError(d.outputSchema) }))
-        : []),
-      // The descriptors are the published JSON Schemas (`type: "object"` objects, checked by the schema tests); the
-      // SDK v2 `Tool` type wants that literal, which `Record<string, unknown>` cannot carry.
-    ]) as unknown as Tool[],
+    // The cast is the published JSON Schemas (`type: "object"` objects) against the SDK v2 `Tool` literal.
+    tools: offeredDescriptors() as unknown as Tool[],
   }));
   server.setRequestHandler("tools/call", async (req) => callTool(req.params.name, req.params.arguments));
 
