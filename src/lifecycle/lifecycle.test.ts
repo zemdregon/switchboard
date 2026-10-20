@@ -89,7 +89,54 @@ const USAGE_WRITER_CLI = WRITER_CLI.replace(
   'emit({ type: "usage", input_tokens: 7, output_tokens: 2 });\n  emit({ type: "tool"',
 );
 
-type Scenario = FakeScenario | "writer" | "writer-usage";
+/** Same as WRITER_CLI but the provider also posts OTLP metrics to the run's receiver when told to (T8.15). */
+const OTLP_WRITER_CLI = WRITER_CLI.replace(
+  'import { writeFileSync } from "node:fs";',
+  `import { writeFileSync } from "node:fs";
+const postOtlp = async () => {
+  const endpoint = process.env.SWITCHBOARD_TEST_OTLP_ENDPOINT;
+  if (!endpoint) return;
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      resourceMetrics: [
+        {
+          resource: { attributes: [{ key: "run.id", value: { stringValue: "forged-by-payload" } }] },
+          scopeMetrics: [
+            {
+              metrics: [
+                {
+                  name: "gen_ai.client.token.usage",
+                  sum: {
+                    dataPoints: [
+                      { asDouble: 11, attributes: [{ key: "gen_ai.token.type", value: { stringValue: "input" } }] },
+                      {
+                        asDouble: 4,
+                        attributes: [
+                          { key: "gen_ai.token.type", value: { stringValue: "output" } },
+                          { key: "user.prompt", value: { stringValue: "exfiltrate this" } },
+                        ],
+                      },
+                    ],
+                  },
+                },
+                { name: "unlisted.vendor.metric", sum: { dataPoints: [{ asDouble: 100 }] } },
+              ],
+            },
+          ],
+        },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error("otlp post failed: " + res.status);
+};`,
+).replace(
+  'emit({ type: "session", session_id: "writer-1" });',
+  'emit({ type: "session", session_id: "writer-otlp-1" });\n  await postOtlp();',
+);
+
+type Scenario = FakeScenario | "writer" | "writer-usage" | "writer-otlp";
 
 /**
  * Test adapter: the objective names the scenario for that run, so one registered `fake` adapter can play several
@@ -118,11 +165,13 @@ class ScenarioAdapter implements ProviderAdapter {
   constructor(
     private readonly writerScript: string,
     private readonly usageScript = writerScript,
+    private readonly otlpScript = writerScript,
   ) {}
 
   private forScenario(s: Scenario): FakeAdapter {
     if (s === "writer-usage") return new FakeAdapter({ script: this.usageScript, timeouts: PATIENT });
     if (s === "writer") return new FakeAdapter({ script: this.writerScript, timeouts: PATIENT });
+    if (s === "writer-otlp") return new FakeAdapter({ script: this.otlpScript, timeouts: PATIENT });
     return new FakeAdapter({ scenario: s, timeouts: s.startsWith("hang") ? SHORT : PATIENT });
   }
 
@@ -253,7 +302,9 @@ beforeEach(() => {
   writeFileSync(writer, WRITER_CLI);
   const usageWriter = path.join(root, "usage-writer-cli.mjs");
   writeFileSync(usageWriter, USAGE_WRITER_CLI);
-  adapter = new ScenarioAdapter(writer, usageWriter);
+  const otlpWriter = path.join(root, "otlp-writer-cli.mjs");
+  writeFileSync(otlpWriter, OTLP_WRITER_CLI);
+  adapter = new ScenarioAdapter(writer, usageWriter, otlpWriter);
   notices = [];
   lifecycle = makeLifecycle();
 });
@@ -282,6 +333,60 @@ describe("usage observations (T2.5, FR-CAP-01)", () => {
     const r = await submit("writer");
     await lifecycle.waitForTerminal(r.runId);
     expect(usageRows(r.runId)).toEqual([]);
+  });
+});
+
+describe("per-run provider OTLP receiver (T8.15, FR-TEL-06, ADR-0062)", () => {
+  const usageRows = (runId: string) => ledger.listUsageObservationsForRun(runId);
+  /** A manifest dir whose `fake` manifest declares documented OTLP variables (test citation). */
+  const manifestDir = () => {
+    const dir = path.join(root, "manifests");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "fake.json"),
+      JSON.stringify({
+        schema_version: 1,
+        provider: "fake",
+        validated_cli_version: "1.0.0",
+        validated_version_range: ">=1.0.0 <2.0.0",
+        validated_on: "2026-10-19",
+        auth_modes_allowed: ["native_cached_subscription"],
+        automation_surface: ["documented_headless"],
+        credential_export_allowed: false,
+        dashboard_scraping_allowed: false,
+        network_protocol_reverse_engineering: false,
+        commercial_multi_user_status: "requires-review",
+        source_revision: "test-only manifest for the T8.15 fake OTLP declaration",
+        otlp_metrics: {
+          endpoint_env: "SWITCHBOARD_TEST_OTLP_ENDPOINT",
+          protocol_env: "SWITCHBOARD_TEST_OTLP_PROTOCOL",
+          resource_attributes_env: "SWITCHBOARD_TEST_OTLP_RESOURCES",
+          docs: "test-only declaration for T8.15; no provider documentation checked",
+        },
+      }),
+    );
+    return dir;
+  };
+
+  it("opens no listener when the switch is off: the run succeeds with no OTLP rows", async () => {
+    lifecycle.start();
+    const r = await submit("writer-otlp");
+    expect((await lifecycle.waitForTerminal(r.runId)).state).toBe("SUCCEEDED");
+    expect(usageRows(r.runId)).toEqual([]);
+  });
+
+  it("records a fake provider's OTLP post as reported observations for that run", async () => {
+    lifecycle = makeLifecycle({ providerOtlp: { enabled: true, manifestDir: manifestDir() } });
+    lifecycle.start();
+    const r = await submit("writer-otlp");
+    expect((await lifecycle.waitForTerminal(r.runId)).state).toBe("SUCCEEDED");
+    const rows = usageRows(r.runId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ source: "provider_reported", provider: "fake", harness: "fake" });
+    // Attribution is controller-side: the payload's forged `run.id` never lands on the row.
+    expect(rows[0]?.run_id).toBe(r.runId);
+    // Allowlisted token figures only: the prompt attribute and the unlisted metric are dropped.
+    expect(JSON.parse(rows[0]?.metrics_json ?? "{}")).toEqual({ input_tokens: 11, output_tokens: 4 });
   });
 });
 
