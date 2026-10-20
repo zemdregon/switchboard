@@ -209,7 +209,7 @@ export interface SwitchboardConfig {
   /** CI-failure trigger (M15, T15.3; FR-QUE-03, LLD §18.6, ADR-0050). Absent or `enabled: false` means no `gh` call. */
   ci_trigger?: CiTriggerConfigInput;
   /** Optional OTLP/HTTP trace destination; absent or empty disables telemetry (LLD §7, T8.1). */
-  telemetry?: { otlp_endpoint?: string };
+  telemetry?: { otlp_endpoint?: string; provider_otlp?: boolean };
   /**
    * Host load hold (T3.24; FR-CAP-12, LLD §20.2). Absent means off: no load is read and dispatch is unchanged. Both keys
    * are required together and `resume_load1` must be lower than `max_load1` (`load.ts` refuses anything else).
@@ -1139,7 +1139,7 @@ export const configSchema = {
     telemetry: {
       type: "object",
       additionalProperties: false,
-      properties: { otlp_endpoint: { type: "string" } },
+      properties: { otlp_endpoint: { type: "string" }, provider_otlp: { type: "boolean" } },
     },
     profiles: {
       type: "object",

@@ -1,5 +1,5 @@
 /**
- * T13.11 (FR-MCP-19, LLD §20.11, ADR-0063): Client ID Metadata Documents beside Dynamic Client Registration.
+ * T13.11 (FR-MCP-19, LLD §20.11, ADR-0065): Client ID Metadata Documents beside Dynamic Client Registration.
  *
  * The fixture is a local HTTPS server on loopback with a certificate for `cimd.test` and `other.test`, signed by a
  * throw-away CA generated with `openssl` in a temp directory. The CA is handed to the fetcher through its `ca` port

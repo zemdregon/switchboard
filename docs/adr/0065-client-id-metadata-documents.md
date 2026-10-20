@@ -1,4 +1,4 @@
-# ADR-0063: Client ID Metadata Documents beside Dynamic Client Registration
+# ADR-0065: Client ID Metadata Documents beside Dynamic Client Registration
 
 - Status: Accepted for the direction (owner decision 77, enhancement discovery 2026-10-19 add rank 4, FR-MCP-19); the
   mechanism below is Delegated (Linus, WORK QUEUE v10, 2026-10-19), not owner-approved line by line. Extends

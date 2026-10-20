@@ -33,7 +33,7 @@
  * - Lifetimes (Assumption): access token {@link ACCESS_TOKEN_TTL_MS}, refresh token {@link REFRESH_TOKEN_TTL_MS} from
  *   its issue (each rotation issues a new one), consent request {@link CONSENT_REQUEST_TTL_MS}.
  *
- * T13.11 (FR-MCP-19, LLD §20.11, ADR-0063): a `client_id` that is an `https` URL names a Client ID Metadata Document
+ * T13.11 (FR-MCP-19, LLD §20.11, ADR-0065): a `client_id` that is an `https` URL names a Client ID Metadata Document
  * (`oauth-cimd.ts`). With `transport.http.cimd` on (the default) and a fetcher wired, `GET /authorize` fetches the
  * document afresh under the fetcher's limits, stores the metadata under the URL's derived `sbc_` identifier (a new URL
  * as a `pending` client, under the registration cap), and shows the URL's host on the consent page; then consent and

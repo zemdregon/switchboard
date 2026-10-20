@@ -2729,7 +2729,13 @@ that any use is contractually compliant (NFR-COMP-01).
     "network_protocol_reverse_engineering": { "const": false },
     "commercial_multi_user_status": { "enum": ["requires-review","reviewed-permitted","reviewed-prohibited"] }, // [R2] shows requires-review; others Proposed
     "source_revision": { "type": "string" },                          // provider terms date or id reviewed
-    "notes": { "type": "string" } } }
+    "notes": { "type": "string" },
+    "otlp_metrics": { "type": "object", "properties": {              // T8.15, FR-TEL-06, ADR-0063: optional; absent unless the cited provider docs were checked
+      "endpoint_env": { "type": "string" },                         // OTLP/HTTP metrics endpoint variable (set to the run's loopback receiver)
+      "protocol_env": { "type": "string" },                         // optional, pinned to http/json when the provider documents it
+      "resource_attributes_env": { "type": "string" },               // optional run/task resource-attributes variable (provider-documented)
+      "docs": { "type": "string" } },                               // provider-documentation citation; required when declared
+      "required": ["endpoint_env","docs"], "additionalProperties": false } } }
 ```
 
 **Eligibility effect (FR-POL-07, FR-ADP-03).** The adapter is ineligible if: no manifest exists (failure code
@@ -2740,7 +2746,9 @@ the manifest fails validation (fail closed); the run's auth mode is not in `auth
 `reviewed-prohibited`. In the single-operator deployment
 `requires-review` is recorded but does not block (Assumption,
 [ADR-0011](../adr/0011-single-operator-local-deployment.md)); multi-user or resale use is out of scope. The three
-`const: false` fields mean a manifest that claims otherwise cannot load.
+`const: false` fields mean a manifest that claims otherwise cannot load. A provider whose manifest omits
+`otlp_metrics` gets no per-run OTLP listener and no extra environment (T8.15, FR-TEL-06,
+[ADR-0063](../adr/0063-per-run-provider-otlp-metrics-receiver.md)); no shipped manifest declares it yet.
 `switchboard adapters validate <provider>` (T4.4, FR-OPS-02) updates
 `validated_cli_version`, `validated_on`, `validated_version_range` and appends a dated evidence sentence to `notes`, and
 nothing else, only after the probe (FR-ADP-02 steps 1 to 5), an `OK` auth preflight and the conformance subset including
@@ -2800,11 +2808,12 @@ credential-like values (including OAuth access or refresh tokens, API keys and w
 paths (use run-relative paths), provider reasoning text (NFR-PRIV-02), MCP request or response bodies, and inner-agent
 prompt or response text. Large payloads are artifacts referenced by ID and hash only, never inlined on spans.
 
-**Configuration (FR-TEL-02, NFR-PRIV-01).** One optional key, documented in [TDD §3.1](TDD.md#31-configuration):
+**Configuration (FR-TEL-02, FR-TEL-06, NFR-PRIV-01).** Two optional keys, documented in [TDD §3.1](TDD.md#31-configuration):
 
 | Key | Default | Behaviour |
 | --- | --- | --- |
-| `telemetry.otlp_endpoint` | absent (no export) | When omitted or empty, Switchboard does not load `@opentelemetry/api` or an OTLP exporter at startup, opens no telemetry listener, and makes no outbound OTLP connection (NFR-PRIV-01). When set, it must be an `http` or `https` URL validated at config load (T8.1); traces export to that endpoint only. |
+| `telemetry.otlp_endpoint` | absent (no export) | When omitted or empty, Switchboard does not load `@opentelemetry/api` or an OTLP exporter at startup, opens no trace-export listener (the T8.15 per-run provider-OTLP receiver is separate: loopback-only, off by default, next row), and makes no outbound OTLP connection (NFR-PRIV-01). When set, it must be an `http` or `https` URL validated at config load (T8.1); traces export to that endpoint only. |
+| `telemetry.provider_otlp` | `false` (no receiver) | When anything but `true`, no per-run receiver opens for any run. When `true`, a run whose provider manifest cites `otlp_metrics` gets one loopback listener (FR-TEL-06, T8.15, [ADR-0063](../adr/0063-per-run-provider-otlp-metrics-receiver.md); [§20.13](#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417)). |
 
 **Lazy load and export pipeline (T8.1, ADR-0012).** OTel packages are imported only after a non-empty
 `telemetry.otlp_endpoint` is loaded, on first span export, not at module top level, so configs without telemetry match
@@ -7607,7 +7616,7 @@ used). Neither leg issues or accepts a session id. Evidence: `src/mcp/http-eras.
 presented session id is still refused; a non-JSON body is refused), the unchanged T13.9 acceptance in
 `src/mcp/mcp.test.ts`, and every unchanged stdio and in-memory suite.
 
-**T13.11 as built (2026-10-19, Delegated; [ADR-0063](../adr/0063-client-id-metadata-documents.md)).** A `client_id`
+**T13.11 as built (2026-10-19, Delegated; [ADR-0065](../adr/0065-client-id-metadata-documents.md)).** A `client_id`
 that is an `https` URL names a Client ID Metadata Document (`src/mcp/oauth-cimd.ts`,
 `draft-ietf-oauth-client-id-metadata-document`), accepted while `transport.http.cimd` is `true` (the default;
 `false` makes such a `client_id` an unknown client with no fetch; stdio has no authorization server and is
@@ -7678,9 +7687,15 @@ a second time with `--coverage` and uploads `coverage/` as the `coverage-report`
   read-only and reports each chain's length and head hash, or `fail` naming the table and the first broken row's id.
   It detects edits made without the chain code; it does not detect a recomputed chain or a truncated tail
   (ADR-0064).
-- **Provider OTLP (FR-TEL-06).** An ADR (new local listener, per-provider environment additions) first. Proposed: one
-  listener per run on `127.0.0.1:0`, metrics only, attribute allowlist, the provider's documented OTLP variables named
-  in its manifest after they are checked against the provider's documentation.
+- **Provider OTLP (FR-TEL-06).** Done (2026-10-19, T8.15, Delegated agent work, not owner-approved):
+  [ADR-0063](../adr/0063-per-run-provider-otlp-metrics-receiver.md) (new local listener) landed in the same PR, committed
+  first. One listener per run on `127.0.0.1:0` for the run's lifetime, metrics only over OTLP/HTTP JSON (no protobuf
+  or gRPC, no new dependency), 1 MiB body cap (Assumption), a closed token/cost metric allowlist mapped to
+  `provider_reported` usage observations for that run, forbidden attributes dropped, run/task ids injected by the
+  controller and never trusted from the payload. `telemetry.provider_otlp` defaults off (off opens no socket); a
+  provider gets a listener only with a cited `otlp_metrics` manifest declaration, and none declares one yet. Tests:
+  `src/telemetry/provider-otlp.test.ts`, the T8.15 block in `src/lifecycle/lifecycle.test.ts`, and the config and
+  manifest declaration tests.
 - **Evaluation (FR-OPS-06).** `switchboard eval run <suite>`: a suite file in the data directory, each task replayed as
   a normal run, graded in a network-off container through the ADR-0052 driver with the tests outside the agent's
   worktree; results in a new `eval_result` table.

@@ -1,5 +1,5 @@
 /**
- * Client ID Metadata Documents for the embedded authorization server (T13.11; FR-MCP-19, LLD §20.11, ADR-0063,
+ * Client ID Metadata Documents for the embedded authorization server (T13.11; FR-MCP-19, LLD §20.11, ADR-0065,
  * `draft-ietf-oauth-client-id-metadata-document`).
  *
  * A client may identify itself with an `https` URL as its `client_id`; the JSON document at that URL holds its
