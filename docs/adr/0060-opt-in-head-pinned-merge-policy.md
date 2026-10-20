@@ -5,6 +5,8 @@
   as built, which adds the `base_mismatch` refusal reason). *Was:* the mechanism Proposed until T15.8 built it
   *Note 2026-10-20:* [ADR-0070](0070-mcp-merge-run-pr.md) shares this gate with MCP `merge_run_pr` and adds
   `merge_policy.require_verification`; this decision is unchanged.
+  *Note 2026-10-20:* [ADR-0073](0073-merge-gate-accepts-pure-base-merges.md) widens the head check from the exact
+  published tip to the tip or a chain of pure base merges on it, verified by the controller.
 - Date: 2026-10-19
 - Decided by: zemdregon for the direction: "Add all 7 including auto-merge", written in chat on 2026-10-19
   ([owner decision 76](../ROADMAP.md#42-owner-decisions)). The mechanism and its wording are Delegated (agent,

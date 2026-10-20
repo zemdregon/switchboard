@@ -317,7 +317,9 @@ describe("the merge gate (T15.8, FR-SUB-02)", () => {
     const merge = new FakeMerge();
     const events: RefSinkEvent[] = [];
     const r = await pollMergePolicies(deps(f, merge, {}, events));
-    expect(r.merged).toEqual([{ projectId: "app", publishRef: REF, prNumber: 42, headSha: SHA_TIP }]);
+    expect(r.merged).toEqual([
+      { projectId: "app", publishRef: REF, prNumber: 42, headSha: SHA_TIP, headKind: "published" },
+    ]);
     expect(merge.merges).toEqual([{ prNumber: 42, method: "squash", headSha: SHA_TIP }]);
     // Read, checks, re-read, then the one write.
     expect(merge.calls).toEqual(["view", "checks", "view", "merge"]);
@@ -327,7 +329,16 @@ describe("the merge gate (T15.8, FR-SUB-02)", () => {
     ]);
     const ev = f.ledger.listRunEvents(p.runId).filter((e) => e.type === "merge_event");
     expect(ev.map((e) => JSON.parse(e.payload_json))).toEqual([
-      { outcome: "merged", publish_ref: REF, head_sha: SHA_TIP, pr_number: 42, method: "squash" },
+      {
+        outcome: "merged",
+        publish_ref: REF,
+        head_sha: SHA_TIP,
+        pr_number: 42,
+        method: "squash",
+        // ADR-0073: the head the gate accepted and how.
+        head_kind: "published",
+        pr_head_sha: SHA_TIP,
+      },
     ]);
     expect(events).toEqual([{ projectId: "app", eventKind: "merge_event", reasonCode: "merged", runId: p.runId }]);
     // A closed sink payload (ADR-0048) for the event.
@@ -547,8 +558,10 @@ describe("the merge gate (T15.8, FR-SUB-02)", () => {
       ["refused", "not_mergeable"],
       ["refused", "gh_error"],
       ["attempted", null],
+      ["refused", "gh_error"],
     ]);
-    // The read failure and the merge failure share the (ref, head, gh_error) key: recorded once.
+    // ADR-0073: the read failure (before the head check) and the merge failure (at the accepted head, which the row
+    // now carries) are two keys; each is recorded once.
     expect(rows.filter((x) => x.pr_number === null).map((x) => x.reason)).toEqual(["gh_error"]);
     expect(() => f?.db.prepare("UPDATE merge_event SET reason = 'draft'").run()).toThrow(/append-only/);
     expect(() =>

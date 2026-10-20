@@ -35,6 +35,9 @@ import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish
  * - **Remote-tracking refs** updated by a controller base refresh (LLD §5.2, ADR-0067): `refs/remotes/<remote>/<branch>`
  *   at exactly the SHA the newest `base_refresh` event (outcome `fetched`) recorded for that ref of this repository is
  *   expected.
+ * - **The merge gate's fetch namespace** `refs/switchboard/merge-gate/` (ADR-0073): the controller force-fetches pull
+ *   request heads and base branches there and reads their SHAs from the fetch's own output, never from these refs, so
+ *   a change there is neither a violation nor trusted.
  * - **Every other ref** (default branch, other branches, tags, remote-tracking refs, notes, stash) and the main
  *   checkout's `HEAD`: any change is a violation. They are **reported, not restored** (Delegated): the controller
  *   cannot tell an agent's change from the operator's own concurrent work, and must never modify the operator's
@@ -55,6 +58,9 @@ import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish
  * checked against the ledger. A push the agent made to a remote cannot be seen or undone from here unless it updated a
  * remote-tracking ref (BR-27); prevention (BR-29) is the control.
  */
+
+/** ADR-0073: the controller-owned namespace of the merge gate's pull request fetch; ignored by the comparison. */
+export const MERGE_GATE_REF_PREFIX = "refs/switchboard/merge-gate/";
 
 export const GIT_REF_SNAPSHOT_EVENT = "git_ref_snapshot";
 export const GIT_REF_CHECK_EVENT = "git_ref_check";
@@ -213,7 +219,9 @@ export class RefGuard {
     const after = listed.at(-1)?.[0] ?? "";
     // The run's own refs are checked against the ledger, never through the tail digest (the publish ref moves legitimately).
     const own = new Set([facts.runBranchRef, facts.publishRef]);
-    const tailNames = truncated ? names.slice(listed.length).filter((n) => !own.has(n)) : [];
+    const tailNames = truncated
+      ? names.slice(listed.length).filter((n) => !own.has(n) && !n.startsWith(MERGE_GATE_REF_PREFIX))
+      : [];
     const snapshot: RefSnapshotV1 = {
       v: 1,
       phase: "leased",
@@ -407,7 +415,7 @@ export class RefGuard {
       const names = new Set<string>([...before.keys()]);
       for (const name of current.keys()) if (inRange(name)) names.add(name);
       for (const name of [...names].sort(compare)) {
-        if (own.has(name)) continue;
+        if (own.has(name) || name.startsWith(MERGE_GATE_REF_PREFIX)) continue;
         const b = before.get(name);
         const a = current.get(name);
         if (b === a) continue;
@@ -418,7 +426,9 @@ export class RefGuard {
         out.push(entry(scope, name, b ?? null, a ?? null, "report"));
       }
       if (snapshot.truncated && snapshot.tail) {
-        const tail = [...current.keys()].filter((n) => !inRange(n) && !own.has(n)).sort(compare);
+        const tail = [...current.keys()]
+          .filter((n) => !inRange(n) && !own.has(n) && !n.startsWith(MERGE_GATE_REF_PREFIX))
+          .sort(compare);
         const digest = digestOf(tail, current);
         if (tail.length !== snapshot.tail.count || digest !== snapshot.tail.digest) {
           out.push({

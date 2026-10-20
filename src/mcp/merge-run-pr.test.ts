@@ -19,8 +19,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
+import type { PullHeadInspection, PullHeadPort, PullHeadQuery } from "../ci/base-merge.js";
 import { mergeTargetsFrom } from "../ci/merge-policy.js";
-import type { CiMergePort, CiPullRequestGateView, CiRequiredChecks } from "../ci/port.js";
+import type { CiBranchUpdatePort, CiMergePort, CiPullRequestGateView, CiRequiredChecks } from "../ci/port.js";
 import { CiStatusError } from "../ci/port.js";
 import type { ResolvedMcpClient, ResolvedProject } from "../config/index.js";
 import { projectPushContextResolver } from "../git/index.js";
@@ -91,6 +92,26 @@ class FakeMerge implements CiMergePort {
   }
 }
 
+/** ADR-0073: the controller's Git read of the pull request head, as a test sets it. */
+class FakePullHeads implements PullHeadPort {
+  queries: PullHeadQuery[] = [];
+  result: PullHeadInspection = { kind: "read", head: "published", upToDate: false, conflicts: false };
+  async inspect(q: PullHeadQuery): Promise<PullHeadInspection> {
+    this.queries.push(q);
+    return this.result;
+  }
+}
+
+/** ADR-0073: G15 fake. */
+class FakeUpdate implements CiBranchUpdatePort {
+  updates: { owner: string; repo: string; prNumber: number; expectedHeadSha: string }[] = [];
+  error: Error | undefined;
+  async updatePullRequestBranch(q: { owner: string; repo: string; prNumber: number; expectedHeadSha: string }) {
+    if (this.error) throw this.error;
+    this.updates.push({ ...q });
+  }
+}
+
 const CLIENTS: ResolvedMcpClient[] = [
   {
     id: "steward",
@@ -113,10 +134,12 @@ interface Fixture {
   ledger: Ledger;
   store: DynamicProjectStore;
   merge: FakeMerge;
+  heads: FakePullHeads;
+  update: FakeUpdate;
   bindings: SubjectBindingStore;
   connect(
     clientId: string,
-    opts?: { subject?: string; noMergePort?: boolean },
+    opts?: { subject?: string; noMergePort?: boolean; noUpdatePort?: boolean },
   ): Promise<{ call: (name: string, args?: Json) => Promise<{ isError: boolean; body: Json }>; tools: string[] }>;
   published(o?: { clientId?: string; projectId?: string; sha?: string }): { runId: string; sessionId: string };
   verify(p: { runId: string; sessionId: string }, sha?: string): void;
@@ -212,11 +235,22 @@ async function start(): Promise<Fixture> {
     },
   };
   const merge = new FakeMerge();
+  const heads = new FakePullHeads();
+  const update = new FakeUpdate();
   const mergeRun: MergeRunDeps = {
     db,
     merge,
     targets: () => mergeTargetsFrom(projects, store),
     resolveRemote: async () => ({ owner: "acme", repo: "web" }),
+    pullHeads: heads,
+    update,
+  };
+  const mergeRunNoUpdate: MergeRunDeps = {
+    db,
+    merge,
+    targets: mergeRun.targets,
+    resolveRemote: mergeRun.resolveRemote,
+    pullHeads: heads,
   };
   const bindings = new SubjectBindingStore(db);
   const opened: (() => Promise<void>)[] = [];
@@ -228,6 +262,8 @@ async function start(): Promise<Fixture> {
     ledger,
     store,
     merge,
+    heads,
+    update,
     bindings,
     connect: async (clientId, opts = {}) => {
       const mcp = createSwitchboardServer({
@@ -241,7 +277,7 @@ async function start(): Promise<Fixture> {
         subjectBindings: bindings,
         ...(opts.subject !== undefined ? { subject: opts.subject } : {}),
         publish,
-        ...(opts.noMergePort === true ? {} : { mergeRun }),
+        ...(opts.noMergePort === true ? {} : { mergeRun: opts.noUpdatePort === true ? mergeRunNoUpdate : mergeRun }),
       });
       const client = new Client({ name: clientId, version: "0.0.0" });
       const [ct, st] = InMemoryTransport.createLinkedPair();
@@ -348,6 +384,7 @@ describe("merge_run_pr (ADR-0070)", () => {
       pull_request: { number: 42, url: "https://github.com/acme/web/pull/42" },
       merged: true,
       head_sha: TIP,
+      head_kind: "published",
       method: "squash",
     });
     expect(f.merge.merges).toEqual([{ owner: "acme", repo: "web", prNumber: 42, method: "squash", headSha: TIP }]);
@@ -547,5 +584,113 @@ describe("merge_run_pr (ADR-0070)", () => {
     const merged = await call("merge_run_pr", { run_id: p.runId });
     expect(merged.isError, JSON.stringify(merged.body)).toBe(false);
     expect(merged.body).toMatchObject({ merged: true, method: "squash" });
+  });
+});
+
+describe("update_run_branch and pure base merges (ADR-0073)", () => {
+  const BASE_MERGE = "5".repeat(40);
+
+  it("is offered with merge_run_pr and the update port; otherwise, and to a client without push, an unknown tool", async () => {
+    f = await start();
+    expect((await f.connect("steward")).tools).toContain("update_run_branch");
+    const noUpdate = await f.connect("steward", { noUpdatePort: true });
+    expect(noUpdate.tools).toContain("merge_run_pr");
+    expect(noUpdate.tools).not.toContain("update_run_branch");
+    expect((await f.connect("steward", { noMergePort: true })).tools).not.toContain("update_run_branch");
+    const nopush = await f.connect("nopush");
+    expect(nopush.tools).not.toContain("update_run_branch");
+    const { runId } = f.published({ clientId: "nopush" });
+    for (const c of [noUpdate, nopush]) {
+      const r = await c.call("update_run_branch", { run_id: runId });
+      expect(r.body.error).toMatchObject({ code: "INVALID_REQUEST", message: 'unknown tool "update_run_branch"' });
+    }
+    expect(f.update.updates).toEqual([]);
+  });
+
+  it("asks GitHub to update the branch, pinned to the head it read; a branch_update run event is recorded", async () => {
+    f = await start();
+    const { call } = await f.connect("steward");
+    const p = f.published();
+    const r = await call("update_run_branch", { run_id: p.runId, expected_head_sha: TIP });
+    expect(r.isError, JSON.stringify(r.body)).toBe(false);
+    expect(r.body).toEqual({
+      run_id: p.runId,
+      pull_request: { number: 42, url: "https://github.com/acme/web/pull/42" },
+      updated: true,
+      previous_head_sha: TIP,
+    });
+    expect(f.update.updates).toEqual([{ owner: "acme", repo: "web", prNumber: 42, expectedHeadSha: TIP }]);
+    expect(f.heads.queries).toMatchObject([{ projectId: "web", prNumber: 42, baseBranch: "main", publishedSha: TIP }]);
+    const ev = f.ledger.listRunEvents(p.runId).filter((e) => e.type === "branch_update");
+    expect(ev.map((e) => JSON.parse(e.payload_json))).toEqual([
+      { publish_ref: `refs/heads/sb/${p.sessionId}`, outcome: "requested", previous_head_sha: TIP, pr_number: 42 },
+    ]);
+    // Nothing was merged.
+    expect(mergeRows(f.db)).toEqual([]);
+  });
+
+  it("returns updated false for a branch already up to date, without asking GitHub", async () => {
+    f = await start();
+    const { call } = await f.connect("steward");
+    const p = f.published();
+    f.heads.result = { kind: "read", head: "published", upToDate: true, conflicts: false };
+    const r = await call("update_run_branch", { run_id: p.runId });
+    expect(r.isError, JSON.stringify(r.body)).toBe(false);
+    expect(r.body).toMatchObject({ updated: false, previous_head_sha: TIP });
+    expect(f.update.updates).toEqual([]);
+  });
+
+  it("refuses policy off, a foreign head, a conflicting base and a moved expected head; gh failure is retryable", async () => {
+    f = await start();
+    const { call } = await f.connect("steward");
+    const plain = f.published({ projectId: "plain" });
+    const off = await call("update_run_branch", { run_id: plain.runId });
+    expect(off.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "policy_off" } });
+    const p = f.published();
+    const moved = await call("update_run_branch", { run_id: p.runId, expected_head_sha: OTHER });
+    expect(moved.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "head_moved" } });
+    f.merge.view = { headSha: OTHER };
+    f.heads.result = { kind: "read", head: "foreign", upToDate: false, conflicts: false };
+    const foreign = await call("update_run_branch", { run_id: p.runId });
+    expect(foreign.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "head_moved" } });
+    f.merge.view = {};
+    f.heads.result = { kind: "read", head: "published", upToDate: false, conflicts: true };
+    const conflict = await call("update_run_branch", { run_id: p.runId });
+    expect(conflict.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "not_mergeable" } });
+    f.heads.result = { kind: "read", head: "published", upToDate: false, conflicts: false };
+    f.update.error = new CiStatusError("GH_FAILED");
+    const failed = await call("update_run_branch", { run_id: p.runId });
+    expect(failed.body.error).toMatchObject({ code: "TOOL_FAILURE", retryable: true, details: { reason: "gh_error" } });
+    expect(f.update.updates).toEqual([]);
+  });
+
+  it("another client's run is unknown, and nothing is read or written", async () => {
+    f = await start();
+    const p = f.published();
+    const peer = await f.connect("peer");
+    const r = await peer.call("update_run_branch", { run_id: p.runId });
+    expect(r.body.error).toMatchObject({ code: "INVALID_REQUEST", message: `unknown run ${p.runId}` });
+    expect(f.merge.calls).toEqual([]);
+    expect(f.heads.queries).toEqual([]);
+    expect(f.update.updates).toEqual([]);
+  });
+
+  it("merge_run_pr merges a pure base merge head pinned to it (head_kind base_merge), verified at the published tip", async () => {
+    f = await start();
+    const { call } = await f.connect("steward");
+    const p = f.published();
+    f.verify(p);
+    f.merge.view = { headSha: BASE_MERGE };
+    f.heads.result = { kind: "read", head: "base_merge", upToDate: true, conflicts: false };
+    const r = await call("merge_run_pr", { run_id: p.runId, expected_head_sha: BASE_MERGE });
+    expect(r.isError, JSON.stringify(r.body)).toBe(false);
+    expect(r.body).toMatchObject({ merged: true, head_sha: BASE_MERGE, head_kind: "base_merge" });
+    expect(f.merge.merges).toMatchObject([{ prNumber: 42, headSha: BASE_MERGE }]);
+    // Without the pull-head reader the same head is head_moved, as before ADR-0073.
+    f.heads.result = { kind: "read", head: "foreign", upToDate: false, conflicts: false };
+    const q = f.published();
+    f.verify(q);
+    const refused = await call("merge_run_pr", { run_id: q.runId });
+    expect(refused.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "head_moved" } });
   });
 });

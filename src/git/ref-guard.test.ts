@@ -193,6 +193,21 @@ describe("RefGuard (T9.5)", () => {
     expect(c.branch).not.toBe(a.branch);
   });
 
+  it("ADR-0073: the merge gate's fetch namespace may change during a run; the ref next to it may not", async () => {
+    const guard = new RefGuard({ ledger });
+    const a = await preparedRun();
+    g(repo, "update-ref", "refs/switchboard/merge-gate/origin/pr-1/head", "main");
+    await guard.snapshotAtLeased(a.run.id);
+    const other = g(repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "fetched");
+    g(repo, "update-ref", "refs/switchboard/merge-gate/origin/pr-1/head", other);
+    g(repo, "update-ref", "refs/switchboard/merge-gate/origin/pr-1/base", other);
+    g(repo, "update-ref", "refs/switchboard/merge-gate-not/x", other);
+    expect(await guard.checkAtFinalizing(a.run.id)).toMatchObject({ result: "violation", violations: 1 });
+    expect(violationsOf(a.run.id).map((v) => [v.scope, v.kind, v.ref])).toEqual([
+      ["other", "created", "refs/switchboard/merge-gate-not/x"],
+    ]);
+  });
+
   it("get_run events show the MCP client the snapshot digest and counts, not the repository's ref names", async () => {
     g(repo, "branch", "operator-private-topic");
     const { run } = await preparedRun();

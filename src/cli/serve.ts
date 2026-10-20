@@ -76,6 +76,7 @@ import {
   CiTriggerPoller,
   GhCiStatusPort,
   GhPullRequestPort,
+  GitPullHeadPort,
   mergeTargetsFrom,
   type OnRefSinkEvent,
   resolveGithubRemote,
@@ -1277,6 +1278,17 @@ async function runDaemon(
     const dynamic = mergeStore.state(projectId)?.inForce?.definition;
     return dynamic === undefined ? undefined : resolveGithubRemote(primaryContext(toResolved(dynamic)).path, remote);
   };
+  // ADR-0073 (LLD §20.7.1): the merge gate's controller-side Git read of a pull request's head and base, in the
+  // project's primary context repository (configured or dynamic in force), shared by the poller and the MCP tools.
+  const pullHeads = new GitPullHeadPort({
+    repoOf: (projectId) => {
+      const project = config.projects.find((p) => p.id === projectId);
+      if (project !== undefined) return primaryContext(project).path;
+      const dynamic = mergeStore.state(projectId)?.inForce?.definition;
+      return dynamic === undefined ? undefined : primaryContext(toResolved(dynamic)).path;
+    },
+    sourceEnv: io.env,
+  });
   // T15.8 (FR-SUB-01, FR-SUB-02, ADR-0048): ref and merge events reach the sinks as closed payloads, once per row.
   const onRefEvent: OnRefSinkEvent | undefined = sinks === undefined ? undefined : (e) => sinks.emit(e);
   // T15.8 (FR-SUB-02, LLD §20.7, ADR-0060): projects whose merge policy is on in the definition in force: configured
@@ -1337,6 +1349,7 @@ async function runDaemon(
           merge: ciPort,
           targets: mergeTargets,
           resolveRemote: resolveCiRemote,
+          pullHeads,
           nowMs: () => (now ? now() : new Date()).getTime(),
           ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
         },
@@ -1420,6 +1433,16 @@ async function runDaemon(
   const gcTimer = config.retentionEnabled
     ? scheduleRetentionGc(config.retention.intervalMs, () => void gcPass("interval"), undefined, log)
     : undefined;
+
+  // ADR-0070, ADR-0073: the G10 to G12 and G15 port of `merge_run_pr` and `update_run_branch`: the poller's, or, when
+  // `ci_trigger.enabled` is false, the same port on `ci_trigger.gh_binary`.
+  const mergeRunPort =
+    ciPort ??
+    new GhCiStatusPort({
+      binary: config.ciTrigger.ghBinary,
+      sourceEnv: io.env,
+      useCheckRunsFallback: config.ciTrigger.useCheckRunsFallback,
+    });
 
   let code = 0;
   try {
@@ -1507,15 +1530,12 @@ async function runDaemon(
       // ADR-0070 (LLD §3.4.13): `merge_run_pr`, offered with `publish_run`: the T15.8 gate on the poller's port, or,
       // when `ci_trigger.enabled` is false, the same G10 to G12 port on `ci_trigger.gh_binary`. Not limited to
       // `ci_trigger.projects`; the project's own merge policy in force decides.
+      // ADR-0073 (LLD §3.4.14): and `update_run_branch` on the same port (G15) with the same pull-head reader.
       mergeRun: {
         db,
-        merge:
-          ciPort ??
-          new GhCiStatusPort({
-            binary: config.ciTrigger.ghBinary,
-            sourceEnv: io.env,
-            useCheckRunsFallback: config.ciTrigger.useCheckRunsFallback,
-          }),
+        merge: mergeRunPort,
+        update: mergeRunPort,
+        pullHeads,
         targets: mergeTargets,
         resolveRemote: resolveCiRemote,
         nowMs: () => (now ? now() : new Date()).getTime(),

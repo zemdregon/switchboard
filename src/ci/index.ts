@@ -1,3 +1,5 @@
+export * from "./base-merge.js";
+export * from "./branch-update.js";
 export * from "./gh-argv.js";
 export * from "./gh-port.js";
 export * from "./gh-pr.js";
