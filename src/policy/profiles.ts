@@ -39,6 +39,7 @@ import {
   type OverridableProfile,
   type OverrideField,
   type PolicySnapshot,
+  type PrivilegedScope,
   type PrivilegedScopeBinding,
   type ProfileOverride,
   type ProfileOverrides,
@@ -279,6 +280,23 @@ export function resolveTrustProfile(name: TrustProfile, options: ResolveOptions 
   if (!Object.hasOwn(DEFAULTS, name)) throw new ProfileUnavailableError(String(name));
   const { profile, applied } = applyOverride(name, options.overrides?.[name]);
   return deepFreezeCopy<PolicySnapshot>(applied.length > 0 ? { ...profile, overrides: applied } : profile);
+}
+
+/**
+ * The snapshot stage-1 eligibility (FRD V11) compiles against for a `privileged` request: the scope resolved with a
+ * placeholder hash and approval ID (the real ones exist only inside the admission transaction). `bypassApproved` is
+ * false whatever the scope says (it is known only at dispatch), so admission defers an adapter's compile refusal to
+ * dispatch. Shared by MCP `delegate_task` and queued admission (`src/queue/admission.ts`) so the two cannot drift: a
+ * `privileged` question without it makes `checkEligibility` call `resolveProfile("privileged")`, which always throws.
+ */
+export function privilegedEligibilityProfile(scope: PrivilegedScope): PolicySnapshot {
+  return resolveTrustProfile("privileged", {
+    privileged: {
+      scope,
+      scopeHash: "0".repeat(64),
+      approvalId: "apv_00000000000000000000000000",
+    },
+  });
 }
 
 /**

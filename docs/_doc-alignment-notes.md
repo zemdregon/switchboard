@@ -1002,3 +1002,21 @@ as history.
   here.
 - `node scripts/check-docs.mjs` passes; `npx tsc --noEmit` passes (the `DEFAULT_MAX_LINE_BYTES` import
   removal in the Claude adapter leaves no stale use). Recorded here only; it does not block PR #786.
+
+## 56. Trusted-development prefix rules stragglers (from PR #782, fixed in this gate)
+
+- PR #782 changes the Claude `trusted-development` shell allowlist compile from one exact `Bash(<entry>)` rule per
+  entry to `Bash(<entry>)` plus `Bash(<entry> *)` (`shellRules` with `form: "prefix"` in
+  `src/adapters/claude/adapter.ts`; `git`/`git-*` programs stay exact; `edit-untrusted` and the privileged scope
+  argv allowlist keep exact rules), with new ADR-0066, the ADR-0015 status-line amendment, the ADR index row, the
+  ROADMAP T3.5 Fix note and two TDD §4.1.1 cells updated in the PR itself.
+- Two in-place phrases the PR missed still said "exact" for the trusted-development allowlist and contradicted the
+  code: the ROADMAP T3.5 Non-privileged-cells sentence ("shell `none` or an exact allowlist") and the TDD §4.1.1
+  Network row trusted-development cell ("with no shell or an exact allowlist (R-36)").
+- Fixed in this gate (docs only, no owner decision needed — code is the source of truth for what is implemented):
+  both now read "an allowlist", the ROADMAP one citing ADR-0066. Checked and left unchanged: the TDD Today and
+  Shell rows' "exact" wording for `edit-untrusted` and the privileged scope cells (code confirms both stay exact),
+  LLD §3.1 "one exact argv" (the privileged_scope schema shape, not the compiled Bash form), the SRS (no rule-form
+  statements), the README Trust profiles section (generic, no rule-form claims) and the ADR-0015 body (Accepted;
+  AGENTS.md forbids editing it, and its status line already records the ADR-0066 amendment).
+- `node scripts/check-docs.mjs` passes. It does not block PR #782.

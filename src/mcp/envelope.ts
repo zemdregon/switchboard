@@ -181,7 +181,7 @@ export function buildEnvelope(
     ...(run.failure_code !== null ? { failure_code: run.failure_code } : {}),
     ...(run.failure_detail ? { failure_detail: scrub(run.failure_detail).slice(0, DETAIL_MAX) } : {}),
     provider: { adapter: run.provider, model: run.model, adapter_version: adapterVersion },
-    route: { reasons: routeReasons(ledger, run.id) },
+    route: { reasons: routeReasons(ledger, run) },
     result,
     artifacts,
     usage: { reported: reportedUsage(ledger, run.id), estimated: null, capacity_confidence: null },
@@ -276,12 +276,22 @@ function reportedUsage(ledger: Ledger, runId: string): ReportedUsage[] | null {
 
 interface Candidate {
   provider: string;
+  /** T7.15 (LLD §17.7): the group member key (`provider/model`); several members may share one provider. */
+  member?: string | null;
   eligible: boolean;
   reasons: { code: string }[];
 }
 
-function routeReasons(ledger: Ledger, runId: string): string[] {
-  const row = ledger.getRouteDecision(runId);
+/** The adapter compile verdicts a `privileged` admission defers to dispatch (T3.3, as `admissible` in `server.ts`). */
+const DEFERRED_COMPILE = new Set(["PROFILE_UNSUPPORTED", "CAPABILITY_MISSING"]);
+
+/**
+ * One line per candidate, labelled by its group member when it has one (so two members of one provider are two
+ * distinguishable lines). For a `privileged` run a candidate refused only by the adapter's compile verdict was
+ * admissible, its compile deferred to dispatch: it reads as deferred, not as excluded beside its own selection.
+ */
+export function routeReasons(ledger: Ledger, run: RunRecord): string[] {
+  const row = ledger.getRouteDecision(run.id);
   if (!row) return [];
   const out: string[] = [];
   const reasons = JSON.parse(row.reasons_json) as { selection?: { provider?: string; basis?: string } };
@@ -289,8 +299,15 @@ function routeReasons(ledger: Ledger, runId: string): string[] {
     out.push(`selected ${row.selected_provider} (${reasons.selection?.basis ?? "eligibility"})`);
   }
   for (const c of JSON.parse(row.candidates_json) as Candidate[]) {
-    if (c.eligible) out.push(`${c.provider}: eligible`);
-    else out.push(`${c.provider}: excluded ${c.reasons[0]?.code ?? "UNKNOWN"}`);
+    const label = c.member ?? c.provider;
+    const code = c.reasons[0]?.code ?? "UNKNOWN";
+    const deferred =
+      run.trust_profile === "privileged" &&
+      c.reasons.length > 0 &&
+      c.reasons.every((r) => DEFERRED_COMPILE.has(r.code));
+    if (c.eligible) out.push(`${label}: eligible`);
+    else if (deferred) out.push(`${label}: compile deferred to dispatch (${code})`);
+    else out.push(`${label}: excluded ${code}`);
   }
   return out;
 }

@@ -19,6 +19,12 @@
  * | G6 | `run list --repo {owner}/{repo} --branch {branch} --status queued --limit {QUEUED_LIMIT} --json {G6_FIELDS}` | `cancel_stale_queued` |
  * | G7 | `run view {databaseId} --repo {owner}/{repo} --json {G7_FIELDS}` | `cancel_stale_queued` |
  * | G8 | `run cancel {databaseId} --repo {owner}/{repo}` (write; never `--force`) | `cancel_stale_queued` |
+ *
+ * T15.7 (FR-QUE-07, LLD §20.4, ADR-0050 amendment 1 item 9), read-only, for every watched published ref:
+ *
+ * | ID | argv (after the binary) |
+ * | --- | --- |
+ * | G9 | `pr view {branch} --repo {owner}/{repo} --json {G9_FIELDS}` |
  */
 
 export const G1_FIELDS = "databaseId,conclusion,headBranch,status,headSha";
@@ -27,6 +33,8 @@ export const G2_FIELDS = "databaseId,conclusion,status";
 export const G4_FIELDS = "attempt,jobs";
 export const G6_FIELDS = "databaseId,conclusion,headBranch,status,headSha";
 export const G7_FIELDS = "databaseId,status,headSha";
+/** G9: the pull request's mergeability (`gh` 2.102.0 `pr view --help` lists all five fields). */
+export const G9_FIELDS = "number,state,isDraft,mergeable,headRefOid";
 /** G6 page size: queued runs read per published ref and poll (Assumption: enough for one ref's backlog). */
 export const QUEUED_LIMIT = "20";
 /**
@@ -160,8 +168,14 @@ export function ghRunCancelArgv(owner: string, repo: string, databaseId: string)
   return audited(["run", "cancel", databaseId, "--repo", repoArg(owner, repo)]);
 }
 
+/** G9: mergeability of the pull request whose head is the published branch (T15.7, read-only). */
+export function ghPrViewArgv(owner: string, repo: string, branch: string): string[] {
+  if (!isSafeBranch(branch)) throw new GhArgvError("invalid branch");
+  return audited(["pr", "view", branch, "--repo", repoArg(owner, repo), "--json", G9_FIELDS]);
+}
+
 /**
- * The argv audit: true only for an argv that is exactly one of G1 to G8 with validated values in the value cells.
+ * The argv audit: true only for an argv that is exactly one of G1 to G9 with validated values in the value cells.
  * Builders call it before returning, so a template edit that drifts fails closed.
  */
 export function isAllowedGhArgv(argv: readonly string[]): boolean {
@@ -218,6 +232,16 @@ export function isAllowedGhArgv(argv: readonly string[]): boolean {
   }
   if (argv[0] === "run" && argv[1] === "cancel") {
     return argv.length === 5 && isDatabaseId(argv[2] ?? "") && argv[3] === "--repo" && ownerRepo(argv[4]);
+  }
+  if (argv[0] === "pr" && argv[1] === "view") {
+    return (
+      argv.length === 7 &&
+      isSafeBranch(argv[2] ?? "") &&
+      argv[3] === "--repo" &&
+      ownerRepo(argv[4]) &&
+      argv[5] === "--json" &&
+      argv[6] === G9_FIELDS
+    );
   }
   if (argv[0] === "api") {
     const m = /^repos\/([^/]+)\/([^/]+)\/commits\/([0-9a-f]{40})\/check-runs$/u.exec(argv[1] ?? "");
@@ -413,4 +437,36 @@ export function parseRunHead(stdout: string): { databaseId: string; status: stri
   const headSha = str(r.headSha);
   if (databaseId === undefined || status === undefined || headSha === undefined) throw new Error("unexpected run");
   return { databaseId, status, headSha };
+}
+
+/** G9 fields after the closed allowlist. `mergeable` is `MERGEABLE`, `CONFLICTING` or `UNKNOWN`. */
+export interface GhPrViewFields {
+  number: number;
+  state: "OPEN" | "CLOSED" | "MERGED";
+  isDraft: boolean;
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  headRefOid: string;
+}
+
+const PR_STATES: ReadonlySet<string> = new Set(["OPEN", "CLOSED", "MERGED"]);
+const MERGEABLE: ReadonlySet<string> = new Set(["MERGEABLE", "CONFLICTING", "UNKNOWN"]);
+
+/** G9 stdout: one pull request object; every other property is dropped. Throws on anything else. */
+export function parsePrView(stdout: string): GhPrViewFields {
+  const o = JSON.parse(stdout) as unknown;
+  if (typeof o !== "object" || o === null || Array.isArray(o)) throw new Error("unexpected pr shape");
+  const r = o as Record<string, unknown>;
+  if (typeof r.number !== "number" || !Number.isSafeInteger(r.number) || r.number < 1) throw new Error("unexpected pr");
+  if (typeof r.state !== "string" || !PR_STATES.has(r.state)) throw new Error("unexpected pr state");
+  if (typeof r.isDraft !== "boolean") throw new Error("unexpected pr draft flag");
+  if (typeof r.mergeable !== "string" || !MERGEABLE.has(r.mergeable)) throw new Error("unexpected mergeable");
+  if (typeof r.headRefOid !== "string" || !isFullLowerSha(r.headRefOid.toLowerCase()))
+    throw new Error("unexpected head");
+  return {
+    number: r.number,
+    state: r.state as GhPrViewFields["state"],
+    isDraft: r.isDraft,
+    mergeable: r.mergeable as GhPrViewFields["mergeable"],
+    headRefOid: r.headRefOid.toLowerCase(),
+  };
 }

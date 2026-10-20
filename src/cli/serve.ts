@@ -72,7 +72,7 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { osLoadReader } from "../capacity/host-load.js";
-import { CiTriggerPoller, GhCiStatusPort, resolveGithubRemote } from "../ci/index.js";
+import { CiTriggerPoller, GhCiStatusPort, resolveGithubRemote, supersededDiffOf } from "../ci/index.js";
 import { ConfigError, loadConfig, primaryContext, type ResolvedConfig } from "../config/index.js";
 import { collectDigestCounts, digestPushFor } from "../control/digest-push.js";
 import {
@@ -103,6 +103,7 @@ import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal 
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
 import { GitPusher, pushContextResolver } from "../git/push.js";
+import { prepareRebaseMerge } from "../git/rebase-prep.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createClassifyRouteFeaturesHook, createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/index.js";
 import { createLedger, openLedger, RagLedger } from "../ledger/index.js";
@@ -653,6 +654,7 @@ async function runDaemon(
       db,
       scratchDir: path.join(config.dataDir, "git-scratch"),
       sanitizePatterns: config.sanitizePatterns,
+      secretScanAllow: config.secretScanAllow,
       ids,
       ...(now ? { now } : {}),
     });
@@ -663,6 +665,7 @@ async function runDaemon(
       db,
       scratchDir: path.join(config.dataDir, "git-scratch"),
       sanitizePatterns: config.sanitizePatterns,
+      secretScanAllow: config.secretScanAllow,
       allowedStates: ["FINALIZING"],
       ids,
       ...(now ? { now } : {}),
@@ -926,6 +929,8 @@ async function runDaemon(
   );
   const lifecycle = new RunLifecycle({
     ledger,
+    // T15.7 (FR-QUE-07, LLD §20.4): controller Git merges the current base into a rebase run's worktree before spawn.
+    rebasePrep: (q) => prepareRebaseMerge(db, q),
     workspace,
     artifacts,
     adapters: registry,
@@ -1187,7 +1192,7 @@ async function runDaemon(
   // T15.3 (FR-QUE-03, LLD §18.7 step 2, ADR-0050): CI is polled through the operator's `gh` before the queue dequeue
   // (step 3), so a fix-up item can be admitted on the same tick. Off unless `ci_trigger.enabled`; no `gh` call otherwise.
   // T15.6 (FR-QUE-06, ADR-0050 amendment 1): the same port is the write side, used only for a project whose
-  // `rerun_failed` or `cancel_stale_queued` switch is on.
+  // `rerun_failed` or `cancel_stale_queued` switch is on. T15.7: and the read-only mergeability side (G9).
   const ciTrigger = config.ciTrigger;
   const ciPort = ciTrigger.enabled
     ? new GhCiStatusPort({
@@ -1203,6 +1208,15 @@ async function runDaemon(
           ledger,
           port: ciPort,
           actions: ciPort,
+          // T15.7 (FR-QUE-07, LLD §20.4): read-only `gh pr view` of each watched ref; the superseded ref's diff is read
+          // with local read-only Git from the project's primary context.
+          pulls: ciPort,
+          supersededDiff: async ({ projectId, headSha }) => {
+            const project = config.projects.find((p) => p.id === projectId);
+            if (project === undefined) return undefined;
+            const ctx = primaryContext(project);
+            return supersededDiffOf(ctx.path, ctx.baseRef, headSha);
+          },
           settings: ciTrigger,
           resolveRemote: async (projectId, remote) => {
             const project = config.projects.find((p) => p.id === projectId);

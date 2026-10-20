@@ -10,6 +10,8 @@ import {
   createWorkQueueLedgerSlice,
   type EnqueueWorkItemInput,
   type ProgressStallFacts,
+  type RefConflictRow,
+  type RunRebaseRow,
   type WorkItemRow,
   type WorkItemState,
   type WorkListFilter,
@@ -1052,7 +1054,10 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   releaseAdmittingToReady(workItemId: string): boolean;
   completeWorkAdmission(
     workItemId: string,
-    outcome: { kind: "admitted"; runId: string } | { kind: "retry" } | { kind: "failed"; code: string },
+    outcome:
+      | { kind: "admitted"; runId: string }
+      | { kind: "retry" }
+      | { kind: "failed"; code: string; detail?: Readonly<Record<string, unknown>> },
   ): WorkItemRow | undefined;
   markWorkItemDone(workItemId: string): WorkItemRow | undefined;
   closeWorkItemForRun(runId: string, runState: "SUCCEEDED" | "FAILED" | "CANCELLED"): WorkItemRow | undefined;
@@ -1065,6 +1070,10 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   // ---- T14.16 additions (digest push and progress stall, FR-CTL-14, LLD §20.5) -------------------------------
   readProgressStallFacts(projectId: string): ProgressStallFacts;
   countWorkItemsByState(): Partial<Record<WorkItemState, number>>;
+  insertRunRebase(input: { runId: string; workItemId: string; publishRef: string; headSha: string }): void;
+  getRunRebase(runId: string): RunRebaseRow | undefined;
+  findRunRebaseForWorkItem(workItemId: string): RunRebaseRow | undefined;
+  getRefConflictForWorkItem(workItemId: string): RefConflictRow | undefined;
 }
 
 export {
@@ -1087,11 +1096,13 @@ export type {
 export type {
   EnqueueWorkItemInput,
   ProgressStallFacts,
+  RefConflictRow,
+  RunRebaseRow,
   WorkItemRow,
   WorkItemState,
   WorkListFilter,
 } from "./work-queue.js";
-export { WORK_ITEM_STATES } from "./work-queue.js";
+export { WORK_ITEM_STATES, WorkItemDedupeConflictError } from "./work-queue.js";
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
   const ids = deps.ids ?? defaultIds;

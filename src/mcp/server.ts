@@ -171,7 +171,15 @@ import {
   createApprovalProxy,
 } from "../control/approval-proxy.js";
 import { snapshotEnvironment } from "../environment/index.js";
-import type { Ledger, RunRecord, RunState, TrustProfile, WorkItemRow, WorkItemState } from "../ledger/index.js";
+import {
+  type Ledger,
+  type RunRecord,
+  type RunState,
+  type TrustProfile,
+  WorkItemDedupeConflictError,
+  type WorkItemRow,
+  type WorkItemState,
+} from "../ledger/index.js";
 import {
   type EligibilityAnswer,
   type EligibilityQuestion,
@@ -189,9 +197,10 @@ import {
   type PrivilegedScope,
   type ProjectSnapshot,
   parsePrivilegedScope,
-  resolveTrustProfile,
+  privilegedEligibilityProfile,
 } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
+import { hotPathsProblem, storedHotPaths } from "../queue/hot-paths.js";
 import { DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT } from "../queue/scheduler.js";
 import { deleteRagStore } from "../retrieval/store.js";
 import {
@@ -1027,7 +1036,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       trustProfile: profile,
       clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
       cwd: workspace,
-      ...(scope?.ok ? { profile: eligibilityProfile(scope.scope) } : {}),
+      ...(scope?.ok ? { profile: privilegedEligibilityProfile(scope.scope) } : {}),
       ...(minimumCapability !== undefined ? { minimumCapability } : {}),
     };
     // T7.15 (LLD §17.7): with a group or an explicit model, each member is a stage-1 candidate.
@@ -1174,7 +1183,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         trustProfile: profile,
         clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
         cwd: workspace,
-        ...(approvedScope?.ok ? { profile: eligibilityProfile(approvedScope.scope) } : {}),
+        ...(approvedScope?.ok ? { profile: privilegedEligibilityProfile(approvedScope.scope) } : {}),
         ...(minimumCapability !== undefined ? { minimumCapability } : {}),
       });
 
@@ -1466,6 +1475,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       created_at: item.created_at,
       updated_at: item.updated_at,
       terminal_at: item.terminal_at,
+      dedupe_key: item.dedupe_key,
+      hot_paths: storedHotPaths(item.hot_paths_json),
+      superseded_by: item.superseded_by,
       ...extra,
     };
   };
@@ -1530,8 +1542,28 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const frozen = { ...request, project: projectId }; // LLD §18.2 request_json
     const priority = a.priority as number;
     const key = a.idempotency_key === undefined ? undefined : `mcp:${a.idempotency_key as string}`;
-    const fingerprint = (p: string, req: unknown, prio: number, preds: string[]) =>
-      requestHash({ project_id: p, request: req, priority: prio, depends_on: preds });
+    const dedupeKey = (a.dedupe_key as string | undefined) ?? null;
+    const hotPaths = (a.hot_paths as string[] | undefined) ?? null;
+    if (hotPaths !== null) {
+      const problem = hotPathsProblem(hotPaths);
+      if (problem !== undefined) throw invalid(problem, { field: "hot_paths" });
+    }
+    const fingerprint = (
+      p: string,
+      req: unknown,
+      prio: number,
+      preds: string[],
+      dedupe: string | null,
+      hot: readonly string[],
+    ) =>
+      requestHash({
+        project_id: p,
+        request: req,
+        priority: prio,
+        depends_on: preds,
+        ...(dedupe !== null ? { dedupe_key: dedupe } : {}),
+        ...(hot.length > 0 ? { hot_paths: hot } : {}),
+      });
     const limit = deps.config.queue?.maxItemsPerProject ?? DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT;
     return ledger.immediate(() => {
       if (key !== undefined) {
@@ -1543,7 +1575,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
               JSON.parse(prior.request_json),
               prior.priority,
               ledger.listWorkItemPredecessors(prior.id),
-            ) === fingerprint(projectId, frozen, priority, predecessors);
+              prior.dedupe_key,
+              storedHotPaths(prior.hot_paths_json),
+            ) === fingerprint(projectId, frozen, priority, predecessors, dedupeKey, hotPaths ?? []);
           if (!same) throw invalid(IDEMPOTENCY_CONFLICT);
           return workView(prior, { replayed: true });
         }
@@ -1554,15 +1588,27 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           max_items_per_project: limit,
         });
       }
-      const item = ledger.enqueueWorkItem({
-        projectId,
-        creatorClientId: deps.clientId,
-        request: frozen,
-        sourceKind: "mcp",
-        idempotencyKey: key ?? null,
-        priority,
-        predecessorIds: predecessors,
-      });
+      let item: WorkItemRow;
+      try {
+        item = ledger.enqueueWorkItem({
+          projectId,
+          creatorClientId: deps.clientId,
+          request: frozen,
+          sourceKind: "mcp",
+          idempotencyKey: key ?? null,
+          priority,
+          predecessorIds: predecessors,
+          dedupeKey,
+          hotPaths,
+        });
+      } catch (err) {
+        // T15.7 (LLD §20.4): no taxonomy code names a held key, so CONFLICT is the reason (as QUEUE_FULL, errors.ts).
+        // The holder's id is not returned: it may belong to another client of the project.
+        if (err instanceof WorkItemDedupeConflictError) {
+          throw invalid(err.message, { field: "dedupe_key", reason: "CONFLICT" });
+        }
+        throw err;
+      }
       return workView(item);
     });
   };
@@ -1727,7 +1773,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         try {
           profiles =
             p === "privileged"
-              ? REPRESENTATIVE_PRIVILEGED_SCOPES.map((sc) => eligibilityProfile(sc))
+              ? REPRESENTATIVE_PRIVILEGED_SCOPES.map((sc) => privilegedEligibilityProfile(sc))
               : [lifecycle.resolveProfile(p)];
         } catch {
           continue; // COMP-POL does not resolve this profile: unsupported, fail closed
@@ -2096,21 +2142,6 @@ const REPRESENTATIVE_PRIVILEGED_SCOPES: readonly PrivilegedScope[] = [
     bypass: false,
   },
 ];
-
-/**
- * The snapshot V11 compiles against for a `privileged` request: the scope resolved with placeholder hash and approval
- * ID (the real ones exist only inside the admission transaction). `bypassApproved` is false whatever the scope says
- * (it is known only at dispatch), so {@link admissible} defers an adapter's compile refusal to dispatch.
- */
-function eligibilityProfile(scope: PrivilegedScope): ResolvedProfile {
-  return resolveTrustProfile("privileged", {
-    privileged: {
-      scope,
-      scopeHash: "0".repeat(64),
-      approvalId: "apv_00000000000000000000000000",
-    },
-  });
-}
 
 function compileValidators(): Record<ToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
