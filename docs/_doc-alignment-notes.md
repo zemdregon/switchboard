@@ -973,3 +973,22 @@ as history.
   code-vs-document contradiction to fix or record as a conflict.
 - `node scripts/check-docs.mjs` passes; no doc edits needed for this PR
   beyond this entry. Recorded here only; it does not block PR #777.
+
+## 55. Privileged queue admission fix (PR #787, fixed, not blocking)
+
+- PR #787 fixes a queued-`privileged` admission bug (`src/queue/admission.ts`, `src/policy/profiles.ts`,
+  `src/mcp/envelope.ts`, `src/mcp/server.ts`, `src/queue/scheduler.ts`, `src/ledger/repo.ts`,
+  `src/ledger/work-queue.ts`, plus `src/queue/privileged-admission.test.ts`,
+  `src/mcp/route-reasons.test.ts`) and updates [LLD §18.4](design/LLD.md#184-admission-through-the-creating-clients-ceiling-fr-que-01)
+  steps 5-6 in the same change. Checked 2026-10-20 against `src/` as the source of truth:
+  `privilegedEligibilityProfile` is shared by `delegate_task` and queued admission (no drift possible);
+  V13 refusal messages are byte-identical in both paths; group candidate `member` keys, the deferred-compile
+  envelope lines and the `selection.basis` privileged-compile suffix all match LLD §17.3/§17.7;
+  `createScrubber` redacts credential-shaped tokens and replaces off-roots paths as LLD step 6 says;
+  README M15, CONTRIBUTING, SECURITY, `docs/operations/`, FRD V11/V13 and the ROADMAP rows need no change
+  (high-level status only; the fix restores already-Done behaviour rather than adding scope).
+- Fixed in this doc-align pass (docs only): LLD step 6 overstated two facts the PR itself introduced.
+  `message?` is now optional (a refusal before any admission attempt, e.g. unknown client, records only
+  `code`), `code` keeps a skill/lifecycle refusal's own code and maps anything else via `toToolError`
+  (not uniformly `toToolError` as written), and `reason`/`field` are scrubbed and bounded like `message`.
+- `node scripts/check-docs.mjs` passes; no owner decision needed. It does not block PR #787.
