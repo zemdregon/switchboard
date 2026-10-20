@@ -12,10 +12,13 @@
  * per number and head). A `gh` failure never undoes the push: the result then has `pull_request: null` and a closed
  * `pull_request_error`.
  *
- * The pull request text is controller-built. The title is `switchboard: <draft title or run id>`, where the draft title
- * (the run's `pr_draft` artifact, inner-agent text) is stripped of control characters and capped at
- * {@link TITLE_TEXT_MAX}. The body is a controller footer (run, meta-session, provider, project, head) and, when the run
- * has a `pr_draft` artifact, its body capped at {@link DRAFT_BODY_MAX_BYTES} under a heading that labels it agent-written.
+ * The pull request text is controller-built around the run's own proposal (ADR-0069 note 2026-10-20): the newest
+ * `pr_draft` artifact, else a title and description proposed in the run's stored result summary
+ * ({@link extractProposal}). The title is `switchboard: <proposed title or run id>`, sanitised by
+ * {@link pullRequestTitle} and capped at {@link TITLE_TEXT_MAX}. The body is the proposed description (capped at
+ * {@link DRAFT_BODY_MAX_BYTES}, mentions neutralised) first, then a `---` line, a label saying it is agent-written and
+ * from which source, and the controller footer (run, meta-session, provider, project, head); with no proposal, the
+ * footer alone. A reused open pull request is never edited.
  */
 import type { ArtifactStore } from "../artifacts/index.js";
 import { branchOfPublishRef, isSafeBranch, PR_BODY_MAX_BYTES } from "../ci/gh-argv.js";
@@ -25,6 +28,7 @@ import type { PushContextConfig, PushResult } from "../git/push.js";
 import { isBranchPrefix, isRemoteName, remoteTargetRef } from "../git/push.js";
 import type { GitPushRequester, Ledger, PullRequestRow, RunRecord } from "../ledger/index.js";
 import { gitText } from "../workspace/git.js";
+import { buildEnvelope } from "./envelope.js";
 import { invalid, ToolError } from "./errors.js";
 
 /** Most characters of the run's own text in the title (ADR-0069). */
@@ -55,6 +59,8 @@ export interface PublishContext {
   readonly clientId: string;
   /** Configured projects this client may use (`mcp_clients[].projects`). */
   readonly clientProjects: readonly string[];
+  /** The `get_run` outbound scrubber: the run summary a proposal is read from is exactly what `get_run` returns. */
+  readonly scrub: (s: string) => string;
 }
 
 export interface PublishResult {
@@ -267,14 +273,14 @@ async function openPullRequest(
         .find((r) => r.number === found.number);
       return { number: found.number, url: found.url, draft: prior?.draft === 1, reused: true };
     }
-    const prDraft = await draftOf(ctx, run.id);
+    const proposal = await proposalOf(ctx, run);
     const created = await deps.pulls.create({
       owner: gh.owner,
       repo: gh.repo,
       branch: publication.branch,
       base,
-      title: pullRequestTitle(prDraft?.title, run.id),
-      body: pullRequestBody(run, publication, prDraft?.body),
+      title: pullRequestTitle(proposal?.title, run.id),
+      body: pullRequestBody(run, publication, proposal),
       draft,
     });
     record(created.number, created.url, "created");
@@ -283,6 +289,24 @@ async function openPullRequest(
     if (err instanceof PullRequestPortError) return { error: err.code };
     return { error: "GH_FAILED" };
   }
+}
+
+/** The run's proposed pull request text and where it came from (ADR-0069 note 2026-10-20). */
+export interface ProposedText {
+  title?: string;
+  body?: string;
+  source: "pr_draft" | "run_summary";
+}
+
+/** The newest non-empty `pr_draft` artifact; else a proposal in the run's stored result summary (as `get_run` shows it). */
+async function proposalOf(ctx: PublishContext, run: RunRecord): Promise<ProposedText | undefined> {
+  const draft = await draftOf(ctx, run.id);
+  if (draft !== undefined && ((draft.title ?? "").trim() !== "" || (draft.body ?? "").trim() !== "")) {
+    return { ...draft, source: "pr_draft" };
+  }
+  const summary = buildEnvelope(ctx.ledger, run, ctx.scrub).result.summary;
+  const proposal = summary === undefined ? undefined : extractProposal(summary);
+  return proposal === undefined ? undefined : { ...proposal, source: "run_summary" };
 }
 
 /** The run's newest `pr_draft` artifact (`{ title, body }`, sanitised when it was stored), or undefined. */
@@ -305,17 +329,95 @@ async function draftOf(ctx: PublishContext, runId: string): Promise<{ title?: st
   }
 }
 
+const THEMATIC_BREAK = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})[ \t]*$/u;
+const TITLE_HEADING = /^ {0,3}#{1,2}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/u;
+const FENCE = /^ {0,3}(`{3,}|~{3,})/u;
+
+/**
+ * A pull request title and description proposed in a run's result summary, or undefined (never invented from prose):
+ * the first level 1/2 ATX heading that follows a thematic break line (`---`, `***`, `___`; blank lines between are
+ * allowed), or else a level 1/2 heading on the summary's first non-blank line. The heading text is the title (raw;
+ * {@link pullRequestTitle} sanitises it) and everything after the heading line is the body. Lines inside fenced code
+ * blocks are neither breaks nor headings.
+ */
+export function extractProposal(summary: string): { title: string; body: string } | undefined {
+  const lines = summary.split(/\r\n|\r|\n/u);
+  const at = (i: number) => {
+    const m = TITLE_HEADING.exec(lines[i] ?? "");
+    const title = m?.[1]?.trim() ?? "";
+    if (title === "") return undefined;
+    return {
+      title,
+      body: lines
+        .slice(i + 1)
+        .join("\n")
+        .trim(),
+    };
+  };
+  let fence: string | undefined;
+  let afterBreak = false;
+  let firstNonBlank: number | undefined;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    const f = FENCE.exec(line)?.[1];
+    if (fence !== undefined) {
+      if (f !== undefined && f[0] === fence[0] && f.length >= fence.length) fence = undefined;
+      continue;
+    }
+    if (line.trim() === "") continue;
+    firstNonBlank ??= i;
+    if (f !== undefined) {
+      fence = f;
+      afterBreak = false;
+      continue;
+    }
+    if (afterBreak) {
+      const hit = at(i);
+      if (hit !== undefined) return hit;
+    }
+    afterBreak = THEMATIC_BREAK.test(line);
+  }
+  return firstNonBlank === undefined ? undefined : at(firstNonBlank);
+}
+
 // biome-ignore lint/suspicious/noControlCharactersInRegex: the point is to remove control characters
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/gu;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: the point is to remove control characters
 const BODY_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
+/** `@` that would ping a user or team on GitHub (not inside a word, as in an email address). */
+const MENTION = /(?<!\w)@(?=[A-Za-z0-9])/gu;
+/** Markdown emphasis or code markers that may wrap the whole title, longest first. */
+const TITLE_WRAPS = ["**", "__", "*", "_", "`"] as const;
 
-/** `switchboard: <text>`: the run's own text without control characters, at most {@link TITLE_TEXT_MAX} characters. */
+/** The title without a trailing period (not an ellipsis) or a marker pair wrapping all of it, repeatedly. */
+function unwrapTitle(title: string): string {
+  let t = title;
+  for (;;) {
+    t = t.replace(/(?<!\.)\.$/u, "").trim();
+    const w = TITLE_WRAPS.find((m) => {
+      const inner = t.slice(m.length, -m.length);
+      return t.length > 2 * m.length && t.startsWith(m) && t.endsWith(m) && !inner.includes(m);
+    });
+    if (w === undefined) return t;
+    t = t.slice(w.length, -w.length).trim();
+  }
+}
+
+/**
+ * Agent text never pings anyone: an `@` before a name becomes the fullwidth `＠` (U+FF20), which GitHub does not link
+ * or notify, and which still reads as the name. The simplest safe rewrite: no zero-width characters, no code spans.
+ */
+export function neutraliseMentions(text: string): string {
+  return text.replace(MENTION, "\uff20");
+}
+
+/**
+ * `switchboard: <text>`: the run's own text without control characters, emphasis or code markers wrapping it, or a
+ * trailing period, with mentions neutralised, at most {@link TITLE_TEXT_MAX} characters; else the run id.
+ */
 export function pullRequestTitle(text: string | undefined, runId: string): string {
-  const clean = [...(text ?? "").replace(CONTROL, " ").replace(/\s+/gu, " ").trim()]
-    .slice(0, TITLE_TEXT_MAX)
-    .join("")
-    .trim();
+  const t = neutraliseMentions(unwrapTitle((text ?? "").replace(CONTROL, " ").replace(/\s+/gu, " ").trim()));
+  const clean = [...t].slice(0, TITLE_TEXT_MAX).join("").trim();
   return `switchboard: ${clean === "" ? runId : clean}`;
 }
 
@@ -333,14 +435,36 @@ function capBytes(s: string, max: number): string {
   return out;
 }
 
-export const AGENT_TEXT_HEADING =
-  "### Agent-written description (untrusted; from the run's pr_draft artifact, not reviewed by Switchboard)";
+/** Close a fenced code block or HTML comment the (possibly truncated) agent text left open, so the footer renders. */
+function closeOpenBlocks(text: string): string {
+  let fence: string | undefined;
+  for (const line of text.split("\n")) {
+    const f = FENCE.exec(line)?.[1];
+    if (f === undefined) continue;
+    if (fence === undefined) fence = f;
+    else if (f[0] === fence[0] && f.length >= fence.length) fence = undefined;
+  }
+  let out = fence === undefined ? text : `${text}\n${fence}`;
+  if (out.lastIndexOf("<!--") > out.lastIndexOf("-->")) out = `${out} -->`;
+  return out;
+}
 
-/** Controller footer, then the capped agent-written draft under a heading that labels it. */
+/** The one-line label between the agent's text and the controller footer, by where the text came from. */
+export const AGENT_TEXT_LABEL: Readonly<Record<ProposedText["source"], string>> = {
+  pr_draft:
+    "_The text above was written by the run's agent (untrusted; from the run's pr_draft artifact, not reviewed by Switchboard)._",
+  run_summary:
+    "_The text above was written by the run's agent (untrusted; from the run's result summary, not reviewed by Switchboard)._",
+};
+
+/**
+ * The agent's proposed description first (control characters removed, mentions neutralised, capped so the footer always
+ * fits), then a `---` line, the label naming its source, and the controller footer; with no proposal, the footer alone.
+ */
 export function pullRequestBody(
   run: Pick<RunRecord, "id" | "meta_session_id" | "provider" | "model" | "project_id">,
   publication: Pick<PublishResult["publication"], "head_sha">,
-  draftBody: string | undefined,
+  proposal: Pick<ProposedText, "body" | "source"> | undefined,
 ): string {
   const provider =
     run.provider === null ? "unknown" : run.model === null ? run.provider : `${run.provider} (${run.model})`;
@@ -353,7 +477,11 @@ export function pullRequestBody(
     `- Project: \`${run.project_id ?? "-"}\``,
     `- Head: \`${publication.head_sha}\``,
   ].join("\n");
-  const agent = capBytes((draftBody ?? "").replace(BODY_CONTROL, ""), DRAFT_BODY_MAX_BYTES).trim();
-  const body = agent === "" ? footer : `${footer}\n\n${AGENT_TEXT_HEADING}\n\n${agent}`;
-  return capBytes(body, PR_BODY_MAX_BYTES);
+  const text = neutraliseMentions((proposal?.body ?? "").replace(BODY_CONTROL, "")).trim();
+  if (proposal === undefined || text === "") return capBytes(footer, PR_BODY_MAX_BYTES);
+  const tail = `\n\n---\n\n${AGENT_TEXT_LABEL[proposal.source]}\n\n${footer}`;
+  // Room for the closers closeOpenBlocks may add (a newline and a fence, or " -->").
+  const room = Math.min(DRAFT_BODY_MAX_BYTES, PR_BODY_MAX_BYTES - Buffer.byteLength(tail, "utf8") - 64);
+  const agent = closeOpenBlocks(capBytes(text, room).trimEnd());
+  return capBytes(`${agent}${tail}`, PR_BODY_MAX_BYTES);
 }

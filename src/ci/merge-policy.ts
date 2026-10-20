@@ -22,6 +22,9 @@
  *    again), then G12 `gh pr merge <n> --<method> --match-head-commit <sha>`, so a head that moves after the read
  *    refuses on GitHub's side too.
  *
+ * ADR-0070: the per-ref gate is {@link applyMergeGate}, shared with MCP `merge_run_pr` ({@link mergeOnRequest}), and
+ * `merge_policy.require_verification: false` skips step 2's `verification_result` condition only.
+ *
  * Every decision is a `merge_event` row (migration 0031): `attempted` before G12 runs (at most one attempt per head SHA:
  * a G12 failure is recorded `gh_error` and is not retried until the head moves), `merged`, or `refused` with a reason,
  * once per `(ref, head, reason)`. A read failure is a `gh_error` refusal and is retried on the next poll. Each newly
@@ -236,138 +239,219 @@ function viewRefusal(view: CiPullRequestGateView, ref: PublishedRef, baseBranch:
 /** One merge pass over every target (LLD §20.7). Never throws for a single project or ref. */
 export async function pollMergePolicies(deps: MergePolicyDeps): Promise<MergePolicyPollResult> {
   const result: MergePolicyPollResult = { merged: [], refused: [], refEvents: [], unresolved: [] };
-  const { db, ledger } = deps;
-  const nowMs = deps.nowMs ?? Date.now;
-  const nowIso = () => new Date(nowMs()).toISOString();
   for (const target of deps.targets()) {
     if (!target.policy.enabled) continue;
-    const { projectId, policy } = target;
-    if (isAdmissionPaused(ledger, projectId)) continue;
+    const { projectId } = target;
+    if (isAdmissionPaused(deps.ledger, projectId)) continue;
     const remotes = new Map<string, { owner: string; repo: string } | undefined>();
-    for (const ref of listPublishedRefs(db, projectId)) {
-      if (isSuperseded(db, projectId, ref.publishRef)) continue;
+    for (const ref of listPublishedRefs(deps.db, projectId)) {
+      if (isSuperseded(deps.db, projectId, ref.publishRef)) continue;
       if (!remotes.has(ref.remote)) remotes.set(ref.remote, await deps.resolveRemote(projectId, ref.remote));
       const gh = remotes.get(ref.remote);
       if (gh === undefined) {
         result.unresolved.push({ projectId, publishRef: ref.publishRef });
         continue;
       }
-      const record = (
-        outcome: "attempted" | "merged" | "refused",
-        prNumber: number | null,
-        reason?: MergeRefusalReason,
-      ) =>
-        recordMergeEvent(
-          { db, ledger, onEvent: deps.onEvent, nowIso: nowIso() },
-          {
-            projectId,
-            ref,
-            prNumber,
-            method: policy.method,
-            outcome,
-            ...(reason !== undefined ? { reason } : {}),
-          },
-        );
-      const refuse = (reason: MergeRefusalReason, prNumber: number | null) => {
-        const recorded = record("refused", prNumber, reason);
-        result.refused.push({ projectId, publishRef: ref.publishRef, headSha: ref.headSha, reason, recorded });
-      };
-      const readView = async (): Promise<CiPullRequestGateView | null | "error"> => {
-        try {
-          return await deps.merge.pullRequestGateView({ ...gh, publishRef: ref.publishRef });
-        } catch {
-          return "error";
-        }
-      };
-
-      const view = await readView();
-      if (view === "error") {
-        refuse("gh_error", null);
-        continue;
-      }
-      if (view === null) continue;
-      for (const ev of refEventsOfPullRequest(db, projectId, ref, view)) {
-        const fresh = recordRefEvent(
-          { db, ledger, onEvent: deps.onEvent, nowIso: nowIso() },
-          { projectId, ref, kind: ev.kind, headSha: ev.headSha, prNumber: view.number },
-        );
-        if (fresh) result.refEvents.push({ projectId, publishRef: ref.publishRef, ...ev });
-      }
-      if (view.state !== "OPEN") continue;
-      if (alreadyAttempted(db, projectId, ref)) continue;
-      const baseBranch = baseBranchOf(target.baseRef, ref.remote);
-      const first = viewRefusal(view, ref, baseBranch);
-      if (first !== undefined) {
-        refuse(first, view.number);
-        continue;
-      }
-      if (!verifiedAtHead(db, projectId, ref.headSha)) {
-        refuse("unverified_at_head", view.number);
-        continue;
-      }
-      if (
-        policy.requiredReports.some((r) => r === "docs-alignment" && !reportAlignedAtHead(db, projectId, ref.headSha))
-      ) {
-        refuse("report_missing", view.number);
-        continue;
-      }
-      let checks: Awaited<ReturnType<CiMergePort["requiredChecks"]>>;
-      try {
-        checks = await deps.merge.requiredChecks({ ...gh, prNumber: view.number });
-      } catch {
-        refuse("gh_error", view.number);
-        continue;
-      }
-      if (checks.kind === "none") {
-        refuse("no_required_checks", view.number);
-        continue;
-      }
-      if (checks.buckets.some((b) => b !== "pass" && b !== "pending")) {
-        refuse("check_failed", view.number);
-        continue;
-      }
-      if (checks.buckets.includes("pending")) {
-        refuse("check_pending", view.number);
-        continue;
-      }
-      // Step 4: the policy and the pull request are read again right before the one write.
-      const now = deps.targets().find((t) => t.projectId === projectId);
-      if (now === undefined || !now.policy.enabled || now.policy.method !== policy.method) {
-        refuse("policy_off", view.number);
-        continue;
-      }
-      const again = await readView();
-      if (again === "error") {
-        refuse("gh_error", view.number);
-        continue;
-      }
-      if (again === null || again.state !== "OPEN" || again.number !== view.number) {
-        refuse("head_moved", view.number);
-        continue;
-      }
-      const second = viewRefusal(again, ref, baseBranch);
-      if (second !== undefined) {
-        refuse(second, view.number);
-        continue;
-      }
-      record("attempted", view.number);
-      try {
-        await deps.merge.mergePullRequest({
-          ...gh,
-          prNumber: view.number,
-          method: policy.method,
+      const out = await applyMergeGate(deps, target, ref, gh, { mode: "poll" });
+      for (const ev of out.refEvents) result.refEvents.push({ projectId, publishRef: ref.publishRef, ...ev });
+      if (out.kind === "merged") {
+        result.merged.push({ projectId, publishRef: ref.publishRef, prNumber: out.prNumber, headSha: ref.headSha });
+      } else if (out.kind === "refused") {
+        result.refused.push({
+          projectId,
+          publishRef: ref.publishRef,
           headSha: ref.headSha,
+          reason: out.reason,
+          recorded: out.recorded,
         });
-      } catch {
-        // A moved head, a protection rule or any other `gh` refusal: the exit code only, never `gh` text.
-        refuse("gh_error", view.number);
-        continue;
       }
-      record("merged", view.number);
-      result.merged.push({ projectId, publishRef: ref.publishRef, prNumber: view.number, headSha: ref.headSha });
     }
   }
   return result;
+}
+
+/** What {@link applyMergeGate} decided for one published ref. */
+export type MergeGateOutcome = { refEvents: { kind: RefEventKind; headSha: string }[] } & (
+  | { kind: "merged"; prNumber: number; alreadyMerged: boolean }
+  | { kind: "refused"; reason: MergeRefusalReason; prNumber: number | null; recorded: boolean }
+  /** `poll` mode only: no pull request, not open, or already attempted at this head; nothing to decide. */
+  | { kind: "skipped" }
+);
+
+/**
+ * The T15.8 gate for one published ref of one target (LLD §20.7 steps 1 to 4, then G12), shared by the poller and
+ * MCP `merge_run_pr` (ADR-0070) so there is one copy of it. `mode: "poll"` is the poller's: no pull request, a pull
+ * request that is not open, or an earlier attempt at this head ends the work without a decision. `mode: "request"` is
+ * one explicit merge request: no pull request or a closed one is `not_mergeable`, a pull request already merged at the
+ * published tip is reported merged without G12 (idempotent), a merged one at another head is `head_moved`, an earlier
+ * attempt does not stop a new one (G12 is head-pinned, so a retry after `gh_error` is safe), and `expectedHeadSha`,
+ * when given, must equal the published tip (`head_moved`). `policy.requireVerification === false` (ADR-0070) skips the
+ * `verification_result` condition only. Never throws for a `gh` failure (it is a `gh_error` refusal).
+ */
+export async function applyMergeGate(
+  deps: Pick<MergePolicyDeps, "db" | "ledger" | "merge" | "targets" | "nowMs" | "onEvent">,
+  target: MergeTarget,
+  ref: PublishedRef,
+  gh: { owner: string; repo: string },
+  opts: { mode: "poll" | "request"; expectedHeadSha?: string },
+): Promise<MergeGateOutcome> {
+  const { db, ledger } = deps;
+  const { projectId, policy } = target;
+  const nowMs = deps.nowMs ?? Date.now;
+  const refEvents: { kind: RefEventKind; headSha: string }[] = [];
+  const record = (outcome: "attempted" | "merged" | "refused", prNumber: number | null, reason?: MergeRefusalReason) =>
+    recordMergeEvent(
+      { db, ledger, onEvent: deps.onEvent, nowIso: new Date(nowMs()).toISOString() },
+      { projectId, ref, prNumber, method: policy.method, outcome, ...(reason !== undefined ? { reason } : {}) },
+    );
+  const refuse = (reason: MergeRefusalReason, prNumber: number | null): MergeGateOutcome => ({
+    kind: "refused",
+    reason,
+    prNumber,
+    recorded: record("refused", prNumber, reason),
+    refEvents,
+  });
+  const skipped: MergeGateOutcome = { kind: "skipped", refEvents };
+  const request = opts.mode === "request";
+  const readView = async (): Promise<CiPullRequestGateView | null | "error"> => {
+    try {
+      return await deps.merge.pullRequestGateView({ ...gh, publishRef: ref.publishRef });
+    } catch {
+      return "error";
+    }
+  };
+
+  const view = await readView();
+  if (view === "error") return refuse("gh_error", null);
+  if (view === null) return request ? refuse("not_mergeable", null) : skipped;
+  for (const ev of refEventsOfPullRequest(db, projectId, ref, view)) {
+    const fresh = recordRefEvent(
+      { db, ledger, onEvent: deps.onEvent, nowIso: new Date(nowMs()).toISOString() },
+      { projectId, ref, kind: ev.kind, headSha: ev.headSha, prNumber: view.number },
+    );
+    if (fresh) refEvents.push(ev);
+  }
+  if (request && opts.expectedHeadSha !== undefined && opts.expectedHeadSha !== ref.headSha) {
+    return refuse("head_moved", view.number);
+  }
+  if (view.state !== "OPEN") {
+    if (!request) return skipped;
+    if (view.state === "MERGED" && view.headSha === ref.headSha) {
+      return { kind: "merged", prNumber: view.number, alreadyMerged: true, refEvents };
+    }
+    return refuse(view.state === "MERGED" ? "head_moved" : "not_mergeable", view.number);
+  }
+  if (!request && alreadyAttempted(db, projectId, ref)) return skipped;
+  const baseBranch = baseBranchOf(target.baseRef, ref.remote);
+  const first = viewRefusal(view, ref, baseBranch);
+  if (first !== undefined) return refuse(first, view.number);
+  if (policy.requireVerification !== false && !verifiedAtHead(db, projectId, ref.headSha)) {
+    return refuse("unverified_at_head", view.number);
+  }
+  if (policy.requiredReports.some((r) => r === "docs-alignment" && !reportAlignedAtHead(db, projectId, ref.headSha))) {
+    return refuse("report_missing", view.number);
+  }
+  let checks: Awaited<ReturnType<CiMergePort["requiredChecks"]>>;
+  try {
+    checks = await deps.merge.requiredChecks({ ...gh, prNumber: view.number });
+  } catch {
+    return refuse("gh_error", view.number);
+  }
+  if (checks.kind === "none") return refuse("no_required_checks", view.number);
+  if (checks.buckets.some((b) => b !== "pass" && b !== "pending")) return refuse("check_failed", view.number);
+  if (checks.buckets.includes("pending")) return refuse("check_pending", view.number);
+  // Step 4: the policy and the pull request are read again right before the one write.
+  const now = deps.targets().find((t) => t.projectId === projectId);
+  if (
+    now === undefined ||
+    !now.policy.enabled ||
+    now.policy.method !== policy.method ||
+    // ADR-0070: verification turned back on after this pass skipped it.
+    (now.policy.requireVerification !== false && policy.requireVerification === false)
+  ) {
+    return refuse("policy_off", view.number);
+  }
+  const again = await readView();
+  if (again === "error") return refuse("gh_error", view.number);
+  if (again === null || again.state !== "OPEN" || again.number !== view.number)
+    return refuse("head_moved", view.number);
+  const second = viewRefusal(again, ref, baseBranch);
+  if (second !== undefined) return refuse(second, view.number);
+  record("attempted", view.number);
+  try {
+    await deps.merge.mergePullRequest({ ...gh, prNumber: view.number, method: policy.method, headSha: ref.headSha });
+  } catch {
+    // A moved head, a protection rule or any other `gh` refusal: the exit code only, never `gh` text.
+    return refuse("gh_error", view.number);
+  }
+  record("merged", view.number);
+  return { kind: "merged", prNumber: view.number, alreadyMerged: false, refEvents };
+}
+
+/** What {@link mergeOnRequest} decided; `not_published` and `unresolved` are decided before any `gh` call. */
+export type MergeRequestOutcome =
+  | {
+      kind: "merged";
+      prNumber: number;
+      headSha: string;
+      method: ProjectMergePolicy["method"];
+      alreadyMerged: boolean;
+      gh: { owner: string; repo: string };
+    }
+  | { kind: "refused"; reason: MergeRefusalReason; prNumber: number | null; headSha: string }
+  /** The ref has no ACCEPTED push for the project (nothing Switchboard published). */
+  | { kind: "not_published" }
+  /** The ref's remote is not a github.com remote. */
+  | { kind: "unresolved"; headSha: string };
+
+/**
+ * One explicit merge request for a published ref (MCP `merge_run_pr`, ADR-0070): the poller's per-project checks
+ * (policy in force and on, project not paused, ref not superseded), then {@link applyMergeGate} in `request` mode. Not
+ * gated by `ci_trigger.enabled` or `ci_trigger.projects`. Every refusal is a `merge_event` row like the poller's: a
+ * project without the policy in force or paused is `policy_off` (method `squash` recorded when it has no policy); a
+ * superseded ref (T15.7) is `head_moved`.
+ */
+export async function mergeOnRequest(
+  deps: Omit<MergePolicyDeps, "ledger"> & { ledger: Ledger },
+  req: { projectId: string; remote: string; publishRef: string; expectedHeadSha?: string },
+): Promise<MergeRequestOutcome> {
+  const { db, ledger } = deps;
+  const ref = listPublishedRefs(db, req.projectId).find(
+    (r) => r.remote === req.remote && r.publishRef === req.publishRef,
+  );
+  if (ref === undefined) return { kind: "not_published" };
+  const nowIso = () => new Date((deps.nowMs ?? Date.now)()).toISOString();
+  const target = deps.targets().find((t) => t.projectId === req.projectId);
+  const refuse = (reason: MergeRefusalReason, method: ProjectMergePolicy["method"]): MergeRequestOutcome => {
+    recordMergeEvent(
+      { db, ledger, onEvent: deps.onEvent, nowIso: nowIso() },
+      { projectId: req.projectId, ref, prNumber: null, method, outcome: "refused", reason },
+    );
+    return { kind: "refused", reason, prNumber: null, headSha: ref.headSha };
+  };
+  if (target === undefined || !target.policy.enabled) return refuse("policy_off", target?.policy.method ?? "squash");
+  if (isAdmissionPaused(ledger, req.projectId)) return refuse("policy_off", target.policy.method);
+  if (isSuperseded(db, req.projectId, ref.publishRef)) return refuse("head_moved", target.policy.method);
+  const gh = await deps.resolveRemote(req.projectId, ref.remote);
+  if (gh === undefined) return { kind: "unresolved", headSha: ref.headSha };
+  const out = await applyMergeGate(deps, target, ref, gh, {
+    mode: "request",
+    ...(req.expectedHeadSha !== undefined ? { expectedHeadSha: req.expectedHeadSha } : {}),
+  });
+  if (out.kind === "merged") {
+    return {
+      kind: "merged",
+      prNumber: out.prNumber,
+      headSha: ref.headSha,
+      method: target.policy.method,
+      alreadyMerged: out.alreadyMerged,
+      gh,
+    };
+  }
+  if (out.kind === "refused")
+    return { kind: "refused", reason: out.reason, prNumber: out.prNumber, headSha: ref.headSha };
+  // `request` mode never skips; fail closed if it ever did.
+  return { kind: "refused", reason: "not_mergeable", prNumber: null, headSha: ref.headSha };
 }
 
 function isSuperseded(db: Database.Database, projectId: string, publishRef: string): boolean {

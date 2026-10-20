@@ -71,6 +71,8 @@
 import { FAILURE_CODES } from "../adapters/failure.js";
 import { MERGE_EVENT_TYPE, MERGE_REFUSAL_REASONS, REF_EVENT_KINDS, REF_EVENT_TYPE } from "../ci/merge-codes.js";
 import {
+  MERGE_POLICY_METHODS,
+  MERGE_POLICY_REPORTS,
   MODEL_GROUP_NAME_PATTERN,
   PROJECT_ID_PATTERN,
   projectSchema,
@@ -129,9 +131,10 @@ export type SkillToolName = (typeof SKILL_TOOL_NAMES)[number];
 
 /**
  * ADR-0069 (LLD §3.4.12): `publish_run`, offered only to a client whose `max_push_policy` is `branch` and only when the
- * server has the publish port (`serve`); to any other client it does not exist.
+ * server has the publish port (`serve`); to any other client it does not exist. ADR-0070 (LLD §3.4.13): `merge_run_pr`
+ * under the same gate and only when the server also has the merge port.
  */
-export const PUBLISH_TOOL_NAMES = ["publish_run"] as const;
+export const PUBLISH_TOOL_NAMES = ["publish_run", "merge_run_pr"] as const;
 export type PublishToolName = (typeof PUBLISH_TOOL_NAMES)[number];
 
 /** Delegated bounds for an MCP-supplied project definition (the configuration schema itself has none). */
@@ -1360,6 +1363,18 @@ const PROJECTS = {
           // Proposed: the ceiling this client gets here, the lower of its own and the project's.
           effective_max_profile: TRUST_PROFILE,
           allowed_providers: { type: "array", items: PROVIDER },
+          // ADR-0070: the merge policy in force, present only when the project sets one (absent means off).
+          merge_policy: {
+            type: "object",
+            additionalProperties: false,
+            required: ["enabled", "method", "required_reports", "require_verification"],
+            properties: {
+              enabled: { type: "boolean" },
+              method: { enum: [...MERGE_POLICY_METHODS] },
+              required_reports: { type: "array", items: { enum: [...MERGE_POLICY_REPORTS] } },
+              require_verification: { type: "boolean" },
+            },
+          },
           // T9.9 (Proposed): present on dynamic projects only.
           source: { type: "string", enum: ["dynamic"] },
           revision: { type: "integer", minimum: 1 },
@@ -1611,6 +1626,15 @@ export const PUBLISH_PULL_REQUEST_ERRORS = [
 ] as const;
 
 const PUBLISH_INPUTS = {
+  merge_run_pr: {
+    type: "object",
+    additionalProperties: false,
+    required: ["run_id"],
+    properties: {
+      run_id: RUN_ID,
+      expected_head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+    },
+  },
   publish_run: {
     type: "object",
     additionalProperties: false,
@@ -1663,7 +1687,32 @@ const PUBLISH_RESULT = {
   },
 } as const;
 
-const PUBLISH_OUTPUTS = { publish_run: withError(PUBLISH_RESULT) } as const;
+/** ADR-0070 (LLD §3.4.13): a merged (or already merged) pull request; every refusal is an error envelope. */
+const MERGE_RUN_PR_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["run_id", "pull_request", "merged", "head_sha", "method"],
+  properties: {
+    run_id: RUN_ID,
+    pull_request: {
+      type: "object",
+      additionalProperties: false,
+      required: ["number", "url"],
+      properties: {
+        number: { type: "integer", minimum: 1 },
+        url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+      },
+    },
+    merged: { const: true },
+    head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+    method: { enum: [...MERGE_POLICY_METHODS] },
+  },
+} as const;
+
+const PUBLISH_OUTPUTS = {
+  publish_run: withError(PUBLISH_RESULT),
+  merge_run_pr: withError(MERGE_RUN_PR_RESULT),
+} as const;
 
 const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
   publish_run:
@@ -1674,6 +1723,17 @@ const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
     "and pull request. A refused push is PERMISSION_BLOCKED with details.reason. If gh fails the push still stands: " +
     "pull_request is null and pull_request_error names why. The pull request body includes the run's agent-written " +
     "draft, labelled untrusted.",
+  merge_run_pr:
+    "Merge the pull request of one of this client's runs that publish_run published, with the operator's GitHub " +
+    "login (gh), only when the project's merge_policy is in force and enabled (see list_projects; update_project " +
+    "turns it on after approval) and, read from GitHub at the published head: the pull request is open, not a draft, " +
+    "on the project's base branch, mergeable, every required check passed (none required, or any pending, is " +
+    "refused, never waited for), the head is still the published one (and expected_head_sha if given), and the " +
+    "policy's verification and report conditions hold. Merges with the policy's method, pinned to that head. A " +
+    "refusal is PERMISSION_BLOCKED with details.reason (policy_off, draft, head_moved, base_mismatch, not_mergeable, " +
+    "no_required_checks, check_pending, check_failed, unverified_at_head, report_missing); a gh failure is " +
+    "TOOL_FAILURE gh_error, retryable. Idempotent: an already merged pull request returns merged true. Every attempt " +
+    "is a merge_event in get_digest.",
 };
 
 const SKILL_DESCRIPTIONS: Readonly<Record<SkillToolName, string>> = {
@@ -1826,6 +1886,7 @@ export function toolDescriptors(
     workQueue?: boolean;
     skills?: boolean;
     publish?: boolean;
+    mergeRunPr?: boolean;
   } = {},
 ): ToolDescriptor[] {
   const base: ToolDescriptor[] = TOOL_NAMES.map((name) => ({
@@ -1845,9 +1906,10 @@ export function toolDescriptors(
     );
   }
   if (opts.publish === true) {
-    // ADR-0069: right after the work-queue tools, before every retrieval-, skill- or project-gated tool.
+    // ADR-0069: right after the work-queue tools, before every retrieval-, skill- or project-gated tool. ADR-0070:
+    // `merge_run_pr` only with `mergeRunPr` as well.
     base.push(
-      ...PUBLISH_TOOL_NAMES.map((name) => ({
+      ...PUBLISH_TOOL_NAMES.filter((name) => name !== "merge_run_pr" || opts.mergeRunPr === true).map((name) => ({
         name,
         description: PUBLISH_DESCRIPTIONS[name],
         inputSchema: structuredClone(PUBLISH_INPUTS[name]) as Record<string, unknown>,

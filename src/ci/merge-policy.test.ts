@@ -491,6 +491,33 @@ describe("the merge gate (T15.8, FR-SUB-02)", () => {
     expect(merge.merges).toHaveLength(1);
   });
 
+  it("ADR-0070 require_verification false: the poller merges without a verification; required_reports still apply", async () => {
+    f = openFixture();
+    const p = publish(f);
+    let policy: ProjectMergePolicy = { ...POLICY, requiredReports: ["docs-alignment"], requireVerification: false };
+    const targets = () => [{ projectId: "app", policy, baseRef: "main" }];
+    const merge = new FakeMerge();
+    const poll = () => pollMergePolicies(deps(f as Fixture, merge, { targets }));
+    expect((await poll()).refused.map((x) => x.reason)).toEqual(["report_missing"]);
+    (f as Fixture).ledger.appendRunEvent({
+      runId: p.runId,
+      type: "docs_alignment",
+      payload: { present: true, valid: true, verdict: "aligned", head_sha: SHA_TIP },
+    });
+    // Verification turned back on between the read and the merge: step 4 refuses (policy_off).
+    merge.checks = { kind: "checks", buckets: ["pass"] };
+    const original = merge.requiredChecks.bind(merge);
+    merge.requiredChecks = async () => {
+      policy = { ...policy, requireVerification: true };
+      return original();
+    };
+    expect((await poll()).refused.map((x) => x.reason)).toEqual(["policy_off"]);
+    policy = { ...policy, requireVerification: false };
+    merge.requiredChecks = original;
+    expect((await poll()).merged).toHaveLength(1);
+    expect(merge.merges).toEqual([{ prNumber: 42, method: "squash", headSha: SHA_TIP }]);
+  });
+
   it("every merge and refusal is in the ledger with a closed reason: draft, base, mergeability, gh errors", async () => {
     f = openFixture();
     const p = publish(f);

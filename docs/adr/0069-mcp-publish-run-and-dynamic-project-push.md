@@ -105,3 +105,30 @@ sets push policy `branch` has been approved by the operator for exactly that (`p
   stays artifact-only; only `publish_run`, at an MCP client's explicit request, opens or reuses a pull request (never
   edits or comments). The `src/inner/pr-draft.test.ts` pin allows exactly `src/ci/gh-argv.ts`.
 - Not covered: GitHub Enterprise hosts, a fork-based `--head owner:branch`, editing an existing pull request's text.
+
+## Amendment 2026-10-20 (Linus, design authority): the run's own proposed pull request text
+
+Production has no `pr_draft` artifact (the inner agent is off), so decision 6 titled real pull requests
+`switchboard: run_<id>` with a metadata-only body although the run's result summary proposed a title and description.
+Decision 6 is amended as follows; the rest of this ADR stands.
+
+- **Source order.** The newest `pr_draft` artifact with a non-empty title or body, else a proposal extracted from the
+  run's stored result summary exactly as `get_run` returns it (`result.summary`, scrubbed). Extraction
+  (`extractProposal`, `src/mcp/publish.ts`): the first level 1/2 ATX heading that follows a thematic break line (`---`,
+  `***`, `___`; blank lines between allowed), else a level 1/2 heading on the summary's first non-blank line; the
+  heading text is the title and everything after the heading line is the body. Lines inside fenced code blocks are
+  neither breaks nor headings. Otherwise there is no proposal; a title is never invented from prose.
+- **Sanitising.** As before (control characters removed, title whitespace collapsed and capped at 120 characters, body
+  capped at 16 KiB), plus: emphasis or code markers wrapping the whole title and a trailing period (not an ellipsis)
+  are removed; an `@` before a user or team name (not inside a word, so email addresses stay) becomes the fullwidth
+  `＠` (U+FF20) in the title and body, which GitHub neither links nor notifies, chosen as the simplest safe rewrite (no
+  zero-width characters, no code spans). This also applies inside code blocks in the description. The description is
+  capped so the controller footer always fits under the 20 KiB body limit, and a fenced block or HTML comment it
+  leaves open is closed so the footer renders.
+- **Layout.** Title `switchboard: <proposed title>` (the prefix still marks controller-opened pull requests). Body: the
+  proposed description first, then a `---` line, a one-line label that the text above was written by the run's agent
+  (untrusted, not reviewed by Switchboard; from the `pr_draft` artifact or from the run's result summary), then the
+  controller footer (run, meta-session, provider, project, head). With no proposal the body is the footer alone.
+- **Unchanged.** A reused open pull request is never edited.
+
+Evidence: `src/mcp/publish-text.test.ts`, `src/mcp/publish-run.test.ts`.

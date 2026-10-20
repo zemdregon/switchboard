@@ -77,6 +77,13 @@ const fullDeps = ({ db, dataDir }: { db: import("better-sqlite3").Database; data
     resolveContext: () => undefined,
     pulls: {} as never,
   },
+  // ADR-0070: the gh merge port behind merge_run_pr (never reached: merge_run_pr is called with invalid arguments).
+  mergeRun: {
+    db,
+    merge: {} as never,
+    targets: () => [],
+    resolveRemote: async () => undefined,
+  },
 });
 
 interface Setup {
@@ -121,6 +128,7 @@ const SETUPS: readonly Setup[] = [
       "update_project",
       "delete_project",
       "publish_run",
+      "merge_run_pr",
       "list_pending_approvals",
       "decide_approval",
       "decide",
@@ -141,7 +149,14 @@ const SETUPS: readonly Setup[] = [
     other: { maxTrustProfile: "edit-untrusted", manageProjects: true, maxPushPolicy: "none" },
     deps: fullDeps,
     orchMust: ["request_decision", "list_decisions", "list_skills"],
-    orchMustNot: ["create_project", "publish_run", "decide_approval", "list_pending_approvals", "decide"],
+    orchMustNot: [
+      "create_project",
+      "publish_run",
+      "merge_run_pr",
+      "decide_approval",
+      "list_pending_approvals",
+      "decide",
+    ],
   },
 ];
 

@@ -124,6 +124,8 @@ export interface ProjectMergePolicy {
   readonly enabled: boolean;
   readonly method: MergePolicyMethod;
   readonly requiredReports: readonly MergePolicyReport[];
+  /** ADR-0070: false skips the `verification_result`-at-head condition. Absent means true (T15.8's gate). */
+  readonly requireVerification?: boolean;
 }
 
 /** T14.17 (FR-CTL-15, LLD §20.13): the advisory critic of a project. */
@@ -359,6 +361,7 @@ export function resolveProjects(
               enabled: p.merge_policy.enabled === true,
               method: p.merge_policy.method ?? "squash",
               requiredReports: [...(p.merge_policy.required_reports ?? [])],
+              ...(p.merge_policy.require_verification === false ? { requireVerification: false } : {}),
             },
           }
         : {}),

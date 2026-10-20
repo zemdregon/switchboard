@@ -551,6 +551,20 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
   return { call, recordNotOffered, resolveForRequest, listForClient };
 }
 
+/** ADR-0070: `list_projects`' `merge_policy` of a project, present only when it sets one (absent means off). */
+export function mergePolicyItem(p: Pick<ResolvedProject, "mergePolicy">) {
+  const m = p.mergePolicy;
+  if (m === undefined) return {};
+  return {
+    merge_policy: {
+      enabled: m.enabled,
+      method: m.method,
+      required_reports: [...m.requiredReports],
+      require_verification: m.requireVerification !== false,
+    },
+  };
+}
+
 /** `list_projects` entry of a dynamic project: the configured shape plus `source`, `revision`, `status`. */
 export function dynamicListItem(e: DynamicListEntry, clientMax: TrustProfile) {
   const p = e.project;
@@ -571,6 +585,7 @@ export function dynamicListItem(e: DynamicListEntry, clientMax: TrustProfile) {
     ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
     effective_max_profile: effectiveMaxProfile(clientMax, p),
     ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
+    ...mergePolicyItem(p),
     source: "dynamic" as const,
     revision: e.revision,
     status: e.status,

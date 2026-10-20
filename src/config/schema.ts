@@ -487,6 +487,11 @@ export interface ProjectConfig {
     enabled?: boolean;
     method?: MergePolicyMethod;
     required_reports?: MergePolicyReport[];
+    /**
+     * ADR-0070: the `verification_result` at the head must be `passed` (default true, T15.8's gate). False skips that
+     * one condition; `required_reports` still apply. Setting it false in a dynamic definition waits for approval.
+     */
+    require_verification?: boolean;
   };
 }
 
@@ -710,6 +715,8 @@ export const projectSchema = {
         enabled: { type: "boolean" },
         method: { enum: [...MERGE_POLICY_METHODS] },
         required_reports: { type: "array", uniqueItems: true, items: { enum: [...MERGE_POLICY_REPORTS] } },
+        // ADR-0070: false skips the verification_result-at-head condition; turning it off waits for approval.
+        require_verification: { type: "boolean" },
       },
     },
     contexts: { type: "array", minItems: 1, items: contextSchema },

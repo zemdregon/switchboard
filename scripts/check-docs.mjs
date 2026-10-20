@@ -145,6 +145,7 @@ export const README_TOOL_LISTS = [
   "SEARCH_TOOL_NAMES",
   "WORK_QUEUE_TOOL_NAMES",
   "SKILL_TOOL_NAMES",
+  "PUBLISH_TOOL_NAMES",
 ];
 
 /** Every tool name in the `export const <LIST> = [...]` arrays of the schemas source text. */
