@@ -28,6 +28,12 @@
  *
  * T3.24 (FR-CAP-12, LLD §20.2): a `QUEUED` run whose latest `load_hold` event has no later `load_release` carries
  * `hold: { reason: "held_load", since }` (the hold event's time). Absent otherwise; a hold is not a needs-attention reason.
+ *
+ * ADR-0069 (LLD §3.4.12): a run with at least one ACCEPTED `git_push` event (the agent `push` tool, an operator push
+ * recorded on it, or `publish_run`) carries `publications`, one entry per pushed branch and head, oldest first, with the
+ * newest `pull_request` row of that branch when `publish_run` opened or reused one. Deliberate exception to "no branch
+ * names" above: the remote branch is what the caller publishes and reviews; it is the controller's
+ * `<branch_prefix><meta-session id>`, never a run branch or a worktree path.
  */
 
 import { HELD_LOAD_REASON, LOAD_HOLD_EVENT, LOAD_RELEASE_EVENT } from "../capacity/host-load.js";
@@ -86,7 +92,44 @@ export interface Envelope {
   /** T8.10 (FR-EXE-10, LLD §20.6): the run's newest verification result's pin; present once one is recorded. */
   verification?: VerificationPinView;
   replayed?: boolean;
+  /** ADR-0069: accepted pushes of this run's branch, with the pull request `publish_run` opened for it. */
+  publications?: PublicationView[];
   events?: { seq: number; ts: string; type: string; payload: unknown }[];
+}
+
+/** ADR-0069: one pushed branch head of a run; the pull request fields only when one was recorded for the branch. */
+export interface PublicationView {
+  branch: string;
+  head_sha: string;
+  pushed_at: string;
+  pull_request_url?: string;
+  pull_request_number?: number;
+}
+
+/** ADR-0069: accepted `git_push` events of the run (deduplicated by branch and head) and its `pull_request` rows. */
+function publicationsOf(ledger: Ledger, runId: string, pushes: readonly { ts: string; payload: unknown }[]) {
+  const out: PublicationView[] = [];
+  const seen = new Set<string>();
+  for (const e of pushes) {
+    const p = e.payload as { outcome?: unknown; ref?: unknown; head_sha?: unknown };
+    if (p.outcome !== "ACCEPTED" || typeof p.ref !== "string" || typeof p.head_sha !== "string") continue;
+    if (!p.ref.startsWith("refs/heads/") || !/^[0-9a-f]{40}$/u.test(p.head_sha)) continue;
+    const branch = p.ref.slice("refs/heads/".length);
+    const key = `${branch}\u0000${p.head_sha}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ branch, head_sha: p.head_sha, pushed_at: e.ts });
+  }
+  if (out.length === 0) return out;
+  const prs = ledger.listPullRequestsForRun(runId);
+  for (const pub of out) {
+    const pr = prs.filter((r) => r.branch === pub.branch).at(-1);
+    if (pr !== undefined) {
+      pub.pull_request_url = pr.url;
+      pub.pull_request_number = pr.number;
+    }
+  }
+  return out;
 }
 
 /**
@@ -138,7 +181,16 @@ export function buildEnvelope(
   let terminal: TransitionPayload | undefined;
   let summaryPayload: unknown;
   let loadHoldSince: string | undefined;
+  const pushes: { ts: string; payload: unknown }[] = [];
   for (const e of ledger.listRunEvents(run.id)) {
+    if (e.type === "git_push") {
+      try {
+        pushes.push({ ts: e.ts, payload: JSON.parse(e.payload_json) });
+      } catch {
+        // an unreadable payload is not a publication
+      }
+      continue;
+    }
     if (e.type === LOAD_HOLD_EVENT || e.type === LOAD_RELEASE_EVENT) {
       loadHoldSince = e.type === LOAD_HOLD_EVENT ? e.ts : undefined;
       continue;
@@ -172,6 +224,7 @@ export function buildEnvelope(
   const verificationSummary = summaryView(summaryPayload, scrub);
   if (verificationSummary !== undefined) result.verification_summary = verificationSummary;
   const pin = verificationPin(ledger, run.id);
+  const publications = publicationsOf(ledger, run.id, pushes);
 
   return {
     run_id: run.id,
@@ -191,6 +244,7 @@ export function buildEnvelope(
       ? { hold: { reason: HELD_LOAD_REASON, since: loadHoldSince } }
       : {}),
     ...(pin !== undefined ? { verification: pin } : {}),
+    ...(publications.length > 0 ? { publications } : {}),
     ...(attention !== undefined
       ? {
           needs_attention: needsAttentionOf(ledger, run, {

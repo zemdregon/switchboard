@@ -35,6 +35,15 @@
  * | G10 | `pr view {branch} --repo {owner}/{repo} --json {G10_FIELDS}` |
  * | G11 | `pr checks {number} --repo {owner}/{repo} --required --json {G11_FIELDS}` |
  * | G12 | `pr merge {number} --repo {owner}/{repo} --{squash\|merge\|rebase} --match-head-commit {sha}` (write) |
+ *
+ * ADR-0069 (MCP `publish_run`, LLD §3.4.12). G14 is a read; G13 is the one pull-request write verb, spawned only by
+ * `publish_run` after the controller push of the same branch was accepted. Title and body are controller-built cells
+ * ({@link isPrTitle}, {@link isPrBody}); never `--fill`, `--web`, `--assignee`, `--reviewer` or `--label`:
+ *
+ * | ID | argv (after the binary) |
+ * | --- | --- |
+ * | G13 | `pr create --repo {owner}/{repo} --head {branch} --base {base} --title {title} --body {body} [--draft]` (write) |
+ * | G14 | `pr view {branch} --repo {owner}/{repo} --json {G14_FIELDS}` |
  */
 
 export const G1_FIELDS = "databaseId,conclusion,headBranch,status,headSha";
@@ -47,6 +56,12 @@ export const G7_FIELDS = "databaseId,status,headSha";
 export const G9_FIELDS = "number,state,isDraft,mergeable,headRefOid";
 /** G10: the merge gate's read (`gh pr view` manual lists all seven fields; G9 plus the head and base branch names). */
 export const G10_FIELDS = "number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName";
+/** G14: the link facts of the pull request whose head is the pushed branch (ADR-0069). */
+export const G14_FIELDS = "number,state,url";
+/** ADR-0069: most characters of a G13 title cell (controller-built: `switchboard: ` and at most 120 of the run's). */
+export const PR_TITLE_MAX = 200;
+/** ADR-0069: most bytes of a G13 body cell (controller footer plus the capped agent-written draft). */
+export const PR_BODY_MAX_BYTES = 20 * 1024;
 /** G11: only the result bucket of each required check (`gh pr checks` manual: `pass`, `fail`, `pending`, ...). */
 export const G11_FIELDS = "bucket";
 /** G12 merge methods; each is one `gh pr merge` flag (`--squash`, `--merge`, `--rebase`). */
@@ -103,6 +118,24 @@ export function branchOfPublishRef(ref: string): string | undefined {
   if (!ref.startsWith("refs/heads/")) return undefined;
   const branch = ref.slice("refs/heads/".length);
   return isSafeBranch(branch) ? branch : undefined;
+}
+
+/** C0 controls (tab and newline aside) and DEL; a title allows none of them, a body only tab, LF and CR. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the point is to find control characters
+const TITLE_CONTROL = /[\u0000-\u001f\u007f]/u;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the point is to find control characters
+const BODY_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
+
+/** A G13 title cell: one line, no control character, never read as a flag, at most {@link PR_TITLE_MAX} characters. */
+export function isPrTitle(s: string): boolean {
+  return s.length > 0 && s.length <= PR_TITLE_MAX && !s.startsWith("-") && !TITLE_CONTROL.test(s);
+}
+
+/** A G13 body cell: no control character but tab and line breaks, never read as a flag, bounded in bytes. */
+export function isPrBody(s: string): boolean {
+  return (
+    s.length > 0 && Buffer.byteLength(s, "utf8") <= PR_BODY_MAX_BYTES && !s.startsWith("-") && !BODY_CONTROL.test(s)
+  );
 }
 
 export class GhArgvError extends Error {
@@ -222,8 +255,33 @@ export function ghPrMergeArgv(
   return audited(["pr", "merge", prNumber, "--repo", repoArg(owner, repo), `--${method}`, "--match-head-commit", sha]);
 }
 
+/** G13: open a pull request for the pushed branch (ADR-0069 write verb). */
+export function ghPrCreateArgv(
+  owner: string,
+  repo: string,
+  branch: string,
+  base: string,
+  title: string,
+  body: string,
+  draft: boolean,
+): string[] {
+  if (!isSafeBranch(branch) || !isSafeBranch(base)) throw new GhArgvError("invalid branch");
+  if (!isPrTitle(title)) throw new GhArgvError("invalid pull request title");
+  if (!isPrBody(body)) throw new GhArgvError("invalid pull request body");
+  const argv = ["pr", "create", "--repo", repoArg(owner, repo), "--head", branch, "--base", base];
+  argv.push("--title", title, "--body", body);
+  if (draft) argv.push("--draft");
+  return audited(argv);
+}
+
+/** G14: the pull request whose head is the pushed branch, link facts only (ADR-0069, read-only). */
+export function ghPrLinkViewArgv(owner: string, repo: string, branch: string): string[] {
+  if (!isSafeBranch(branch)) throw new GhArgvError("invalid branch");
+  return audited(["pr", "view", branch, "--repo", repoArg(owner, repo), "--json", G14_FIELDS]);
+}
+
 /**
- * The argv audit: true only for an argv that is exactly one of G1 to G12 with validated values in the value cells.
+ * The argv audit: true only for an argv that is exactly one of G1 to G14 with validated values in the value cells.
  * Builders call it before returning, so a template edit that drifts fails closed.
  */
 export function isAllowedGhArgv(argv: readonly string[]): boolean {
@@ -288,7 +346,22 @@ export function isAllowedGhArgv(argv: readonly string[]): boolean {
       argv[3] === "--repo" &&
       ownerRepo(argv[4]) &&
       argv[5] === "--json" &&
-      (argv[6] === G9_FIELDS || argv[6] === G10_FIELDS)
+      (argv[6] === G9_FIELDS || argv[6] === G10_FIELDS || argv[6] === G14_FIELDS)
+    );
+  }
+  if (argv[0] === "pr" && argv[1] === "create") {
+    return (
+      (argv.length === 12 || (argv.length === 13 && argv[12] === "--draft")) &&
+      argv[2] === "--repo" &&
+      ownerRepo(argv[3]) &&
+      argv[4] === "--head" &&
+      isSafeBranch(argv[5] ?? "") &&
+      argv[6] === "--base" &&
+      isSafeBranch(argv[7] ?? "") &&
+      argv[8] === "--title" &&
+      isPrTitle(argv[9] ?? "") &&
+      argv[10] === "--body" &&
+      isPrBody(argv[11] ?? "")
     );
   }
   if (argv[0] === "pr" && argv[1] === "checks") {
@@ -574,4 +647,52 @@ export function parseRequiredChecks(stdout: string): CheckBucket[] {
       throw new Error("unexpected bucket");
     return b as CheckBucket;
   });
+}
+
+/** G14 fields after the closed allowlist (ADR-0069). */
+export interface GhPrLinkFields {
+  number: number;
+  state: string;
+  url: string;
+}
+
+/**
+ * A pull request URL exactly as github.com prints it for `owner/repo`: `https://github.com/<owner>/<repo>/pull/<n>`
+ * (case-insensitive owner and repository, as GitHub treats them). Returns the number, or undefined for anything else.
+ */
+export function pullRequestNumberOf(url: string, owner: string, repo: string): number | undefined {
+  const m = /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/([1-9][0-9]{0,9})$/u.exec(url);
+  if (m === null) return undefined;
+  if ((m[1] as string).toLowerCase() !== owner.toLowerCase() || (m[2] as string).toLowerCase() !== repo.toLowerCase()) {
+    return undefined;
+  }
+  const n = Number(m[3]);
+  return Number.isSafeInteger(n) ? n : undefined;
+}
+
+/** G14 stdout: one object with `number`, `state` and a URL of `owner/repo`. Throws on anything else. */
+export function parsePrLinkView(stdout: string, owner: string, repo: string): GhPrLinkFields {
+  const o = JSON.parse(stdout) as unknown;
+  if (typeof o !== "object" || o === null || Array.isArray(o)) throw new Error("unexpected pull request shape");
+  const r = o as Record<string, unknown>;
+  const state = str(r.state);
+  const url = str(r.url);
+  const number = typeof r.number === "number" && Number.isSafeInteger(r.number) && r.number > 0 ? r.number : undefined;
+  if (state === undefined || url === undefined || number === undefined || !/^[A-Z_]{1,20}$/u.test(state)) {
+    throw new Error("unexpected pull request fields");
+  }
+  if (pullRequestNumberOf(url, owner, repo) !== number) throw new Error("pull request URL does not match");
+  return { number, state, url };
+}
+
+/** G13 stdout: `gh pr create` prints the new pull request's URL (the last non-empty line). Throws on anything else. */
+export function parsePrCreated(stdout: string, owner: string, repo: string): { number: number; url: string } {
+  const lines = stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "");
+  const url = lines[lines.length - 1] ?? "";
+  const number = pullRequestNumberOf(url, owner, repo);
+  if (number === undefined) throw new Error("unexpected pull request URL");
+  return { number, url };
 }

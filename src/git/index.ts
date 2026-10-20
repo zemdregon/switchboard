@@ -82,6 +82,7 @@ export {
   type PushRequest,
   type PushResult,
   type PushToolCode,
+  projectPushContextResolver,
   pushArgs,
   pushContextResolver,
   pushEnv,

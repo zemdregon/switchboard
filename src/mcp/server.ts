@@ -289,11 +289,14 @@ import {
   type PendingRevisionAnnouncement,
   type ProjectTools,
 } from "./project-tools.js";
+import { type PublishDeps, publishRun } from "./publish.js";
 import {
   inputSchema,
   MCP_ARTIFACT_KINDS,
   PROJECT_TOOL_NAMES,
   type ProjectToolName,
+  PUBLISH_TOOL_NAMES,
+  type PublishToolName,
   SCHEMA_DIALECT,
   SEARCH_TOOL_NAMES,
   SKILL_TOOL_NAMES,
@@ -416,6 +419,12 @@ export interface McpServerDeps {
    * do not exist for this server; `announce` tells the sinks a decision is waiting (`decision_requested`, no text).
    */
   readonly decisions?: { readonly announce?: (a: DecisionAnnouncement) => void };
+  /**
+   * ADR-0069 (LLD §3.4.12): the controller pusher, push-context resolver and `gh` pull-request port behind
+   * `publish_run`. Absent means the tool does not exist for this server; present, it is offered only to a client whose
+   * `max_push_policy` is `branch`.
+   */
+  readonly publish?: PublishDeps;
 }
 
 /** T16.9: what the skill tools read. Nothing here is written. */
@@ -1164,6 +1173,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
               trustProfile: profile,
               clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
               cwd: workspace,
+              // The request's own scope, as stage 1: a re-check must never compile the bare name `privileged`.
+              ...(scope?.ok ? { profile: privilegedEligibilityProfile(scope.scope) } : {}),
             },
             privileged,
             minimumCapability,
@@ -2108,6 +2119,20 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   /** T16.9 (FR-SKL-08): offered only while the store is wired and `skills.enabled` is true. */
   const skillsOffered = deps.skills?.settings.enabled === true;
   const skillValidators = compileSkillValidators();
+
+  // ADR-0069 (LLD §3.4.12): `publish_run`, scoped exactly as `get_run` (another client's or subject's run is unknown).
+  const publishOffered = deps.publish !== undefined && client.maxPushPolicy === "branch";
+  const publishValidators = compilePublishValidators();
+  const publishRunTool = async (a: Args) => {
+    const run = ownRun(a.run_id as string);
+    return publishRun(
+      { ledger, artifacts: deps.artifacts, clientId: deps.clientId, clientProjects: client.projects ?? [] },
+      deps.publish as PublishDeps,
+      run,
+      { openPullRequest: a.open_pull_request !== false, draft: a.draft === true },
+    );
+  };
+  const publishHandlers: Record<PublishToolName, (a: Args) => Promise<object>> = { publish_run: publishRunTool };
   const skillGate = (profile: TrustProfile): SkillGate => ({
     profile,
     allowDraftInTrusted: deps.skills?.settings.allowDraftInTrusted === true,
@@ -2211,6 +2236,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         searchContext: searchOffered(),
         workQueue: workQueueOffered,
         skills: skillsOffered,
+        publish: publishOffered,
       }),
       // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
       ...(approvalProxy !== undefined
@@ -2292,6 +2318,14 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         const validate = skillValidators[tool];
         if (!validate(args)) throw schemaError(validate.errors ?? []);
         return ok(await skillHandlers[tool](args));
+      }
+      if ((PUBLISH_TOOL_NAMES as readonly string[]).includes(name) && publishOffered) {
+        // ADR-0069: when not offered (no publish port, or max_push_policy none) it is answered like an unknown tool.
+        const tool = name as PublishToolName;
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        const validate = publishValidators[tool];
+        if (!validate(args)) throw schemaError(validate.errors ?? []);
+        return ok(await publishHandlers[tool](args));
       }
       if ((WORK_QUEUE_TOOL_NAMES as readonly string[]).includes(name) && workQueueOffered) {
         // T15.9 (FR-QUE-08): when not offered (a console client) it is answered exactly like an unknown tool.
@@ -2423,6 +2457,14 @@ function compileSkillValidators(): Record<SkillToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
   return Object.fromEntries(SKILL_TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
     SkillToolName,
+    ValidateFunction
+  >;
+}
+
+function compilePublishValidators(): Record<PublishToolName, ValidateFunction> {
+  const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
+  return Object.fromEntries(PUBLISH_TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
+    PublishToolName,
     ValidateFunction
   >;
 }

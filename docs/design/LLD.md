@@ -2352,6 +2352,56 @@ configured. Research input: [consent-page approval link spike](../research/conse
 - Audit: page events carry event names, reason codes, methods and (after sign-in only) approval ids; never a handle,
   URL, passphrase or pairing code.
 
+#### 3.4.12 `publish_run` and publications (FR-GIT-12, ADR-0069)
+
+*Added 2026-10-20 (Linus, design authority, under owner ruling 2026-10-20; details not owner-approved).* Code:
+`src/mcp/publish.ts`, `src/ci/gh-pr.ts`, G13/G14 in `src/ci/gh-argv.ts`, `projectPushContextResolver` in
+`src/git/push.ts`, schemas in `src/mcp/schemas.ts`, wired in `src/cli/serve.ts`. Decision record:
+[ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md).
+
+**Offered** only when the server has the publish port (`serve`) and the client's `max_push_policy` is `branch`; never
+to a `console` profile. Otherwise it is answered exactly like an unknown tool.
+
+**Input** (closed): `{ run_id, open_pull_request?: boolean = true, draft?: boolean = false }`.
+
+**Checks, in order** (nothing is written before the push step): `run_id` names a run of this client and HTTP subject
+(as `get_run`; otherwise `INVALID_REQUEST "unknown run <id>"`); the run is `SUCCEEDED` (`INVALID_REQUEST`,
+`details.reason: RUN_NOT_SUCCEEDED`); its project resolves through the push resolver (configuration first, then an
+approved dynamic project's in-force revision while its creator keeps `manage_projects` and `max_push_policy: branch`),
+is the client's (configured: in its `projects` list; dynamic: created by it) and the primary context's policy is
+`branch` (`PERMISSION_BLOCKED` with `details.reason` `NO_PROJECT`, `CONTEXT_UNKNOWN` or `POLICY_NONE`); the run has a
+`git_commit` row (`INVALID_REQUEST`, `NOTHING_TO_PUBLISH`).
+
+**Push.** When the meta-session already has an ACCEPTED `git_push` event of the current publish head to the current
+target (remote and `refs/heads/<branch_prefix><sess>`), that push is returned (`reused: true`). Otherwise `GitPusher`
+(§12.6) runs with `requested_by: mcp_client:<id>` and the run as the event run; BR-31 does not apply (a controller
+push, as the operator's). A refusal is `PERMISSION_BLOCKED` (policy reasons, `SECRET_SCAN_BLOCKED` included) or
+`INVALID_REQUEST` (`NOTHING_TO_PUSH`) or `TOOL_FAILURE` (remote and Git failures), each with `details.reason` (the
+§12.6 reason code) and `details.push_id`.
+
+**Pull request** (when `open_pull_request`): `owner/repo` from `git remote get-url --push <remote>` (github.com https,
+`ssh://git@github.com/` or `git@github.com:` only; else `REMOTE_NOT_GITHUB`); base = `base_ref` without `refs/heads/`,
+`refs/remotes/<remote>/` or `<remote>/` (`BASE_INVALID` unless a safe branch name). G14 first; an `OPEN` pull request is
+reused. Otherwise G13 with title `switchboard: <pr_draft title or run id>` (control characters removed, at most 120
+characters of run text) and a body of the controller footer (run, meta-session, provider, project, head) plus the
+`pr_draft` body capped at 16 KiB under the heading "Agent-written description (untrusted; ...)". A `gh` failure leaves
+the push in place and returns `pull_request: null` with `pull_request_error` from the closed list `GH_MISSING`,
+`AUTH_REQUIRED`, `TIMEOUT`, `GH_FAILED`, `PARSE_FAILED`, `REMOTE_NOT_GITHUB`, `BASE_INVALID`.
+
+**Output** (closed): `{ run_id, meta_session_id, publication: { push_id, remote, branch, head_sha, pushed_at, reused },
+pull_request: null | { number, url, draft, reused }, pull_request_error? }`.
+
+**Records** (migration 0033). `git_push.requested_by` also takes `mcp_client:<id>` (table rebuilt as in migration 0016;
+`GLOB 'mcp_client:?*'`). `pull_request` (append-only): `id` (`prq_`), `run_id`, `meta_session_id`, `push_id`,
+`client_id`, `repo`, `number`, `url` (`https://github.com/...`), `branch`, `base_ref`, `head_sha`, `draft`, `action`
+(`created` or `reused`, a reuse recorded once per number and head), `created_at`; the same transaction appends a
+`pull_request_opened` run event with those facts.
+
+**Envelope `publications`** (`get_run`, `list_runs`, `get_digest` finished and failed entries): present when the run has
+at least one ACCEPTED `git_push` event recorded on it (agent `push` tool, an operator push recorded on it, or
+`publish_run`); one `{ branch, head_sha, pushed_at, pull_request_url?, pull_request_number? }` per branch and head,
+oldest first; the pull request fields come from the newest `pull_request` row of the run for that branch.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added
@@ -4165,7 +4215,12 @@ silent:
 **As built (2026-10-13, Delegated, T9.6, [ADR-0028](../adr/0028-controller-push-and-credential-reach.md); owner text
 above unchanged).** Code: `src/git/push.ts` (`GitPusher`), `src/git/push-names.ts`, `src/git/credential-reach.ts`,
 callers `src/git/channel.ts` (agent tool) and `src/cli/git-push.ts` (operator command `switchboard git push
-<sess_...|run_...> [--json]`). Choices where this section was silent:
+<sess_...|run_...> [--json]`).
+*Note 2026-10-20 ([ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md)):* a third caller is MCP
+`publish_run` (§3.4.12, `requested_by: mcp_client:<id>`, no BR-31 check), and every caller resolves the context with
+`projectPushContextResolver` (configuration, then an approved dynamic project's in-force revision); where the list
+below says "from the CURRENT configuration", read "from the current configuration or in-force revision". Choices
+where this section was silent:
 
 - **Target.** The local publish ref `refs/heads/switchboard/pub/<sess>` (ADR-0025, Q-42 confirmed) is pushed to
   `refs/heads/<push.branch_prefix><sess>`. The refspec is `<verified head sha>:<target>`: never a ref name as source,
@@ -6807,6 +6862,19 @@ Dequeue is implemented inside COMP-RTE (scheduler tick) calling the same admissi
    the error's details when present, scrubbed and bounded like `message`. An unexpected exception records only the
    fixed `TOOL_FAILURE` message and its class name in `error_class`, never its own message or stack, request text or
    provider output.
+   *Amended 2026-10-20 ([ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md) item 10; Linus, design
+   authority, under owner ruling 2026-10-20):* `reason` and `stage` are now always present and CLOSED
+   (`ADMISSION_FAILURE_REASONS`, `ADMISSION_STAGES`): an error's own `details.reason` is kept only when it is one of the
+   listed controller codes (`ENVIRONMENT_NOT_IMPLEMENTED`, `PROJECT_BRIEF_UNAVAILABLE`, `NOT_MANAGEABLE`,
+   `PROJECT_PAUSED`, `GROUP_MEMBERS`, `PROJECT_PROVIDERS`, `SKILLS_DISABLED`, `QUEUE_FULL`, `BASE_REF_UNRESOLVED`),
+   otherwise it is the stage's code (`CLIENT_UNKNOWN`, `PROJECT_UNRESOLVED`, `CEILING_EXCEEDED`, `REQUEST_INVALID`,
+   `ROUTING_INVALID`, `SKILL_REFUSED`, `NO_ELIGIBLE_PROVIDER`, `ROUTE_FAILED`, `SUBMIT_REFUSED`), and an unexpected
+   exception is `INTERNAL_ERROR`. An unknown creator client now records `{ message, reason: CLIENT_UNKNOWN, stage:
+   client }` too. A base ref that does not resolve is `INVALID_REQUEST` (`BASE_REF_UNRESOLVED`) as for delegate_task,
+   no longer a raw Git error mapped to `TOOL_FAILURE`; the remembered-model re-check passes the request's compiled
+   scope as stage 1 does. The production evidence of 2026-10-20 (detail `{"code":"TOOL_FAILURE"}` only, project
+   `switchboard`, client `linus`, `model_group: hard`) is the shape written before the fix of item 5 (PR #784); the
+   regression is pinned in `src/queue/privileged-admission.test.ts` with that request shape.
 
 **MCP tools (T15.1).** `enqueue_work`, `list_work` and `cancel_work`, scoped as `list_runs` (§3.4.2): a `project_id`
 must name a project the client may use (unknown → `INVALID_REQUEST`, outside its `projects` list → `PERMISSION_BLOCKED`,

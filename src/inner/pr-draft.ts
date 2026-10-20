@@ -13,8 +13,9 @@
  * over the title and the body (no inner-specific exceptions), and the SANITISED draft is stored as a `pr_draft` artifact
  * (`application/json`) that the `inner_call` run event references (LLD §13.6, §12.7).
  *
- * Fallback: no artifact and a fixed error. Switchboard never opens, edits or comments on a pull request (FR-INN-11,
- * BR-38): this module has no network client, and `src/inner/pr-draft.test.ts` asserts that no module in `src/` is one.
+ * Fallback: no artifact and a fixed error. This task never opens, edits or comments on a pull request (FR-INN-11,
+ * BR-38): this module has no network client, and `src/inner/pr-draft.test.ts` asserts that no module in `src/` is one
+ * except the audited operator-`gh` argv that MCP `publish_run` uses (ADR-0069, BR-38 note 2026-10-20).
  *
  * Trigger (Assumption): the LLD names no tool or CLI command that starts the draft, and `inner` commands are T11.7, so the
  * entry point is the service function {@link createPrDraft}; nothing calls it automatically.

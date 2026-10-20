@@ -19,10 +19,11 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
 import { createSwitchboardServer, type SwitchboardMcpServer } from "../mcp/index.js";
+import { ModelRegistry } from "../models/registry.js";
 import { resolveProfile } from "../policy/index.js";
 import type { Json } from "../routing/fixtures/harness.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { type AdmitWorkDeps, admitWorkItemRequest } from "./admission.js";
+import { ADMISSION_FAILURE_REASONS, ADMISSION_STAGES, type AdmitWorkDeps, admitWorkItemRequest } from "./admission.js";
 import { runProjectWorkQueueTick } from "./scheduler.js";
 
 const GIT_ENV = {
@@ -63,6 +64,10 @@ const CLIENTS: ResolvedMcpClient[] = [
   { id: "plain", maxTrustProfile: "edit-untrusted", projects: ["app"] },
 ];
 
+// The prod request routed `model_group: "hard"`; placeholder models only (LLD §17.7).
+const GROUPS = { hard: { members: [{ provider: "fake", model: "fake-max" }] } };
+const GROUP_MODELS = new ModelRegistry(new Map([["fake", { ids: ["fake-max"] }]]));
+
 const TICK = { maxItemsPerProject: 500, dequeueBatch: 1 };
 
 interface Fixture {
@@ -75,7 +80,7 @@ interface Fixture {
   close(): Promise<void>;
 }
 
-async function start(): Promise<Fixture> {
+async function start(opts: { groups?: boolean } = {}): Promise<Fixture> {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-queue-priv-")));
   const repo = path.join(root, "repo");
   mkdirSync(repo);
@@ -103,6 +108,7 @@ async function start(): Promise<Fixture> {
     resolveProfile: profileFor,
     eligibility: {
       platform: "linux",
+      ...(opts.groups === true ? { models: GROUP_MODELS } : {}),
       gate: (id, version) => ({
         eligible: true,
         evidence: { provider: id, observedVersion: version, validatedRange: "test", validatedCliVersion: "test" },
@@ -131,7 +137,12 @@ async function start(): Promise<Fixture> {
     },
   ];
   const mcpClients = new Map(CLIENTS.map((c) => [c.id, c]));
-  const config = { allowedRoots: [root], mcpClients, projects };
+  const config = {
+    allowedRoots: [root],
+    mcpClients,
+    projects,
+    ...(opts.groups === true ? { modelGroups: GROUPS } : {}),
+  };
   const servers = new Map<string, { mcp: SwitchboardMcpServer; client: Client }>();
   for (const c of CLIENTS) {
     const mcp = createSwitchboardServer({ lifecycle, ledger, artifacts, registry, config, clientId: c.id });
@@ -244,6 +255,63 @@ describe("queued privileged admission matches delegate_task", () => {
     expect(basis(queuedRun)).toBe(basis(directRun));
   });
 
+  it("the prod shape (model_group hard, require_provider false) admits from the queue as delegate_task does", async () => {
+    f = await start({ groups: true });
+    // Root cause pin: no eligibility question for a privileged request ever omits the request's compiled scope (the
+    // production resolver throws for the bare name `privileged`, which surfaced as TOOL_FAILURE before #784).
+    const asked = vi.spyOn(f.lifecycle, "checkEligibility");
+    const req = request({ routing: { model_group: "hard", require_provider: false } });
+    const direct = await f.call("linus", "delegate_task", req);
+    expect(direct.isError, JSON.stringify(direct.body)).toBe(false);
+    const item = enqueue(f, "linus", req);
+    await runProjectWorkQueueTick(f.ledger, f.deps, TICK);
+    expect(f.ledger.getWorkItem(item.id)?.state, JSON.stringify(f.events(item.id))).toBe("ADMITTED");
+    await f.lifecycle.waitForTerminal(f.ledger.getWorkItem(item.id)?.admitted_run_id as string);
+    await f.lifecycle.waitForTerminal(direct.body.run_id as string);
+    const privilegedQuestions = asked.mock.calls.map(([q]) => q).filter((q) => q.trustProfile === "privileged");
+    expect(privilegedQuestions.length).toBeGreaterThan(0);
+    for (const q of privilegedQuestions) expect(q.profile?.name).toBe("privileged");
+  });
+
+  it("a second queued privileged item in the same project (affinity held) still admits", async () => {
+    f = await start();
+    const first = enqueue(f, "linus", request());
+    await runProjectWorkQueueTick(f.ledger, f.deps, TICK);
+    await f.lifecycle.waitForTerminal(f.ledger.getWorkItem(first.id)?.admitted_run_id as string);
+    const second = enqueue(f, "linus", request({ objective: "second privileged change" }));
+    expect(await runProjectWorkQueueTick(f.ledger, f.deps, TICK)).toEqual({ admitted: 1, retried: 0, failed: 0 });
+    const runId = f.ledger.getWorkItem(second.id)?.admitted_run_id as string;
+    expect(f.ledger.getRunRecord(runId)?.trust_profile).toBe("privileged");
+    await f.lifecycle.waitForTerminal(runId);
+  });
+
+  it("an unresolvable base ref is INVALID_REQUEST as for delegate_task, not TOOL_FAILURE", async () => {
+    f = await start();
+    const project = (f.deps.config.projects as ResolvedProject[])[0] as ResolvedProject;
+    const context = { ...(project.contexts[0] as ResolvedProject["contexts"][number]), baseRef: "no-such-branch" };
+    (f.deps.config as { projects: ResolvedProject[] }).projects = [{ ...project, contexts: [context] }];
+    const outcome = await admitWorkItemRequest(f.deps, "linus", "app", request(), "queue:base");
+    expect(outcome).toEqual({
+      kind: "failed",
+      code: "INVALID_REQUEST",
+      detail: {
+        message: 'project app: base ref "no-such-branch" does not resolve to a commit',
+        reason: "BASE_REF_UNRESOLVED",
+        stage: "project",
+        field: "project",
+      },
+    });
+  });
+
+  it("an unknown creator client records a closed reason, not a bare code", async () => {
+    f = await start();
+    expect(await admitWorkItemRequest(f.deps, "nobody", "app", request(), "queue:nobody")).toEqual({
+      kind: "failed",
+      code: "PERMISSION_BLOCKED",
+      detail: { message: "the item's creator client is not configured", reason: "CLIENT_UNKNOWN", stage: "client" },
+    });
+  });
+
   it("the ceiling still refuses a queued privileged item, with a reason on admission_failed", async () => {
     f = await start();
     const item = enqueue(f, "plain", request());
@@ -255,6 +323,8 @@ describe("queued privileged admission matches delegate_task", () => {
     expect(failedDetail(f, item.id)).toEqual({
       code: "PERMISSION_BLOCKED",
       message: "trust profile exceeds project ceiling", // client ceiling edit-untrusted, applied per project
+      reason: "CEILING_EXCEEDED",
+      stage: "ceiling",
     });
   });
 
@@ -268,9 +338,12 @@ describe("queued privileged admission matches delegate_task", () => {
       code: "INVALID_REQUEST",
       message: "privileged_scope is allowed only with trust_profile privileged (got edit-untrusted)",
       field: "privileged_scope",
+      reason: "REQUEST_INVALID",
+      stage: "request",
     });
     const badDetail = failedDetail(f, bad.id);
     expect(badDetail?.code).toBe("INVALID_REQUEST");
+    expect(badDetail?.reason).toBe("REQUEST_INVALID");
     expect(badDetail?.message).toMatch(/^invalid privileged_scope: /u);
     expect(badDetail?.field).toMatch(/shell/u);
   });
@@ -283,7 +356,12 @@ describe("queued privileged admission matches delegate_task", () => {
     expect(outcome).toEqual({
       kind: "failed",
       code: "TOOL_FAILURE",
-      detail: { message: "internal controller error; see the operator log", error_class: "RangeError" },
+      detail: {
+        message: "internal controller error; see the operator log",
+        reason: "INTERNAL_ERROR",
+        stage: "route",
+        error_class: "RangeError",
+      },
     });
 
     const item = enqueue(f, "linus", request());
@@ -292,6 +370,8 @@ describe("queued privileged admission matches delegate_task", () => {
     expect(detail).toEqual({
       code: "TOOL_FAILURE",
       message: "internal controller error; see the operator log",
+      reason: "INTERNAL_ERROR",
+      stage: "route",
       error_class: "RangeError",
     });
     expect(JSON.stringify(detail)).not.toContain(secret);
@@ -310,6 +390,9 @@ describe("queued privileged admission matches delegate_task", () => {
     const text = JSON.stringify(outcome);
     expect(text).not.toContain(secret);
     expect(text).not.toContain("/home/op/.secret");
-    expect(outcome).toMatchObject({ code: "TOOL_FAILURE", detail: { reason: "X" } });
+    // The error's own `reason` ("X") is not in the closed list: the stage's code is recorded instead.
+    expect(outcome).toMatchObject({ code: "TOOL_FAILURE", detail: { reason: "ROUTE_FAILED", stage: "route" } });
+    expect(ADMISSION_FAILURE_REASONS).toContain((outcome as { detail: { reason: string } }).detail.reason);
+    expect(ADMISSION_STAGES).toContain((outcome as { detail: { stage: string } }).detail.stage);
   });
 });
