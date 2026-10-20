@@ -2828,7 +2828,11 @@ worktree, with no shell (`;`, `$( )` and `*` are passed literally), the run's en
 SSH-agent or GnuPG variables) and the run's wall-clock limit. The first command that fails, times out or cannot start
 ends the run `FAILED` with `TEST_FAILURE`; the agent's own summary is kept. `get_run` shows each command's outcome and
 exit code, and `get_artifacts` returns the full output as a `test_report` (at most 1 MiB per stream, secret patterns
-redacted). `cancel_run` stops a running command, and a controller restart ends the run `PROCESS_CRASH` without running
+redacted). Since T8.10 each stored report also records the commit and tree the commands ran on (`head_sha`, null when
+the worktree differs, and `tree_sha`); `get_run` exposes the newest pin as `verification.verified_at_sha`/`tree_sha`
+with `stale` when the run's published ref has since moved, and a run of the example `docs-alignment` skill stores its
+report as a `docs_alignment` artifact ([LLD §20.6][t810]). `cancel_run` stops a running command, and a controller
+restart ends the run `PROCESS_CRASH` without running
 the commands again. They are refused under `inspect-untrusted`. **They run on your host as your user, outside any
 provider sandbox** (ROADMAP owner decision 11, R-24): they can read your files and use the network. Supply them only for
 repositories you trust. A Git ref they move is reported as a policy violation and controller refs are put back, but a
@@ -2837,6 +2841,8 @@ environment (there is no config key yet) and the commands run inside bubblewrap 
 the rest of the host is read-only and every namespace, network included, is unshared. Without a working `bwrap` the
 commands do not run and the run ends `TEST_FAILURE`; they never fall back to running unconfined. `doctor` reports
 whether bubblewrap is usable. Confinement does not hide files your user can read (ROADMAP T3.11, ADR-0051).
+
+[t810]: docs/design/LLD.md#206-head-pinned-verification-evidence-and-the-docs-alignment-skill-fr-exe-10-fr-skl-11-t810
 
 **Verification slots.** Set any `limits.verification_*` key (ROADMAP T3.22, FR-EXE-09) and the verification commands of
 every run on this host share that many slots (default 2): a run with no free slot waits in `VERIFYING` (recorded as a

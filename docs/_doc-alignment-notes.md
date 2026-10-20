@@ -126,6 +126,12 @@ block, the 2026-10-14 live checks and owner decision 56, all cited directly).
   COMP-RTE `FR-QUE-01..02`. Left unchanged for the same reason: re-attribution is the HLD owner's call, the SDD
   covers FR-CTL-15, and `node scripts/check-docs.mjs` passes. It does not block PR #766.
 
+  **Update 2026-10-19 (doc-align gate for PR #775, T8.10):** this PR widens the same gap by two more IDs. Its
+  SDD rows map FR-EXE-10 to COMP-EXE, COMP-GIT, COMP-MCP and FR-SKL-11 to COMP-SKL while the HLD rows still
+  cite COMP-EXE `FR-EXE-01..08` and COMP-SKL `FR-SKL-01–10`. Left unchanged for the same reason:
+  re-attribution is the HLD owner's call, the SDD covers both IDs, and `node scripts/check-docs.mjs`
+  passes. It does not block PR #775.
+
 ## 10. M7 wave-B planning notes vs Done rows (pre-existing, not from PR #645)
 
 - The §6.12 sequencing notes still say "T7.8 is blocked on T7.12 (its row)", that T7.9 and T7.12 "wait for
@@ -807,6 +813,10 @@ as history.
   to `Done` without touching §9.2. Same treatment: §9.2 stays a dated snapshot; the live status lives in the
   T8.13 row. It does not block PR #773.
 
+  **Update 2026-10-19 (doc-align gate for PR #775, T8.10):** this PR flips one more 2026-10-19 row (T8.10)
+  to `Done` without touching §9.2. Same treatment: §9.2 stays a dated snapshot; the live status lives in the
+  T8.10 row. It does not block PR #775.
+
 ## 47. TDD §3.8 cited a 2026-10-18 "macOS merge waiver" with no §4.2 entry (from PR #761, resolved on the branch)
 
 - PR #761 removes the macOS CI job and records the removal in TDD §2 (CI row) and §3.8 as "removed under the
@@ -922,3 +932,18 @@ as history.
 - Historical rows not rewritten: T8.1's "no listener and no export when unset" describes the exporter scope
   that was true when T8.1 was Done (2026-10-16); the T8.15 row carries the new behaviour. `node
   scripts/check-docs.mjs` passes.
+
+## 53. SRS FR-EXE-09 note vs LLD §20.14 on the write lease during a slot wait (pre-existing, not from PR #775)
+
+- [SRS FR-EXE-09](requirements/SRS.md) (note 2026-10-19, owner decision 76, harness report) says "a slot wait
+  never holds another lock (write lease, data-directory lock or test lock) while it waits".
+- [LLD §20.14](design/LLD.md#2014-notes-carried-from-the-harness-report) says no box-wide lock (data-directory
+  lock, GC slot, any test lock) is held while a run waits for a verification slot, then adds "The run's own
+  write lease stays held; it protects only its worktree."
+- Both wordings are on `origin/main` (verified with `git show` on this branch), so PR #775 neither introduces
+  nor worsens the tension; its `heldLocks()` instrumentation (`src/lock/held.ts`) tracks only the
+  data-directory lock and the verification slots, pinning neither reading for the write lease.
+- Left unchanged: agreeing whether the run's write lease is held across a slot wait and wording both places
+  the same is the SRS/LLD owners' call. It does not block PR #775 (the task's own evidence — the
+  `heldLocks()` slot-wait test in `src/lifecycle/verification.test.ts` — is cited in-row and matches the
+  named test).

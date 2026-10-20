@@ -59,6 +59,7 @@ const EXPECTED_TABLES = [
   "skill_event",
   "skill_version",
   "usage_observation",
+  "verification_result",
   "workspace_checkpoint",
 ];
 
