@@ -1,7 +1,8 @@
 # ADR-0063: Per-run loopback OTLP/HTTP metrics receiver for provider telemetry
 
-- Status: Proposed (Delegated, agent, 2026-10-19; direction from owner decision 77 via ROADMAP T8.15, not
-  owner-approved)
+- Status: Accepted (2026-10-19, Delegated agent work under owner decision 77 and the WORK QUEUE v10 Linus decisions; not
+  owner-approved). Built by ROADMAP T8.15 (`src/telemetry/provider-otlp.ts`, the `telemetry.provider_otlp` switch,
+  the `otlp_metrics` manifest declaration)
 - Date: 2026-10-19
 - Decided by: Delegated (agent, 2026-10-19) under owner decision 77 as relayed by WORK QUEUE v10 (Linus decisions
   v10-D1 and v10-D6). Not owner-approved.

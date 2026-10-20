@@ -891,9 +891,11 @@ as history.
   rule ("numbered sequentially. Numbers are never reused"), and this PR introduced it.
 - Fixed in this doc-align pass (docs only, no decision change): the new file is now
   `docs/adr/0063-per-run-provider-otlp-metrics-receiver.md` (next sequential number; no 0063 existed),
-  titled ADR-0063, still Proposed/Delegated; the index row and every docs reference (README twice, HLD
+  titled ADR-0063; the index row and every docs reference (README twice, HLD
   TB-6, SDD FR-TEL-06 and NFR-PRIV-01 rows, TDD §3.1, LLD §7 table and §20.13, ROADMAP T8.15, SRS
-  FR-TEL-06 note) now cite ADR-0063. The pre-existing ADR-0062 (MCP SDK v2, accepted direction) is
+  FR-TEL-06 note) now cite ADR-0063. ADR-0063 itself is now Accepted (T8.15 built), Delegated, matching the
+  ADR-0064 precedent (Accepted when its T8.13 implementation landed); no decision text changed. The
+  pre-existing ADR-0062 (MCP SDK v2, accepted direction) is
   untouched, as are all T13.10 citations to it.
 - Follow-up outside this gate (code side, non-blocking): `src/` comments still cite "ADR-0062" for the
   OTLP receiver (`src/telemetry/provider-otlp.ts`, `src/lifecycle/lifecycle.ts`, `src/config/load.ts`,
