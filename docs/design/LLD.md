@@ -6671,17 +6671,21 @@ its own dynamic project allowed), and an item is visible only to its `creator_cl
 is unknown, `INVALID_REQUEST`). Only the creator may cancel over MCP; the operator uses CLI `switchboard queue cancel`
 (FR-OPS-01). Closed schemas live in `src/mcp/schemas.ts`. **Delegated** details:
 
-- `enqueue_work { project_id, request, priority?, depends_on?, idempotency_key? }`. `request` is the closed
+- `enqueue_work { project_id, request, priority?, depends_on?, idempotency_key?, dedupe_key?, hot_paths? }`.
+  `request` is the closed
   `delegate_task` subset frozen in `request_json` (§18.2): `objective`, `trust_profile`, `constraints`,
   `verification_commands`, `routing`, `priority`, `privileged_scope`. At enqueue the server applies the `delegate_task`
   checks that need no workspace: the ceiling against the lower of the client's and the project's maximum (V5,
   `PERMISSION_BLOCKED`), V13, V7 and V8. Admission re-checks under the configuration of that time (§18.4 step 2).
   `depends_on` (at most 32) names the caller's own items. A project already holding `queue.max_items_per_project` rows
   is `INVALID_REQUEST`. The key is stored as `mcp:<key>` so it cannot collide with schedule or CI keys, and is replayed
-  (`replayed: true`) only for the same project, request, priority and `depends_on`.
+  (`replayed: true`) only for the same project, request, priority and `depends_on`. `dedupe_key` (T15.7, 1 to 200
+  characters) is refused with `details.reason` `CONFLICT` while another item of the project holds it; `hot_paths`
+  (T15.7, at most 32 relative globs) serialises the dequeue, see §20.4.
 - `list_work { project_id?, state_in?, limit? }` returns the caller's items ordered as §18.3, at most `limit` (default
   50, at most 200). An item shows `work_item_id`, `project_id`, `state`, `priority`, `trust_profile`, `source_kind`,
-  `depends_on`, `admitted_run_id`, `last_error_code` and timestamps, never the objective or the rest of `request_json`.
+  `depends_on`, `admitted_run_id`, `last_error_code`, `dedupe_key`, `hot_paths`, `superseded_by` and timestamps,
+  never the objective or the rest of `request_json`.
 - `cancel_work { work_item_id }` moves a `PENDING` or `READY` item to `CANCELLED` and returns any other item unchanged.
   `ADMITTING` is not cancelled, so a run never sits behind a `CANCELLED` item; an admitted item is stopped with
   `cancel_run`.
@@ -7384,7 +7388,7 @@ Tests: `src/ci/ci-transient.test.ts` (fake `CiStatusPort`, fake `CiActionsPort` 
   so the controller prepares the worktree: the ref's head with the current base merged in by controller Git, conflicts
   left as markers for the agent to resolve; the commit tool then records the result. Whether the commit tool can record
   a two-parent commit, or must squash the resolution onto the ref, is settled in T15.7 (Assumption: two-parent commit
-  through the same sanitiser and provenance record, FR-GIT-04, FR-GIT-07).
+  through the same sanitiser and provenance record, FR-GIT-04, FR-GIT-07; settled: two-parent commit, see As built below).
 - **Cap and supersede.** Rebase items count against the FR-QUE-05 per-ref counter. At the cap, one re-implementation
   item starts from the current base with the old ref's diff as a context file (untrusted), the old ref's state gets
   `superseded_by` (the new item) and the poller stops watching it.
