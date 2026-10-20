@@ -100,6 +100,7 @@ import {
   environmentEventSink,
 } from "../environment/index.js";
 import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal } from "../exec/outer-sandbox.js";
+import { refreshBase } from "../git/base-refresh.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
 import { GitPusher, pushContextResolver } from "../git/push.js";
@@ -143,6 +144,7 @@ import { fireDueSchedules } from "../schedule/index.js";
 import { canonicalBody, listRunSkills, readSkillContent } from "../skills/index.js";
 import { createTelemetry } from "../telemetry/index.js";
 import {
+  type BaseRefreshRequest,
   collectOrphans,
   createSeedStore,
   DEFAULT_SEED_ENTRIES_PER_SEED,
@@ -472,6 +474,40 @@ export function runEnvironments(
   });
 }
 
+/**
+ * LLD §5.2 (FR-PRJ-02 note, ADR-0067): the workspace manager's base refresh. A run's project resolves to its
+ * configured definition, else a dynamic project's revision in force (as admission does); only a primary context that
+ * sets `base_remote` fetches. The fetch uses the allowlisted environment of the controller's own push (ADR-0028).
+ */
+export function serveBaseRefresh(
+  config: Pick<ResolvedConfig, "projects">,
+  store: Pick<DynamicProjectStore, "state">,
+  db: ReturnType<typeof openLedger>,
+  ids: { id(prefix: string): string },
+  sourceEnv: Readonly<Record<string, string | undefined>>,
+  now?: () => Date,
+): (input: BaseRefreshRequest) => Promise<string | undefined> {
+  return async (input) => {
+    const configured = config.projects.find((p) => p.id === input.projectId);
+    const dynamic = configured === undefined ? store.state(input.projectId)?.inForce?.definition : undefined;
+    const project = configured ?? (dynamic !== undefined ? toResolved(dynamic) : undefined);
+    const remote = project !== undefined ? primaryContext(project).baseRemote : undefined;
+    if (remote === undefined) return undefined;
+    const r = await refreshBase(
+      db,
+      {
+        runId: input.runId,
+        metaSessionId: input.metaSessionId,
+        repoRoot: input.repoRoot,
+        baseRef: input.baseRef,
+        remote,
+      },
+      { ids, sourceEnv, ...(now ? { now } : {}) },
+    );
+    return r.baseCommit;
+  };
+}
+
 /** T9.13 (FR-WS-10, LLD §5.1, ADR-0057): the dependency seed store and the per-project plan `serve` composes. */
 export interface ServeSeeds {
   readonly store: SeedStore;
@@ -560,6 +596,14 @@ async function runDaemon(
     allowedRoots: config.allowedRoots,
     ids,
     ...(seeds !== undefined ? { seeding: { store: seeds.store, plan: seeds.plan } } : {}),
+    baseRefresh: serveBaseRefresh(
+      config,
+      new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+      db,
+      ids,
+      io.env,
+      now,
+    ),
   });
 
   try {

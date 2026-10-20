@@ -32,6 +32,9 @@ import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish
  *   terminal), another session's publish ref to one of that session's controller commits. Anything else is a violation.
  * - **Remote-tracking refs** updated by a controller push (T9.6): `refs/remotes/<remote>/<branch>` at exactly the SHA an
  *   ACCEPTED `git_push` row pushed to `refs/heads/<branch>` on that remote is expected.
+ * - **Remote-tracking refs** updated by a controller base refresh (LLD §5.2, ADR-0067): `refs/remotes/<remote>/<branch>`
+ *   at exactly the SHA the newest `base_refresh` event (outcome `fetched`) recorded for that ref of this repository is
+ *   expected.
  * - **Every other ref** (default branch, other branches, tags, remote-tracking refs, notes, stash) and the main
  *   checkout's `HEAD`: any change is a violation. They are **reported, not restored** (Delegated): the controller
  *   cannot tell an agent's change from the operator's own concurrent work, and must never modify the operator's
@@ -411,6 +414,7 @@ export class RefGuard {
         const scope = name.startsWith("refs/heads/switchboard/") ? "switchboard" : "other";
         if (scope === "switchboard" && this.controllerMoved(name, a)) continue;
         if (scope === "other" && this.controllerPushed(name, a)) continue;
+        if (scope === "other" && (await this.controllerFetchedBase(facts.repoRoot, name, a))) continue;
         out.push(entry(scope, name, b ?? null, a ?? null, "report"));
       }
       if (snapshot.truncated && snapshot.tail) {
@@ -507,6 +511,23 @@ export class RefGuard {
     const slash = rest.indexOf("/");
     if (slash <= 0) return false;
     return this.ledger.hasAcceptedPush(rest.slice(0, slash), `refs/heads/${rest.slice(slash + 1)}`, after);
+  }
+
+  /**
+   * LLD §5.2 (ADR-0067): the daemon's base refresh fetches the configured base branch into
+   * `refs/remotes/<remote>/<branch>` before another run's worktree is created. Such a change is expected exactly when the
+   * newest `base_refresh` event with outcome `fetched` recorded this SHA for this ref of this repository. A deletion or any
+   * other value is still a violation; an agent's own fetch to that same SHA is indistinguishable and harmless. A
+   * symbolic tracking ref (`refs/remotes/<remote>/HEAD`) is listed at its target's SHA, so it is judged by its target.
+   */
+  private async controllerFetchedBase(repoRoot: string, name: string, after: string | undefined): Promise<boolean> {
+    if (after === undefined || !name.startsWith("refs/remotes/")) return false;
+    if (this.ledger.hasBaseRefreshFetch(repoRoot, name, after)) return true;
+    const sym = await git(["symbolic-ref", "-q", name], { cwd: repoRoot, okCodes: [1, 128] });
+    const target = sym.code === 0 ? sym.stdout.toString("utf8").trim() : "";
+    return (
+      target !== name && target.startsWith("refs/remotes/") && this.ledger.hasBaseRefreshFetch(repoRoot, target, after)
+    );
   }
 
   /** Whether a change to another run's or session's `switchboard/` ref matches what the controller records. */

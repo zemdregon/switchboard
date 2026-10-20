@@ -715,6 +715,26 @@ describe("projects[] (T9.1, FR-PRJ-01, 02, 04)", () => {
     );
   });
 
+  it("base_remote (LLD §5.2, ADR-0067): absent by default, a remote name on the primary context only", () => {
+    const off = loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx] }) });
+    expect(off.projects[0]?.contexts[0]?.baseRemote).toBeUndefined();
+    const on = loadConfig({
+      configPath: withProjects({ id: "web-app", name: "W", contexts: [{ ...repoCtx, base_remote: "origin" }] }),
+    });
+    expect(on.projects[0]?.contexts[0]?.baseRemote).toBe("origin");
+    const load = (contexts: unknown[]) => () =>
+      loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts }) });
+    expect(load([{ ...repoCtx, base_remote: "https://example.test/r.git" }])).toThrow(
+      /\$\.projects\[0\]\.contexts\[0\]\.base_remote: must be the name of a remote/,
+    );
+    expect(
+      load([
+        { ...repoCtx, primary: true },
+        { ...repoCtx, id: "docs", base_remote: "origin" },
+      ]),
+    ).toThrow(/\$\.projects\[0\]\.contexts\[1\]\.base_remote: only the primary context/);
+  });
+
   it("finalize_commit (T9.7, FR-GIT-09): default off, opt-in resolved, needs an identity and the primary writable context", () => {
     const identity = { name: "Ada", email: "ada@example.test" };
     const off = loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx] }) });

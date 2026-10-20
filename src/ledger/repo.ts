@@ -1016,6 +1016,11 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   /** Whether an ACCEPTED `git_push` row pushed exactly `headSha` to `ref` on the remote named `remote` (T9.6). */
   hasAcceptedPush(remote: string, ref: string, headSha: string): boolean;
   /**
+   * Whether the newest `base_refresh` run event with outcome `fetched` (LLD §5.2, ADR-0067) for `trackingRef` of the
+   * repository at `repoRoot` recorded the controller setting it to exactly `sha`.
+   */
+  hasBaseRefreshFetch(repoRoot: string, trackingRef: string, sha: string): boolean;
+  /**
    * Payload JSON of the newest `git_push` run events across every run of a meta-session, NEWEST FIRST, at most
    * `limit` (T9.14, FR-CTL-03 `secret_scan_blocked`: operator pushes record on a run of the meta-session too).
    */
@@ -2229,6 +2234,10 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       );
     },
 
+    hasBaseRefreshFetch(repoRoot, trackingRef, sha) {
+      return hasBaseRefreshFetch(db, repoRoot, trackingRef, sha);
+    },
+
     listGitPushEventPayloadsForMetaSession(metaSessionId, limit) {
       return (
         db
@@ -2366,4 +2375,28 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     // T15.2 (FR-QUE-02): schedules (migration 0019).
     ...createScheduleLedgerSlice(db, { ids, ts, immediate }),
   };
+}
+
+/** The `base_refresh` run event type (LLD §5.2); written by `src/git/base-refresh.ts`. */
+export const BASE_REFRESH_EVENT = "base_refresh";
+
+/**
+ * {@link Ledger.hasBaseRefreshFetch} over a database handle (also used by the base refresh itself): only the NEWEST
+ * `fetched` record of that ref of that repository counts, so a ref rewound to an older fetched value is not accepted.
+ */
+export function hasBaseRefreshFetch(
+  db: Database.Database,
+  repoRoot: string,
+  trackingRef: string,
+  sha: string,
+): boolean {
+  const newest = db
+    .prepare(
+      `SELECT json_extract(payload_json, '$.tracking_after') AS sha FROM run_event
+       WHERE type = ? AND json_extract(payload_json, '$.outcome') = 'fetched'
+         AND json_extract(payload_json, '$.repo_root') = ? AND json_extract(payload_json, '$.tracking_ref') = ?
+       ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(BASE_REFRESH_EVENT, repoRoot, trackingRef) as { sha: unknown } | undefined;
+  return newest !== undefined && newest.sha === sha;
 }

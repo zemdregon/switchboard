@@ -2711,6 +2711,64 @@ in addition: a symlink leaving the directory fails the build with `unsafe_entry`
 profile `trusted-development`; an entry `evicting` is never used; a `container` run's argv carries exactly one extra
 `:ro` mount and no other path under the data directory.
 
+### 5.2 Base refresh (FR-PRJ-02 note, ADR-0067)
+
+*Built 2026-10-20 (Linus decision, Delegated, not owner-approved), [ADR-0067](../adr/0067-daemon-base-refresh-into-remote-tracking-ref.md).
+Code: `src/git/base-refresh.ts` (`refreshBase`), the `baseRefresh` option of `WorkspaceManager`
+(`src/workspace/manager.ts`), composed by `serveBaseRefresh` in `src/cli/serve.ts`.*
+
+**Problem.** The first worktree of a meta-session starts at the project's `base_ref` resolved in the operator's
+repository. Switchboard never updates the local branch, so with `base_ref: "main"` every run starts from whatever the
+operator last pulled. On 2026-10-20 every production run started from `f06f181` while `origin/main` was several merges
+ahead; agents ran `git fetch` to see `main`, were refused (FR-GIT-01), and every published branch conflicted.
+
+**Opt-in.** A primary context may set `base_remote` (a remote NAME, as `push.remote`; a URL or a non-primary context is
+a configuration error). Absent, nothing below runs and the base is resolved exactly as before.
+
+**Algorithm.** In `prepare`, after the lease is acquired and only when the meta-session has no head commit (its first
+run), the run has a project and a `baseRef`, under the per-repository worktree serialisation (§5, the queue
+`serialisedWorktreeCreate` also uses for `git worktree add`):
+
+1. `base_ref` must name a local branch (`main` or `refs/heads/main`, existing; a SHA or tag is `BASE_NOT_BRANCH`).
+2. If the current `refs/remotes/<remote>/<branch>` equals the `tracking_after` of the **newest** `base_refresh` event
+   with outcome `fetched` for that ref of that repository, and fast-forwards the local branch, it is the fallback base
+   for steps 3 and 5. Otherwise there is no trusted tracking value: a value written by anything but this controller
+   (an agent's own fetch or `update-ref`) never becomes a base.
+3. If another meta-session whose `repo_root` is this repository holds a write lease: `skipped` / `REPO_BUSY`, no
+   fetch (that run may already have its LEASED ref snapshot, §12.5).
+4. The remote must exist; the repository's own configuration must not set an unsafe key and the remote's fetch URLs
+   must use an allowed transport and carry no credentials (the push's checks, §12.6, ADR-0028), else `skipped` with
+   that reason.
+5. `git fetch --quiet --no-tags --no-prune --no-recurse-submodules --no-write-fetch-head --no-auto-maintenance --
+   <remote> refs/heads/<branch>:refs/remotes/<remote>/<branch>` with the push's process model (allowlisted environment,
+   own session, no prompts, 60 s timeout) and command-scope configuration (hooks off, no submodules, no auto gc or
+   maintenance, only the `https`, `ssh` and `file` transports). The refspec is not forced: a rewound or rewritten
+   remote branch fails the fetch. A failure is `failed` (`FETCH_FAILED`, `FETCH_TIMEOUT`); a value left by a failed
+   fetch is not trusted.
+6. After a successful fetch the outcome is `fetched` with reason `CURRENT` (tracking equals local), `ADVANCED` (the
+   local branch is an ancestor: the run starts at the fetched commit) or `LOCAL_AHEAD` (ahead or diverged: the run
+   starts at the local branch).
+
+The local branch, the operator's checkout and every other ref are never written (FR-WS-05). One `base_refresh` run
+event per attempt: `{v: 1, outcome, reason, repo_root, remote, branch, tracking_ref, local_sha, tracking_before,
+tracking_after, base_commit}`, never a URL or Git's output. Any problem (including a Git error, `GIT_FAILED`)
+degrades to the configured `base_ref` and never fails `prepare`. The meta-session's `base_commit` is the commit the
+worktree was created at, so publication and its chain checks (§12.3, §12.5) use it unchanged.
+
+**Ref guard (§12.5).** A move of `refs/remotes/<remote>/<branch>` to exactly the SHA of the newest recorded `fetched`
+event for that ref of the repository is an expected difference, and so is a symbolic tracking ref
+(`refs/remotes/<remote>/HEAD`) listed at such a value through its target. A deletion, a rewind to an older fetched
+value or any other value stays a violation (fail closed). The refresh runs before the run's own LEASED snapshot, so it
+is never part of that run's comparison. An agent can still not write a ref: nothing here runs in the agent's process,
+and its own `git fetch` stays denied.
+
+**Crash safety.** The event is appended after the fetch. A crash between the two leaves a moved tracking ref without a
+record: a later run's guard reports it (`other`, `report`), and step 2 does not trust it until the next recorded fetch.
+
+**Not covered.** A later run of the meta-session starts from the meta-session head, not a refreshed base; rebase
+preparation (§20.4) still resolves `base_ref` locally. `https` and `ssh` remotes are not tested (tests use `file`
+remotes).
+
 ## 6. Compliance manifest
 
 One manifest per provider, stored in the repository (versioned data, not code), loaded and Ajv-validated at startup;
@@ -3296,9 +3354,10 @@ and context kinds abort startup with the JSON path) and `loadConfig` adds the st
 context ids, exactly one primary context (a sole context is primary unless it says `"primary": false`), only the
 primary context writable (default: writable iff primary), `push.policy: "branch"` needs `remote` and `branch_prefix`
 (**Assumption**, from the example above), any push other than `none` needs `identity`, `image_digest` required for
-`container` and refused for `host`. `base_ref` is required (FR-PRJ-02). Context ids match `^[a-z][a-z0-9-]{0,40}$` and
-the image digest `^sha256:[0-9a-f]{64}$` (**Assumptions**). `allowed_providers` takes the provider IDs of
-`PROVIDER_IDS` (`claude-code`, `codex`, ...), not the short `claude` shown in the example. `max_trust_profile`,
+`container` and refused for `host`. `base_ref` is required (FR-PRJ-02). `base_remote` is optional, a remote name
+like `push.remote`, and only on the primary context ([§5.2](#52-base-refresh-fr-prj-02-note-adr-0067)). Context ids
+match `^[a-z][a-z0-9-]{0,40}$` and the image digest `^sha256:[0-9a-f]{64}$` (**Assumptions**). `allowed_providers`
+takes the provider IDs of `PROVIDER_IDS` (`claude-code`, `codex`, ...), not the short `claude` shown in the example. `max_trust_profile`,
 `allowed_providers` and `sign` are checked for shape only; enforcement is T9.2 and T9.10. The filesystem rules run only
 in `switchboard projects validate` (absolute path; `realpath` under an allowed root, so `..` and symlink escapes are
 refused; a Git repository whose top level is also under an allowed root; `base_ref` resolves to a commit; a `container`
@@ -3397,7 +3456,9 @@ identity in step 6):* the steps run in `resolveProject` and `projectCandidates` 
 `details.reason = "PROJECT_PROVIDERS"`, and a non-required preference outside the set is ignored); the excluded
 providers are recorded in the `route_decision` reasons as `project.excluded_providers`; (6) the project block is frozen
 into the policy snapshot (ADR-0024). The project's `base_ref` starts the first worktree of the meta-session
-(`PrepareInput.baseRef`, `src/workspace/manager.ts`); later runs start from the meta-session head as before. A
+(`PrepareInput.baseRef`, `src/workspace/manager.ts`); later runs start from the meta-session head as before. With
+`base_remote` set on the primary context, the daemon first refreshes that branch from the remote into its
+remote-tracking ref ([§5.2](#52-base-refresh-fr-prj-02-note-adr-0067)). A
 continuation re-runs steps 1 to 4 for the meta-session's own project: a project removed from configuration is
 `INVALID_REQUEST`, one removed from the client's list `PERMISSION_BLOCKED` (history stays, FR-PRJ-09).
 
@@ -3999,6 +4060,8 @@ silent:
   or be a commit with a `git_commit_intent` (not aborted) whose recorded parent chain through such commits reaches the
   meta-session's `base_commit`. Another run's branch may move to one of that run's checkpoint commits or be deleted
   (that run non-terminal, or its session `ARCHIVED`); another session's publish ref may move to one of its intents.
+  A remote-tracking ref may move to the SHA the newest `fetched` daemon base refresh recorded for it (2026-10-20,
+  [§5.2](#52-base-refresh-fr-prj-02-note-adr-0067), [ADR-0067](../adr/0067-daemon-base-refresh-into-remote-tracking-ref.md)).
 - **Concurrent runs in one repository (T9.11, Delegated).** The checkpoint commit moves a run branch before its `post`
   row exists, so another run's check in that window would report the move as a `switchboard` violation. The lifecycle
   therefore runs each run's check, mutation assessment and checkpoint as one critical section per repository root
@@ -4096,7 +4159,8 @@ callers `src/git/channel.ts` (agent tool) and `src/cli/git-push.ts` (operator co
 - **Operator command.** Same algorithm without BR-31; takes the data-directory lock and refuses (`LOCKED`) while `serve`
   holds it (ADR-0005, like `gc --apply`); exit 0 when the remote holds the head.
 - **Ref guard.** `refs/remotes/<remote>/<branch>` created or moved to a SHA that an ACCEPTED `git_push` row pushed to
-  `refs/heads/<branch>` on `<remote>` is an expected difference (§12.5).
+  `refs/heads/<branch>` on `<remote>` is an expected difference (§12.5). So is a move to the SHA the newest `fetched`
+  `base_refresh` event recorded for that ref of the repository ([§5.2](#52-base-refresh-fr-prj-02-note-adr-0067)).
 - **Not tested.** `https` and `ssh` remotes, credential helpers, SSH agents and proxies (no network in tests); Git
   versions other than 2.43.0.
 

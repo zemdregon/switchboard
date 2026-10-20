@@ -109,8 +109,23 @@ export interface WorkspaceManagerOptions {
       projectId: string,
     ) => { readonly specs: readonly SeedSpec[]; readonly environment: SeedEnvironment } | undefined;
   };
+  /**
+   * LLD §5.2 (FR-PRJ-02 note, ADR-0067): the base refresh of a meta-session's first worktree, called under the
+   * per-repository worktree serialisation when the run has a project and a `baseRef`. Returns the commit to start from,
+   * or undefined to keep `baseRef`; a throw is treated as undefined. Absent (`serve` composes it only when a configured
+   * project sets `base_remote`): no call, and the base is resolved exactly as before.
+   */
+  readonly baseRefresh?: (input: BaseRefreshRequest) => Promise<string | undefined>;
   /** T16.6 test seam: the unlink the native-skill cleaner uses (fault injection, TDD §3.16.2 property 5). */
   readonly nativeSkillFs?: NativeSkillFs;
+}
+
+export interface BaseRefreshRequest {
+  readonly runId: string;
+  readonly metaSessionId: string;
+  readonly projectId: string;
+  readonly repoRoot: string;
+  readonly baseRef: string;
 }
 
 export interface PrepareInput {
@@ -265,8 +280,14 @@ export class WorkspaceManager {
         .get(input.metaSessionId) as { head_commit: string | null; base_commit: string | null } | undefined;
       if (!session) throw new WorkspaceError("NOT_FOUND", `meta-session ${input.metaSessionId} not found`);
 
+      const refreshed = session.head_commit === null ? await this.refreshBase(input, repoRoot) : undefined;
       const baseCommit = await gitText(
-        ["rev-parse", "--verify", "--end-of-options", `${session.head_commit ?? input.baseRef ?? "HEAD"}^{commit}`],
+        [
+          "rev-parse",
+          "--verify",
+          "--end-of-options",
+          `${session.head_commit ?? refreshed ?? input.baseRef ?? "HEAD"}^{commit}`,
+        ],
         { cwd: repoRoot },
       );
       const branch = `switchboard/${input.metaSessionId}/${input.runId}`;
@@ -320,6 +341,24 @@ export class WorkspaceManager {
       this.releaseLease(input.runId);
       throw err;
     }
+  }
+
+  /** LLD §5.2: the refreshed base of a first run, or undefined (no hook, no project or base ref, or a failed hook). */
+  private async refreshBase(input: PrepareInput, repoRoot: string): Promise<string | undefined> {
+    const hook = this.options.baseRefresh;
+    if (hook === undefined || input.baseRef === undefined) return undefined;
+    const row = this.db.prepare("SELECT project_id FROM run WHERE id = ?").get(input.runId) as
+      | { project_id: string | null }
+      | undefined;
+    if (!row?.project_id) return undefined;
+    const request: BaseRefreshRequest = {
+      runId: input.runId,
+      metaSessionId: input.metaSessionId,
+      projectId: row.project_id,
+      repoRoot,
+      baseRef: input.baseRef,
+    };
+    return serialisedWorktreeCreate(repoRoot, () => hook(request)).catch(() => undefined);
   }
 
   /**
