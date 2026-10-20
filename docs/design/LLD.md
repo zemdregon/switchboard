@@ -3074,10 +3074,11 @@ other than the fake compiles `acp-stdio`.
   runs (not FR-EXE-04's persistent transport).
 - **Framing.** Each stdout line is one UTF-8 JSON-RPC 2.0 object (newline-delimited, no embedded newline, ACP
   transports page). Max message 1 MiB (the JSONL default `maxLineBytes`, `DEFAULT_MAX_LINE_BYTES`).
-  `OUTPUT_PROTOCOL_ERROR` (kill the group, keep the data) for: an oversize line, invalid UTF-8 or JSON, a JSON array, `jsonrpc` other than `"2.0"`, a response to an id
-  the client did not send, a message for another `sessionId`, more than 8 unanswered agent-to-client requests, or a
-  `protocolVersion` other than 1 in the `initialize` result. No line is ignorable: ACP forbids non-protocol stdout.
-  The client writes only its own messages, one per line; a write error is treated as process exit.
+  `OUTPUT_PROTOCOL_ERROR` (kill the group, keep the data) for: an oversize line, invalid UTF-8 or JSON, a JSON array,
+  `jsonrpc` other than `"2.0"`, a response to an id the client did not send, a message for another `sessionId`, more
+  than 8 unanswered agent-to-client requests, or a `protocolVersion` other than 1 in the `initialize` result. No line
+  is ignorable: ACP forbids non-protocol stdout. The client writes only its own messages, one per line; a write error
+  is treated as process exit.
 - **Sequence.** `initialize` (version 1; `clientCapabilities` `fs.readTextFile` and `fs.writeTextFile` `false`,
   `terminal` `false`, nothing else; `clientInfo`) within 30 s; then `session/new` (`cwd`, `mcpServers` from the plan)
   or, for a resume, `session/resume` if `sessionCapabilities.resume` was advertised, else `session/load` if
