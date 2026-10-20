@@ -53,6 +53,7 @@ const EXPECTED_TABLES = [
   "project_work_item",
   "provider_binding",
   "provider_health",
+  "pull_request",
   "rag_record",
   "rag_request",
   "ref_event",

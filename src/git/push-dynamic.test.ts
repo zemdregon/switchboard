@@ -1,13 +1,13 @@
 /**
- * T9.9 / Q-46 pin (owner decision 62): a push from an approved dynamic project is refused by design.
+ * ADR-0069 (supersedes the Q-46 answer of owner decision 62 for approved branch-policy dynamic projects): a push from
+ * an approved dynamic project whose in-force revision sets push policy `branch` reaches the remote, through the agent
+ * `push` tool's and `publish_run`'s pusher in `serve` and through `switchboard git push`. Both build their `GitPusher`
+ * with `projectPushContextResolver`: configuration first, then the dynamic store's in-force revision, while the creating
+ * client keeps `manage_projects` and `max_push_policy: branch`. Every other state (pending, rejected, never created,
+ * deleted, a revision in force with policy `none`, a creator whose push maximum was lowered) is refused before any Git
+ * call, and nothing reaches the remote.
  *
- * The `push` tool (served over MCP through `GitToolService`, wired in `src/cli/serve.ts`) and `switchboard git push`
- * (`src/cli/git-push.ts`) both build their `GitPusher` with `pushContextResolver(config.projects)`: push targets
- * (remote, prefix, path) resolve from the configuration only. An approved dynamic project lives in the ledger (its
- * in-force revision may declare push policy `branch` per FR-PRJ-10), never in the configuration, so the resolver
- * returns `undefined` and the push is refused `CONTEXT_UNKNOWN` before any Git call. Nothing reaches the remote.
- *
- * Temporaryrepositories and a LOCAL bare remote only; no provider CLI, no network, no real credential.
+ * Temporary repositories and a LOCAL bare remote only; no provider CLI, no network, no real credential.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -18,8 +18,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArtifactStore } from "../artifacts/index.js";
 import { main } from "../cli/index.js";
 import type { CliIo } from "../cli/io.js";
+import type { ProjectConfig } from "../config/index.js";
 import { loadConfig } from "../config/load.js";
-import { GitPublisher, GitPusher, pushContextResolver } from "../git/index.js";
+import { GitPublisher, GitPusher, projectPushContextResolver, pushContextResolver } from "../git/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, openLedger } from "../ledger/index.js";
 import { DynamicProjectStore } from "../projects/index.js";
@@ -45,7 +46,7 @@ let configPath: string;
 let env: Record<string, string | undefined>;
 let db: Database.Database;
 
-function writeConfig(): void {
+function writeConfig(client: Record<string, unknown> = {}): void {
   writeFileSync(
     configPath,
     JSON.stringify({
@@ -53,7 +54,13 @@ function writeConfig(): void {
       data_dir: dataDir,
       allowed_roots: [path.dirname(repo)],
       mcp_clients: [
-        { id: "mgr", max_trust_profile: "edit-untrusted", manage_projects: true, max_push_policy: "branch" },
+        {
+          id: "mgr",
+          max_trust_profile: "edit-untrusted",
+          manage_projects: true,
+          max_push_policy: "branch",
+          ...client,
+        },
       ],
       projects: [
         {
@@ -88,40 +95,45 @@ async function run(args: string[]) {
   return { code, out: out.join(""), err: err.join("") };
 }
 
-/** The approved dynamic revision declares push policy `branch` (FR-PRJ-10); approval enables runs, not push. */
-function seedApprovedDynamicRevision(): void {
-  const store = new DynamicProjectStore(db, { ids: createIdGenerator() });
-  store.appendRevision(
+const definition = (policy: "branch" | "none" = "branch"): ProjectConfig => ({
+  id: "dyn-app",
+  name: "Dynamic app",
+  contexts: [
+    {
+      id: "main",
+      kind: "repository",
+      path: repo,
+      base_ref: "main",
+      push: policy === "branch" ? { policy, remote: "origin", branch_prefix: "sb/" } : { policy },
+      identity: IDENTITY,
+    },
+  ],
+});
+
+const store = () => new DynamicProjectStore(db, { ids: createIdGenerator() });
+
+/** Revision 1 of `dyn-app`, waiting for the operator (FR-PRJ-10: push policy and identity need approval). */
+function seedPending(policy: "branch" | "none" = "branch"): void {
+  store().appendRevision(
     {
       projectId: "dyn-app",
       clientId: "mgr",
-      definition: {
-        id: "dyn-app",
-        name: "Dynamic app",
-        contexts: [
-          {
-            id: "main",
-            kind: "repository",
-            path: repo,
-            base_ref: "main",
-            push: { policy: "branch" as const, remote: "origin", branch_prefix: "sb/" },
-            identity: IDENTITY,
-          },
-        ],
-      },
+      definition: definition(policy),
       status: "PENDING_APPROVAL",
       approvalReasons: ["push_policy", "commit_identity"],
       action: "create_project",
     },
     () => undefined,
   );
-  const decided = store.decide({ projectId: "dyn-app", decision: "APPROVED", decidedBy: "operator1" });
-  expect(decided.state.inForce?.revision).toBe(1);
-  expect(decided.state.inForce?.definition.contexts[0]?.push?.policy).toBe("branch");
 }
 
-/** A meta-session of the approved dynamic project with one published commit on the publish ref. */
-async function seedDynamicCommit(): Promise<{ sessionId: string; runId: string; sha: string }> {
+function seedDecided(decision: "APPROVED" | "REJECTED", policy: "branch" | "none" = "branch"): void {
+  seedPending(policy);
+  store().decide({ projectId: "dyn-app", decision, decidedBy: "operator1" });
+}
+
+/** A meta-session of `projectId` with one published commit on its publish ref. */
+async function seedCommit(projectId = "dyn-app"): Promise<{ sessionId: string; runId: string; sha: string }> {
   const ledger = createLedger(db, { ids: createIdGenerator() });
   const mgr = new WorkspaceManager({
     db,
@@ -130,8 +142,8 @@ async function seedDynamicCommit(): Promise<{ sessionId: string; runId: string; 
     allowedRoots: [path.dirname(repo)],
     ids: createIdGenerator(),
   });
-  const session = ledger.createMetaSession({ objective: "dynamic work", repoRoot: repo, projectId: "dyn-app" });
-  const run = ledger.createRun({
+  const session = ledger.createMetaSession({ objective: "dynamic work", repoRoot: repo, projectId });
+  const r = ledger.createRun({
     metaSessionId: session.id,
     state: "RUNNING",
     trustProfile: "edit-untrusted",
@@ -140,24 +152,24 @@ async function seedDynamicCommit(): Promise<{ sessionId: string; runId: string; 
     requestHash: "h",
     clientId: "mgr",
     provider: "fake",
-    projectId: "dyn-app",
+    projectId,
   });
   const ws = await mgr.prepare({
     metaSessionId: session.id,
-    runId: run.id,
+    runId: r.id,
     workspace: repo,
     trustProfile: "edit-untrusted",
   });
   if (ws.mode !== "worktree") throw new Error("expected a worktree");
   writeFileSync(path.join(ws.worktreePath, "feature.txt"), "feature\n");
   const c = await new GitPublisher({ db, scratchDir: path.join(tmp, "scratch") }).commit({
-    runId: run.id,
+    runId: r.id,
     message: "Add the feature",
     identity: IDENTITY,
-    projectId: "dyn-app",
+    projectId,
     contextId: "main",
   });
-  return { sessionId: session.id, runId: run.id, sha: c.sha };
+  return { sessionId: session.id, runId: r.id, sha: c.sha };
 }
 
 beforeEach(() => {
@@ -181,7 +193,6 @@ beforeEach(() => {
   env = { PATH: process.env.PATH, HOME: home };
   writeConfig();
   db = openLedger(dataDir);
-  seedApprovedDynamicRevision();
 });
 
 afterEach(() => {
@@ -194,49 +205,130 @@ const remoteRefs = (cwd: string): string[] =>
     .split("\n")
     .filter((l) => l !== "");
 
-describe("push from an approved dynamic project is refused by design (Q-46, owner decision 62)", () => {
-  it("the MCP push tool path refuses CONTEXT_UNKNOWN: the production resolver sees configuration only", async () => {
-    // The same construction as serve.ts: the resolver reads the loaded configuration, never the ledger.
-    const config = loadConfig({ configPath, env });
-    expect(config.projects.some((p) => p.id === "dyn-app")).toBe(false);
-    const { sessionId, runId } = await seedDynamicCommit();
-    const pusher = new GitPusher({
-      db,
-      resolveContext: pushContextResolver(config.projects),
-      sourceEnv: { PATH: process.env.PATH, HOME: home },
-      ids: createIdGenerator(),
-    });
-    const r = await pusher.push({
-      metaSessionId: sessionId,
-      requestedBy: "agent_tool",
-      runId,
-      agentReach: { ok: true },
-    });
-    expect(r).toMatchObject({ outcome: "REFUSED_POLICY", reason: "CONTEXT_UNKNOWN", pushed: false });
-    expect(r.toolCode).toBe("PUSH_NOT_ALLOWED");
-    expect(r.remote).toBe("");
-    expect(r.ref).toBe("");
-    // Nothing reached the bare remote, and the refusal is recorded in the ledger.
-    expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
-    const row = db.prepare("SELECT outcome, detail FROM git_push").get() as { outcome: string; detail: string };
-    expect(row).toMatchObject({ outcome: "REFUSED_POLICY", detail: "CONTEXT_UNKNOWN" });
+/** The pusher exactly as `serve` builds it: the loaded configuration, the ledger's dynamic store. */
+function servePusher(): GitPusher {
+  const config = loadConfig({ configPath, env });
+  return new GitPusher({
+    db,
+    resolveContext: projectPushContextResolver({
+      projects: config.projects,
+      store: store(),
+      clients: config.mcpClients,
+    }),
+    sourceEnv: { PATH: process.env.PATH, HOME: home },
+    ids: createIdGenerator(),
+  });
+}
+
+const agentPush = (pusher: GitPusher, s: { sessionId: string; runId: string }) =>
+  pusher.push({ metaSessionId: s.sessionId, requestedBy: "agent_tool", runId: s.runId, agentReach: { ok: true } });
+
+describe("push from an approved dynamic project (ADR-0069, superseding the Q-46 answer for branch policy)", () => {
+  it("approved with policy branch: the serve pusher pushes to the local bare remote", async () => {
+    seedDecided("APPROVED");
+    const s = await seedCommit();
+    const r = await agentPush(servePusher(), s);
+    expect(r).toMatchObject({ outcome: "ACCEPTED", reason: "ACCEPTED", pushed: true, remote: "origin" });
+    expect(r.ref).toBe(`refs/heads/sb/${s.sessionId}`);
+    expect(remoteRefs(bare)).toContain(`refs/heads/sb/${s.sessionId}`);
+    const row = db.prepare("SELECT outcome, project_id, requested_by FROM git_push").get();
+    expect(row).toEqual({ outcome: "ACCEPTED", project_id: "dyn-app", requested_by: "agent_tool" });
   });
 
-  it("switchboard git push refuses CONTEXT_UNKNOWN and records the attempt; the remote is unchanged", async () => {
-    const { sessionId, runId } = await seedDynamicCommit();
+  it("approved with policy branch: switchboard git push pushes and records the operator push", async () => {
+    seedDecided("APPROVED");
+    const s = await seedCommit();
     db.close();
     try {
-      const r = await run(["git", "push", sessionId]);
-      expect(r.code, r.out + r.err).toBe(1);
-      expect(r.out).toContain("push refused (CONTEXT_UNKNOWN)");
-      expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
-      const show = JSON.parse((await run(["runs", "show", runId, "--json"])).out);
-      expect(show.run.pushes).toEqual([
-        expect.objectContaining({ outcome: "REFUSED_POLICY", reason: "CONTEXT_UNKNOWN" }),
-      ]);
-      expect(show.run.commits[0].pushed_to).toEqual([]);
+      const r = await run(["git", "push", s.sessionId]);
+      expect(r.code, r.out + r.err).toBe(0);
+      expect(r.out).toContain("pushed 1 commit(s)");
+      expect(remoteRefs(bare)).toContain(`refs/heads/sb/${s.sessionId}`);
+      const show = JSON.parse((await run(["runs", "show", s.runId, "--json"])).out);
+      expect(show.run.pushes).toEqual([expect.objectContaining({ outcome: "ACCEPTED" })]);
     } finally {
       db = openLedger(dataDir);
     }
+  });
+
+  it.each([
+    ["pending (never decided)", () => seedPending()],
+    ["rejected", () => seedDecided("REJECTED")],
+    ["never created", () => undefined],
+  ])("%s: refused CONTEXT_UNKNOWN before any Git call; the remote is unchanged", async (_label, seed) => {
+    seed();
+    const s = await seedCommit();
+    const r = await agentPush(servePusher(), s);
+    expect(r).toMatchObject({
+      outcome: "REFUSED_POLICY",
+      reason: "CONTEXT_UNKNOWN",
+      pushed: false,
+      remote: "",
+      ref: "",
+    });
+    expect(r.toolCode).toBe("PUSH_NOT_ALLOWED");
+    expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+  });
+
+  it("deleted after approval: refused CONTEXT_UNKNOWN", async () => {
+    seedDecided("APPROVED");
+    const s = await seedCommit();
+    store().appendRevision(
+      {
+        projectId: "dyn-app",
+        clientId: "mgr",
+        definition: definition(),
+        status: "DELETED",
+        approvalReasons: [],
+        action: "delete_project",
+      },
+      () => undefined,
+    );
+    expect(store().state("dyn-app")?.deleted).toBe(true);
+    const r = await agentPush(servePusher(), s);
+    expect(r).toMatchObject({ outcome: "REFUSED_POLICY", reason: "CONTEXT_UNKNOWN", pushed: false });
+    expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+  });
+
+  it("approved, but the revision in force sets policy none: refused POLICY_NONE", async () => {
+    seedDecided("APPROVED", "none");
+    const s = await seedCommit();
+    const r = await agentPush(servePusher(), s);
+    expect(r).toMatchObject({ outcome: "REFUSED_POLICY", reason: "POLICY_NONE", pushed: false });
+    expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+  });
+
+  it.each([
+    ["max_push_policy lowered to none", { max_push_policy: "none" }],
+    ["manage_projects removed", { manage_projects: false, max_push_policy: undefined }],
+  ])("approved, but the creator's %s: refused CONTEXT_UNKNOWN", async (_label, change) => {
+    seedDecided("APPROVED");
+    const s = await seedCommit();
+    writeConfig(change);
+    const r = await agentPush(servePusher(), s);
+    expect(r).toMatchObject({ outcome: "REFUSED_POLICY", reason: "CONTEXT_UNKNOWN", pushed: false });
+    expect(remoteRefs(bare)).toEqual(["refs/heads/main"]);
+    db.close();
+    try {
+      const cli = await run(["git", "push", s.sessionId]);
+      expect(cli.code).toBe(1);
+      expect(cli.out).toContain("push refused (CONTEXT_UNKNOWN)");
+    } finally {
+      db = openLedger(dataDir);
+    }
+  });
+
+  it("a configured project of the same id wins over a dynamic one; the configuration-only resolver still sees none", async () => {
+    seedDecided("APPROVED");
+    const config = loadConfig({ configPath, env });
+    const resolve = projectPushContextResolver({
+      projects: config.projects,
+      store: store(),
+      clients: config.mcpClients,
+    });
+    expect(resolve("web")).toMatchObject({ projectId: "web", policy: "branch" });
+    expect(resolve("web")?.dynamicCreator).toBeUndefined();
+    expect(resolve("dyn-app")).toMatchObject({ projectId: "dyn-app", policy: "branch", dynamicCreator: "mgr" });
+    expect(pushContextResolver(config.projects)("dyn-app")).toBeUndefined();
   });
 });

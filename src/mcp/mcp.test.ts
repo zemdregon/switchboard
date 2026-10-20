@@ -1537,6 +1537,7 @@ describe("runs admitted from queued work, over stdio and HTTP (FR-QUE-01, FR-QUE
     expect((await call("get_run", { run_id: runId }, index)).body).toMatchObject({ run_id: runId, status: "QUEUED" });
     expect((await call("list_runs", {}, index)).body.runs.map((r: Json) => r.run_id)).toContain(runId);
     expect((await call("get_artifacts", { run_id: runId }, index)).isError).toBe(false);
+    expect((await call("explain_route", { run_id: runId }, index)).isError).toBe(false);
     expect((await call("steer_run", { run_id: runId, note: "look at the tests" }, index)).isError).toBe(false);
     expect((await call("get_digest", {}, index)).body.cursor).not.toBeNull();
   };
@@ -1545,6 +1546,7 @@ describe("runs admitted from queued work, over stdio and HTTP (FR-QUE-01, FR-QUE
     for (const [tool, args] of [
       ["get_run", { run_id: runId }],
       ["get_artifacts", { run_id: runId }],
+      ["explain_route", { run_id: runId }],
       ["steer_run", { run_id: runId, note: "look at the tests" }],
       ["cancel_run", { run_id: runId }],
     ] as const) {

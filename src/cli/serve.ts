@@ -75,6 +75,7 @@ import { osLoadReader } from "../capacity/host-load.js";
 import {
   CiTriggerPoller,
   GhCiStatusPort,
+  GhPullRequestPort,
   mergeTargetsFrom,
   type OnRefSinkEvent,
   resolveGithubRemote,
@@ -112,7 +113,7 @@ import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal 
 import { refreshBase } from "../git/base-refresh.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
-import { GitPusher, pushContextResolver } from "../git/push.js";
+import { GitPusher, projectPushContextResolver } from "../git/push.js";
 import { prepareRebaseMerge } from "../git/rebase-prep.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createClassifyRouteFeaturesHook, createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/index.js";
@@ -699,6 +700,24 @@ async function runDaemon(
         }
       : undefined;
 
+  // T9.6 (ADR-0028): push targets come from this process's configuration at push time and, since ADR-0069, from the
+  // in-force revision of an approved dynamic project whose creator may still push; the operator's Git configuration is
+  // used only by the controller's own `git push` (allowlisted environment, never the agent's). One pusher serves the
+  // agent `push` tool and MCP `publish_run`, so pushes of one meta-session run one at a time.
+  const resolvePushContext = projectPushContextResolver({
+    projects: config.projects,
+    store: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+    clients: config.mcpClients,
+  });
+  const pusher = new GitPusher({
+    db,
+    resolveContext: resolvePushContext,
+    sourceEnv: io.env,
+    secretScanAllow: config.secretScanAllow,
+    ids,
+    ...(now ? { now } : {}),
+  });
+
   // T9.4: commit intents left by a crash (ADR-0025), then socket directories of channels a crash left open (ADR-0026).
   let gitTools: GitToolService;
   let finalizePublisher: GitPublisher;
@@ -727,16 +746,7 @@ async function runDaemon(
       db,
       dataDir: config.dataDir,
       publisher,
-      // T9.6 (ADR-0028): push targets come from this process's configuration at push time; the operator's Git
-      // configuration is used only by the controller's own `git push` (allowlisted environment, never the agent's).
-      pusher: new GitPusher({
-        db,
-        resolveContext: pushContextResolver(config.projects),
-        sourceEnv: io.env,
-        secretScanAllow: config.secretScanAllow,
-        ids,
-        ...(now ? { now } : {}),
-      }),
+      pusher,
       shimCommand: defaultShimCommand(),
       innerAgent,
       innerSettingFor,
@@ -1480,6 +1490,13 @@ async function runDaemon(
       // T16.9 (FR-SKL-08, LLD §19.9): the skill store under `<data_dir>/skills/`, read-only; absent unless
       // `skills.enabled`, so a disabled installation offers no skill tools.
       ...(config.skills.enabled ? { skills: { db, dataDir: config.dataDir, settings: config.skills } } : {}),
+      // ADR-0069 (LLD §3.4.12): `publish_run` for clients with `max_push_policy: branch`: the shared pusher, then a pull
+      // request through the operator's own `gh` login (`ci_trigger.gh_binary`, audited G13/G14 argv, ADR-0050).
+      publish: {
+        pusher,
+        resolveContext: resolvePushContext,
+        pulls: new GhPullRequestPort({ binary: config.ciTrigger.ghBinary, sourceEnv: io.env }),
+      },
     };
     mcp = await startStdioServer({ ...mcpDeps, clientId });
     mcp.server.onclose = () => resolveStop("mcp transport closed");

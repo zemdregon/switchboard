@@ -652,9 +652,35 @@ export interface GitPushRow {
   outcome: "ACCEPTED" | "REFUSED_POLICY" | "REJECTED_REMOTE" | "ERROR";
   /** Short reason code from a fixed vocabulary (`src/git/push.ts`); never Git's own output. */
   detail: string | null;
-  requested_by: "agent_tool" | "operator";
+  /** ADR-0069 (migration 0033): `mcp_client:<id>` for a `publish_run` push. */
+  requested_by: GitPushRequester;
   created_at: string;
 }
+
+/** Who asked for a push (FR-GIT-05): the agent `push` tool, the operator CLI, or an MCP client's `publish_run`. */
+export type GitPushRequester = "agent_tool" | "operator" | `mcp_client:${string}`;
+
+/** One `pull_request` row (ADR-0069, migration 0033). Append-only. Controller facts only; never a title or body. */
+export interface PullRequestRow {
+  id: string;
+  run_id: string;
+  meta_session_id: string;
+  push_id: string;
+  client_id: string;
+  /** `owner/repo` on github.com. */
+  repo: string;
+  number: number;
+  url: string;
+  /** Head branch (the pushed `refs/heads/<branch>` without the prefix). */
+  branch: string;
+  base_ref: string;
+  head_sha: string;
+  draft: 0 | 1;
+  action: "created" | "reused";
+  created_at: string;
+}
+
+export type NewPullRequest = Omit<PullRequestRow, "id" | "created_at">;
 
 /** Everything `recordGitPush` needs; `id` and `created_at` are assigned by the ledger. */
 export interface NewGitPush {
@@ -1026,6 +1052,15 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, De
    * `limit` (T9.14, FR-CTL-03 `secret_scan_blocked`: operator pushes record on a run of the meta-session too).
    */
   listGitPushEventPayloadsForMetaSession(metaSessionId: string, limit: number): string[];
+  /**
+   * ADR-0069: in ONE `BEGIN IMMEDIATE` transaction insert the append-only `pull_request` row and append the
+   * `pull_request_opened` run event on its run (payload: the row's facts, never a title or body).
+   */
+  recordPullRequest(input: NewPullRequest): PullRequestRow;
+  /** ADR-0069: the `pull_request` rows of one run, oldest first. */
+  listPullRequestsForRun(runId: string): PullRequestRow[];
+  /** ADR-0069: the `pull_request` rows of every run of a meta-session, oldest first. */
+  listPullRequestsForMetaSession(metaSessionId: string): PullRequestRow[];
   /**
    * `push_id`s named by the `secret_scan_acknowledged` run events of a meta-session (T9.14, operator
    * `git ack-secret-scan`, LLD §20.9). Unreadable payloads are skipped.
@@ -2267,6 +2302,64 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           )
           .all(metaSessionId, limit) as { payload_json: string }[]
       ).map((row) => row.payload_json);
+    },
+
+    recordPullRequest(input) {
+      return immediate(() => {
+        const when = ts();
+        const id = ids.id("prq");
+        db.prepare(
+          `INSERT INTO pull_request (id, run_id, meta_session_id, push_id, client_id, repo, number, url, branch, base_ref,
+             head_sha, draft, action, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          id,
+          input.run_id,
+          input.meta_session_id,
+          input.push_id,
+          input.client_id,
+          input.repo,
+          input.number,
+          input.url,
+          input.branch,
+          input.base_ref,
+          input.head_sha,
+          input.draft,
+          input.action,
+          when,
+        );
+        insertEvent(
+          input.run_id,
+          "pull_request_opened",
+          {
+            pull_request_id: id,
+            push_id: input.push_id,
+            repo: input.repo,
+            number: input.number,
+            url: input.url,
+            branch: input.branch,
+            base_ref: input.base_ref,
+            head_sha: input.head_sha,
+            draft: input.draft === 1,
+            action: input.action,
+            requested_by: `mcp_client:${input.client_id}`,
+          },
+          when,
+        );
+        return db.prepare("SELECT * FROM pull_request WHERE id = ?").get(id) as PullRequestRow;
+      });
+    },
+
+    listPullRequestsForRun(runId) {
+      return db
+        .prepare("SELECT * FROM pull_request WHERE run_id = ? ORDER BY created_at, id")
+        .all(runId) as PullRequestRow[];
+    },
+
+    listPullRequestsForMetaSession(metaSessionId) {
+      return db
+        .prepare("SELECT * FROM pull_request WHERE meta_session_id = ? ORDER BY created_at, id")
+        .all(metaSessionId) as PullRequestRow[];
     },
 
     listSecretScanAcknowledgedPushIds(metaSessionId) {

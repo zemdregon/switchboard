@@ -524,7 +524,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `mcp_clients` | yes | Entries `{ "id", "max_trust_profile", "privileged_approval"?, "projects"? }`. `id` matches `^[a-z0-9][a-z0-9_-]{0,63}$` and must be unique. `serve --client <id>` binds a session to one entry. |
 | `mcp_clients[].projects` | no | Ids of the configured `projects` this client may use with `delegate_task`'s `project` input and see in `list_projects`. An id that names no project stops startup. A client without the list can use no project (workspace paths still work). |
 | `mcp_clients[].manage_projects` | no | `true` gives this client the `create_project`, `update_project` and `delete_project` tools for its own *dynamic projects* (see [Dynamic projects](#dynamic-projects)). Default `false`: the tools do not exist for it. |
-| `mcp_clients[].max_push_policy` | no | `"none"` (default) or `"branch"`: the widest push policy a dynamic project of this client may declare. Only with `manage_projects: true`. A push-enabled project still waits for `projects approve` (which enables runs, not push targets: a push from an approved dynamic project is refused `CONTEXT_UNKNOWN` by design, owner decision 62; Q-46 answered). |
+| `mcp_clients[].max_push_policy` | no | `"none"` (default) or `"branch"`: the widest push policy a dynamic project of this client may declare. Only with `manage_projects: true`. A push-enabled project still waits for `projects approve`. Since ADR-0069 (2026-10-20, owner decision 78) an approved revision with push policy `branch` pushes (agent `push` tool, `publish_run`, `switchboard git push`) while the client keeps `manage_projects` and `max_push_policy: "branch"`; it also offers `publish_run` to the client. |
 | `mcp_clients[].approval_proxy_kinds` | no | Subset of `privileged_scope`, `dynamic_project`, `push_revision` that an `approval_proxy` client may list and decide over MCP (default: all three). Refused without `approval_proxy: true`. Example: `["dynamic_project", "push_revision"]` lets a chat client approve project revisions but never a privileged run (ADR-0068). |
 | `mcp_clients[].privileged_approval` | no | `"required"` (default) or `"not_required"`. With `not_required`, that client's `privileged` requests run without `switchboard approve` (see [Trust profiles](#trust-profiles)). Allowed only when the client's `max_trust_profile` is `privileged`; `doctor` warns for every client that sets it. |
 | `data_dir` | no | Where the ledger, artifacts and worktrees live. Default `$XDG_DATA_HOME/switchboard` (`~/.local/share/switchboard`). |
@@ -846,6 +846,7 @@ See [TDD §3.1](docs/design/TDD.md#31-configuration) and [LLD §3.4](docs/design
 | `request_decision`, `list_decisions` | yes | no | no extra (`decide` only) |
 | `decide` | no | no | yes (an `approval_proxy` client decides only decisions of its targets) |
 | `pause_project`, `resume_project`, `steer_run` | yes | yes | no |
+| `publish_run` (push a SUCCEEDED run's branch, open a pull request with the operator's `gh` login; ADR-0069) | only with `max_push_policy: "branch"` | no | no extra |
 
 Tool outputs use closed controller fields only (no transcripts). Pending approvals expose an `approval_digest`, not
 scope bodies.

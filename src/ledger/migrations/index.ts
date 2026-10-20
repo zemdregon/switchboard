@@ -32,6 +32,7 @@ import { sql as sql0029 } from "./0029_published_ref_conflicts.js";
 import { sql as sql0030 } from "./0030_decision_request.js";
 import { sql as sql0031 } from "./0031_merge_policy.js";
 import { sql as sql0032 } from "./0032_decision_onboarding.js";
+import { sql as sql0033 } from "./0033_mcp_publication.js";
 
 export interface Migration {
   readonly version: number;
@@ -82,4 +83,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 30, name: "decision_request", sql: sql0030, foreignKeysOff: true },
   { version: 31, name: "merge_policy", sql: sql0031 },
   { version: 32, name: "decision_onboarding", sql: sql0032 },
+  { version: 33, name: "mcp_publication", sql: sql0033, foreignKeysOff: true },
 ];

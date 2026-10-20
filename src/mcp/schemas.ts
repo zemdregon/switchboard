@@ -127,6 +127,13 @@ export type WorkQueueToolName = (typeof WORK_QUEUE_TOOL_NAMES)[number];
 export const SKILL_TOOL_NAMES = ["list_skills", "get_skill"] as const;
 export type SkillToolName = (typeof SKILL_TOOL_NAMES)[number];
 
+/**
+ * ADR-0069 (LLD §3.4.12): `publish_run`, offered only to a client whose `max_push_policy` is `branch` and only when the
+ * server has the publish port (`serve`); to any other client it does not exist.
+ */
+export const PUBLISH_TOOL_NAMES = ["publish_run"] as const;
+export type PublishToolName = (typeof PUBLISH_TOOL_NAMES)[number];
+
 /** Delegated bounds for an MCP-supplied project definition (the configuration schema itself has none). */
 export const MAX_DEFINITION_STRING = 4096;
 export const MAX_DEFINITION_ITEMS = 32;
@@ -490,6 +497,22 @@ const ENVELOPE = {
             enum: ["global_default", "global_role", "project_default", "project_role", "request", "continued"],
           },
           delivery: { enum: ["prompt_prefix", "native", "skipped", null] },
+        },
+      },
+    },
+    // ADR-0069 (LLD §3.4.12): accepted pushes of the run's branch; pull request fields once publish_run recorded one.
+    publications: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["branch", "head_sha", "pushed_at"],
+        properties: {
+          branch: { type: "string", maxLength: 255 },
+          head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+          pushed_at: { type: "string" },
+          pull_request_url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+          pull_request_number: { type: "integer", minimum: 1 },
         },
       },
     },
@@ -1573,6 +1596,83 @@ const SKILL_TEXT = {
 } as const;
 const SKILL_OUTPUTS = { list_skills: withError(SKILL_LIST), get_skill: withError(SKILL_TEXT) } as const;
 
+/** ADR-0069 closed `pull_request_error` vocabulary (`src/mcp/publish.ts`, `src/ci/gh-pr.ts`). */
+export const PUBLISH_PULL_REQUEST_ERRORS = [
+  "GH_MISSING",
+  "AUTH_REQUIRED",
+  "TIMEOUT",
+  "GH_FAILED",
+  "PARSE_FAILED",
+  "REMOTE_NOT_GITHUB",
+  "BASE_INVALID",
+] as const;
+
+const PUBLISH_INPUTS = {
+  publish_run: {
+    type: "object",
+    additionalProperties: false,
+    required: ["run_id"],
+    properties: {
+      run_id: RUN_ID,
+      open_pull_request: { type: "boolean", default: true },
+      draft: { type: "boolean", default: false },
+    },
+  },
+} as const;
+
+const PUBLISH_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["run_id", "meta_session_id", "publication", "pull_request"],
+  properties: {
+    run_id: RUN_ID,
+    meta_session_id: SESSION_ID,
+    publication: {
+      type: "object",
+      additionalProperties: false,
+      required: ["push_id", "remote", "branch", "head_sha", "pushed_at", "reused"],
+      properties: {
+        push_id: { type: "string", pattern: "^gps_[0-9A-HJKMNP-TV-Z]{26}$" },
+        remote: { type: "string", maxLength: 255 },
+        branch: { type: "string", maxLength: 255 },
+        head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        pushed_at: { type: "string" },
+        reused: { type: "boolean" },
+      },
+    },
+    pull_request: {
+      oneOf: [
+        { type: "null" },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["number", "url", "draft", "reused"],
+          properties: {
+            number: { type: "integer", minimum: 1 },
+            url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+            draft: { type: "boolean" },
+            reused: { type: "boolean" },
+          },
+        },
+      ],
+    },
+    pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
+  },
+} as const;
+
+const PUBLISH_OUTPUTS = { publish_run: withError(PUBLISH_RESULT) } as const;
+
+const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
+  publish_run:
+    "Publish one of this client's SUCCEEDED runs: the controller pushes the run's branch (its meta-session's " +
+    "controller commits, never forced, never the default branch, after the same secret scan as every push) to the " +
+    "project's configured remote, then, unless open_pull_request is false, opens a pull request with the operator's " +
+    "GitHub login (gh) or reuses the open one for that branch. Idempotent: publishing again returns the existing push " +
+    "and pull request. A refused push is PERMISSION_BLOCKED with details.reason. If gh fails the push still stands: " +
+    "pull_request is null and pull_request_error names why. The pull request body includes the run's agent-written " +
+    "draft, labelled untrusted.",
+};
+
 const SKILL_DESCRIPTIONS: Readonly<Record<SkillToolName, string>> = {
   list_skills:
     "Operator-approved skills this client may name in delegate_task, read-only: per name the newest version it could " +
@@ -1705,7 +1805,7 @@ const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
 };
 
 export interface ToolDescriptor {
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName;
+  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName | PublishToolName;
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
@@ -1717,7 +1817,13 @@ export interface ToolDescriptor {
  * (T12.6, FR-RAG-06), the work-queue tools only with `workQueue` (T15.1), the skill tools only with `skills` (T16.9).
  */
 export function toolDescriptors(
-  opts: { manageProjects?: boolean; searchContext?: boolean; workQueue?: boolean; skills?: boolean } = {},
+  opts: {
+    manageProjects?: boolean;
+    searchContext?: boolean;
+    workQueue?: boolean;
+    skills?: boolean;
+    publish?: boolean;
+  } = {},
 ): ToolDescriptor[] {
   const base: ToolDescriptor[] = TOOL_NAMES.map((name) => ({
     name,
@@ -1732,6 +1838,17 @@ export function toolDescriptors(
         description: WORK_DESCRIPTIONS[name],
         inputSchema: structuredClone(WORK_INPUTS[name]) as Record<string, unknown>,
         outputSchema: structuredClone(WORK_OUTPUTS[name]) as Record<string, unknown>,
+      })),
+    );
+  }
+  if (opts.publish === true) {
+    // ADR-0069: right after the work-queue tools, before every retrieval-, skill- or project-gated tool.
+    base.push(
+      ...PUBLISH_TOOL_NAMES.map((name) => ({
+        name,
+        description: PUBLISH_DESCRIPTIONS[name],
+        inputSchema: structuredClone(PUBLISH_INPUTS[name]) as Record<string, unknown>,
+        outputSchema: structuredClone(PUBLISH_OUTPUTS[name]) as Record<string, unknown>,
       })),
     );
   }
@@ -1768,8 +1885,11 @@ export function toolDescriptors(
 }
 
 export function inputSchema(
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName,
+  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName | PublishToolName,
 ): Record<string, unknown> {
+  if ((PUBLISH_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(PUBLISH_INPUTS[name as PublishToolName]) as Record<string, unknown>;
+  }
   if ((SKILL_TOOL_NAMES as readonly string[]).includes(name)) {
     return structuredClone(SKILL_INPUTS[name as SkillToolName]) as Record<string, unknown>;
   }
@@ -1784,8 +1904,11 @@ export function inputSchema(
 }
 
 export function outputSchema(
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName,
+  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName | PublishToolName,
 ): Record<string, unknown> {
+  if ((PUBLISH_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(PUBLISH_OUTPUTS[name as PublishToolName]) as Record<string, unknown>;
+  }
   if ((SKILL_TOOL_NAMES as readonly string[]).includes(name)) {
     return structuredClone(SKILL_OUTPUTS[name as SkillToolName]) as Record<string, unknown>;
   }

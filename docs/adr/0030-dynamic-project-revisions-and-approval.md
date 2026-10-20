@@ -1,6 +1,10 @@
 # ADR-0030: Dynamic project revisions, decisions and events in the ledger; approval on the CLI
 
-- Status: Accepted. Amended by [ADR-0068](0068-mcp-only-project-onboarding.md) (items 4 and 5)
+- Status: Accepted. Amended by [ADR-0068](0068-mcp-only-project-onboarding.md) (items 4 and 5). *Note 2026-10-20:*
+  [ADR-0069](0069-mcp-publish-run-and-dynamic-project-push.md) supersedes the Q-46 answer of owner decision 62 for
+  approved dynamic projects whose in-force revision sets push policy `branch`: their push targets now resolve from that
+  revision while the creator keeps `manage_projects` and `max_push_policy: branch`. The decision text below is
+  unchanged.
 - Date: 2026-10-13
 - Decided by: Delegated (agent), under [owner decision 25](../ROADMAP.md#42-owner-decisions) (best practice for a
   decision that does not affect bypass mode). Not an zemdregon quote and not owner-approved. Recorded as decision 39 in
