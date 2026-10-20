@@ -72,7 +72,14 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { osLoadReader } from "../capacity/host-load.js";
-import { CiTriggerPoller, GhCiStatusPort, resolveGithubRemote, supersededDiffOf } from "../ci/index.js";
+import {
+  CiTriggerPoller,
+  GhCiStatusPort,
+  mergeTargetsFrom,
+  type OnRefSinkEvent,
+  resolveGithubRemote,
+  supersededDiffOf,
+} from "../ci/index.js";
 import { ConfigError, loadConfig, primaryContext, type ResolvedConfig } from "../config/index.js";
 import { collectDigestCounts, digestPushFor } from "../control/digest-push.js";
 import {
@@ -1246,6 +1253,18 @@ async function runDaemon(
   // T15.6 (FR-QUE-06, ADR-0050 amendment 1): the same port is the write side, used only for a project whose
   // `rerun_failed` or `cancel_stale_queued` switch is on. T15.7: and the read-only mergeability side (G9).
   const ciTrigger = config.ciTrigger;
+  const mergeStore = new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) });
+  const resolveCiRemote = async (projectId: string, remote: string) => {
+    const project = config.projects.find((p) => p.id === projectId);
+    if (project !== undefined) return resolveGithubRemote(primaryContext(project).path, remote);
+    const dynamic = mergeStore.state(projectId)?.inForce?.definition;
+    return dynamic === undefined ? undefined : resolveGithubRemote(primaryContext(toResolved(dynamic)).path, remote);
+  };
+  // T15.8 (FR-SUB-01, FR-SUB-02, ADR-0048): ref and merge events reach the sinks as closed payloads, once per row.
+  const onRefEvent: OnRefSinkEvent | undefined = sinks === undefined ? undefined : (e) => sinks.emit(e);
+  // T15.8 (FR-SUB-02, LLD §20.7, ADR-0060): projects whose merge policy is on in the definition in force: configured
+  // projects, and dynamic projects' revisions in force (a revision turning it on waits for operator approval).
+  const mergeTargets = () => mergeTargetsFrom(config.projects, mergeStore);
   const ciPort = ciTrigger.enabled
     ? new GhCiStatusPort({
         binary: ciTrigger.ghBinary,
@@ -1274,6 +1293,7 @@ async function runDaemon(
             const project = config.projects.find((p) => p.id === projectId);
             return project === undefined ? undefined : resolveGithubRemote(primaryContext(project).path, remote);
           },
+          ...(onRefEvent === undefined ? {} : { onRefEvent }),
           maxItemsPerProject: queueSettings.maxItemsPerProject,
           // T14.9 (FR-CTL-10, ADR-0048): a ref newly reaching the stuck flag reaches the sinks as `needs_attention`
           // (`ci_fix_stuck`, no run; the project carries it). The poller announces the 0→1 transition only.
@@ -1293,6 +1313,16 @@ async function runDaemon(
               }),
         },
         () => (now ? now() : new Date()).getTime(),
+        // T15.8: the merge pass on the same tick, after the trigger poll; G10 to G12 only for targets with the policy on.
+        {
+          db,
+          ledger,
+          merge: ciPort,
+          targets: mergeTargets,
+          resolveRemote: resolveCiRemote,
+          nowMs: () => (now ? now() : new Date()).getTime(),
+          ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
+        },
       )
     : undefined;
   // T14.16 (FR-CTL-14, LLD §20.5, ADR-0048): the metadata-only digest push, only when the operator set

@@ -1146,7 +1146,8 @@ characters, arrays at most 32 items), closed, so a client-limit key such as `max
 (create, update, delete): `{ id, revision, status: "ACTIVE" | "PENDING_APPROVAL" | "DELETED", approval_needed?,
 in_force_revision?, message? }` (`in_force_revision` and `message` Proposed). `approval_needed` values:
 `container_environment`, `push_policy`, `commit_identity`, `commit_signing`, `widened_trust_ceiling`,
-`widened_providers` (widening is measured against the revision in force). Errors, in check order: schema
+`widened_providers` (widening is measured against the revision in force), `merge_policy` (T15.8: the definition sets
+`merge_policy.enabled: true`, on every revision that keeps it on, §20.7). Errors, in check order: schema
 `INVALID_REQUEST`; a control, separator or bidirectional character in any string `INVALID_REQUEST`
 (`CONTROL_CHARACTER`); a configured id or another client's project `PERMISSION_BLOCKED` with one message for both
 (`NOT_MANAGEABLE`); unknown id for update/delete, deleted id, or an existing id for create `INVALID_REQUEST` (ids are
@@ -1744,7 +1745,7 @@ Extend `$defs` in §3.0:
       "requested_at": { "type": "string" } } },
   "sink_event_kind": { "enum": [
       "run_terminal","needs_attention","approval_pending","approval_decided","budget_exhausted","project_paused","queue_low",
-      "digest" ] },                         // digest: T14.16, FR-CTL-14, §20.5
+      "digest","ref_event","merge_event" ] }, // digest: T14.16, FR-CTL-14, §20.5; ref_event, merge_event: T15.8, §20.7
   "notification_payload": { "type": "object", "required": [
       "project_id","event_kind","reason_code","run_id","link" ], "properties": {
       "project_id": { "type": "string" },
@@ -2203,7 +2204,8 @@ counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
   `queue_low` the literal `queue_low` (T15.4, FR-QUE-04; `run_id` null); `digest` the literal `digest` (T14.16,
   FR-CTL-14; `project_id` `*`, `run_id` null, and the integer-only `counts` object of §20.5, which no other kind may
   carry); `decision_requested` the literal `awaiting_decision` (T14.15, FR-CTL-13; `run_id` null, never decision
-  text). `project_id`
+  text); `ref_event` a ref event kind and `merge_event` `merged` or a merge refusal reason (T15.8, FR-SUB-01,
+  FR-SUB-02, §20.7; `run_id` the run that published the ref, or null). `project_id`
   is a project id, `-` (a run admitted without a project) or `*` (all projects). An event with any other value, or a
   `run_id` that is not `run_` + ULID, is dropped, not sent.
 - Link: the configured `public_url` resource itself when the HTTP transport is set (`sinkLink` returns it unchanged
@@ -7718,6 +7720,63 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
 - **Ref events (FR-SUB-01 first delivery).** `ref_event` rows of kind `ci_passed`, `ci_failed`, `foreign_commit`,
   `conflicting`, `merged`, `closed`, read through the same poller, shown in `get_digest` and sent to sinks as closed
   payloads. No inbound webhook; event text never authorises anything.
+
+*As built (2026-10-20, T15.8; Linus decision, Delegated, not owner-approved):*
+
+1. **Configuration** (`src/config/schema.ts`, `src/config/projects.ts`). `projects[].merge_policy` is part of
+   `projectSchema`, so a dynamic definition (FR-PRJ-10) may carry it: `enabled` (default `false`), `method`
+   (`squash`, `merge`, `rebase`; default `squash`), `required_reports` (closed list: `docs-alignment`). A revision with
+   `enabled: true` waits for operator approval with the new `approval_needed` value `merge_policy` (the T9.9 project
+   tools), on every revision that keeps it on (an approval is per revision, like a push policy). The pass reads only
+   definitions in force (`mergeTargetsFrom`), so a pending revision never merges.
+2. **Where it runs** (`src/ci/merge-policy.ts`, `pollMergePolicies`). On the CI poller's tick after the trigger poll
+   (`CiTriggerPoller`): `ci_trigger.enabled` is the one switch for every `gh` call and `poll_interval_seconds` the pace,
+   but a project needs no `ci_trigger.projects[]` entry to be merged. A paused project (§3.4.4) and a superseded ref
+   (§20.4) are skipped without a `gh` call. Only refs the project published (`listPublishedRefs`, §18.6).
+3. **`gh` templates** (`src/ci/gh-argv.ts`, ADR-0050 amendment 1 item 10), audited like G1 to G9: G10 `pr view
+   <branch> --json number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName`; G11 `pr checks <n> --required
+   --json bucket` (only the required checks' buckets, so non-required checks are never read and cannot block or pass a
+   merge); G12 `pr merge <n> --repo <o>/<r> --<method> --match-head-commit <sha>`. Never `--admin`, `--auto` or
+   `--delete-branch`. The flags and fields were checked against the `gh` manual pages (`gh_pr_merge`,
+   `gh_pr_checks`, `gh_pr_view` on cli.github.com, 2026-10-20); `gh --help` could not be run on the build host, so the
+   check against the installed `gh` that ADR-0050 asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from
+   the manual's exit code 8 for pending checks): with `--json`, `gh pr checks` prints the array also when it exits 1
+   (a failed check) or 8 (a pending one), and exits 1 with no output when the base reports no required check. Every
+   reading fails closed: exit 1 with no output is `none` (refused), anything unparseable is `gh_error` (refused).
+4. **Gate order** (the first failing step is the reason): G10 (no pull request → nothing; not `OPEN` → a `merged` or
+   `closed` ref event only; `draft`; head other than the published tip or head branch other than the ref → `head_moved`;
+   base other than the primary context's base branch → `base_mismatch`; not `MERGEABLE`, `UNKNOWN` included →
+   `not_mergeable`); the newest `verification_result` of the project at that head SHA must be `passed`
+   (`unverified_at_head`; a result without a SHA never counts, §20.6); each `required_reports` entry's newest valid
+   report at the SHA must say `aligned` (`report_missing`); G11 (`none` → `no_required_checks`; any `fail`, `cancel` or
+   `skipping` → `check_failed`, fail closed; any `pending` → `check_pending`); the policy is looked up again
+   (`policy_off` when it was turned off or its method changed meanwhile); G10 again (step 1's checks again); then G12.
+   The base branch is `base_ref` with `refs/heads/`, `refs/remotes/<remote>/` or `<remote>/` removed (a `base_ref` that
+   names a commit never equals a branch, so it is refused). `base_mismatch` is added to the closed reason list.
+   The docs-alignment report's `head_sha` is the agent's claim (§20.6): `required_reports` is an extra condition, not a
+   controller-verified fact; the controller-read facts are the pull request, the required checks and the verification
+   result.
+5. **Ledger** (migration **0031**, `src/ledger/migrations/0031_merge_policy.ts`; renumbered from 0030 because T14.15's
+   `decision_request` landed first as 0030). `merge_event` (`mge_*`): `project_id`, `publish_ref`,
+   `pr_number` (NULL only for a refusal before the pull request was read), `head_sha` (the published tip), `method`,
+   `outcome` (`attempted`, `merged`, `refused`), `reason`, `run_id` (the publishing run), `created_at`. `attempted` is
+   written before G12, and at most one G12 runs per head SHA: a G12 failure is `gh_error` and is not retried until the
+   head moves (an operator merges by hand). A refusal is written once per `(ref, head, reason)` (partial unique index);
+   a repeat on a later poll writes nothing. `ref_event` (`rfe_*`): one row per `(project, ref, kind, head)`. Both are
+   append-only (triggers).
+6. **Delivery.** A new `merged` or `refused` row and a new `ref_event` row are also a `merge_event` / `ref_event` run
+   event on the run that published the ref (none for an operator push) and a sink event (`ref_event` or `merge_event`
+   kind, §3.4.9). `get_digest` lists them per project as `ref_events` (present only when non-empty; a delta lists the
+   scanned ones, a snapshot the newest 50 per project), each rebuilt from closed fields: `event_id`, `run_id`, `ts`,
+   `type`, `code` (the kind, or `merged` / `refused`), `reason` (refusals), `publish_ref`, `head_sha`, `pr_number`.
+   The publishing run belongs to the publishing client, so another client never sees them.
+7. **Ref event sources.** The CI trigger poll (`src/ci/trigger.ts`): a `success` or `failure` conclusion at the
+   published tip is `ci_passed` or `ci_failed` (`CI_INFRA` is neither); each G9 read, and each G10 read of the merge
+   pass, gives `merged`, `closed`, `conflicting` (open, at the published tip) or `foreign_commit` (open, head a commit
+   Switchboard never pushed on that ref). Merge queues are not modelled: a base that requires one turns G12 into
+   "queued" on GitHub's side, recorded as `merged`; the later `merged` ref event is the fact (ADR-0060 revisit clause).
+8. **Tests.** `src/ci/merge-policy.test.ts` (fake `CiMergePort` and fake `GhRunner`; every done-when clause), the
+   approval wait in `src/mcp/project-tools.test.ts`, the migration in `src/ledger/ledger.test.ts`.
 
 ### 20.8 Work queue over HTTP (FR-QUE-08, T15.9)
 

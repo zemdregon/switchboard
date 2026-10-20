@@ -22,6 +22,12 @@
  * rebase item that continues the publishing meta-session (`ci_ref_conflict`); rebase items count against the FR-QUE-05
  * per-ref counter. At the cap, one re-implementation item from the current base carries the old ref's diff as untrusted
  * context, the ref gets `superseded_by` and is no longer watched (neither CI nor mergeability).
+ *
+ * T15.8 (FR-SUB-01 first delivery, LLD §20.7): the same reads become ref events (`merge-policy.ts`, migration 0031):
+ * a `success` or `failure` conclusion at the published tip is `ci_passed` or `ci_failed` (a `CI_INFRA` conclusion is
+ * neither), and each pull request read gives `conflicting`, `foreign_commit`, `merged` or `closed`. Each is recorded
+ * once per ref, kind and head, never authorises anything, and reaches the publishing client through `get_digest` and
+ * the sinks. {@link CiTriggerPoller} also runs the merge pass ({@link pollMergePolicies}) when `serve` wires it.
  */
 import type Database from "better-sqlite3";
 import { defaultRedactor } from "../artifacts/redact.js";
@@ -36,6 +42,15 @@ import { defaultIds } from "../ids/index.js";
 import type { Ledger } from "../ledger/index.js";
 import { WorkItemDedupeConflictError } from "../ledger/work-queue.js";
 import { branchOfPublishRef, isDatabaseId, isFullLowerSha } from "./gh-argv.js";
+import type { RefEventKind } from "./merge-codes.js";
+import {
+  type MergePolicyDeps,
+  type MergePolicyPollResult,
+  type OnRefSinkEvent,
+  pollMergePolicies,
+  recordRefEvent,
+  refEventsOfPullRequest,
+} from "./merge-policy.js";
 import {
   type CiActionsPort,
   type CiPullRequestPort,
@@ -112,6 +127,8 @@ export interface CiTriggerDeps {
    * re-implementation item as untrusted context; undefined when it cannot be read (the item is still admitted).
    */
   readonly supersededDiff?: (q: { projectId: string; remote: string; headSha: string }) => Promise<string | undefined>;
+  /** T15.8: a newly recorded ref event for the sinks (ids and codes only). Must not throw; best effort. */
+  readonly onRefEvent?: OnRefSinkEvent;
 }
 
 export interface CiTriggerPollResult {
@@ -131,6 +148,8 @@ export interface CiTriggerPollResult {
   rebases: { projectId: string; publishRef: string; headSha: string; workItemId: string }[];
   /** T15.7: re-implementation items admitted at the cap; the ref is superseded by the item. */
   reimplemented: { projectId: string; publishRef: string; headSha: string; workItemId: string }[];
+  /** T15.8: ref events newly recorded on this poll (FR-SUB-01). */
+  refEvents: { projectId: string; publishRef: string; kind: RefEventKind; headSha: string }[];
 }
 
 export interface CiTriggerRefState {
@@ -219,6 +238,7 @@ export async function pollCiTriggers(deps: CiTriggerDeps): Promise<CiTriggerPoll
     cancelled: [],
     rebases: [],
     reimplemented: [],
+    refEvents: [],
   };
   const { settings, ledger, db } = deps;
   const nowMs = deps.nowMs ?? Date.now;
@@ -263,6 +283,14 @@ export async function pollCiTriggers(deps: CiTriggerDeps): Promise<CiTriggerPoll
       ) {
         fail("OBSERVATION_MISMATCH");
         continue;
+      }
+      const ciClass = classifyConclusion(obs.conclusion);
+      if (ciClass === "success" || ciClass === "failure") {
+        const kind = ciClass === "success" ? "ci_passed" : "ci_failed";
+        const at = { db, ledger, nowIso: new Date(nowMs()).toISOString(), ...refSink(deps) };
+        if (recordRefEvent(at, { projectId, ref, kind, headSha: ref.headSha, prNumber: null })) {
+          result.refEvents.push({ projectId, publishRef: ref.publishRef, kind, headSha: ref.headSha });
+        }
       }
       if (!FAILING_CONCLUSIONS.has(obs.conclusion)) {
         resetCiFixCounter(db, { projectId, publishRef: ref.publishRef });
@@ -418,6 +446,9 @@ export async function pollCiTriggers(deps: CiTriggerDeps): Promise<CiTriggerPoll
 
 type FailFn = (reason: CiTriggerErrorReason) => void;
 
+const refSink = (deps: CiTriggerDeps): { onEvent?: OnRefSinkEvent } =>
+  deps.onRefEvent === undefined ? {} : { onEvent: deps.onRefEvent };
+
 /** T15.7: true when the ref's state carries `superseded_by` (migration 0029). */
 export function isRefSuperseded(db: Database.Database, projectId: string, publishRef: string): boolean {
   const row = db
@@ -492,6 +523,14 @@ async function watchConflict(a: {
   } catch (err) {
     fail(reasonOf(err));
     return "watching";
+  }
+  if (pr !== null) {
+    const at = { db, ledger, nowIso: new Date(a.nowMs()).toISOString(), ...refSink(deps) };
+    for (const ev of refEventsOfPullRequest(db, projectId, ref, pr)) {
+      if (recordRefEvent(at, { projectId, ref, kind: ev.kind, headSha: ev.headSha, prNumber: pr.number })) {
+        a.result.refEvents.push({ projectId, publishRef: ref.publishRef, ...ev });
+      }
+    }
   }
   // Only an open pull request whose head is the tip Switchboard published (a head someone else pushed is out of scope).
   if (pr === null || pr.state !== "OPEN" || pr.mergeable !== "CONFLICTING" || pr.headSha !== ref.headSha) {
@@ -790,7 +829,10 @@ async function cancelStaleQueued(a: {
   }
 }
 
-/** Paces {@link pollCiTriggers} to `poll_interval_seconds` on the `serve` scheduler tick; one poll at a time. */
+/**
+ * Paces {@link pollCiTriggers} to `poll_interval_seconds` on the `serve` scheduler tick; one poll at a time. With
+ * `merge` (T15.8), the merge pass ({@link pollMergePolicies}) runs after the trigger poll on the same tick.
+ */
 export class CiTriggerPoller {
   private lastPollMs: number | undefined;
   private inFlight = false;
@@ -800,10 +842,11 @@ export class CiTriggerPoller {
   constructor(
     private readonly deps: CiTriggerDeps,
     private readonly nowMs: () => number = Date.now,
+    private readonly merge?: MergePolicyDeps,
   ) {}
 
   /** Runs a poll when due; undefined when off, not due, or a poll is still running. */
-  async tick(): Promise<CiTriggerPollResult | undefined> {
+  async tick(): Promise<(CiTriggerPollResult & { merge?: MergePolicyPollResult }) | undefined> {
     const { enabled, pollIntervalSeconds } = this.deps.settings;
     if (!enabled || pollIntervalSeconds === 0 || this.inFlight) return undefined;
     const now = this.nowMs();
@@ -813,7 +856,8 @@ export class CiTriggerPoller {
     try {
       const r = await pollCiTriggers(this.deps);
       this.lastErrors = r.errors;
-      return r;
+      if (this.merge === undefined) return r;
+      return { ...r, merge: await pollMergePolicies(this.merge) };
     } finally {
       this.inFlight = false;
     }

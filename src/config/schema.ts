@@ -452,7 +452,23 @@ export interface ProjectConfig {
     enabled?: boolean;
     min_diff_lines?: number;
   };
+  /**
+   * T15.8 (FR-SUB-02, LLD §20.7, ADR-0060): the opt-in, head-pinned merge policy. Off by default. A dynamic project
+   * definition may carry it, but a revision that turns it on waits for operator approval (`merge_policy`, FR-PRJ-10).
+   */
+  merge_policy?: {
+    enabled?: boolean;
+    method?: MergePolicyMethod;
+    required_reports?: MergePolicyReport[];
+  };
 }
+
+/** T15.8: `projects[].merge_policy.method`, one `gh pr merge` flag each; `squash` by default (LLD §20.7). */
+export const MERGE_POLICY_METHODS = ["squash", "merge", "rebase"] as const;
+export type MergePolicyMethod = (typeof MERGE_POLICY_METHODS)[number];
+/** T15.8: reports `required_reports` may name (closed list; the docs-alignment skill's report, FR-SKL-11). */
+export const MERGE_POLICY_REPORTS = ["docs-alignment"] as const;
+export type MergePolicyReport = (typeof MERGE_POLICY_REPORTS)[number];
 
 /** One `projects[].dependency_seeds[]` entry (LLD §5.1). Paths are relative to the primary context. */
 export interface DependencySeedConfig {
@@ -657,6 +673,16 @@ export const projectSchema = {
         low_water: { type: "integer", minimum: 1 },
         // T14.16: the upper bound (30 days) is an Assumption, a sanity limit with no source (Delegated).
         stall_hours: { type: "integer", minimum: 1, maximum: MAX_STALL_HOURS },
+      },
+    },
+    // T15.8 (FR-SUB-02, LLD §20.7): turning it on in a dynamic definition waits for operator approval.
+    merge_policy: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        enabled: { type: "boolean" },
+        method: { enum: [...MERGE_POLICY_METHODS] },
+        required_reports: { type: "array", uniqueItems: true, items: { enum: [...MERGE_POLICY_REPORTS] } },
       },
     },
     contexts: { type: "array", minItems: 1, items: contextSchema },

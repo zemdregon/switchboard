@@ -25,6 +25,16 @@
  * | ID | argv (after the binary) |
  * | --- | --- |
  * | G9 | `pr view {branch} --repo {owner}/{repo} --json {G9_FIELDS}` |
+ *
+ * T15.8 (FR-SUB-02, LLD §20.7, ADR-0050 amendment 1 item 10, ADR-0060). G10 and G11 are reads; G12 is the one merge
+ * write verb, spawned only for a project whose `merge_policy.enabled` is on and only after the gate held. Never
+ * `--admin`, `--auto` or `--delete-branch`:
+ *
+ * | ID | argv (after the binary) |
+ * | --- | --- |
+ * | G10 | `pr view {branch} --repo {owner}/{repo} --json {G10_FIELDS}` |
+ * | G11 | `pr checks {number} --repo {owner}/{repo} --required --json {G11_FIELDS}` |
+ * | G12 | `pr merge {number} --repo {owner}/{repo} --{squash\|merge\|rebase} --match-head-commit {sha}` (write) |
  */
 
 export const G1_FIELDS = "databaseId,conclusion,headBranch,status,headSha";
@@ -35,6 +45,13 @@ export const G6_FIELDS = "databaseId,conclusion,headBranch,status,headSha";
 export const G7_FIELDS = "databaseId,status,headSha";
 /** G9: the pull request's mergeability (`gh` 2.102.0 `pr view --help` lists all five fields). */
 export const G9_FIELDS = "number,state,isDraft,mergeable,headRefOid";
+/** G10: the merge gate's read (`gh pr view` manual lists all seven fields; G9 plus the head and base branch names). */
+export const G10_FIELDS = "number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName";
+/** G11: only the result bucket of each required check (`gh pr checks` manual: `pass`, `fail`, `pending`, ...). */
+export const G11_FIELDS = "bucket";
+/** G12 merge methods; each is one `gh pr merge` flag (`--squash`, `--merge`, `--rebase`). */
+export const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
+export type MergeMethod = (typeof MERGE_METHODS)[number];
 /** G6 page size: queued runs read per published ref and poll (Assumption: enough for one ref's backlog). */
 export const QUEUED_LIMIT = "20";
 /**
@@ -47,6 +64,7 @@ const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u;
 const REPO = /^[A-Za-z0-9._-]{1,100}$/u;
 const SHA = /^[0-9a-f]{40}$/u;
 const DATABASE_ID = /^[1-9][0-9]{0,19}$/u;
+const PR_NUMBER = /^[1-9][0-9]{0,9}$/u;
 
 export function isGhOwner(s: string): boolean {
   return OWNER.test(s);
@@ -62,6 +80,10 @@ export function isFullLowerSha(s: string): boolean {
 
 export function isDatabaseId(s: string): boolean {
   return DATABASE_ID.test(s);
+}
+
+export function isPrNumber(s: string): boolean {
+  return PR_NUMBER.test(s);
 }
 
 /**
@@ -174,8 +196,34 @@ export function ghPrViewArgv(owner: string, repo: string, branch: string): strin
   return audited(["pr", "view", branch, "--repo", repoArg(owner, repo), "--json", G9_FIELDS]);
 }
 
+/** G10: the merge gate's view of the pull request whose head is the published branch (T15.8, read-only). */
+export function ghPrGateViewArgv(owner: string, repo: string, branch: string): string[] {
+  if (!isSafeBranch(branch)) throw new GhArgvError("invalid branch");
+  return audited(["pr", "view", branch, "--repo", repoArg(owner, repo), "--json", G10_FIELDS]);
+}
+
+/** G11: the required checks of one pull request's head (T15.8, read-only). */
+export function ghPrRequiredChecksArgv(owner: string, repo: string, prNumber: string): string[] {
+  if (!isPrNumber(prNumber)) throw new GhArgvError("invalid pull request number");
+  return audited(["pr", "checks", prNumber, "--repo", repoArg(owner, repo), "--required", "--json", G11_FIELDS]);
+}
+
+/** G12: merge one pull request pinned to its head SHA (T15.8 write verb). */
+export function ghPrMergeArgv(
+  owner: string,
+  repo: string,
+  prNumber: string,
+  method: MergeMethod,
+  sha: string,
+): string[] {
+  if (!isPrNumber(prNumber)) throw new GhArgvError("invalid pull request number");
+  if (!(MERGE_METHODS as readonly string[]).includes(method)) throw new GhArgvError("invalid merge method");
+  if (!isFullLowerSha(sha)) throw new GhArgvError("invalid commit id");
+  return audited(["pr", "merge", prNumber, "--repo", repoArg(owner, repo), `--${method}`, "--match-head-commit", sha]);
+}
+
 /**
- * The argv audit: true only for an argv that is exactly one of G1 to G9 with validated values in the value cells.
+ * The argv audit: true only for an argv that is exactly one of G1 to G12 with validated values in the value cells.
  * Builders call it before returning, so a template edit that drifts fails closed.
  */
 export function isAllowedGhArgv(argv: readonly string[]): boolean {
@@ -240,7 +288,29 @@ export function isAllowedGhArgv(argv: readonly string[]): boolean {
       argv[3] === "--repo" &&
       ownerRepo(argv[4]) &&
       argv[5] === "--json" &&
-      argv[6] === G9_FIELDS
+      (argv[6] === G9_FIELDS || argv[6] === G10_FIELDS)
+    );
+  }
+  if (argv[0] === "pr" && argv[1] === "checks") {
+    return (
+      argv.length === 8 &&
+      isPrNumber(argv[2] ?? "") &&
+      argv[3] === "--repo" &&
+      ownerRepo(argv[4]) &&
+      argv[5] === "--required" &&
+      argv[6] === "--json" &&
+      argv[7] === G11_FIELDS
+    );
+  }
+  if (argv[0] === "pr" && argv[1] === "merge") {
+    return (
+      argv.length === 8 &&
+      isPrNumber(argv[2] ?? "") &&
+      argv[3] === "--repo" &&
+      ownerRepo(argv[4]) &&
+      MERGE_METHODS.some((m) => argv[5] === `--${m}`) &&
+      argv[6] === "--match-head-commit" &&
+      isFullLowerSha(argv[7] ?? "")
     );
   }
   if (argv[0] === "api") {
@@ -469,4 +539,39 @@ export function parsePrView(stdout: string): GhPrViewFields {
     mergeable: r.mergeable as GhPrViewFields["mergeable"],
     headRefOid: r.headRefOid.toLowerCase(),
   };
+}
+
+/** G10 fields after the closed allowlist: G9's plus the head and base branch names. */
+export interface GhPrGateViewFields extends GhPrViewFields {
+  headRefName: string;
+  baseRefName: string;
+}
+
+/** G10 stdout: G9's checks, plus two branch names that must be safe branch names. Throws on anything else. */
+export function parsePrGateView(stdout: string): GhPrGateViewFields {
+  const base = parsePrView(stdout);
+  const r = JSON.parse(stdout) as Record<string, unknown>;
+  if (typeof r.headRefName !== "string" || !isSafeBranch(r.headRefName)) throw new Error("unexpected head branch");
+  if (typeof r.baseRefName !== "string" || !isSafeBranch(r.baseRefName)) throw new Error("unexpected base branch");
+  return { ...base, headRefName: r.headRefName, baseRefName: r.baseRefName };
+}
+
+/** `gh pr checks` buckets (`gh pr checks` manual); anything else is a parse failure. */
+export const CHECK_BUCKETS = ["pass", "fail", "pending", "skipping", "cancel"] as const;
+export type CheckBucket = (typeof CHECK_BUCKETS)[number];
+
+/** At most this many required checks are read (Assumption: more than any branch protection lists). */
+export const REQUIRED_CHECKS_MAX = 200;
+
+/** G11 stdout: a JSON array of `{bucket}`; every other property is dropped. Throws on anything else. */
+export function parseRequiredChecks(stdout: string): CheckBucket[] {
+  const parsed: unknown = JSON.parse(stdout);
+  if (!Array.isArray(parsed) || parsed.length > REQUIRED_CHECKS_MAX) throw new Error("unexpected checks shape");
+  return parsed.map((raw) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("unexpected check shape");
+    const b = (raw as Record<string, unknown>).bucket;
+    if (typeof b !== "string" || !(CHECK_BUCKETS as readonly string[]).includes(b))
+      throw new Error("unexpected bucket");
+    return b as CheckBucket;
+  });
 }

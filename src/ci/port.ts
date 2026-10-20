@@ -116,6 +116,41 @@ export interface CiPullRequestPort {
   }): Promise<CiPullRequestState | null>;
 }
 
+/** The merge gate's view of a published ref's pull request (T15.8, G10); structured facts only. */
+export interface CiPullRequestGateView extends CiPullRequestState {
+  /** The pull request's head branch (no `refs/heads/`). */
+  readonly headBranch: string;
+  /** The pull request's base branch (no `refs/heads/`). */
+  readonly baseBranch: string;
+}
+
+/**
+ * The required checks of a pull request's head (G11): the bucket of each, or `none` when the base branch reports no
+ * required check (refused by the gate, fail closed).
+ */
+export type CiRequiredChecks =
+  | { readonly kind: "none" }
+  | { readonly kind: "checks"; readonly buckets: readonly string[] };
+
+/**
+ * The T15.8 side (FR-SUB-02, ADR-0050 amendment 1 item 10, ADR-0060): the merge gate's reads and the one head-pinned
+ * merge. Used only for a project whose `merge_policy.enabled` is on. Every method throws {@link CiStatusError}.
+ */
+export interface CiMergePort {
+  /** G10; null when the branch has no pull request. */
+  pullRequestGateView(q: { owner: string; repo: string; publishRef: string }): Promise<CiPullRequestGateView | null>;
+  /** G11. */
+  requiredChecks(q: { owner: string; repo: string; prNumber: number }): Promise<CiRequiredChecks>;
+  /** G12: `gh pr merge <number> --<method> --match-head-commit <sha>`. Resolves only when `gh` exits 0. */
+  mergePullRequest(q: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    method: "squash" | "merge" | "rebase";
+    headSha: string;
+  }): Promise<void>;
+}
+
 export type CiStatusErrorReason = "AUTH_REQUIRED" | "GH_FAILED" | "GH_MISSING" | "PARSE_FAILED" | "TIMEOUT";
 
 export class CiStatusError extends Error {

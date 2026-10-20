@@ -1174,6 +1174,7 @@ describe("CI-fix cap per FR-QUE-05 and ADR-0050 (T15.5)", () => {
       cancelled: [],
       rebases: [],
       reimplemented: [],
+      refEvents: [],
     });
     expect(isCiFixStuck(f.db, "app")).toBe(false);
   });
