@@ -33,10 +33,11 @@ import {
   requestHash,
   verificationCommandsProblem,
 } from "../lifecycle/index.js";
-import { invalid, ToolError } from "../mcp/errors.js";
+import { invalid, ToolError, toToolError } from "../mcp/errors.js";
 import { admitBrief, createProjectTools } from "../mcp/project-tools.js";
+import { createScrubber } from "../mcp/scrub.js";
 import type { ModelCapability, ModelRegistry } from "../models/registry.js";
-import { type ProjectSnapshot, parsePrivilegedScope } from "../policy/index.js";
+import { type ProjectSnapshot, parsePrivilegedScope, privilegedEligibilityProfile } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
 import {
   buildRouteDecision,
@@ -66,7 +67,22 @@ import { gitText } from "../workspace/git.js";
 export type AdmitWorkOutcome =
   | { kind: "admitted"; runId: string; replayed: boolean }
   | { kind: "retry" }
-  | { kind: "failed"; code: string };
+  | { kind: "failed"; code: string; detail?: AdmissionFailureDetail };
+
+/**
+ * Why a queued item failed admission, recorded on its `admission_failed` event beside `code`. Built only from the
+ * controller's own error: the message delegate_task would return (scrubbed: credential-shaped tokens redacted, paths
+ * outside the allowed roots replaced, bounded), `reason` and `field` when the error names them, and for an unexpected
+ * exception only its class name (never its message or stack). Never request text or provider output.
+ */
+export type AdmissionFailureDetail = {
+  message: string;
+  reason?: string;
+  field?: string;
+  error_class?: string;
+};
+
+const FAILURE_MESSAGE_MAX = 300;
 
 export interface AdmitWorkDeps {
   lifecycle: RunLifecycle;
@@ -126,23 +142,42 @@ const eligibilityError = ({ decision }: EligibilityAnswer): ToolError => {
   });
 };
 
-function mapError(err: unknown): AdmitWorkOutcome {
-  // T16.4 (LLD §19.5): a skill refusal fails the item with its code, as the same request fails delegate_task.
-  if (err instanceof SkillAdmissionError) return { kind: "failed", code: err.code };
+function mapError(err: unknown, scrub: (s: string) => string): AdmitWorkOutcome {
   if (err instanceof LifecycleError) {
     if (err.code === "QUEUE_FULL") return { kind: "retry" };
     // T14.4 (FR-CTL-06): an operator budget refusal holds the item in the queue; it is tried again when the cap resets.
     if (err.code === "BUDGET_EXHAUSTED") return { kind: "retry" };
     // T14.6 (FR-CTL-05, LLD §18.4 step 4): a pause holds the item in the queue; it is tried again after resume.
     if (err.code === "PAUSED") return { kind: "retry" };
-    return { kind: "failed", code: err.code };
   }
   if (err instanceof ToolError) {
     const reason = (err.details as { reason?: string }).reason;
     if (err.code === "PERMISSION_BLOCKED" && reason === "approval_required") return { kind: "retry" };
-    return { kind: "failed", code: err.code };
   }
-  return { kind: "failed", code: "TOOL_FAILURE" };
+  // T16.4 (LLD §19.5): a skill refusal fails the item with its code, as the same request fails delegate_task. A
+  // lifecycle refusal keeps its own code; anything else maps as delegate_task maps it (unexpected: TOOL_FAILURE).
+  const mapped = toToolError(err);
+  const code = err instanceof SkillAdmissionError || err instanceof LifecycleError ? err.code : mapped.code;
+  return { kind: "failed", code, detail: failureDetail(err, mapped, scrub) };
+}
+
+function failureDetail(err: unknown, mapped: ToolError, scrub: (s: string) => string): AdmissionFailureDetail {
+  const details = mapped.details as { reason?: unknown; field?: unknown };
+  const text = (v: unknown): string | undefined =>
+    typeof v === "string" ? scrub(v).slice(0, FAILURE_MESSAGE_MAX) : undefined;
+  const reason = text(details.reason);
+  const field = text(details.field);
+  const known = err instanceof ToolError || err instanceof LifecycleError || err instanceof SkillAdmissionError;
+  const errorClass =
+    !known && err instanceof Error && mapped.code === "TOOL_FAILURE" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(err.name)
+      ? err.name
+      : undefined;
+  return {
+    message: text(err instanceof LifecycleError ? err.message : mapped.message) ?? "",
+    ...(reason !== undefined ? { reason } : {}),
+    ...(field !== undefined ? { field } : {}),
+    ...(errorClass !== undefined ? { error_class: errorClass } : {}),
+  };
 }
 
 export async function admitWorkItemRequest(
@@ -162,6 +197,7 @@ export async function admitWorkItemRequest(
   if (!client) return { kind: "failed", code: "PERMISSION_BLOCKED" };
   const maxTrustProfile = client.maxTrustProfile;
   const { lifecycle, ledger, registry } = deps;
+  const scrub = createScrubber(deps.config.allowedRoots);
 
   const projectTools =
     deps.projectStore === undefined
@@ -290,6 +326,8 @@ export async function admitWorkItemRequest(
   ): RouteDecisionResult & { provider: ProviderId } => {
     const group = opts.group;
     const providers = [...new Set(eligible.map((c) => group?.members.find((m) => m.key === c)?.provider ?? c))];
+    const suffix =
+      opts.privileged && !answer.decision.eligible.length ? "; privileged compile deferred to dispatch" : "";
     const settings = {
       weights: deps.config.routing?.weights ?? DEFAULT_WEIGHTS,
       windowSeconds: deps.config.capacity?.windowSeconds ?? DEFAULT_CAPACITY_WINDOW_SECONDS,
@@ -319,6 +357,7 @@ export async function admitWorkItemRequest(
       affinity,
       scoreInputs,
       weights: settings.weights,
+      basisSuffix: suffix,
       ...(opts.project !== undefined ? { project: opts.project } : {}),
       ...(group !== undefined
         ? { group: { name: group.name, requestedModel: group.requestedModel, members: group.members } }
@@ -389,11 +428,19 @@ export async function admitWorkItemRequest(
     const workspace = resolved.workspace;
     checkCeiling(profile, resolved);
     const scopeArg = request.privileged_scope;
+    // V13, as delegate_task: privileged_scope present exactly when the profile is privileged.
     if (profile === "privileged" && scopeArg === undefined) {
-      throw invalid("privileged requires privileged_scope", { field: "privileged_scope" });
+      throw invalid("trust_profile privileged requires privileged_scope", { field: "privileged_scope" });
+    }
+    if (profile !== "privileged" && scopeArg !== undefined) {
+      throw invalid(`privileged_scope is allowed only with trust_profile privileged (got ${profile})`, {
+        field: "privileged_scope",
+      });
     }
     const scope = scopeArg === undefined ? undefined : parsePrivilegedScope(scopeArg);
-    if (scope && !scope.ok) throw invalid("invalid privileged_scope", { field: "privileged_scope" });
+    if (scope && !scope.ok) {
+      throw invalid(`invalid privileged_scope: ${scope.field} ${scope.message}`, { field: scope.field });
+    }
     const verification = (request.verification_commands as string[][]) ?? [];
     if (verification.length > 0 && profile === "inspect-untrusted") {
       throw invalid("verification_commands refused under inspect-untrusted", { field: "verification_commands" });
@@ -477,6 +524,9 @@ export async function admitWorkItemRequest(
       trustProfile: profile,
       clientMaxProfile: resolved.effectiveMax,
       cwd: workspace,
+      // V11, as delegate_task: compile against the request's scope. Without it `checkEligibility` resolves the bare
+      // name `privileged`, which always throws, and every queued privileged item failed TOOL_FAILURE.
+      ...(scope?.ok ? { profile: privilegedEligibilityProfile(scope.scope) } : {}),
       ...(minimumCapability !== undefined ? { minimumCapability } : {}),
     };
     // T7.15 (LLD §17.7): with a group or an explicit model, each member is a stage-1 candidate.
@@ -595,6 +645,6 @@ export async function admitWorkItemRequest(
     });
     return { kind: "admitted", runId: submitted.runId, replayed: submitted.replayed };
   } catch (err) {
-    return mapError(err);
+    return mapError(err, scrub);
   }
 }

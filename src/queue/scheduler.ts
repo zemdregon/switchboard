@@ -39,7 +39,11 @@ export async function runProjectWorkQueueTick(
       try {
         request = JSON.parse(item.request_json) as Record<string, unknown>;
       } catch {
-        ledger.completeWorkAdmission(item.id, { kind: "failed", code: "INVALID_REQUEST" });
+        ledger.completeWorkAdmission(item.id, {
+          kind: "failed",
+          code: "INVALID_REQUEST",
+          detail: { message: "request_json is not valid JSON" },
+        });
         failed++;
         continue;
       }
@@ -77,7 +81,11 @@ export async function runProjectWorkQueueTick(
         ledger.completeWorkAdmission(item.id, { kind: "retry" });
         retried++;
       } else {
-        ledger.completeWorkAdmission(item.id, { kind: "failed", code: outcome.code });
+        ledger.completeWorkAdmission(item.id, {
+          kind: "failed",
+          code: outcome.code,
+          ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+        });
         failed++;
       }
     }
