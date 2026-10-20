@@ -34,7 +34,7 @@ status of each). Contributions are code, tests, or documentation edits.
    `npm test` never calls a real provider. `npm run test:live` is an opt-in smoke
    test against a provider CLI you have installed and logged in to natively; it is
    skipped unless `SWITCHBOARD_LIVE_TESTS=1` is set (see the
-   [README](README.md#optional-live-smoke-test)). `npm run pack:smoke` checks
+   [README](docs/guide/live-testing.md#optional-live-smoke-test)). `npm run pack:smoke` checks
 that `npm pack` produces an installable tarball.
 4. Check your Markdown and the documentation set locally:
 
