@@ -129,6 +129,21 @@ export interface ProjectSnapshot {
    * not change the run. Absent when the project has no `brief_file` (also on snapshots written before T5.14). Never the text.
    */
   readonly brief_sha256?: string;
+  /**
+   * ADR-0071: the project's dependency setup step as of admission (defaults applied), so a later configuration edit or
+   * an approval waiting on a new revision cannot change what this run executes. Absent when the project has none (also
+   * on snapshots written before ADR-0071). Argv and hostnames only; never output.
+   */
+  readonly setup?: ProjectSetupSnapshot;
+}
+
+/** ADR-0071: the frozen `setup` of a run's project (see `ProjectSnapshot.setup`). */
+export interface ProjectSetupSnapshot {
+  readonly commands: readonly (readonly string[])[];
+  readonly network_hosts: readonly string[];
+  readonly cache: "pnpm" | "npm" | "none";
+  readonly timeout_seconds: number;
+  readonly env: Readonly<Record<string, string>>;
 }
 
 /**

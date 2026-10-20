@@ -70,3 +70,21 @@ export {
   seedReclaimer,
   seedWorktree,
 } from "./seeds.js";
+export {
+  createProjectSetup,
+  lockfileHash,
+  type ProjectSetupOptions,
+  type ProjectSetupRunner,
+  SETUP_LOCKFILES,
+  SETUP_MARKER_FILE,
+  SETUP_OUTPUT_CAP_BYTES,
+  type SetupFailureReason,
+  type SetupHandle,
+  type SetupPlan,
+  type SetupRunInput,
+  type SetupRunResult,
+  setupEnvironment,
+  setupHash,
+  setupReport,
+  WORKSPACE_SETUP_EVENT,
+} from "./setup.js";

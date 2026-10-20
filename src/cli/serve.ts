@@ -156,6 +156,7 @@ import { createTelemetry } from "../telemetry/index.js";
 import {
   type BaseRefreshRequest,
   collectOrphans,
+  createProjectSetup,
   createSeedStore,
   DEFAULT_SEED_ENTRIES_PER_SEED,
   DEFAULT_SEED_STORE_MB,
@@ -994,6 +995,12 @@ async function runDaemon(
     ledger,
     // T15.7 (FR-QUE-07, LLD §20.4): controller Git merges the current base into a rebase run's worktree before spawn.
     rebasePrep: (q) => prepareRebaseMerge(db, q),
+    // ADR-0071: projects' dependency setup step, in bubblewrap with network only through the allowlisting proxy.
+    projectSetup: createProjectSetup({
+      dataDir: config.dataDir,
+      baseEnv: io.env,
+      ...(outerSandbox ? { outerSandbox } : {}),
+    }),
     workspace,
     artifacts,
     adapters: registry,

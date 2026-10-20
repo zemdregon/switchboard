@@ -240,7 +240,10 @@ import {
   type DiskFloor,
   type DiskFloorStatus,
   type PreparedWorkspace,
+  type ProjectSetupRunner,
   ResumeDirectoryUnavailableError,
+  setupReport,
+  WORKSPACE_SETUP_EVENT,
   type WorkspaceManager,
 } from "../workspace/index.js";
 import {
@@ -633,6 +636,12 @@ export interface RunLifecycleOptions {
     repoRoot: string;
     baseRef: string;
   }) => Promise<{ ok: true; mergeParentSha: string; conflictedPaths: number } | { ok: false; reason: string }>;
+  /**
+   * ADR-0071: the project setup runner (`createProjectSetup`, `src/workspace/setup.ts`). A run whose frozen project
+   * snapshot carries `setup` and finds no runner fails before spawn (`SETUP_FAILED`, fail closed); runs without
+   * `setup` never call it.
+   */
+  readonly projectSetup?: ProjectSetupRunner;
   /** Must share the ledger's database handle. */
   readonly workspace: WorkspaceManager;
   readonly artifacts: ArtifactStore;
@@ -2057,6 +2066,18 @@ export class RunLifecycle {
           reason: "GIT_REF_SNAPSHOT_FAILED",
         });
       }
+      // ADR-0071: the project's dependency setup, in the worktree, before anything reads it or the agent starts.
+      if (snapshotProject?.setup !== undefined) {
+        const go = await this.projectSetup(
+          exec,
+          runId,
+          run0.meta_session_id,
+          snapshotProject.id,
+          ws,
+          snapshotProject.setup,
+        );
+        if (!go) return;
+      }
     }
 
     const cwd = ws.mode === "worktree" ? ws.worktreePath : ws.path;
@@ -3232,6 +3253,135 @@ export class RunLifecycle {
   // ---- terminal helpers -----------------------------------------------------------------------------------------
 
   /** Direct failure from PREFLIGHT (T8) or LEASED (T10); releases any lease in the same transaction. */
+  /**
+   * ADR-0071: run the frozen setup step in the run's worktree (`src/workspace/setup.ts`). Every outcome is one
+   * `workspace_setup` event with codes and numbers only (`skipped` on a marker match, else `started` and then
+   * `succeeded`, `failed` or `cancelled`); the redacted output is the `setup_log` artifact. A failure or timeout ends
+   * the run FAILED `TOOL_FAILURE` before spawn (`reason` `SETUP_FAILED` or `SETUP_TIMEOUT`, `setup_reason` the step's
+   * code); `started_at` stays unset, so the provider's breaker is not touched (LLD §16.4). Returns false when the run
+   * ended here.
+   */
+  private async projectSetup(
+    exec: Execution,
+    runId: string,
+    metaSessionId: string,
+    projectId: string,
+    ws: Extract<PreparedWorkspace, { mode: "worktree" }>,
+    setup: NonNullable<ProjectSnapshot["setup"]>,
+  ): Promise<boolean> {
+    const event = (payload: Record<string, unknown>) =>
+      this.ledger.appendRunEvent({ runId, type: WORKSPACE_SETUP_EVENT, payload });
+    const failSetup = (reason: "SETUP_FAILED" | "SETUP_TIMEOUT", setupReason: string, detail: string, extra = {}) => {
+      this.fail(runId, "TOOL_FAILURE", detail, { reason, setup_reason: setupReason, ...extra });
+      return false;
+    };
+    const runner = this.opts.projectSetup;
+    if (runner === undefined) {
+      event({ phase: "failed", reason: "unavailable" });
+      return failSetup("SETUP_FAILED", "unavailable", "project setup failed (SETUP_FAILED): no setup runner is wired");
+    }
+    let plan: Awaited<ReturnType<ProjectSetupRunner["plan"]>>;
+    try {
+      plan = await runner.plan(ws.worktreePath, setup);
+    } catch {
+      event({ phase: "failed", reason: "internal_error" });
+      return failSetup(
+        "SETUP_FAILED",
+        "internal_error",
+        "project setup failed (SETUP_FAILED): the worktree could not be read",
+      );
+    }
+    if (plan.skip) {
+      event({ phase: "skipped", reason: "marker_match" });
+      return true;
+    }
+    event({
+      phase: "started",
+      commands: setup.commands.length,
+      network_hosts: setup.network_hosts.length,
+      cache: setup.cache,
+      timeout_seconds: setup.timeout_seconds,
+    });
+    // The step may take its whole timeout before the agent's own bound starts: keep the lease ahead of both.
+    this.opts.workspace.extendLease(runId, 2 * setup.timeout_seconds * 1000 + DEFAULT_LEASE_TTL_MS);
+    const handle = runner.start({
+      runId,
+      projectId,
+      worktreePath: ws.worktreePath,
+      setup,
+      plan,
+      onSpawn: (index, { pid, pgid }) => {
+        // LLD §8: recorded before any output is read, so a restart can kill an orphaned setup command.
+        this.ledger.updateRunFields(
+          runId,
+          { pid, pgid, proc_start_ticks: procStartTicks(pid) },
+          { type: WORKSPACE_SETUP_EVENT, payload: { phase: "command_started", index, pid, pgid } },
+        );
+      },
+    });
+    exec.handle = handle;
+    if (exec.cancelRequested) void handle.cancel();
+    const result = await handle.done;
+    exec.handle = undefined;
+    let artifactId: string | undefined;
+    if (result.commands.length > 0) {
+      try {
+        const stored = await this.opts.artifacts.put(
+          setupReport(result, (b) => this.opts.artifacts.redactContent(b), plan),
+        );
+        artifactId = this.ledger.insertArtifact({
+          runId,
+          metaSessionId,
+          kind: "setup_log",
+          sha256: stored.sha256,
+          sizeBytes: stored.sizeBytes,
+          mediaType: "application/json",
+        });
+      } catch {
+        artifactId = undefined; // the log is a record, not a condition of the step
+      }
+    }
+    const summary = {
+      duration_ms: result.durationMs,
+      exit_codes: result.commands.filter((c) => c.outcome !== "not_run").map((c) => c.exitCode),
+      confined: result.confined,
+      proxy_allowed: result.proxy.allowed,
+      proxy_refused: result.proxy.refused,
+      ...(artifactId !== undefined ? { artifact_id: artifactId } : {}),
+    };
+    if (result.outcome === "succeeded") {
+      event({ phase: "succeeded", ...summary });
+      return true;
+    }
+    if (result.outcome === "cancelled" || exec.cancelRequested) {
+      event({ phase: "cancelled", ...summary });
+      this.cancelEarly(runId);
+      return false;
+    }
+    const reason = result.reason ?? "internal_error";
+    event({ phase: "failed", reason, ...summary });
+    const extra = artifactId !== undefined ? { setup_log: artifactId } : {};
+    if (result.outcome === "timeout") {
+      return failSetup(
+        "SETUP_TIMEOUT",
+        reason,
+        `project setup timed out after ${setup.timeout_seconds} s (SETUP_TIMEOUT); output in the setup_log artifact`,
+        extra,
+      );
+    }
+    const first = result.commands.find((c) => c.outcome !== "passed" && c.outcome !== "not_run");
+    const what =
+      reason === "command_failed" && first !== undefined
+        ? `command ${first.index} ${first.outcome}${first.exitCode !== null ? ` (exit ${first.exitCode})` : ""}`
+        : reason;
+    return failSetup(
+      "SETUP_FAILED",
+      reason,
+      `project setup failed (SETUP_FAILED): ${what}; output in the setup_log artifact`,
+      extra,
+    );
+  }
+
   private fail(runId: string, code: FailureCode, detail: string, extra: Record<string, unknown> = {}): void {
     this.ledger.immediate(() => {
       this.opts.workspace.releaseLease(runId);

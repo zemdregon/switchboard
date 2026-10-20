@@ -41,6 +41,7 @@ import type {
   TrustProfile,
 } from "../config/index.js";
 import { effectiveMaxProfile, PROJECT_ID_PATTERN } from "../config/index.js";
+import type { ProjectSetupSnapshot } from "../policy/index.js";
 import {
   approvalReasons,
   BriefError,
@@ -565,6 +566,36 @@ export function mergePolicyItem(p: Pick<ResolvedProject, "mergePolicy">) {
   };
 }
 
+/** ADR-0071: `list_projects`' `setup` of a project, present only when it sets one (defaults filled in). */
+export function setupItem(p: Pick<ResolvedProject, "setup">) {
+  const s = p.setup;
+  if (s === undefined) return {};
+  return {
+    setup: {
+      commands: s.commands.map((argv) => [...argv]),
+      network: { hosts: [...s.hosts] },
+      cache: s.cache,
+      timeout_seconds: s.timeoutSeconds,
+      ...(Object.keys(s.env).length > 0 ? { env: { ...s.env } } : {}),
+    },
+  };
+}
+
+/** ADR-0071: the project's setup step frozen into the run's project snapshot at admission; nothing when it has none. */
+export function snapshotSetup(p: Pick<ResolvedProject, "setup">): { setup?: ProjectSetupSnapshot } {
+  const s = p.setup;
+  if (s === undefined) return {};
+  return {
+    setup: {
+      commands: s.commands.map((argv) => [...argv]),
+      network_hosts: [...s.hosts],
+      cache: s.cache,
+      timeout_seconds: s.timeoutSeconds,
+      env: Object.fromEntries(Object.entries(s.env).filter((e): e is [string, string] => e[1] !== undefined)),
+    },
+  };
+}
+
 /** `list_projects` entry of a dynamic project: the configured shape plus `source`, `revision`, `status`. */
 export function dynamicListItem(e: DynamicListEntry, clientMax: TrustProfile) {
   const p = e.project;
@@ -586,6 +617,7 @@ export function dynamicListItem(e: DynamicListEntry, clientMax: TrustProfile) {
     effective_max_profile: effectiveMaxProfile(clientMax, p),
     ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
     ...mergePolicyItem(p),
+    ...setupItem(p),
     source: "dynamic" as const,
     revision: e.revision,
     status: e.status,

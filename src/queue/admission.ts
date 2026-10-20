@@ -34,7 +34,7 @@ import {
   verificationCommandsProblem,
 } from "../lifecycle/index.js";
 import { invalid, ToolError, toToolError } from "../mcp/errors.js";
-import { admitBrief, createProjectTools } from "../mcp/project-tools.js";
+import { admitBrief, createProjectTools, snapshotSetup } from "../mcp/project-tools.js";
 import { createScrubber } from "../mcp/scrub.js";
 import type { ModelCapability, ModelRegistry } from "../models/registry.js";
 import { type ProjectSnapshot, parsePrivilegedScope, privilegedEligibilityProfile } from "../policy/index.js";
@@ -354,6 +354,8 @@ export async function admitWorkItemRequest(
               push: { policy: context.push.policy },
               ...(context.finalizeCommit ? { finalize_commit: true as const } : {}),
               ...(context.sign ? { sign: true as const } : {}),
+              // ADR-0071: the setup step as of admission; a read-only (critic) run gets none.
+              ...snapshotSetup(project),
             }),
         ...admitBrief(project, deps.config.allowedRoots),
       },

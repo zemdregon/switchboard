@@ -19,11 +19,18 @@ import type {
   MergePolicyReport,
   ProjectConfig,
   ProviderId,
+  SetupCache,
+  SetupEnvKey,
   SkillAssignmentConfig,
   SwitchboardConfig,
   TrustProfile,
 } from "./schema.js";
-import { DEFAULT_CRITIC_MIN_DIFF_LINES, TRUST_PROFILES } from "./schema.js";
+import {
+  DEFAULT_CRITIC_MIN_DIFF_LINES,
+  DEFAULT_SETUP_HOSTS,
+  DEFAULT_SETUP_TIMEOUT_SECONDS,
+  TRUST_PROFILES,
+} from "./schema.js";
 
 /** T9.13 (FR-WS-10, LLD §5.1): `dependency_seeds[].timeout_seconds` when absent (Assumption, Delegated). */
 export const DEFAULT_SEED_TIMEOUT_SECONDS = 600;
@@ -117,6 +124,17 @@ export interface ResolvedProject {
   readonly critic?: ProjectCriticConfig;
   /** T15.8 (FR-SUB-02, LLD §20.7): present only when the project sets `merge_policy`. Absent means off. */
   readonly mergePolicy?: ProjectMergePolicy;
+  /** ADR-0071: present only when the project sets `setup`; defaults filled in. Absent means no setup step. */
+  readonly setup?: ProjectSetup;
+}
+
+/** ADR-0071: a project's dependency setup step, resolved (defaults applied, lists copied). */
+export interface ProjectSetup {
+  readonly commands: readonly (readonly string[])[];
+  readonly hosts: readonly string[];
+  readonly cache: SetupCache;
+  readonly timeoutSeconds: number;
+  readonly env: Readonly<Partial<Record<SetupEnvKey, string>>>;
 }
 
 /** T15.8 (FR-SUB-02, LLD §20.7, ADR-0060): the opt-in, head-pinned merge policy of a project. */
@@ -231,6 +249,10 @@ export function checkProjects(cfg: SwitchboardConfig): string[] {
       }
     }
     errs.push(...checkDependencySeeds(p, at));
+    // ADR-0071: the setup step runs on the host only (its sandbox and proxy are host mechanisms); refused, not ignored.
+    if (p.setup !== undefined && env.kind !== "host") {
+      errs.push(`${at}.setup: only valid for a host environment (ADR-0071)`);
+    }
     const primaries = p.contexts.filter((c) => isPrimaryContext(p, c)).length;
     if (primaries !== 1) {
       errs.push(`${at}.contexts: exactly one context must be primary ("primary": true); found ${primaries}`);
@@ -365,8 +387,20 @@ export function resolveProjects(
             },
           }
         : {}),
+      ...(p.setup !== undefined ? { setup: resolveSetup(p.setup) } : {}),
     };
   });
+}
+
+/** ADR-0071: `setup` with its defaults (hosts `registry.npmjs.org`, cache `none`, 600 seconds, no variables). */
+export function resolveSetup(s: NonNullable<ProjectConfig["setup"]>): ProjectSetup {
+  return {
+    commands: s.commands.map((argv) => [...argv]),
+    hosts: [...(s.network?.hosts ?? DEFAULT_SETUP_HOSTS)],
+    cache: s.cache ?? "none",
+    timeoutSeconds: s.timeout_seconds ?? DEFAULT_SETUP_TIMEOUT_SECONDS,
+    env: { ...(s.env ?? {}) },
+  };
 }
 
 /** The lower of two trust profiles on the order `inspect-untrusted` < ... < `privileged` (FR-PRJ-06, LLD §11.2). */

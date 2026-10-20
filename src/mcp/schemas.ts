@@ -76,6 +76,7 @@ import {
   MODEL_GROUP_NAME_PATTERN,
   PROJECT_ID_PATTERN,
   projectSchema,
+  SETUP_CACHES,
   SKILL_NAME_PATTERN,
   SKILL_REF_PATTERN,
   SKILL_ROLE_PATTERN,
@@ -308,6 +309,8 @@ export const MCP_ARTIFACT_KINDS = [
   "handoff_condense",
   // T8.10 (FR-SKL-11, LLD §20.6): the docs-alignment report; its `notes` are untrusted text.
   "docs_alignment",
+  // ADR-0071: the project setup step's redacted output; its text is untrusted (package scripts write it).
+  "setup_log",
 ] as const;
 
 const TRUST_PROFILE = {
@@ -1373,6 +1376,24 @@ const PROJECTS = {
               method: { enum: [...MERGE_POLICY_METHODS] },
               required_reports: { type: "array", items: { enum: [...MERGE_POLICY_REPORTS] } },
               require_verification: { type: "boolean" },
+            },
+          },
+          // ADR-0071: the setup step in force (defaults filled in), present only when the project sets one.
+          setup: {
+            type: "object",
+            additionalProperties: false,
+            required: ["commands", "network", "cache", "timeout_seconds"],
+            properties: {
+              commands: { type: "array", items: { type: "array", items: { type: "string" } } },
+              network: {
+                type: "object",
+                additionalProperties: false,
+                required: ["hosts"],
+                properties: { hosts: { type: "array", items: { type: "string" } } },
+              },
+              cache: { enum: [...SETUP_CACHES] },
+              timeout_seconds: { type: "integer", minimum: 1 },
+              env: { type: "object", additionalProperties: { type: "string" } },
             },
           },
           // T9.9 (Proposed): present on dynamic projects only.
