@@ -1,6 +1,6 @@
 # ADR-0047: Approval proxy over MCP for marked clients
 
-- Status: Proposed
+- Status: Proposed. Amended by [ADR-0068](0068-mcp-only-project-onboarding.md) (approval kinds)
 - Date: 2026-10-15
 - Decided by: zemdregon for the decision itself (owner decision 50, 2026-10-15, answering discovery question 2: "the chat
   bot connected to MCP is allowed to proxy approvals from the owner, but consent page approvals can exist as a secondary
