@@ -39,9 +39,15 @@
  * - `open_decisions` (T14.15, FR-CTL-13, LLD §20.3) lists the caller's open decision requests of a listed project
  *   (`decision_id`, `work_item_id`, reason `awaiting_decision`, `requested_at`), oldest first, present only when
  *   non-empty. The question, options and note are not in the digest; `list_decisions` returns them, labelled untrusted.
+ * - `ref_events` (T15.8, FR-SUB-01 first delivery and FR-SUB-02, LLD §20.7) lists the `ref_event` and `merge_event`
+ *   run events of the listed runs (the run that published the ref, so only the publishing client sees them): in a
+ *   delta the scanned ones, in a snapshot the newest {@link SNAPSHOT_TERMINAL_MAX} per project. Metadata only: each
+ *   entry is rebuilt from closed fields (codes from the closed lists, the ref, a SHA, a pull request number), never
+ *   from `gh` or agent text. Present only when non-empty.
  */
 
 import { createHash } from "node:crypto";
+import { MERGE_EVENT_TYPE, MERGE_REFUSAL_REASONS, REF_EVENT_KINDS, REF_EVENT_TYPE } from "../ci/merge-codes.js";
 import { budgetControlFacts } from "../control/budgets.js";
 import { loopBreakerControlFacts } from "../control/loop-attention.js";
 import type { ControlPlaneFacts, NeedsAttentionReason } from "../control/needs-attention.js";
@@ -75,6 +81,21 @@ export interface ApprovalProxyItem {
   requested_at: string;
 }
 
+/** T15.8: one ref or merge event in the digest (metadata only). */
+export interface DigestRefEvent {
+  event_id: string;
+  run_id: string;
+  ts: string;
+  type: typeof REF_EVENT_TYPE | typeof MERGE_EVENT_TYPE;
+  /** `ref_event`: the kind; `merge_event`: `merged` or `refused`. */
+  code: string;
+  /** `merge_event` refusals only. */
+  reason?: string;
+  publish_ref: string;
+  head_sha: string;
+  pr_number: number | null;
+}
+
 export interface DigestProject {
   project_id: string;
   /** T14.6: the project's own pause or the operator's global pause holds admission now. */
@@ -91,6 +112,8 @@ export interface DigestProject {
   open_decisions?: OpenDecisionItem[];
   pending_approvals: ApprovalProxyItem[];
   untrusted_summaries: { run_id: string; field: "result.summary"; content: UntrustedText }[];
+  /** T15.8: present only when a listed run carries a ref or merge event. */
+  ref_events?: DigestRefEvent[];
 }
 
 export interface OpenDecisionItem {
@@ -144,21 +167,28 @@ export function assembleDigest(
     runs: RunRecord[],
     terminal: (run: RunRecord) => boolean,
     projectIds: Iterable<string>,
+    refEvents: RunEventRow[],
     terminalMax = Number.POSITIVE_INFINITY,
-  ) =>
-    assembleProjects(ledger, runs, { terminal, terminalMax }, projectIds, scrub, {
+  ) => {
+    const projects = assembleProjects(ledger, runs, { terminal, terminalMax }, projectIds, scrub, {
       now: options.now,
       control,
       ...(options.stallHours !== undefined ? { stallHours: options.stallHours } : {}),
       ...(options.openDecisions !== undefined ? { openDecisions: options.openDecisions } : {}),
     });
+    addRefEvents(projects, runs, refEvents, terminalMax);
+    return projects;
+  };
 
   if (sinceCursor === undefined) {
     const runs = allRuns(ledger, scope);
     let cursor: RunEventRow | undefined;
+    const refEvents: RunEventRow[] = [];
     for (const run of runs) {
-      const last = ledger.listRunEvents(run.id).at(-1);
+      const events = ledger.listRunEvents(run.id);
+      const last = events.at(-1);
       if (last !== undefined && (cursor === undefined || after(last, cursor))) cursor = last;
+      for (const e of events) if (REF_TYPES.has(e.type)) refEvents.push(e);
     }
     return {
       cursor: cursor?.id ?? null,
@@ -166,6 +196,7 @@ export function assembleDigest(
         runs,
         (run) => run.state === "SUCCEEDED" || run.state === "FAILED",
         [...scope.projectIds, ...projectsOf(runs)],
+        refEvents,
         SNAPSHOT_TERMINAL_MAX,
       ),
     };
@@ -195,8 +226,62 @@ export function assembleDigest(
   const touched = [...new Set(scanned.map((e) => e.run_id))].map((id) => visibleRun(id) as RunRecord);
   return {
     cursor: scanned.at(-1)?.id ?? start.id,
-    projects: assemble(touched, (run) => terminalized.has(run.id), projectsOf(touched)),
+    projects: assemble(
+      touched,
+      (run) => terminalized.has(run.id),
+      projectsOf(touched),
+      scanned.filter((e) => REF_TYPES.has(e.type)),
+    ),
   };
+}
+
+const REF_TYPES: ReadonlySet<string> = new Set([REF_EVENT_TYPE, MERGE_EVENT_TYPE]);
+const REF_KINDS: ReadonlySet<string> = new Set(REF_EVENT_KINDS);
+const REFUSALS: ReadonlySet<string> = new Set(MERGE_REFUSAL_REASONS);
+const SHA_RE = /^[0-9a-f]{40}$/u;
+const REF_RE = /^refs\/heads\/[A-Za-z0-9._/-]{1,255}$/u;
+
+/** T15.8: one event rebuilt from its closed fields, or undefined when any field is outside them. */
+function digestRefEvent(e: RunEventRow): DigestRefEvent | undefined {
+  let p: Record<string, unknown>;
+  try {
+    p = JSON.parse(e.payload_json) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  const code = e.type === REF_EVENT_TYPE ? p.kind : p.outcome;
+  if (typeof code !== "string") return undefined;
+  if (e.type === REF_EVENT_TYPE ? !REF_KINDS.has(code) : code !== "merged" && code !== "refused") return undefined;
+  if (code === "refused" && (typeof p.reason !== "string" || !REFUSALS.has(p.reason))) return undefined;
+  if (typeof p.publish_ref !== "string" || !REF_RE.test(p.publish_ref)) return undefined;
+  if (typeof p.head_sha !== "string" || !SHA_RE.test(p.head_sha)) return undefined;
+  const pr = p.pr_number;
+  if (pr !== null && !(typeof pr === "number" && Number.isSafeInteger(pr) && pr > 0)) return undefined;
+  return {
+    event_id: e.id,
+    run_id: e.run_id,
+    ts: e.ts,
+    type: e.type as DigestRefEvent["type"],
+    code,
+    ...(code === "refused" ? { reason: p.reason as string } : {}),
+    publish_ref: p.publish_ref,
+    head_sha: p.head_sha,
+    pr_number: pr as number | null,
+  };
+}
+
+/** T15.8: attaches each listed project's ref events, newest first, at most `max` per project. */
+function addRefEvents(projects: DigestProject[], runs: RunRecord[], events: RunEventRow[], max: number): void {
+  const projectOf = new Map(runs.map((r) => [r.id, r.project_id]));
+  const byId = new Map(projects.map((p) => [p.project_id, p]));
+  const sorted = [...events].sort((a, b) => (after(a, b) ? -1 : after(b, a) ? 1 : 0));
+  for (const e of sorted) {
+    const projectId = projectOf.get(e.run_id);
+    const project = projectId == null ? undefined : byId.get(projectId);
+    if (project === undefined || (project.ref_events?.length ?? 0) >= max) continue;
+    const entry = digestRefEvent(e);
+    if (entry !== undefined) project.ref_events = [...(project.ref_events ?? []), entry];
+  }
 }
 
 function assembleProjects(

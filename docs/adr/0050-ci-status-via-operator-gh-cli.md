@@ -69,7 +69,8 @@ every verb below, and each write verb is behind its own project switch, off by d
 Every other `gh` verb stays refused, and the argv allowlist test keeps proving it. Exact field names and flags are
 checked against the installed `gh` in ROADMAP T15.6 to T15.8 before code relies on them
 (T15.6 done: `gh` 2.102.0, `--help` only, no call to GitHub; T15.7 done the same way for item 9, whose closed field
-list is `number,state,isDraft,mergeable,headRefOid`; T15.8 pending)
+list is `number,state,isDraft,mergeable,headRefOid`; T15.8 done 2026-10-20 for item 10 as G10 to G12 against the
+`gh` manual only, the installed-`gh` check is open as ROADMAP Q-109)
 ([LLD §20.1](../design/LLD.md#201-ci-transient-handling-fr-que-06-t156),
 [§20.4](../design/LLD.md#204-published-ref-conflicts-and-supersede-fr-que-07-t157),
 [§20.7](../design/LLD.md#207-opt-in-merge-policy-and-ref-events-fr-sub-01-fr-sub-02-t158-adr-0060)).

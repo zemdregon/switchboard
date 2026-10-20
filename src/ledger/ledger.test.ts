@@ -37,6 +37,7 @@ const EXPECTED_TABLES = [
   "http_subject",
   "inner_call",
   "inner_task_state",
+  "merge_event",
   "meta_session",
   "oauth_cimd_client",
   "oauth_client",
@@ -54,6 +55,7 @@ const EXPECTED_TABLES = [
   "provider_health",
   "rag_record",
   "rag_request",
+  "ref_event",
   "route_decision",
   "run",
   "run_event",
@@ -641,7 +643,13 @@ describe("ledger migrations", () => {
     d.prepare(
       "INSERT INTO project_work_event (id, work_item_id, type, created_at) VALUES ('pwe_1', 'que_A', 'enqueued', ?)",
     ).run(at);
-    expect(migrate(d, undefined, MIGRATIONS)).toEqual([30]);
+    expect(
+      migrate(
+        d,
+        undefined,
+        MIGRATIONS.filter((m) => m.version <= 30),
+      ),
+    ).toEqual([30]);
 
     // Rows, dependencies, events and the 0029 columns survive the rebuild; the foreign keys still hold.
     expect(

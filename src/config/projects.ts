@@ -15,6 +15,8 @@ import type {
   ContextConfig,
   ContextKind,
   EnvironmentKind,
+  MergePolicyMethod,
+  MergePolicyReport,
   ProjectConfig,
   ProviderId,
   SkillAssignmentConfig,
@@ -111,6 +113,15 @@ export interface ResolvedProject {
   readonly briefFile?: string;
   /** T14.17 (FR-CTL-15, LLD §20.13): present only when the project sets `critic`. Absent means off. */
   readonly critic?: ProjectCriticConfig;
+  /** T15.8 (FR-SUB-02, LLD §20.7): present only when the project sets `merge_policy`. Absent means off. */
+  readonly mergePolicy?: ProjectMergePolicy;
+}
+
+/** T15.8 (FR-SUB-02, LLD §20.7, ADR-0060): the opt-in, head-pinned merge policy of a project. */
+export interface ProjectMergePolicy {
+  readonly enabled: boolean;
+  readonly method: MergePolicyMethod;
+  readonly requiredReports: readonly MergePolicyReport[];
 }
 
 /** T14.17 (FR-CTL-15, LLD §20.13): the advisory critic of a project. */
@@ -327,6 +338,15 @@ export function resolveProjects(
             critic: {
               enabled: p.critic.enabled ?? false,
               minDiffLines: p.critic.min_diff_lines ?? DEFAULT_CRITIC_MIN_DIFF_LINES,
+            },
+          }
+        : {}),
+      ...(p.merge_policy !== undefined
+        ? {
+            mergePolicy: {
+              enabled: p.merge_policy.enabled === true,
+              method: p.merge_policy.method ?? "squash",
+              requiredReports: [...(p.merge_policy.required_reports ?? [])],
             },
           }
         : {}),

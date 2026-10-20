@@ -213,11 +213,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#559](https://github.com/zemdregon/switchboard/pull/559)). ADR-0047 and ADR-0048 remain Proposed. See
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
-- **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
-  decisions 76 and 77: T15.6 is Done on fakes (2026-10-19, Delegated agent work, not owner-approved), T15.7 is
-  Done on fakes (2026-10-19, Delegated agent work, not owner-approved; published-ref conflicts and supersede,
-  migration 0029, `src/ci/ref-conflicts.test.ts`), T15.8 is Planned and T15.9 is Done; the M15 scope below stays
-  Done on fakes
+- **Milestone 15 (project queue, schedules and CI triggers) is `Done` on fakes** (2026-10-20, Delegated agent work,
+  not owner-approved; reopened 2026-10-19 for owner decisions 76 and 77, whose tasks are all Done on fakes: T15.6,
+  T15.7 (published-ref conflicts and supersede, migration 0029, `src/ci/ref-conflicts.test.ts`), T15.8 (opt-in
+  head-pinned merge policy and ref events, migration 0031, `src/ci/merge-policy.test.ts`) and T15.9; the M15 scope
+  below stays Done on fakes
   (2026-10-18, Delegated
   agent work,
   not owner-approved; the `serve` low-water wiring below is a separate open fix)). The durable per-project work queue
@@ -236,6 +236,11 @@ Pre-release. The package is private and is not published to any registry; you bu
   A ref reported `CONFLICTING` by read-only `gh pr view` admits one rebase item (T15.7, cap shared with the fix-up
   cap); at the cap one re-implementation item from the current base supersedes the old ref, and work items may carry
   a `dedupe_key` (a second live item with the same key is refused) and `hot_paths` (overlapping items never run together).
+  A project may turn on a merge policy (T15.8: `projects[].merge_policy`, off by default; an orchestrator that turns it
+  on waits for operator approval): a published ref's pull request is merged with `gh pr merge --match-head-commit` only
+  when every required check is green at its head, it is mergeable and a passing verification is recorded at that SHA.
+  Every merge and refusal is a `merge_event` row; CI results, foreign commits, conflicts, merges and closes of published
+  refs are `ref_event` rows, shown to the publishing client in `get_digest` and sent to sinks as metadata only.
   A project may set a queue low-water mark (T15.4: `projects.<id>.queue.low_water`, off by default): when the
   admissible count (`READY` items, or `PENDING` items whose dependencies can still be met) drops below the mark, one
   `queue_low` sink event fires, re-armed only when the count rises back to the mark. The detector is covered on fakes

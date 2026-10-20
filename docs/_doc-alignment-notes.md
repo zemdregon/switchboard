@@ -1111,3 +1111,18 @@ as history.
   diff. The conclusion is unchanged: no model or group name moves anywhere, nothing to align.
   `docs/ROADMAP.md` on disk is now 1,520,314 bytes (growth from merged main work), still the "1.5 MB
   roadmap" of the LLD text.
+
+## 59. Merge policy (T15.8, supersedes PR #793): migration renumbered 0030 → 0031 after T14.15
+
+- PR #793 built T15.8 (opt-in head-pinned merge policy and ref events, [ADR-0060](adr/0060-opt-in-head-pinned-merge-policy.md))
+  on a base before T14.15 (PR #789), which took migration 0030 (`decision_request`). This superseding change re-applies
+  #793 on current `main` and renumbers its migration to **0031** (`src/ledger/migrations/0031_merge_policy.ts`,
+  `{ version: 31, name: "merge_policy" }` in `src/ledger/migrations/index.ts`). The T14.15 ledger test now migrates to
+  version 30 only, so it still asserts that 0030 alone runs on a version 29 database.
+- Kept both sides where #793 and #789 touched the same lists: `SINK_EVENT_KINDS` and `SINK_REASON_CODES` carry
+  `decision_requested` and `ref_event`/`merge_event`; LLD §3.4.9's reason-code bullet names all three; `get_digest`
+  returns both `open_decisions` and `ref_events`.
+- Synced to the new number: the LLD §20.7 ledger item, the ROADMAP M15 row and §6.14 text, the README Status block,
+  and the module comments in `src/ci/trigger.ts`, `src/ci/merge-codes.ts` and the migration itself. Item 58's
+  "migration 0030 after 0029" (decision requests) is unchanged and still true.
+- `node scripts/check-docs.mjs` passes.

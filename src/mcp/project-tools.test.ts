@@ -601,6 +601,30 @@ describe("approval (BR-32): container, push and widening wait for the operator",
     expect(m10.body.error).toMatchObject({ code: "TOOL_FAILURE", details: { reason: "ENVIRONMENT_NOT_IMPLEMENTED" } });
   });
 
+  it("turning the merge policy on waits for the operator; off does not (T15.8, FR-SUB-02)", async () => {
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
+    const off = await call("create_project", { project: definition({ merge_policy: { enabled: false } }) });
+    expect(off.body).toMatchObject({ revision: 1, status: "ACTIVE" });
+    const on = await call("update_project", {
+      id: "dyn-app",
+      project: definition({ merge_policy: { enabled: true, method: "rebase", required_reports: ["docs-alignment"] } }),
+    });
+    expect(on.body).toMatchObject({
+      revision: 2,
+      status: "PENDING_APPROVAL",
+      approval_needed: ["merge_policy"],
+      in_force_revision: 1,
+    });
+    expect(store.state("dyn-app")?.inForce?.definition.merge_policy).toEqual({ enabled: false });
+    store.decide({ projectId: "dyn-app", decision: "APPROVED", decidedBy: "op" });
+    expect(store.state("dyn-app")?.inForce?.definition.merge_policy?.enabled).toBe(true);
+    const bad = await call("update_project", {
+      id: "dyn-app",
+      project: definition({ merge_policy: { enabled: true, required_reports: ["anything"] } }),
+    });
+    expect(bad.body.error.code).toBe("INVALID_REQUEST");
+  });
+
   it("a rejected revision stays unusable; widening an approved revision returns to pending with the old one in force", async () => {
     await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
     await call("create_project", { project: definition({ max_trust_profile: "inspect-untrusted" }) });

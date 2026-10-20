@@ -9,6 +9,9 @@ import {
   branchOfPublishRef,
   ghCheckRunsArgv,
   ghEnv,
+  ghPrGateViewArgv,
+  ghPrMergeArgv,
+  ghPrRequiredChecksArgv,
   ghPrViewArgv,
   ghRunCancelArgv,
   ghRunHeadArgv,
@@ -19,8 +22,10 @@ import {
   ghRunViewArgv,
   isFullLowerSha,
   parseCheckRuns,
+  parsePrGateView,
   parsePrView,
   parseQueuedRuns,
+  parseRequiredChecks,
   parseRunHead,
   parseRunJobs,
   parseRunList,
@@ -29,9 +34,12 @@ import {
 import {
   type CiActionsPort,
   type CiConclusion,
+  type CiMergePort,
+  type CiPullRequestGateView,
   type CiPullRequestPort,
   type CiPullRequestState,
   type CiQueuedRun,
+  type CiRequiredChecks,
   type CiRunJob,
   type CiRunQuery,
   CiStatusError,
@@ -42,6 +50,8 @@ import {
 
 /** `gh` exit code for "authentication required" (`gh help exit-codes`). */
 export const GH_EXIT_AUTH_REQUIRED = 4;
+/** `gh pr checks` exit code for "checks pending" (`gh pr checks` manual). */
+export const GH_EXIT_CHECKS_PENDING = 8;
 export const DEFAULT_GH_TIMEOUT_MS = 30_000;
 const MAX_GH_STDOUT_BYTES = 1024 * 1024;
 
@@ -104,7 +114,7 @@ export interface GhCiStatusPortOptions {
   readonly useCheckRunsFallback?: boolean;
 }
 
-export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullRequestPort {
+export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullRequestPort, CiMergePort {
   private readonly binary: string;
   private readonly runner: GhRunner;
   private readonly sourceEnv: Readonly<Record<string, string | undefined>>;
@@ -201,6 +211,57 @@ export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullReques
       mergeable: pr.mergeable,
       headSha: pr.headRefOid,
     };
+  }
+
+  /** G10 (T15.8). Exit 1 resolves null as for G9 (no pull request on the branch; stderr is never read). */
+  async pullRequestGateView(q: {
+    owner: string;
+    repo: string;
+    publishRef: string;
+  }): Promise<CiPullRequestGateView | null> {
+    const branch = branchOfPublishRef(q.publishRef);
+    if (branch === undefined) throw new CiStatusError("PARSE_FAILED", "invalid published ref");
+    const argv = ghPrGateViewArgv(q.owner, q.repo, branch);
+    const r = await this.runner(this.binary, argv, { env: ghEnv(this.sourceEnv), timeoutMs: this.timeoutMs });
+    if (r.exitCode === 1 && r.notFound !== true && r.timedOut !== true) return null;
+    const pr = this.parse(this.check(r), parsePrGateView);
+    return {
+      number: pr.number,
+      state: pr.state,
+      isDraft: pr.isDraft,
+      mergeable: pr.mergeable,
+      headSha: pr.headRefOid,
+      headBranch: pr.headRefName,
+      baseBranch: pr.baseRefName,
+    };
+  }
+
+  /**
+   * G11 (T15.8). `gh pr checks` exits 1 when a check failed and 8 when one is pending (manual), and exits 1 with no
+   * stdout when the base reports no required check. Assumption (the installed `gh` could not be asked on the build
+   * host): with `--json` the array is printed in each of those cases, so exit 0, 1 or 8 with a JSON array is read as
+   * the array, exit 1 with empty stdout as `none`, anything else as an error. Every reading fails closed: `none` and an
+   * error both refuse the merge.
+   */
+  async requiredChecks(q: { owner: string; repo: string; prNumber: number }): Promise<CiRequiredChecks> {
+    const argv = ghPrRequiredChecksArgv(q.owner, q.repo, String(q.prNumber));
+    const r = await this.runner(this.binary, argv, { env: ghEnv(this.sourceEnv), timeoutMs: this.timeoutMs });
+    const soft =
+      r.notFound !== true && r.timedOut !== true && (r.exitCode === 1 || r.exitCode === GH_EXIT_CHECKS_PENDING);
+    if (soft && r.exitCode === 1 && r.stdout.trim() === "") return { kind: "none" };
+    const buckets = this.parse(soft ? r.stdout : this.check(r), parseRequiredChecks);
+    return buckets.length === 0 ? { kind: "none" } : { kind: "checks", buckets };
+  }
+
+  /** G12 (T15.8 write verb). Any non-zero exit, a moved head included, throws. */
+  async mergePullRequest(q: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    method: "squash" | "merge" | "rebase";
+    headSha: string;
+  }): Promise<void> {
+    await this.run(ghPrMergeArgv(q.owner, q.repo, String(q.prNumber), q.method, q.headSha.toLowerCase()));
   }
 
   private async run(argv: string[]): Promise<string> {
