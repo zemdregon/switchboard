@@ -947,3 +947,23 @@ as history.
   the same is the SRS/LLD owners' call. It does not block PR #775 (the task's own evidence — the
   `heldLocks()` slot-wait test in `src/lifecycle/verification.test.ts` — is cited in-row and matches the
   named test).
+
+## 51. CI Linux job timeout 20 -> 30 minutes (PR #777, no doc impact, checked 2026-10-20)
+
+- PR #777 changes only `timeout-minutes: 20` to `30` for the Linux job in
+  `.github/workflows/ci.yml` (one file, one line; no job added, removed or
+  renamed, so the AGENTS.md "seven checks" merge routine still counts).
+- No document states a CI job timeout value: [TDD §3.8](design/TDD.md#38-ci-pipeline)
+  describes the pipeline jobs without timeouts, and greps for `timeout-minutes`,
+  `20 minutes` and `30 minutes` across `docs/`, `README.md`, `CONTRIBUTING.md`
+  and `SECURITY.md` find nothing CI-related (the `30 minutes` hits are the
+  run wall-clock default in LLD, the operator-shim note in SRS FR-EXE-09 and
+  the manager.ts comment — all unrelated to the CI job cap). No document is stale.
+- Checked and left unchanged: the PR message says the suite takes ~9-12 min
+  plus install while AGENTS.md calls the full `npm test` "about three
+  minutes". Those measure different scopes (local test run vs the whole CI
+  job with install, build, lint and docs check), a commit message is not a
+  document, and this gate does not run the suite — so there is no verified
+  code-vs-document contradiction to fix or record as a conflict.
+- `node scripts/check-docs.mjs` passes; no doc edits needed for this PR
+  beyond this entry. Recorded here only; it does not block PR #777.
