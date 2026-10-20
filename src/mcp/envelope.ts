@@ -83,8 +83,30 @@ export interface Envelope {
   needs_attention?: NeedsAttention;
   /** T3.24 (FR-CAP-12): present only while a `QUEUED` run is held by the host load hold. */
   hold?: { reason: typeof HELD_LOAD_REASON; since: string };
+  /** T8.10 (FR-EXE-10, LLD §20.6): the run's newest verification result's pin; present once one is recorded. */
+  verification?: VerificationPinView;
   replayed?: boolean;
   events?: { seq: number; ts: string; type: string; payload: unknown }[];
+}
+
+/**
+ * T8.10 (FR-EXE-10, LLD §20.6): `verified_at_sha` is the commit the verification ran on, null when the worktree's tree
+ * differed from it. `stale` is computed on read from the ledger's newest `git_commit` for the run's publish ref (Linus
+ * decision v10 (a)): true when that head is another commit. Delegated (fail closed): a result without a SHA is always
+ * `stale`, so it can never count as verification at the current head.
+ */
+export interface VerificationPinView {
+  verified_at_sha: string | null;
+  tree_sha: string | null;
+  stale: boolean;
+}
+
+function verificationPin(ledger: Ledger, runId: string): VerificationPinView | undefined {
+  const row = ledger.latestVerificationResult(runId);
+  if (row === undefined) return undefined;
+  const head = ledger.latestPublishedHead(row.publish_ref);
+  const stale = row.head_sha === null || (head !== undefined && head !== row.head_sha);
+  return { verified_at_sha: row.head_sha, tree_sha: row.tree_sha, stale };
 }
 
 /** T11.9: a condensed view of the verification output. Prose only; see the module comment. */
@@ -149,6 +171,7 @@ export function buildEnvelope(
 
   const verificationSummary = summaryView(summaryPayload, scrub);
   if (verificationSummary !== undefined) result.verification_summary = verificationSummary;
+  const pin = verificationPin(ledger, run.id);
 
   return {
     run_id: run.id,
@@ -167,6 +190,7 @@ export function buildEnvelope(
     ...(run.state === "QUEUED" && loadHoldSince !== undefined
       ? { hold: { reason: HELD_LOAD_REASON, since: loadHoldSince } }
       : {}),
+    ...(pin !== undefined ? { verification: pin } : {}),
     ...(attention !== undefined
       ? {
           needs_attention: needsAttentionOf(ledger, run, {

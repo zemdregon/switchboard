@@ -359,14 +359,21 @@ export function verificationSummary(r: VerificationCommandResult): Record<string
 
 /**
  * The `test_report` artifact body (version 1, `application/json`). Argv and output are passed through `redact` before
- * they are put into JSON; the artifact store redacts the whole body again when it is stored.
+ * they are put into JSON; the artifact store redacts the whole body again when it is stored. T8.10 (FR-EXE-10, LLD
+ * §20.6): with a `pin`, the body gains `head_sha` (null when the worktree's tree differed from that commit's) and
+ * `tree_sha`.
  */
-export function verificationReport(result: VerificationResult, redact: (b: Buffer) => Buffer): Buffer {
+export function verificationReport(
+  result: VerificationResult,
+  redact: (b: Buffer) => Buffer,
+  pin?: { readonly headSha: string | null; readonly treeSha: string | null },
+): Buffer {
   const text = (b: Buffer) => redact(b).toString("utf8");
   return Buffer.from(
     JSON.stringify({
       v: 1,
       outcome: result.outcome,
+      ...(pin !== undefined ? { head_sha: pin.headSha, tree_sha: pin.treeSha } : {}),
       ...(result.confined !== undefined ? { confined: result.confined } : {}),
       commands: result.commands.map((c) => ({
         index: c.index,
