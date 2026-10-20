@@ -167,9 +167,12 @@ export const COMMAND_HELP: readonly CommandHelpEntry[] = [
     global: [
       "  git push <id>       Push a meta-session's published commits (sess_... or one of its run_...) to the context's",
       '                      configured remote branch; only with push.policy "branch", never forced; refused while serve runs',
+      "  git ack-secret-scan <gps_id>",
+      "                      Acknowledge a push the secret scan refused (clears secret_scan_blocked; never allows a push)",
     ],
-    usage: ["switchboard git push <session_or_run_id>"],
-    summary: "Push a meta-session's published commits to the context's configured remote branch.",
+    usage: ["switchboard git push <session_or_run_id>", "switchboard git ack-secret-scan <gps_id>"],
+    summary:
+      "Push a meta-session's published commits to the context's configured remote branch, or acknowledge a secret-scan refusal.",
     options: [OPT_JSON, OPT_CONFIG],
     example: "switchboard git push sess_abc123",
   },

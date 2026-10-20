@@ -273,15 +273,26 @@ export async function scanOutgoingDiff(
 export const SECRET_SCAN_HIT_EVENT = "secret_scan_hit";
 
 /**
+ * Event type of the operator acknowledgement of a refused push (`switchboard git ack-secret-scan`, LLD §20.9):
+ * `{push_id, acknowledged_by, ref, head_sha}`. It clears `secret_scan_blocked` for that refusal only; it never allows
+ * a push.
+ */
+export const SECRET_SCAN_ACKNOWLEDGED_EVENT = "secret_scan_acknowledged";
+
+/**
  * Whether the newest decisive `git_push` event of a meta-session was a `SECRET_SCAN_BLOCKED` refusal (FR-CTL-03
- * `secret_scan_blocked`, LLD §20.9): an `ACCEPTED` push clears it; a refusal for another reason decides nothing.
+ * `secret_scan_blocked`, LLD §20.9): an `ACCEPTED` push clears it; a refusal for another reason decides nothing; a
+ * refusal whose `push_id` is in `acknowledged` (operator `git ack-secret-scan`) clears it until the next refusal.
  * `payloads` are `git_push` event payloads, NEWEST FIRST.
  */
-export function secretScanBlockedFromPushEvents(payloads: Iterable<unknown>): boolean {
+export function secretScanBlockedFromPushEvents(
+  payloads: Iterable<unknown>,
+  acknowledged: ReadonlySet<string> = new Set(),
+): boolean {
   for (const p of payloads) {
     if (typeof p !== "object" || p === null) continue;
-    const { outcome, reason } = p as { outcome?: unknown; reason?: unknown };
-    if (reason === "SECRET_SCAN_BLOCKED") return true;
+    const { outcome, reason, push_id } = p as { outcome?: unknown; reason?: unknown; push_id?: unknown };
+    if (reason === "SECRET_SCAN_BLOCKED") return !(typeof push_id === "string" && acknowledged.has(push_id));
     if (outcome === "ACCEPTED") return false;
   }
   return false;

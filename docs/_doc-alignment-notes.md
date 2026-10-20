@@ -1216,3 +1216,40 @@ as history.
   `LifecycleError` refusal's own code and maps anything else via `toToolError` (`mapError`), and `reason`/`field` are
   scrubbed and bounded to 300 characters like `message` (`failureDetail`).
 - Docs only; no owner decision needed.
+
+## 66. T9.14 remainder / superseder (PR #800, itself superseding #792; re-applied on main at ed770ec)
+
+- Renumbered: PR #792 filed this as item 56 and PR #800 as item 59; main has since used 56 to 65, so it is 66 here.
+  PR #800 conflicted with main in ROADMAP, this file and the ADR index; re-applied with main's rows kept and only the
+  T9.14 row and the ADR-0061 index row replaced. No new ADR (ADR-0061 is amended), so no renumbering. Earlier text:
+  its SRS FR-CTL-03 part-2 amendment sits beside main's updated T14.15 note (both kept).
+- PR #792 marks ROADMAP T9.14 `Done` (2026-10-20, Linus decision, Delegated) with the operator acknowledgement
+  `switchboard git ack-secret-scan <gps_id>` (`src/cli/secret-scan-ack.ts`, one `secret_scan_acknowledged` event,
+  clears the derived `secret_scan_blocked` flag only, never allows a push), `listSecretScanAcknowledgedPushIds` in
+  `src/ledger/repo.ts`, the acknowledged-id input of `secretScanBlockedFromPushEvents` in `src/git/secret-scan.ts`
+  wired in `src/control/needs-attention.ts`, and tests in `src/cli/secret-scan-ack.test.ts` and
+  `src/git/secret-scan.test.ts`. The PR itself updates the documents that own each fact: ROADMAP T9.14 (Done with
+  per-clause evidence) and the M9 row's FR-GIT-11 entry, ADR-0061 (part-2 amendment plus status line) and the ADR
+  index row, LLD §20.9 ("Operator acknowledgement" contract) and the §3.4.5 table row, SDD FR-GIT-11, SRS FR-GIT-11
+  (part-2 amendment; normative text unchanged) and FR-CTL-03 (part-2 amendment), and the README config-key and
+  operator-command rows.
+- Verified in this gate against the code (no owner decision needed — code is the source of truth): every test name
+  the T9.14 evidence cites exists (`src/git/push.test.ts` refusal, bypass, range, allowlist and commit-warning
+  cases; `src/cli/secret-scan-ack.test.ts` clear/idempotent/never-pushes, superseded-refusal, REFUSED/NOT_FOUND,
+  no-event, daemon-lock and no-MCP-surface cases; `src/git/secret-scan.test.ts` acknowledged-refusal derivation;
+  `src/control/needs-attention.test.ts` `secret_scan_blocked` block); the LLD check order (NOT_FOUND, REFUSED,
+  already-acknowledged, newer-refusal for the same meta-session and ref), idempotency, ref scoping, the
+  ADR-0005-style lock rule, the exit-code scheme and "no un-acknowledge" all match `src/cli/secret-scan-ack.ts`;
+  "adds no table, migration or component" holds (one `run_event` type plus a query method); the "at most 50" caps
+  match both call sites. Checked and left unchanged: PRD non-goals and the HLD threat row ("no in-band override"
+  still holds — the acknowledgement is operator-CLI-only and publishes nothing); LLD §3.4.5 prose and the
+  announcement-hook note (the acknowledgement is a ledger write, not an announcement); the dated "stays Proposed /
+  stays Partial" notes in the SRS part-1 amendment and the ADR-0061 part-1 section (accurate history, superseded by
+  the part-2 amendments); M9 `Partial` (its exceptions E2, E3, E5–E8 are unrelated to T9.14); the T8.11
+  parenthetical "(T9.14 Partial 2026-10-19 ...)". No stale ack/`Done`/`Partial` claim remains anywhere else.
+- Two code-side observations, fixed when the patch was re-applied: `SECRET_SCAN_FAILED_EVENT` was exported from
+  `src/git/secret-scan.ts` but never emitted, referenced or re-exported (the `secret_scan_failed` event was not
+  carried over), and `MAX_SECRET_SCAN_HIT_EVENTS = 50` was defined a second time there, unreferenced, beside the
+  `src/git/push.ts` definition both call sites use. Both dead exports were removed; no document named them.
+- `node scripts/check-docs.mjs` passes with no document edits in this gate beyond this entry. It does not block
+  PR #792.
