@@ -1723,7 +1723,7 @@ Extend `$defs` in §3.0:
 { "$defs": {
   "needs_attention_reason": { "enum": [
       "awaiting_approval", "parked_loop", "ci_fix_stuck", "failed_after_retry", "stalled", "budget_exhausted",
-      "skill_cleanup_failed", "secret_scan_blocked" ] },
+      "skill_cleanup_failed", "secret_scan_blocked", "idle_timeout_work_kept" ] },
   "needs_attention": { "type": "object", "required": ["active"], "properties": {
       "active": { "type": "boolean" },
       "reason": { "$ref": "#/$defs/needs_attention_reason" } } },  // required when active is true
@@ -1960,8 +1960,8 @@ request and daemon application), `src/ledger/control-plane.ts` (migration 0018 r
 
 #### 3.4.5 Needs-attention derivation (FR-CTL-03)
 
-Closed reason list (FR-CTL-03, LLD §3.4.1; eight values, `skill_cleanup_failed` added by T16.6, `secret_scan_blocked`
-by T9.14):
+Closed reason list (FR-CTL-03, LLD §3.4.1; nine values, `skill_cleanup_failed` added by T16.6, `secret_scan_blocked`
+by T9.14, `idle_timeout_work_kept` by [ADR-0068](../adr/0068-final-result-decides-a-timed-out-run.md)):
 
 | Reason | Derived when (ledger facts only) |
 | --- | --- |
@@ -1973,13 +1973,15 @@ by T9.14):
 | `budget_exhausted` | Project (or global) budget refusal is active for admission (§3.4.6) |
 | `skill_cleanup_failed` | The run's newest `skill_removed` event reports an entry with `removal: "failed"`, or is malformed (fail closed) (§19.8; T16.6), in any state |
 | `secret_scan_blocked` | The meta-session's newest decisive `git_push` event (any run, operator pushes included) is a `SECRET_SCAN_BLOCKED` refusal: an `ACCEPTED` push clears it, a refusal for another reason does not (§20.9; T9.14); a terminal run shows it only when it is the newest of its meta-session |
+| `idle_timeout_work_kept` | Run `FAILED` with `PROCESS_TIMEOUT` and detail `idle timeout`, its newest post-run `checkpoint` event reports `changed_files` > 0 (the `diff` artifact and the rollback's evidence commit keep the work), and it is the newest run of its meta-session (ADR-0068) |
 
 Multiple reasons may apply; the envelope and digest expose the highest-priority reason only (order:
 `skill_cleanup_failed`, `secret_scan_blocked`, `budget_exhausted`, `parked_loop`, `ci_fix_stuck`, `awaiting_approval`,
-`stalled`, `failed_after_retry`; T16.6 put `skill_cleanup_failed` first, Delegated, because a skill file left in a
-worktree blocks publication until an operator or a later removal point clears it; T9.14 put `secret_scan_blocked`
-second, Delegated, for the same reason: publication stays refused until the operator allowlists the finding or pushes
-by hand).
+`stalled`, `idle_timeout_work_kept`, `failed_after_retry`; ADR-0068 put `idle_timeout_work_kept` just above its less
+specific neighbour `failed_after_retry`, Delegated; T16.6 put `skill_cleanup_failed` first, Delegated, because a skill
+file left in a worktree blocks publication until an operator or a later removal point clears it; T9.14 put
+`secret_scan_blocked` second, Delegated, for the same reason: publication stays refused until the operator allowlists
+the finding or pushes by hand).
 Priority is **Proposed** for stable UI; T14.2 may adjust with tests.
 
 **Implemented (T14.2, Delegated, not owner-approved).** `src/control/needs-attention.ts` derives the flag on read and
@@ -2239,6 +2241,8 @@ counts to the ledger without payload or URL (NFR-SEC-01). Never blocks admission
     and retention-gc passes record the same ledger events (so the envelope and digest still flag the run) but do not
     emit (the dispatcher does not exist yet at startup reconcile).
   - `needs_attention` / `ci_fix_stuck`: the CI poller setting the stuck flag (the 0→1 transition only), via `onStuck`.
+  - `needs_attention` / `idle_timeout_work_kept` (ADR-0068): the terminal transition of an idle-timeout failure whose
+    post-run checkpoint captured changed files, via `onNeedsAttention`, once per run in this process.
   - `decision_requested` / `awaiting_decision` (T14.15, FR-CTL-13): `requestDecision` committing the open row and
     parking the item, via the decision-service announce hook wired in `src/cli/serve.ts` (one emission per
     decision, at request time; nothing is sent on `decide`).
@@ -2999,6 +3003,14 @@ documents.
   terminal. Defaults: wall-clock 30 min, idle (no stdout bytes) 5 min, preflight probe 10 s
   (`DEFAULT_PROBE_TIMEOUT_MS` in `src/adapters/run.ts`); the wall-clock and idle values are configurable. Timeout yields
   `PROCESS_TIMEOUT`, cancel yields `CANCELLED`.
+  *As built (2026-10-20, Delegated, not owner-approved,
+  [ADR-0068](../adr/0068-final-result-decides-a-timed-out-run.md)):* a `subprocess-jsonl` timeout that ends a process
+  after its last `result` event was `ok`, with only `unknown` or `usage` events after it, is judged by the adapter's own
+  `extractResult` as a clean expected exit (`settleAfterFinalResult`); an `ok` verdict is the run's result, and the
+  `RUNNING → FINALIZING` event adds `settled_after_result` (`idle` or `wall_clock`) beside `exit_outcome: "timeout"`. A
+  project may replace the idle window with `projects[].timeouts.provider_idle_seconds`
+  ([§11.1](#111-configuration-shape)); the default stays 5 min. An idle-timeout failure that left changed files raises
+  `idle_timeout_work_kept` ([§3.4.5](#345-needs-attention-derivation-fr-ctl-03)).
 - **Line framing.** Stdout is decoded as UTF-8 and split on `\n` (tolerating `\r\n`); one JSON document per line for
   JSONL transports; for `json` output, the entire stdout is one document capped at the artifact limit. Max line size 1
   MiB (proposed target, `DEFAULT_MAX_LINE_BYTES`) unless the adapter's `Invocation.maxLineBytes` sets another fixed
@@ -3366,6 +3378,12 @@ is part of the same Ajv-validated schema (strict; unknown keys abort startup) an
 preflight cache, NFR-PERF-02). The cache holds only successful `probe` and `OK` auth results, keyed by adapter id and
 the resolved binary's path, `mtime`, size and inode, so an upgraded binary is re-probed immediately and a failure or
 an unauthenticated state is re-checked on the next call (used by `delegate_task`, dispatch and `list_capabilities`; [§2](#2-adapter-contract)).
+
+*As built (2026-10-20, Delegated, not owner-approved, [ADR-0068](../adr/0068-final-result-decides-a-timed-out-run.md)):*
+`projects[].timeouts` holds one key, `provider_idle_seconds` (integer 60 to 3600, **Assumption** bounds; configuration
+file only, not a dynamic project definition). Absent, the adapter's idle window applies (300 seconds, `DEFAULT_IDLE_MS`,
+[§8](#8-run-supervisor-details)). Admission freezes it into the policy snapshot as `project.provider_idle_ms`, and the
+lifecycle applies it to the run's provider invocation and to every steer turn; the wall clock is unchanged.
 
 *As built (2026-10-13, Delegated, T9.1):* `projects[]` is in the Ajv schema (`src/config/schema.ts`, strict: unknown keys
 and context kinds abort startup with the JSON path) and `loadConfig` adds the structural rules: unique project and

@@ -247,6 +247,9 @@ export const MAX_STALL_HOURS = 720;
 export const DEFAULT_CRITIC_MIN_DIFF_LINES = 400;
 /** T14.17: largest `projects[].critic.min_diff_lines` (a sanity bound with no source; Assumption, Delegated). */
 export const MAX_CRITIC_MIN_DIFF_LINES = 1_000_000;
+/** FR-EXE-01: bounds of `projects[].timeouts.provider_idle_seconds` (Assumptions with no source, Delegated). */
+export const MIN_PROVIDER_IDLE_SECONDS = 60;
+export const MAX_PROVIDER_IDLE_SECONDS = 3600;
 
 /** `control_plane` as written in the config file (LLD §3.4.6); `budgets` (T14.4) and `loop_breaker` (T14.5) so far. */
 export interface ControlPlaneConfigInput {
@@ -461,6 +464,12 @@ export interface ProjectConfig {
     method?: MergePolicyMethod;
     required_reports?: MergePolicyReport[];
   };
+  /**
+   * FR-EXE-01 (LLD §8, ADR-0068; Delegated): the provider idle window in seconds for this project's runs, frozen at admission.
+   * Absent means the adapter default, 300 seconds (`DEFAULT_IDLE_MS`). Configuration file only (not a dynamic project
+   * definition): it widens a resource bound.
+   */
+  timeouts?: { provider_idle_seconds?: number };
 }
 
 /** T15.8: `projects[].merge_policy.method`, one `gh pr merge` flag each; `squash` by default (LLD §20.7). */
@@ -814,7 +823,7 @@ const projectCriticSchema = {
 
 /**
  * A `projects[]` entry of the configuration file: {@link projectSchema} plus `dependency_seeds` (T9.13), `skills`
- * (T16.3), `critic` (T14.17) and `brief_file` (T5.14).
+ * (T16.3), `critic` (T14.17), `brief_file` (T5.14) and `timeouts` (FR-EXE-01).
  */
 const configProjectSchema = {
   ...projectSchema,
@@ -823,6 +832,18 @@ const configProjectSchema = {
     dependency_seeds: dependencySeedsSchema,
     skills: projectSkillsSchema(),
     critic: projectCriticSchema,
+    // FR-EXE-01: the provider idle window; bounds are Assumptions (Delegated).
+    timeouts: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        provider_idle_seconds: {
+          type: "integer",
+          minimum: MIN_PROVIDER_IDLE_SECONDS,
+          maximum: MAX_PROVIDER_IDLE_SECONDS,
+        },
+      },
+    },
     // T5.14: a path; the file rules (outside the roots, at most 4 KiB, UTF-8) are `loadConfig`'s.
     brief_file: { type: "string", minLength: 1, maxLength: 4096 },
   },

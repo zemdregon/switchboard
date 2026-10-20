@@ -33,9 +33,17 @@
  * refusal for another reason leaves it. Like `ci_fix_stuck`, a terminal run shows it only when it is the newest of its
  * meta-session. It ranks second: publication of the meta-session is refused until the operator allowlists the finding
  * or pushes by hand.
+ *
+ * `idle_timeout_work_kept` (FR-EXE-01, FR-CTL-03, LLD §3.4.5; Delegated, not owner-approved): the run ended FAILED
+ * with `PROCESS_TIMEOUT` and the detail `idle timeout`, and its post-run checkpoint captured changed files (the diff
+ * artifact and the rollback's evidence commit keep them). The provider went quiet without a final result, so nothing
+ * was published; an operator decides whether to salvage the diff or continue. Like `parked_loop`, only the newest run
+ * of its meta-session shows it: a successor supersedes it. It ranks just above `failed_after_retry`, its more specific
+ * neighbour.
  */
 
 import type Database from "better-sqlite3";
+import { IDLE_TIMEOUT_DETAIL } from "../adapters/failure.js";
 import { secretScanBlockedFromPushEvents } from "../git/secret-scan.js";
 import type { Ledger, RunRecord, RunState } from "../ledger/index.js";
 import { isTerminal } from "../lifecycle/index.js";
@@ -49,6 +57,7 @@ export const NEEDS_ATTENTION_PRIORITY = [
   "ci_fix_stuck",
   "awaiting_approval",
   "stalled",
+  "idle_timeout_work_kept",
   "failed_after_retry",
 ] as const;
 
@@ -85,6 +94,8 @@ export interface NeedsAttentionFacts {
   skillCleanupFailed?: boolean;
   /** T9.14: the meta-session's newest decisive `git_push` event is a `SECRET_SCAN_BLOCKED` refusal. Absent means false. */
   secretScanBlocked?: boolean;
+  /** FR-EXE-01: FAILED on an idle timeout with changed files in its post-run checkpoint. Absent means false. */
+  idleTimeoutWorkKept?: boolean;
 }
 
 export interface NeedsAttentionOptions {
@@ -104,6 +115,7 @@ export function matchingReasons(f: NeedsAttentionFacts, o: NeedsAttentionOptions
     ci_fix_stuck: f.ciFixStuck && (!terminal || f.newestInMetaSession),
     awaiting_approval: f.state === "AWAITING_APPROVAL" || f.pendingApproval,
     stalled: STALL_STATES.has(f.state) && isStale(f.lastActivityAt, o),
+    idle_timeout_work_kept: f.state === "FAILED" && f.idleTimeoutWorkKept === true && f.newestInMetaSession,
     failed_after_retry:
       f.state === "FAILED" &&
       (f.attempt >= (o.maxSuccessorsPerMetaSession ?? DEFAULT_MAX_SUCCESSORS_PER_META_SESSION) || f.metaSessionParked),
@@ -160,7 +172,34 @@ export function readNeedsAttentionFacts(
     ciFixStuck: run.project_id !== null && (control.ciFixStuck?.(run.project_id) ?? false),
     skillCleanupFailed: skillCleanupFailed(events),
     secretScanBlocked: secretScanBlocked(ledger, run.meta_session_id),
+    idleTimeoutWorkKept: idleTimeoutWorkKept(run, events),
   };
+}
+
+/** FR-EXE-01: an idle-timeout failure whose newest post-run `checkpoint` event reports changed files. */
+export function idleTimeoutWorkKept(
+  run: Pick<RunRecord, "state" | "failure_code" | "failure_detail">,
+  events: readonly { type: string; payload_json: string }[],
+): boolean {
+  if (run.state !== "FAILED" || run.failure_code !== "PROCESS_TIMEOUT" || run.failure_detail !== IDLE_TIMEOUT_DETAIL) {
+    return false;
+  }
+  const post = events.findLast((e) => e.type === "checkpoint" && checkpointKind(e.payload_json) === "post");
+  if (post === undefined) return false;
+  try {
+    const changed = (JSON.parse(post.payload_json) as { changed_files?: unknown }).changed_files;
+    return typeof changed === "number" && changed > 0;
+  } catch {
+    return false;
+  }
+}
+
+function checkpointKind(payload: string): unknown {
+  try {
+    return (JSON.parse(payload) as { kind?: unknown }).kind;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Most `git_push` events read per derivation; older ones cannot change the answer once one decides (T9.14). */

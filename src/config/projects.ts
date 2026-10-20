@@ -117,6 +117,8 @@ export interface ResolvedProject {
   readonly critic?: ProjectCriticConfig;
   /** T15.8 (FR-SUB-02, LLD §20.7): present only when the project sets `merge_policy`. Absent means off. */
   readonly mergePolicy?: ProjectMergePolicy;
+  /** FR-EXE-01: `timeouts.provider_idle_seconds` in milliseconds; absent means the adapter default. */
+  readonly providerIdleMs?: number;
 }
 
 /** T15.8 (FR-SUB-02, LLD §20.7, ADR-0060): the opt-in, head-pinned merge policy of a project. */
@@ -361,6 +363,9 @@ export function resolveProjects(
               requiredReports: [...(p.merge_policy.required_reports ?? [])],
             },
           }
+        : {}),
+      ...(p.timeouts?.provider_idle_seconds !== undefined
+        ? { providerIdleMs: p.timeouts.provider_idle_seconds * 1000 }
         : {}),
     };
   });

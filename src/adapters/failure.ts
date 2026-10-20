@@ -36,6 +36,9 @@ export const PROVIDER_ERROR_CATEGORY_CODES: Readonly<Record<string, FailureCode>
   tool: "TOOL_FAILURE",
 };
 
+/** The `PROCESS_TIMEOUT` detail {@link classifyCommon} gives an idle timeout (FR-EXE-01; `idle_timeout_work_kept`). */
+export const IDLE_TIMEOUT_DETAIL = "idle timeout";
+
 /**
  * Shared precedence for classifyFailure (Proposed): supervisor-determined outcomes first, then structured events,
  * then exit status. Evidence that is not clearly a success never yields success; a clean exit with no `result`
