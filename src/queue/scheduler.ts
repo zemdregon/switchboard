@@ -8,6 +8,8 @@ import { type AdmitWorkDeps, admitWorkItemRequest } from "./admission.js";
 
 export const DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT = 500;
 export const DEFAULT_QUEUE_DEQUEUE_BATCH = 1;
+/** The idempotency key of a run admitted from a work item is this prefix and the item id. */
+export const QUEUE_IDEMPOTENCY_PREFIX = "queue:";
 
 export interface QueueSchedulerSettings {
   maxItemsPerProject: number;
@@ -47,7 +49,7 @@ export async function runProjectWorkQueueTick(
         failed++;
         continue;
       }
-      const idem = `queue:${item.id}`;
+      const idem = `${QUEUE_IDEMPOTENCY_PREFIX}${item.id}`;
       // T15.7 (LLD §20.4): a rebase item continues the publishing meta-session. A run already admitted for it (a crash
       // after submit) completes the admission instead of a second run.
       const conflict = ledger.getRefConflictForWorkItem(item.id);

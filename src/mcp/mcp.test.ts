@@ -42,6 +42,8 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle, type RunLifecycleOptions } from "../lifecycle/index.js";
 import { createProfileResolver } from "../policy/index.js";
+import type { AdmitWorkDeps } from "../queue/admission.js";
+import { runProjectWorkQueueTick } from "../queue/scheduler.js";
 import { compileCheck, requirementsFor, TRUST_PROFILE_ORDER } from "../routing/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import {
@@ -164,6 +166,8 @@ let lifecycle: RunLifecycle;
 let writerScript: string;
 let claudeLoggedIn: boolean;
 const servers: { mcp: SwitchboardMcpServer; client: Client }[] = [];
+/** What the controller's queue tick admits with, for the configuration of the last `setup`. */
+let queueAdmission: AdmitWorkDeps;
 
 /** Probe runner: the Claude replay script only replays streams, so its probe/auth commands are answered here. */
 const realRunner = createProbeRunner();
@@ -288,6 +292,7 @@ async function setup(s: Setup): Promise<void> {
       ]),
     ),
   };
+  queueAdmission = { lifecycle, ledger, registry, config } as unknown as AdmitWorkDeps;
   // T13.5: one binding store for every server, as `serve` does.
   const subjectBindings = new SubjectBindingStore(db);
   for (const c of clients) {
@@ -1494,6 +1499,112 @@ describe("HTTP session binding by subject and client (T13.5; FR-MCP-15, Q-78)", 
     }
     // Positive control: the scan would have found the token.
     expect(TOKEN_SHAPE.test(`x ${issued.token} y`)).toBe(true);
+  });
+});
+
+describe("runs admitted from queued work, over stdio and HTTP (FR-QUE-01, FR-QUE-08, FR-MCP-15)", () => {
+  const A = `sbc_${"a".repeat(22)}`;
+  const B = `sbc_${"b".repeat(22)}`;
+  const REQUEST = { objective: "Fix the parser crash", trust_profile: "edit-untrusted" };
+  // Stdio servers first (grok-bot 0, peer 1); the HTTP tokens append A as grok-bot (2) and B as peer (3).
+  const owners = { stdio: 0, http: 2 };
+  const others = { stdio: 1, http: 3 };
+  const start = () =>
+    setup({
+      adapters: [fakeWriter()],
+      clients: [
+        { id: "grok-bot", max: "edit-untrusted", projects: ["web-app"] },
+        { id: "peer", max: "edit-untrusted", projects: ["web-app"] },
+      ],
+      projects: [project()],
+      http: { map: { [A]: "grok-bot", [B]: "peer" }, tokens: [{ oauthClientId: A }, { oauthClientId: B }] },
+      start: false,
+    });
+  const tick = () => runProjectWorkQueueTick(ledger, queueAdmission, { maxItemsPerProject: 500, dequeueBatch: 1 });
+  /** Enqueue as `index`, let the controller admit it and return the admitted run id `list_work` reports. */
+  const admitted = async (index: number): Promise<string> => {
+    const enq = await call("enqueue_work", { project_id: "web-app", request: REQUEST }, index);
+    expect(enq.isError).toBe(false);
+    expect(await tick()).toEqual({ admitted: 1, retried: 0, failed: 0 });
+    const item = (await call("list_work", {}, index)).body.items.find(
+      (i: Json) => i.work_item_id === enq.body.work_item_id,
+    );
+    expect(item).toMatchObject({ state: "ADMITTED", admitted_run_id: expect.any(String) });
+    expect(ledger.getRunRecord(item.admitted_run_id)).toMatchObject({ client_id: "grok-bot", state: "QUEUED" });
+    return item.admitted_run_id as string;
+  };
+  const expectVisible = async (runId: string, index: number): Promise<void> => {
+    expect((await call("get_run", { run_id: runId }, index)).body).toMatchObject({ run_id: runId, status: "QUEUED" });
+    expect((await call("list_runs", {}, index)).body.runs.map((r: Json) => r.run_id)).toContain(runId);
+    expect((await call("get_artifacts", { run_id: runId }, index)).isError).toBe(false);
+    expect((await call("steer_run", { run_id: runId, note: "look at the tests" }, index)).isError).toBe(false);
+    expect((await call("get_digest", {}, index)).body.cursor).not.toBeNull();
+  };
+  /** Another client gets exactly the answer an id that does not exist gets. */
+  const expectUnknown = async (runId: string, index: number): Promise<void> => {
+    for (const [tool, args] of [
+      ["get_run", { run_id: runId }],
+      ["get_artifacts", { run_id: runId }],
+      ["steer_run", { run_id: runId, note: "look at the tests" }],
+      ["cancel_run", { run_id: runId }],
+    ] as const) {
+      const r = await call(tool, args, index);
+      expect(r.body.error, `${tool} from ${index}`).toMatchObject({
+        code: "INVALID_REQUEST",
+        message: `unknown run ${runId}`,
+      });
+      const ghostId = `${runId.slice(0, -4)}0000`;
+      const ghost = await call(tool, { ...args, run_id: ghostId }, index);
+      expect(r.body.error).toEqual(JSON.parse(JSON.stringify(ghost.body.error).replaceAll(ghostId, runId)));
+    }
+    expect((await call("list_runs", {}, index)).body.runs).toEqual([]);
+    expect((await call("get_digest", {}, index)).body.cursor).toBeNull();
+  };
+
+  it("an HTTP client reads, steers and cancels the run admitted from its own queued item; another client cannot", async () => {
+    await start();
+    const runId = await admitted(owners.http);
+    await expectVisible(runId, owners.http);
+    // The item belongs to the mapped client, so its run is the same client's over stdio too.
+    await expectVisible(runId, owners.stdio);
+    const ownerCursor = (await call("get_digest", {}, owners.http)).body.cursor as string;
+    for (const index of [others.http, others.stdio]) {
+      await expectUnknown(runId, index);
+      const delta = await call("get_digest", { since_cursor: ownerCursor }, index);
+      expect(delta.body.error?.code).toBe("INVALID_REQUEST");
+    }
+    expect(ledger.getRunRecord(runId)?.state).toBe("QUEUED");
+    const cancelled = await call("cancel_run", { run_id: runId }, owners.http);
+    expect(cancelled.isError).toBe(false);
+    expect(cancelled.body.status).toBe("CANCELLED");
+  });
+
+  it("a run admitted from an item queued over stdio is its client's over HTTP too, and no other client's", async () => {
+    await start();
+    const runId = await admitted(owners.stdio);
+    await expectVisible(runId, owners.http);
+    await expectVisible(runId, owners.stdio);
+    for (const index of [others.http, others.stdio]) await expectUnknown(runId, index);
+  });
+
+  it("a client cannot take a queued item's idempotency key, so a stdio run never becomes its admission", async () => {
+    await start();
+    const enq = await call("enqueue_work", { project_id: "web-app", request: REQUEST }, owners.stdio);
+    // The same request as the item, so without the reservation the tick would replay this run as the admission.
+    const direct = { project: "web-app", ...REQUEST, idempotency_key: `queue:${enq.body.work_item_id}` };
+    for (const index of [owners.stdio, owners.http]) {
+      const r = await call("delegate_task", direct, index);
+      expect(r.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { field: "idempotency_key" } });
+    }
+    const local = await call("delegate_task", projectArgs({ idempotency_key: "stdio-own-key" }), owners.stdio);
+    expect(local.isError).toBe(false);
+    // The stdio run stays unknown over HTTP, as T13.5 requires; the item's own run is visible once admitted.
+    const r = await call("get_run", { run_id: local.body.run_id }, owners.http);
+    expect(r.body.error).toMatchObject({ code: "INVALID_REQUEST", message: `unknown run ${local.body.run_id}` });
+    expect(await tick()).toEqual({ admitted: 1, retried: 0, failed: 0 });
+    const runIds = (await call("list_runs", {}, owners.http)).body.runs.map((x: Json) => x.run_id);
+    expect(runIds).toHaveLength(1);
+    expect(runIds).not.toContain(local.body.run_id);
   });
 });
 
