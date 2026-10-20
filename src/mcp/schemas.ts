@@ -139,6 +139,14 @@ export type SkillToolName = (typeof SKILL_TOOL_NAMES)[number];
 export const PUBLISH_TOOL_NAMES = ["publish_run", "merge_run_pr", "update_run_branch"] as const;
 export type PublishToolName = (typeof PUBLISH_TOOL_NAMES)[number];
 
+/**
+ * ADR-0074 (LLD §3.4.15): `refresh_project_base` and `rebase_session`, offered only when the server has the base port
+ * (`serve`) and to a client whose ceiling is above `inspect-untrusted` (they write Git objects and refs). Listed right
+ * after the publish tools.
+ */
+export const BASE_TOOL_NAMES = ["refresh_project_base", "rebase_session"] as const;
+export type BaseToolName = (typeof BASE_TOOL_NAMES)[number];
+
 /** Delegated bounds for an MCP-supplied project definition (the configuration schema itself has none). */
 export const MAX_DEFINITION_STRING = 4096;
 export const MAX_DEFINITION_ITEMS = 32;
@@ -1815,6 +1823,94 @@ const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
     "would conflict); a gh or fetch failure is TOOL_FAILURE gh_error, retryable.",
 };
 
+const SHA = { type: "string", pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$" } as const;
+
+/** ADR-0074 (LLD §3.4.15). */
+const BASE_INPUTS = {
+  refresh_project_base: {
+    type: "object",
+    additionalProperties: false,
+    required: ["project_id"],
+    properties: { project_id: PROJECT_REF },
+  },
+  rebase_session: {
+    type: "object",
+    additionalProperties: false,
+    required: ["session_id"],
+    properties: { session_id: SESSION_ID, expected_head_sha: SHA },
+  },
+} as const;
+
+const BASE_REFRESH_REASONS = [
+  "ADVANCED",
+  "CURRENT",
+  "LOCAL_AHEAD",
+  "REPO_BUSY",
+  "BASE_NOT_BRANCH",
+  "REMOTE_INVALID",
+  "REMOTE_UNKNOWN",
+  "REPO_CONFIG_UNSAFE",
+  "REMOTE_URL_CREDENTIALS",
+  "REMOTE_TRANSPORT_NOT_ALLOWED",
+  "FETCH_TIMEOUT",
+  "FETCH_FAILED",
+  "GIT_FAILED",
+] as const;
+
+const BASE_OUTPUTS = {
+  refresh_project_base: withError({
+    type: "object",
+    additionalProperties: false,
+    required: ["project_id", "base_ref", "remote", "base_commit", "previous_commit", "remote_commit", "reason"],
+    properties: {
+      project_id: PROJECT_REF,
+      base_ref: { type: "string", maxLength: 255 },
+      remote: { type: "string", maxLength: 255 },
+      base_commit: SHA,
+      previous_commit: { oneOf: [{ type: "null" }, SHA] },
+      remote_commit: SHA,
+      reason: { enum: [...BASE_REFRESH_REASONS] },
+    },
+  }),
+  rebase_session: withError({
+    type: "object",
+    additionalProperties: false,
+    required: ["session_id", "previous_head", "new_head", "base_commit", "rebased_commits"],
+    properties: {
+      session_id: SESSION_ID,
+      previous_head: SHA,
+      new_head: SHA,
+      base_commit: SHA,
+      rebased_commits: { type: "integer", minimum: 0 },
+      publish: {
+        type: "object",
+        additionalProperties: false,
+        required: ["previous_tip", "new_tip"],
+        properties: { previous_tip: SHA, new_tip: SHA },
+      },
+    },
+  }),
+} as const;
+
+const BASE_DESCRIPTIONS: Readonly<Record<BaseToolName, string>> = {
+  refresh_project_base:
+    "Fetch the base branch of one of this client's remote-backed projects now (a dynamic project with clone_url, " +
+    "or one whose primary context sets base_remote), with the controller's hardened fetch into the remote-tracking " +
+    "ref only. Returns base_commit (where a new meta-session of the project starts now), previous_commit (the " +
+    "tracking ref before the fetch, or null) and remote_commit. New meta-sessions already fetch before their first " +
+    "worktree; this is for checking or forcing it. A project that is not remote-backed is INVALID_REQUEST " +
+    "NOT_REMOTE_BACKED; a failed fetch is TOOL_FAILURE BASE_REFRESH_FAILED with details.fetch_reason.",
+  rebase_session:
+    "Rebase one of this client's meta-sessions onto a freshly fetched base, so its next continue_task starts from " +
+    "the current remote base plus the session's own commits. Only with no run in progress. The controller fetches " +
+    "the base, replays the session's commits (and its unpublished or published controller commits) without touching " +
+    "any worktree, and records the new head; it never pushes. Refused before anything changes, as INVALID_REQUEST " +
+    "with details.reason: CONFLICT (details.conflicting_paths), HEAD_MOVED (expected_head_sha differs), ACTIVE_RUN, " +
+    "NOT_REMOTE_BACKED, NOTHING_TO_REBASE, MERGE_COMMIT; or PERMISSION_BLOCKED SIGNING_UNAVAILABLE, " +
+    "IDENTITY_REQUIRED, REPO_CONFIG_UNSAFE; or TOOL_FAILURE BASE_REFRESH_FAILED, REPO_BUSY (retryable). A branch " +
+    "publish_run pushed before is not a fast-forward afterwards, and publishing it again is refused NON_FAST_FORWARD.",
+};
+
 const SKILL_DESCRIPTIONS: Readonly<Record<SkillToolName, string>> = {
   list_skills:
     "Operator-approved skills this client may name in delegate_task, read-only: per name the newest version it could " +
@@ -1947,7 +2043,14 @@ const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
 };
 
 export interface ToolDescriptor {
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName | PublishToolName;
+  name:
+    | ToolName
+    | ProjectToolName
+    | SearchToolName
+    | WorkQueueToolName
+    | SkillToolName
+    | PublishToolName
+    | BaseToolName;
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
@@ -1967,6 +2070,7 @@ export function toolDescriptors(
     publish?: boolean;
     mergeRunPr?: boolean;
     updateRunBranch?: boolean;
+    baseTools?: boolean;
   } = {},
 ): ToolDescriptor[] {
   const base: ToolDescriptor[] = TOOL_NAMES.map((name) => ({
@@ -1997,6 +2101,17 @@ export function toolDescriptors(
         description: PUBLISH_DESCRIPTIONS[name],
         inputSchema: structuredClone(PUBLISH_INPUTS[name]) as Record<string, unknown>,
         outputSchema: structuredClone(PUBLISH_OUTPUTS[name]) as Record<string, unknown>,
+      })),
+    );
+  }
+  if (opts.baseTools === true) {
+    // ADR-0074: right after the publish tools.
+    base.push(
+      ...BASE_TOOL_NAMES.map((name) => ({
+        name,
+        description: BASE_DESCRIPTIONS[name],
+        inputSchema: structuredClone(BASE_INPUTS[name]) as Record<string, unknown>,
+        outputSchema: structuredClone(BASE_OUTPUTS[name]) as Record<string, unknown>,
       })),
     );
   }
@@ -2033,8 +2148,18 @@ export function toolDescriptors(
 }
 
 export function inputSchema(
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName | PublishToolName,
+  name:
+    | ToolName
+    | ProjectToolName
+    | SearchToolName
+    | WorkQueueToolName
+    | SkillToolName
+    | PublishToolName
+    | BaseToolName,
 ): Record<string, unknown> {
+  if ((BASE_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(BASE_INPUTS[name as BaseToolName]) as Record<string, unknown>;
+  }
   if ((PUBLISH_TOOL_NAMES as readonly string[]).includes(name)) {
     return structuredClone(PUBLISH_INPUTS[name as PublishToolName]) as Record<string, unknown>;
   }
@@ -2052,8 +2177,18 @@ export function inputSchema(
 }
 
 export function outputSchema(
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName | PublishToolName,
+  name:
+    | ToolName
+    | ProjectToolName
+    | SearchToolName
+    | WorkQueueToolName
+    | SkillToolName
+    | PublishToolName
+    | BaseToolName,
 ): Record<string, unknown> {
+  if ((BASE_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(BASE_OUTPUTS[name as BaseToolName]) as Record<string, unknown>;
+  }
   if ((PUBLISH_TOOL_NAMES as readonly string[]).includes(name)) {
     return structuredClone(PUBLISH_OUTPUTS[name as PublishToolName]) as Record<string, unknown>;
   }

@@ -271,6 +271,7 @@ import {
   versionInjectable,
 } from "../skills/index.js";
 import { gitText } from "../workspace/git.js";
+import { type BaseToolDeps, rebaseSessionTool, refreshProjectBase } from "./base-tools.js";
 import {
   type AnyDecisionToolName,
   DECIDE_TOOL_NAMES,
@@ -295,6 +296,8 @@ import {
 } from "./project-tools.js";
 import { type PublishDeps, publishRun } from "./publish.js";
 import {
+  BASE_TOOL_NAMES,
+  type BaseToolName,
   inputSchema,
   MCP_ARTIFACT_KINDS,
   PROJECT_TOOL_NAMES,
@@ -434,6 +437,12 @@ export interface McpServerDeps {
    * `publish_run` is and this is present; absent, the tool does not exist for this server.
    */
   readonly mergeRun?: MergeRunDeps;
+  /**
+   * ADR-0074 (LLD §3.4.15): the ledger handle and fetch environment behind `refresh_project_base` and
+   * `rebase_session`. Absent means the tools do not exist for this server; present, they are offered to a client whose
+   * ceiling is above `inspect-untrusted`.
+   */
+  readonly base?: BaseToolDeps;
 }
 
 /** T16.9: what the skill tools read. Nothing here is written. */
@@ -2165,6 +2174,55 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ownRun(a.run_id as string),
       a.expected_head_sha as string | undefined,
     );
+  // ADR-0074 (LLD §3.4.15): scoped like `search_project_context` (projects) and `continue_task` (meta-sessions).
+  const baseOffered = deps.base !== undefined && maxTrustProfile !== "inspect-untrusted";
+  const baseValidators = compileBaseValidators();
+  /** The client's newest visible run of `projectId` in `repoRoot`: where `refresh_project_base` records its event. */
+  const anchorRun = (projectId: string, repoRoot: string): string | undefined => {
+    const rows = (deps.base as BaseToolDeps).db
+      .prepare(
+        `SELECT r.id, r.meta_session_id FROM run r JOIN meta_session m ON m.id = r.meta_session_id
+         WHERE r.client_id = ? AND r.project_id = ? AND m.repo_root = ? ORDER BY r.created_at DESC, r.id DESC LIMIT 20`,
+      )
+      .all(deps.clientId, projectId, repoRoot) as { id: string; meta_session_id: string }[];
+    return rows.find((r) => ownSubject(r.meta_session_id))?.id;
+  };
+  const refreshProjectBaseTool = async (a: Args) => {
+    const project = await searchTarget(a.project_id as string);
+    return refreshProjectBase(deps.base as BaseToolDeps, project, (root) => anchorRun(project.id, root));
+  };
+  const rebaseSessionHandler = async (a: Args) => {
+    const sessionId = a.session_id as string;
+    const session = ledger.getMetaSession(sessionId);
+    const ctx = session ? lifecycle.metaSessionContext(sessionId) : undefined;
+    if (!session || !ctx || ctx.clientId !== deps.clientId || !ownSubject(sessionId)) {
+      throw invalid(`unknown meta-session ${sessionId}`);
+    }
+    if (session.status !== "ACTIVE") throw invalid(`meta-session ${sessionId} is closed`);
+    if (ctx.activeRunId !== undefined) {
+      throw invalid(`meta-session ${sessionId} has an active run ${ctx.activeRunId}`, {
+        reason: "ACTIVE_RUN",
+        run_id: ctx.activeRunId,
+      });
+    }
+    if (ctx.projectId === undefined) {
+      throw invalid(`meta-session ${sessionId} has no project, so it has no remote base`, {
+        reason: "NOT_REMOTE_BACKED",
+      });
+    }
+    // BR-23 / FR-PRJ-09: the meta-session's project is re-resolved under the current checks.
+    const project = await searchTarget(ctx.projectId);
+    return rebaseSessionTool(
+      deps.base as BaseToolDeps,
+      { id: sessionId, repoRoot: session.repo_root },
+      project,
+      a.expected_head_sha as string | undefined,
+    );
+  };
+  const baseHandlers: Record<BaseToolName, (a: Args) => Promise<object>> = {
+    refresh_project_base: refreshProjectBaseTool,
+    rebase_session: rebaseSessionHandler,
+  };
   const publishHandlers: Record<PublishToolName, (a: Args) => Promise<object>> = {
     publish_run: publishRunTool,
     merge_run_pr: mergeRunPrTool,
@@ -2281,6 +2339,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         publish: publishOffered,
         mergeRunPr: mergeRunOffered,
         updateRunBranch: updateBranchOffered,
+        baseTools: baseOffered,
       }),
       // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
       ...(approvalProxy !== undefined
@@ -2372,6 +2431,14 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         const validate = publishValidators[tool];
         if (!validate(args)) throw schemaError(validate.errors ?? []);
         return ok(await publishHandlers[tool](args));
+      }
+      if ((BASE_TOOL_NAMES as readonly string[]).includes(name) && baseOffered) {
+        // ADR-0074: when not offered (no base port, or an inspect-only client) it is answered like an unknown tool.
+        const tool = name as BaseToolName;
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        const validate = baseValidators[tool];
+        if (!validate(args)) throw schemaError(validate.errors ?? []);
+        return ok(await baseHandlers[tool](args));
       }
       if ((WORK_QUEUE_TOOL_NAMES as readonly string[]).includes(name) && workQueueOffered) {
         // T15.9 (FR-QUE-08): when not offered (a console client) it is answered exactly like an unknown tool.
@@ -2511,6 +2578,14 @@ function compilePublishValidators(): Record<PublishToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
   return Object.fromEntries(PUBLISH_TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
     PublishToolName,
+    ValidateFunction
+  >;
+}
+
+function compileBaseValidators(): Record<BaseToolName, ValidateFunction> {
+  const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
+  return Object.fromEntries(BASE_TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
+    BaseToolName,
     ValidateFunction
   >;
 }

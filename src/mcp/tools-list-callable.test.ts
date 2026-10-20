@@ -26,6 +26,7 @@ import {
 } from "../skills/index.js";
 import { DECIDE_TOOL_NAMES, DECISION_TOOL_NAMES } from "./decision-tools.js";
 import {
+  BASE_TOOL_NAMES,
   PROJECT_TOOL_NAMES,
   PUBLISH_TOOL_NAMES,
   SEARCH_TOOL_NAMES,
@@ -39,6 +40,7 @@ const ALL_TOOL_NAMES: readonly string[] = [
   ...TOOL_NAMES,
   ...WORK_QUEUE_TOOL_NAMES,
   ...PUBLISH_TOOL_NAMES,
+  ...BASE_TOOL_NAMES,
   ...SEARCH_TOOL_NAMES,
   ...SKILL_TOOL_NAMES,
   ...PROJECT_TOOL_NAMES,
@@ -87,6 +89,8 @@ const fullDeps = ({ db, dataDir }: { db: import("better-sqlite3").Database; data
     pullHeads: {} as never,
     update: {} as never,
   },
+  // ADR-0074: the base port behind refresh_project_base and rebase_session (never reached: invalid arguments).
+  base: { db, ids: createIdGenerator(), sourceEnv: {} },
 });
 
 interface Setup {
@@ -105,7 +109,15 @@ const SETUPS: readonly Setup[] = [
     name: "no optional ports: plain orchestrator and console clients",
     orch: { maxTrustProfile: "edit-untrusted" },
     other: { maxTrustProfile: "edit-untrusted", toolProfile: "console" },
-    orchMustNot: ["create_project", "publish_run", "decide_approval", "list_pending_approvals", "decide"],
+    orchMustNot: [
+      "create_project",
+      "publish_run",
+      "decide_approval",
+      "list_pending_approvals",
+      "decide",
+      "refresh_project_base",
+      "rebase_session",
+    ],
   },
   {
     name: "prod grok-bot (manage_projects, approval_proxy on itself, push branch) and a console approver",
@@ -140,6 +152,8 @@ const SETUPS: readonly Setup[] = [
       "list_decisions",
       "list_skills",
       "get_skill",
+      "refresh_project_base",
+      "rebase_session",
     ],
   },
   {
@@ -162,6 +176,13 @@ const SETUPS: readonly Setup[] = [
       "list_pending_approvals",
       "decide",
     ],
+  },
+  {
+    name: "ADR-0074: an inspect-only orchestrator is not offered the base tools, even with the base port",
+    orch: { maxTrustProfile: "inspect-untrusted", toolProfile: "orchestrator" },
+    other: { maxTrustProfile: "edit-untrusted" },
+    deps: fullDeps,
+    orchMustNot: ["refresh_project_base", "rebase_session"],
   },
 ];
 

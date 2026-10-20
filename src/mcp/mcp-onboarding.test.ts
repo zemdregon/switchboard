@@ -390,6 +390,20 @@ describe("MCP-only onboarding end to end (ADR-0068)", () => {
     expect(JSON.parse(last?.payload_json ?? "{}")).toMatchObject({ clone: "reused" });
   });
 
+  it("ADR-0074: a clone_url context's base_remote must be the clone's remote; the default needs no approval", async () => {
+    await setup();
+    const bad = await call("grok-bot", "create_project", { project: cloned({}, { base_remote: "upstream" }) });
+    expect(bad.isError).toBe(true);
+    expect(bad.body.error).toMatchObject({
+      code: "PERMISSION_BLOCKED",
+      details: { reason: "BASE_REMOTE_NOT_CLONE_REMOTE", field: "$.project.contexts[0].base_remote" },
+    });
+    expect(events().at(-1)).toMatchObject({ outcome: "REFUSED", reason: "BASE_REMOTE_NOT_CLONE_REMOTE" });
+    const ok = await call("grok-bot", "create_project", { project: cloned({}, { base_remote: "origin" }) });
+    expect(ok.isError, JSON.stringify(ok.body)).toBe(false);
+    expect(ok.body.approval_needed).not.toContain("base_remote");
+  });
+
   it("a proxy limited to project kinds cannot list or decide a privileged approval; the default proxy can", async () => {
     await setup();
     const d = await call("root", "delegate_task", {

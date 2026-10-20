@@ -153,6 +153,18 @@ export {
   secretScanBlockedFromPushEvents,
 } from "./secret-scan.js";
 export {
+  MAX_CONFLICT_PATHS,
+  MAX_REBASE_COMMITS,
+  MIN_SESSION_REBASE_GIT_VERSION,
+  rebaseSession,
+  SESSION_REBASED_EVENT,
+  SessionRebaseError,
+  type SessionRebaseInput,
+  type SessionRebaseOptions,
+  type SessionRebaseRefusal,
+  type SessionRebaseResult,
+} from "./session-rebase.js";
+export {
   DEFAULT_SIGN_TIMEOUT_MS,
   repoSigningConfigUnsafe,
   SIGNING_AGENT_VARIABLES,

@@ -47,6 +47,7 @@ import {
   BriefError,
   type CloneAudit,
   CloneError,
+  checkBaseRemote,
   checkClientLimits,
   checkCloneUrl,
   checkFilesystem,
@@ -231,6 +232,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
 
   const checkDefinition = (def: ProjectConfig): void => {
     checkStructure(def);
+    checkBaseRemote(def);
     checkClientLimits(def, limits, deps.disabledProviders);
     checkRagSharing(def);
   };
