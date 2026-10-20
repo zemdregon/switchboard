@@ -132,6 +132,36 @@ describe("guardToolCall", () => {
     });
     expect(guardToolCall({ tool: "shell", command: "git status" }, ctx)).toBeUndefined();
   });
+
+  // The git- path and read-only `git branch` fixes in `gitWriteInCommand` must not open a credential read: once a line
+  // is no longer a Git write, the provider-state check still sees it.
+  it("a git- path or read-only git branch is allowed, a credential read beside it stays denied", () => {
+    const shell = (command: string) => ({ tool: "shell" as const, command });
+    for (const command of [
+      "timeout 600 npx vitest run src/cli/git-push.test.ts",
+      "cat src/cli/git-push.ts",
+      "git branch --show-current",
+      "git branch --list 'switchboard/*'",
+    ]) {
+      expect(guardToolCall(shell(command), ctx), command).toBeUndefined();
+    }
+    for (const command of [
+      `timeout 600 npx vitest run src/cli/git-push.test.ts && cat ${HOME}/.codex/auth.json`,
+      `timeout 600 cat ${HOME}/.claude/.credentials.json`,
+      "cat src/cli/git-push.ts; cat ~/.grok/auth.json",
+      "git branch --show-current && cat ~/.codex/auth.json",
+      `git branch -a; cp ${HOME}/.claude/.credentials.json /tmp/x`,
+    ]) {
+      expect(guardToolCall(shell(command), ctx), command).toMatchObject({ kind: "provider_state" });
+    }
+    for (const command of [
+      `cat ${HOME}/.codex/auth.json && git branch -D main`,
+      "timeout 600 cat src/cli/git-push.ts; git-push origin",
+    ]) {
+      expect(guardToolCall(shell(command), ctx), command).toMatchObject({ kind: "git_write" });
+      expect(guardToolCall(shell(command), { ...ctx, bypass: true }), command).toMatchObject({ kind: "git_write" });
+    }
+  });
 });
 
 describe("repo-local agent config is refused while repoConfig is disabled (Q-63)", () => {
