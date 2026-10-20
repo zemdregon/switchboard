@@ -1972,7 +1972,7 @@ by T9.14):
 | `stalled` | Run non-terminal, `RUNNING` or `LEASED`, and no `run_event` for this run in the last *T* minutes (§3.4.6); run is **not** cancelled |
 | `budget_exhausted` | Project (or global) budget refusal is active for admission (§3.4.6) |
 | `skill_cleanup_failed` | The run's newest `skill_removed` event reports an entry with `removal: "failed"`, or is malformed (fail closed) (§19.8; T16.6), in any state |
-| `secret_scan_blocked` | The meta-session's newest decisive `git_push` event (any run, operator pushes included) is a `SECRET_SCAN_BLOCKED` refusal: an `ACCEPTED` push clears it, a refusal for another reason does not (§20.9; T9.14); a terminal run shows it only when it is the newest of its meta-session |
+| `secret_scan_blocked` | The meta-session's newest decisive `git_push` event (any run, operator pushes included) is a `SECRET_SCAN_BLOCKED` refusal: an `ACCEPTED` push clears it, a refusal for another reason does not, and a `secret_scan_acknowledged` event naming that refusal's `push_id` (operator `git ack-secret-scan`) clears it until the next refusal (§20.9; T9.14); a terminal run shows it only when it is the newest of its meta-session |
 
 Multiple reasons may apply; the envelope and digest expose the highest-priority reason only (order:
 `skill_cleanup_failed`, `secret_scan_blocked`, `budget_exhausted`, `parked_loop`, `ci_fix_stuck`, `awaiting_approval`,
@@ -7819,15 +7819,15 @@ with the client's direct `delegate_task` keys" hold by construction). (Bug fix 2
   a `.gitattributes` line cannot hide added lines; paths Git counts as binary are still scanned and are listed in
   the event.
 - **Outcome.** A hit refuses the push with `SECRET_SCAN_BLOCKED`, appends `secret_scan_hit {stage: "push", rule_id,
-  path, line}` (never the value) and flags `secret_scan_blocked` until a clean push of that ref (an operator
-  acknowledgement through the CLI is Proposed, not built). The commit tool appends the same event with `stage:
+  path, line}` (never the value) and flags `secret_scan_blocked` until a clean push of that ref or an operator
+  acknowledgement through the CLI (built; see below). The commit tool appends the same event with `stage:
   "commit"` and does not refuse (built by the T9.14 split, part 1; see below).
 - **No override in-band.** The only allowlist is operator configuration (`git.secret_scan.allow`, rule id and path
   glob); no MCP field, privileged scope or bypass flag changes the result. The operator can always push by hand.
 
 **Implemented (T9.14, 2026-10-19, Delegated agent work, not owner-approved beyond owner decision 77).** The push side
-is built, and so is the commit-time warning (`stage: "commit"`, T9.14 split part 1, 2026-10-20); the operator
-acknowledgement through the CLI is not (the row stays `Partial` for it).
+is built, and so are the commit-time warning (`stage: "commit"`, T9.14 split part 1, 2026-10-20) and the operator
+acknowledgement through the CLI (T9.14 split part 2, 2026-10-20, Linus decision, Delegated, not owner-approved).
 
 - **Scanner.** `src/git/secret-scan.ts`. The rule set is exactly the artifact redactor's (`SECRET_RULES` and
   `PREFIXED_RULES` in `src/artifacts/redact.ts`, which gained stable ids; no second pattern set): `pem_private_key`,
@@ -7865,6 +7865,49 @@ acknowledgement through the CLI is not (the row stays `Partial` for it).
   the committing run. It never throws and never refuses; a scan or ledger failure records nothing and leaves the
   commit unchanged, and it raises no `needs_attention`. Tests: the commit-time cases in the "pre-push secret scan"
   block of `src/git/push.test.ts`.
+
+**Operator acknowledgement (T9.14 split part 2, 2026-10-20; Linus decision, Delegated, not owner-approved).** Built in
+`src/cli/secret-scan-ack.ts`. It relies on these as-built facts: a refused push is a `git_push` row (`outcome`
+`REFUSED_POLICY`, `detail` starting with `SECRET_SCAN_BLOCKED`; append-only) and a `git_push` run event whose payload
+holds `push_id`, `reason`, `ref` and `head_sha` (`recordGitPush` in `src/ledger/repo.ts`). The row has no meta-session
+column and `run_id` is NULL for an operator push, so the owning run and meta-session are read from the `git_push` run
+event that carries the `push_id`.
+
+- **Command.** `switchboard git ack-secret-scan <gps_id> [--json]`, beside `switchboard git push`. Operator CLI only:
+  not an MCP tool, not an HTTP route, not a field of any worker or agent surface, so a run cannot clear its own block.
+  No privileged scope or client setting enables it.
+- **Target and refusals.** `<gps_id>` is a `git_push` row id. Checks run in this order, each before any write:
+  1. No such row: `NOT_FOUND`.
+  2. The row is not a secret-scan refusal (`outcome` is not `REFUSED_POLICY`, or the `reason` of its `git_push` event
+     is not `SECRET_SCAN_BLOCKED`): `REFUSED`. An event that is missing or unreadable is also `REFUSED` (fail closed).
+  3. A `secret_scan_acknowledged` event with this `push_id` already exists: exit 0, `already_acknowledged`, no write
+     (idempotent); `still_blocked` in the report says whether a newer refusal still raises the flag.
+  4. A newer secret-scan refusal exists for the same meta-session and ref: `REFUSED` (only the latest refusal can be
+     acknowledged); the message names the newer push id.
+- **Ledger.** One `run_event` of type `secret_scan_acknowledged`, payload `{push_id, acknowledged_by, ref, head_sha}`
+  (`ref` and `head_sha` copied from the row; `acknowledged_by` is the operator's OS user, as `requested_by` is for
+  `operator_cancel_requested`), appended on the run that owns the refused push. No new table, no migration, no change
+  to `git_push`. The event holds no finding value, path or URL.
+- **Semantics.** It clears the derived `secret_scan_blocked` flag only, until the next refusal on that ref:
+  `secretScanBlockedFromPushEvents` takes the acknowledged push ids (`listSecretScanAcknowledgedPushIds` in
+  `src/ledger/repo.ts`), and the flag is false when the newest `SECRET_SCAN_BLOCKED` refusal is among them; a newer
+  refusal has a new `push_id`, so it re-raises the flag. It never allows a push: the pre-push scan still refuses the
+  same content, bypass runs included, and `git.secret_scan.allow` stays the only in-configuration way past a refusal.
+  There is no un-acknowledge command.
+- **Lock.** The rule of the other operator CLI ledger writes (`approve`, `deny` and `cancel`, ADR-0005): the
+  data-directory lock is held when it is free; if a live `serve` daemon holds it, the single event is written without
+  it. The checks and the insert share one `BEGIN IMMEDIATE` transaction, so two concurrent acknowledgements write one
+  event. This is not the `git push` rule (which refuses while a daemon holds the lock): this command runs no Git.
+- **Exit codes.** The CLI's existing scheme (`src/cli/main.ts`): 0 for `acknowledged` or `already_acknowledged`;
+  `NOT_FOUND` and `REFUSED` exit 1 with those error codes; 2 (`USAGE`) for a missing, extra or malformed id (not
+  `gps_...`).
+- **Tests.** `src/cli/secret-scan-ack.test.ts`: the flag clears and the event has the four fields; a second
+  acknowledgement exits 0 and the event count stays one; the same canary still refuses afterwards, through the
+  operator command and in an exempt approved bypass run, and the new refusal re-raises the flag; a superseded refusal
+  is `REFUSED` and writes nothing; an accepted push, a `POLICY_NONE` refusal and a row with no event are `REFUSED`; an
+  unknown id is `NOT_FOUND`; malformed usage exits 2; the write succeeds while a daemon holds the lock; the ledger never
+  holds the value; no MCP tool name and no module other than `src/cli/main.ts` reaches the command.
+  `src/git/secret-scan.test.ts` covers the derivation with acknowledged ids.
 
 ### 20.10 Repository-configuration preflight (FR-POL-11, T3.25)
 
