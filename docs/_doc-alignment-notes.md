@@ -1049,7 +1049,7 @@ as history.
   detail under them); no ROADMAP task row exists for this fix, so no status or evidence field is
   touched. `node scripts/check-docs.mjs` passes. It does not block PR #790.
 
-## 56. Decision requests (T14.15, PR #789): SRS as-built notes fixed here; two stragglers left for other lanes
+## 58. Decision requests (T14.15, PR #789): SRS as-built notes fixed here; two stragglers left for other lanes
 
 - This PR builds T14.15 (Done 2026-10-20) and updates the ROADMAP T14.15 row, the M14 row (`FR-CTL-13 (T14.15, Done)`),
   the SDD FR-CTL-13 row (Proposed to Done), ADR-0048 item 3 (`decision_requested`), LLD §20.3 ("As built") and the
