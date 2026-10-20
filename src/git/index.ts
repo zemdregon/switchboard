@@ -1,4 +1,17 @@
 export {
+  BASE_REFRESH_EVENT,
+  type BaseRefreshInput,
+  type BaseRefreshOptions,
+  type BaseRefreshOutcome,
+  type BaseRefreshReason,
+  type BaseRefreshResult,
+  DEFAULT_BASE_REFRESH_TIMEOUT_MS,
+  FETCH_CONFIG,
+  fetchArgs,
+  refreshBase,
+  trackingRefOf,
+} from "./base-refresh.js";
+export {
   type ChannelLimits,
   ChannelOpenError,
   DEFAULT_CHANNEL_LIMITS,

@@ -37,6 +37,7 @@ export {
 } from "./gc.js";
 export { CONTROLLER_IDENTITY, GitError, MIN_GIT_VERSION } from "./git.js";
 export {
+  type BaseRefreshRequest,
   type FinalizeResult,
   type MutationAssessment,
   type PreparedWorkspace,

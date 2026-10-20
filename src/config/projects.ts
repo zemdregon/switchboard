@@ -64,6 +64,8 @@ export interface ResolvedContext {
   /** The path exactly as written in the config; canonicalised and checked by `projects validate` (and again at admission, T9.2). */
   readonly path: string;
   readonly baseRef: string;
+  /** LLD §5.2 (ADR-0067): present only when the context sets `base_remote`. */
+  readonly baseRemote?: string;
   readonly primary: boolean;
   readonly writable: boolean;
   readonly push: { policy: "none" | "branch"; remote?: string; branchPrefix?: string };
@@ -174,6 +176,15 @@ export function checkProjects(cfg: SwitchboardConfig): string[] {
         errs.push(
           `${cat}.push.remote: must be the name of a remote configured in the repository (letters, digits, '.', '_', '-'; not a URL)`,
         );
+      }
+      // LLD §5.2 (ADR-0067): the base refresh fetches into the primary context's repository only, by remote NAME.
+      if (c.base_remote !== undefined) {
+        if (!isRemoteName(c.base_remote)) {
+          errs.push(
+            `${cat}.base_remote: must be the name of a remote configured in the repository (letters, digits, '.', '_', '-'; not a URL)`,
+          );
+        }
+        if (!isPrimary) errs.push(`${cat}.base_remote: only the primary context can set base_remote`);
       }
       if (c.push?.branch_prefix !== undefined && !isBranchPrefix(c.push.branch_prefix)) {
         errs.push(
@@ -287,6 +298,7 @@ export function resolveProjects(
           kind: c.kind,
           path: c.path,
           baseRef: c.base_ref,
+          ...(c.base_remote !== undefined ? { baseRemote: c.base_remote } : {}),
           primary,
           writable: c.writable ?? primary,
           push: {

@@ -387,6 +387,11 @@ export interface ContextConfig {
   kind: ContextKind;
   path: string;
   base_ref: string;
+  /**
+   * FR-PRJ-02 note (LLD §5.2, ADR-0067): a remote NAME the daemon fetches `base_ref` from into its remote-tracking ref
+   * before a meta-session's first worktree is created. Primary context only; absent: no fetch (the local branch as is).
+   */
+  base_remote?: string;
   primary?: boolean;
   writable?: boolean;
   push?: { policy: (typeof PUSH_POLICIES)[number]; remote?: string; branch_prefix?: string };
@@ -589,6 +594,7 @@ const contextSchema = {
     kind: { enum: [...CONTEXT_KINDS] },
     path: { type: "string", minLength: 1 },
     base_ref: { type: "string", minLength: 1 },
+    base_remote: { type: "string", minLength: 1 },
     primary: { type: "boolean" },
     writable: { type: "boolean" },
     push: {
