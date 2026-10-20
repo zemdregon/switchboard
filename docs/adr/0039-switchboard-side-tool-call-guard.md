@@ -78,6 +78,15 @@ already goes through.
   privileged snapshot records `repoConfig: "scoped"`, so the check never refused a privileged run, including one whose
   approved scope says `repository_config` `disabled`. The effective value now comes from the scope
   (`effectiveRepoConfig`, `src/policy/repo-agent-config.ts`; an unmapped mode fails closed to `disabled`).
+- Positive (2026-10-20, Linus decision, Delegated, not owner-approved): two false positives that failed real runs
+  `PERMISSION_BLOCKED` are fixed in `gitWriteInCommand`. Behind a launcher, a `git-` word with a file extension other
+  than `.exe` (`timeout 600 npx vitest run src/cli/git-push.test.ts`) is an argument, not a Git subprogram; a `git-`
+  word in program position is still refused. The listing forms of `git branch` (bare, `--show-current`, `--list`/`-l`,
+  `-a`, `-r`, `-v`, `--contains`, `--merged`, `--points-at`, `--sort`, `--format`, ...) are read-only; a positional
+  name outside list mode, any other or abbreviated option, and a name after `--` stay `git_write` (create, delete,
+  move, copy, force, upstream, description). A glob or variable argument is `uncertain`. The shell-allowlist check
+  (`gitWriteRisk`) is unchanged: `git branch` in any form is still refused there. Tests: `src/adapters/git-write.test.ts`
+  and `src/adapters/git-write-detector.property.test.ts`.
 - Negative: both refusals are lexical (`lstat` on the listed paths; resolved paths, symlinks not followed), run after
   the adapter's compile, and use `HOME` from the lifecycle's `baseEnv` (the process environment by default).
 
