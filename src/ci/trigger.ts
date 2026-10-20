@@ -418,7 +418,7 @@ export async function pollCiTriggers(deps: CiTriggerDeps): Promise<CiTriggerPoll
 
 type FailFn = (reason: CiTriggerErrorReason) => void;
 
-/** T15.7: true when the ref's state carries `superseded_by` (migration 0028). */
+/** T15.7: true when the ref's state carries `superseded_by` (migration 0029). */
 export function isRefSuperseded(db: Database.Database, projectId: string, publishRef: string): boolean {
   const row = db
     .prepare("SELECT superseded_by FROM ci_trigger_ref_state WHERE project_id = ? AND publish_ref = ?")

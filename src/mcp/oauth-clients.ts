@@ -118,9 +118,19 @@ export interface RegisteredClient extends ClientMetadata {
   readonly clientId: string;
   readonly status: ClientStatus;
   readonly createdAt: string;
+  /**
+   * T13.11 (FR-MCP-19): the Client Identifier URL when the client identified itself with a Client ID Metadata
+   * Document (`oauth_cimd_client`, migration 0028); absent for a client registered through RFC 7591.
+   */
+  readonly cimdUrl?: string;
 }
 
 export type RegisterResult = { ok: true; client: RegisteredClient } | { ok: false; reason: "too_many_pending" };
+
+/** `id_conflict`: the URL's derived identifier is already another client's (a registered one, or another URL's). */
+export type CimdRegisterResult =
+  | { ok: true; client: RegisteredClient }
+  | { ok: false; reason: "too_many_pending" | "id_conflict" };
 
 interface ClientRow {
   client_id: string;
@@ -129,6 +139,24 @@ interface ClientRow {
   grant_types_json: string;
   status: ClientStatus;
   created_at: string;
+  cimd_url: string | null;
+}
+
+const SELECT_CLIENT = `SELECT c.client_id, c.client_name, c.redirect_uris_json, c.grant_types_json, c.status, c.created_at,
+       m.url AS cimd_url
+  FROM oauth_client c LEFT JOIN oauth_cimd_client m ON m.client_id = c.client_id
+ WHERE c.client_id = ?`;
+
+function fromRow(row: ClientRow): RegisteredClient {
+  return {
+    clientId: row.client_id,
+    redirectUris: JSON.parse(row.redirect_uris_json) as string[],
+    grantTypes: JSON.parse(row.grant_types_json) as string[],
+    ...(row.client_name !== null ? { clientName: row.client_name } : {}),
+    status: row.status,
+    createdAt: row.created_at,
+    ...(row.cimd_url !== null ? { cimdUrl: row.cimd_url } : {}),
+  };
 }
 
 export interface OAuthClientStoreDeps {
@@ -148,30 +176,75 @@ export class OAuthClientStore {
     this.random = deps.randomBytes ?? randomBytes;
   }
 
+  /** True while {@link MAX_PENDING_CLIENTS} clients created within {@link PENDING_WINDOW_MS} still wait for a decision. */
+  pendingCapReached(): boolean {
+    const since = new Date(this.now().getTime() - PENDING_WINDOW_MS).toISOString();
+    const { n } = this.db
+      .prepare("SELECT COUNT(*) AS n FROM oauth_client WHERE status = 'pending' AND created_at > ?")
+      .get(since) as { n: number };
+    return n >= MAX_PENDING_CLIENTS;
+  }
+
+  private insertPending(clientId: string, metadata: ClientMetadata, createdAt: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO oauth_client (client_id, client_name, redirect_uris_json, grant_types_json, status, created_at)
+         VALUES (?, ?, ?, ?, 'pending', ?)`,
+      )
+      .run(
+        clientId,
+        metadata.clientName ?? null,
+        JSON.stringify(metadata.redirectUris),
+        JSON.stringify(metadata.grantTypes),
+        createdAt,
+      );
+  }
+
   /** Store a validated registration as `pending`, unless the pending cap is reached. */
   register(metadata: ClientMetadata): RegisterResult {
     const now = this.now();
-    const since = new Date(now.getTime() - PENDING_WINDOW_MS).toISOString();
     return this.db.transaction((): RegisterResult => {
-      const { n } = this.db
-        .prepare("SELECT COUNT(*) AS n FROM oauth_client WHERE status = 'pending' AND created_at > ?")
-        .get(since) as { n: number };
-      if (n >= MAX_PENDING_CLIENTS) return { ok: false, reason: "too_many_pending" };
+      if (this.pendingCapReached()) return { ok: false, reason: "too_many_pending" };
       const clientId = `sbc_${this.random(16).toString("base64url")}`;
       const createdAt = now.toISOString();
-      this.db
-        .prepare(
-          `INSERT INTO oauth_client (client_id, client_name, redirect_uris_json, grant_types_json, status, created_at)
-           VALUES (?, ?, ?, ?, 'pending', ?)`,
-        )
-        .run(
-          clientId,
-          metadata.clientName ?? null,
-          JSON.stringify(metadata.redirectUris),
-          JSON.stringify(metadata.grantTypes),
-          createdAt,
-        );
+      this.insertPending(clientId, metadata, createdAt);
       return { ok: true, client: { ...metadata, clientId, status: "pending", createdAt } };
+    })();
+  }
+
+  /**
+   * T13.11 (FR-MCP-19): store the metadata just fetched for a Client Identifier URL under its derived `clientId`. A new
+   * URL creates a `pending` client (the same cap as registration, since anyone can present a URL); a known one keeps
+   * its status and gets the fresh metadata (nothing is cached across consents). The derived identifier must belong to
+   * this URL: a registered client or another URL under it is `id_conflict`.
+   */
+  registerCimd(clientId: string, url: string, metadata: ClientMetadata): CimdRegisterResult {
+    const now = this.now().toISOString();
+    return this.db.transaction((): CimdRegisterResult => {
+      const existing = this.get(clientId);
+      if (existing !== undefined) {
+        if (existing.cimdUrl !== url) return { ok: false, reason: "id_conflict" };
+        this.db
+          .prepare(
+            "UPDATE oauth_client SET client_name = ?, redirect_uris_json = ?, grant_types_json = ? WHERE client_id = ?",
+          )
+          .run(
+            metadata.clientName ?? null,
+            JSON.stringify(metadata.redirectUris),
+            JSON.stringify(metadata.grantTypes),
+            clientId,
+          );
+        this.db.prepare("UPDATE oauth_cimd_client SET fetched_at = ? WHERE client_id = ?").run(now, clientId);
+        const refreshed = this.get(clientId);
+        if (refreshed === undefined) throw new Error("CIMD client vanished inside its own transaction");
+        return { ok: true, client: refreshed };
+      }
+      if (this.pendingCapReached()) return { ok: false, reason: "too_many_pending" };
+      this.insertPending(clientId, metadata, now);
+      this.db
+        .prepare("INSERT INTO oauth_cimd_client (client_id, url, fetched_at) VALUES (?, ?, ?)")
+        .run(clientId, url, now);
+      return { ok: true, client: { ...metadata, clientId, status: "pending", createdAt: now, cimdUrl: url } };
     })();
   }
 
@@ -190,20 +263,8 @@ export class OAuthClientStore {
   }
 
   get(clientId: string): RegisteredClient | undefined {
-    const row = this.db
-      .prepare(
-        "SELECT client_id, client_name, redirect_uris_json, grant_types_json, status, created_at FROM oauth_client WHERE client_id = ?",
-      )
-      .get(clientId) as ClientRow | undefined;
-    if (!row) return undefined;
-    return {
-      clientId: row.client_id,
-      redirectUris: JSON.parse(row.redirect_uris_json) as string[],
-      grantTypes: JSON.parse(row.grant_types_json) as string[],
-      ...(row.client_name !== null ? { clientName: row.client_name } : {}),
-      status: row.status,
-      createdAt: row.created_at,
-    };
+    const row = this.db.prepare(SELECT_CLIENT).get(clientId) as ClientRow | undefined;
+    return row ? fromRow(row) : undefined;
   }
 }
 

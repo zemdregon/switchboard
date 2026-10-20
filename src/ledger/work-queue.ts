@@ -34,7 +34,7 @@ export interface WorkItemRow {
   created_at: string;
   updated_at: string;
   terminal_at: string | null;
-  /** T15.7 (migration 0028): per-project dedupe key, `null` when unset. */
+  /** T15.7 (migration 0029): per-project dedupe key, `null` when unset. */
   dedupe_key: string | null;
   /** T15.7: JSON array of path globs, `null` when unset. */
   hot_paths_json: string | null;
@@ -127,7 +127,7 @@ export interface WorkQueueLedgerSlice {
   getRefConflictForWorkItem(workItemId: string): RefConflictRow | undefined;
 }
 
-/** T15.7 (migration 0028): one `run_rebase` row. */
+/** T15.7 (migration 0029): one `run_rebase` row. */
 export interface RunRebaseRow {
   run_id: string;
   work_item_id: string;
@@ -140,7 +140,7 @@ export interface RunRebaseRow {
   updated_at: string;
 }
 
-/** T15.7 (migration 0028): one `ci_ref_conflict` row. */
+/** T15.7 (migration 0029): one `ci_ref_conflict` row. */
 export interface RefConflictRow {
   id: string;
   project_id: string;
@@ -165,7 +165,7 @@ const ITEM_COLS = `id, project_id, creator_client_id, state, priority, request_j
   idempotency_key, admitted_run_id, last_error_code, created_at, updated_at, terminal_at, dedupe_key, hot_paths_json,
   superseded_by`;
 
-/** The partial unique index `project_work_item_dedupe` of migration 0028, as a predicate. */
+/** The partial unique index `project_work_item_dedupe` of migration 0029, as a predicate. */
 const DEDUPE_HELD = `dedupe_key IS NOT NULL AND superseded_by IS NULL
   AND state NOT IN ('CANCELLED', 'FAILED_ADMISSION') AND (state = 'DONE' OR terminal_at IS NULL)`;
 

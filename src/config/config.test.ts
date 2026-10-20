@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_BUNDLE_BOUNDS, MIN_BUNDLE_BYTES } from "../continuity/bundle-schema.js";
+import { cimdInternalClientId } from "../mcp/oauth-cimd.js";
 import {
   ConfigError,
   effectiveMaxProfile,
@@ -167,7 +168,38 @@ describe("loadConfig", () => {
         mcpPath: "/mcp",
         allowedOrigins: [],
         clientMap: new Map(),
+        cimd: true,
       });
+    });
+
+    it("maps a Client Identifier URL under its derived id and takes cimd: false (T13.11, FR-MCP-19)", () => {
+      const url = "https://app.example/oauth/client";
+      const mapped = http({ ...on, clients: [{ oauth_client_id: url, mcp_client: "main" }], cimd: false });
+      expect(mapped.httpTransport?.cimd).toBe(false);
+      expect(mapped.httpTransport?.clientMap.get(cimdInternalClientId(url))).toBe("main");
+      expect(mapped.httpTransport?.clientMap.has(url)).toBe(false);
+      expect(() =>
+        http({
+          ...on,
+          clients: [
+            { oauth_client_id: url, mcp_client: "main" },
+            { oauth_client_id: url, mcp_client: "main" },
+          ],
+        }),
+      ).toThrow(/mapped more than once/);
+      for (const bad of [
+        "https://app.example/",
+        "https://app.example/c?x=1",
+        "https://10.0.0.1/c",
+        "https://App.example/c",
+      ]) {
+        expect(() => http({ ...on, clients: [{ oauth_client_id: bad, mcp_client: "main" }] })).toThrow(
+          /Client Identifier URL must be https/,
+        );
+      }
+      expect(() => http({ ...on, clients: [{ oauth_client_id: "http://app.example/c", mcp_client: "main" }] })).toThrow(
+        ConfigError,
+      );
     });
 
     it("maps OAuth clients to MCP clients and refuses unsafe or unknown targets (T13.4, FR-MCP-14)", () => {

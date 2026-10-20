@@ -1497,7 +1497,9 @@ previous provider and model, runs that switched, by reason) are a query over `ro
 
 Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted 2026-10-14 under T13.1), with its
 SDK and protocol-era statements superseded in part by [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md) (T13.10).
-Requirements FR-MCP-12 to 17. Off unless the config enables it.
+Requirements FR-MCP-12 to 17 and FR-MCP-19 (Client ID Metadata Documents, T13.11; the SDK-era move FR-MCP-18 is in
+[§20.11](#2011-mcp-sdk-v2-and-client-id-metadata-documents-fr-mcp-18-fr-mcp-19-t1310-t1311)). Off unless the config
+enables it.
 
 - **Endpoint.** One Streamable HTTP path (`/mcp`), bound to `127.0.0.1` unless `transport.http.bind` is set explicitly.
   Every request checks the `Origin` header against `transport.http.allowed_origins` before routing; an `Origin` that is
@@ -1510,15 +1512,18 @@ Requirements FR-MCP-12 to 17. Off unless the config enables it.
   a path that is not `/`, under `/.well-known/` or an authorization-server endpoint), `bind` (an IP literal, default
   `127.0.0.1`), `port`, `allow_non_loopback` (default false), `allowed_origins` (T13.2: at most 32 serialised origins
   such as `https://app.example`, exactly as a browser sends them; default empty, which refuses every request carrying
-  an `Origin`). `public_url` and `port` are required when enabled. Plain
+  an `Origin`). `public_url` and `port` are required when enabled. `cimd` (T13.11: Client ID Metadata Documents
+  accepted as `client_id`; default true, `false` makes a URL `client_id` an unknown client with no fetch; stdio
+  unaffected). Plain
   HTTP in `public_url` is refused at load, even for localhost. Code: `src/config/http-transport.ts`.
 - **Metadata.** `GET /.well-known/oauth-protected-resource` and the path-suffixed form
   `/.well-known/oauth-protected-resource/<endpoint path>` (RFC 9728 §3.1) return `resource` (the normalised
   `public_url`), `authorization_servers` (the embedded issuer: the origin of `public_url`), `bearer_methods_supported:
   ["header"]` and `resource_name`. `GET /.well-known/oauth-authorization-server` (RFC 8414) returns the issuer, the
   `/authorize`, `/token` and `/register` endpoints, `response_types_supported: ["code"]`, `grant_types_supported:
-  ["authorization_code", "refresh_token"]`, `code_challenge_methods_supported: ["S256"]` and
-  `token_endpoint_auth_methods_supported: ["none"]`. Each of those three endpoints answers 404 when `serve` has not
+  ["authorization_code", "refresh_token"]`, `code_challenge_methods_supported: ["S256"]`,
+  `token_endpoint_auth_methods_supported: ["none"]` and `client_id_metadata_document_supported` (the `cimd` flag,
+  T13.11). Each of those three endpoints answers 404 when `serve` has not
   configured it (registration: T13.7; authorization and token: T13.8). Code: `src/mcp/http.ts`.
 - **Challenge.** A request without a valid bearer token gets HTTP 401 with `WWW-Authenticate` naming the metadata URL.
   The server never returns a token or any authorization detail.
@@ -1565,8 +1570,9 @@ CREATE INDEX oauth_token_client ON oauth_token(client_id, kind);
   `client_id_issued_at`, `client_name`, `redirect_uris`, `grant_types`, `response_types: ["code"]` and
   `token_endpoint_auth_method: "none"`; no secret and no registration access token (RFC 7592 is not offered). At most 16
   `pending` clients created in the last 24 hours may exist; another registration gets 429 `temporarily_unavailable`
-  with `Retry-After: 3600`. The endpoint passes the `Origin` check first. `serve` logs the new `client_id` only. Code:
-  `src/mcp/oauth-clients.ts`, `src/mcp/http.ts`.
+  with `Retry-After: 3600`. The endpoint passes the `Origin` check first. `serve` logs the new `client_id` only. Client
+  ID Metadata Documents do not use this endpoint (T13.11, [§20.11](#2011-mcp-sdk-v2-and-client-id-metadata-documents-fr-mcp-18-fr-mcp-19-t1310-t1311)).
+  Code: `src/mcp/oauth-clients.ts`, `src/mcp/http.ts`.
 
 ```sql
 CREATE TABLE oauth_client (              -- migration 0011 (T13.7); status changes only by operator decision
@@ -1582,14 +1588,17 @@ CREATE INDEX oauth_client_status ON oauth_client(status, created_at);
 ```
 
 - **Authorization, consent and token endpoints as built (T13.8, Q-75, Q-76, Delegated).** `GET /authorize` requires
-  `response_type=code`, a registered `client_id`, a `redirect_uri` equal to a registered one,
+  `response_type=code`, a registered `client_id` (or, since T13.11, a Client ID Metadata Document URL, fetched afresh
+  at this endpoint only; [§20.11](#2011-mcp-sdk-v2-and-client-id-metadata-documents-fr-mcp-18-fr-mcp-19-t1310-t1311)), a
+  `redirect_uri` equal to a registered one,
   `code_challenge_method=S256` with a 43-character `code_challenge`, and `resource` equal to the resource identifier;
   `scope` is absent or `mcp` (the only grantable scope; `privileged` and anything else get `invalid_scope`); `state` is
   at most 512 characters; no parameter may repeat. An unknown client or unregistered redirect URI gets an HTML error
   page and no redirect; every other error redirects with the RFC 6749 error code, `state` and `iss` (RFC 9207) for an
   approved client only, and is an error page for a pending, denied or revoked one (no open redirector through a
   self-registered URI, RFC 9700 §4.11.2). A valid request shows the consent page: static HTML (escaped client name,
-  client id, redirect URI, scope), with `Content-Security-Policy: default-src 'none'; form-action 'self' <redirect
+  client id (for a CIMD client the URL, with its host on its own line, T13.11), redirect URI, scope),
+  with `Content-Security-Policy: default-src 'none'; form-action 'self' <redirect
   origin>; frame-ancestors 'none'; base-uri 'none'`, `X-Frame-Options: DENY`, `Cache-Control: no-store`,
   `Referrer-Policy: no-referrer`. The consent request (random id, CSRF token hash, PKCE challenge, at most 32 open; when
   full, the oldest request of a not-yet-approved client is dropped first; 10 minutes) is held in memory; the CSRF token
@@ -1631,8 +1640,10 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
   The entry's `max_profile` is frozen into the policy snapshot at admission (FR-MCP-06, FR-POL-01). No claim can name
   `privileged`.
 - **Mapping and mount as built (T13.4, Q-77, Delegated).** The token's subject is its OAuth client id.
-  `transport.http.clients` lists `{ "oauth_client_id": "sbc_...", "mcp_client": "<mcp_clients id>" }` (at most 64, each
-  OAuth client once); `transport.http.default_mcp_client` optionally names the entry for an approved OAuth client with
+  `transport.http.clients` maps an `oauth_client_id` (`sbc_...`, or since T13.11 the client's `https` metadata-document
+  URL, stored under its derived `sbc_` id; [§20.11](#2011-mcp-sdk-v2-and-client-id-metadata-documents-fr-mcp-18-fr-mcp-19-t1310-t1311))
+  to an `mcp_client` id (at most 64 entries, each OAuth client once);
+  `transport.http.default_mcp_client` optionally names the entry for an approved OAuth client with
   no mapping. Config load refuses a target that is not in `mcp_clients` or that has `privileged_approval: not_required`,
   so a remote client's `privileged` runs always wait for the operator CLI (FR-MCP-14, ADR-0019), and a
   `default_mcp_client` with a `privileged` ceiling (only an explicit mapping may reach one). The token's OAuth client
@@ -2238,6 +2249,12 @@ As built (T14.11, Delegated): the filter lives in `src/mcp/tool-profile.ts` and 
 project-admin call is still recorded, FR-PRJ-10). A console name with no registered handler yet is absent rather than
 invented. Config load refuses an unknown `tool_profile` value and refuses `console` together with `manage_projects:
 true`, which would otherwise be a silent no-op.
+
+As built (unknown-tool `details.tools`, 2026-10-20, Delegated, not owner-approved): both `tools/call`
+unknown-tool refusals report `details.tools` as exactly the names `tools/list` returns for that client, derived from
+the same descriptors (`offeredDescriptors` in `src/mcp/server.ts`), so the list can never lag the registered set
+(work-queue, skill and approval-proxy tools included when offered). Pinned by `src/mcp/unknown-tool.test.ts`
+(`details.tools` equals the sorted `tools/list` names for an orchestrator and a console client).
 
 #### 3.4.11 Consent-page approval link (FR-CTL-09, ADR-0047)
 
@@ -7429,7 +7446,7 @@ fields; `--help` only, no call to GitHub):
    prefix ends at the first of `* ? [ ] { } ! \`; an empty prefix overlaps everything. "Running" is `ADMITTING`, or
    `ADMITTED` with its run not terminal; the dequeue takes the first `READY` item in §18.3 order that does not overlap
    (`claimReadyWorkItem`, `src/queue/hot-paths.ts`). Both enter the idempotency fingerprint.
-6. **Migration 0028** (`src/ledger/migrations/0028_published_ref_conflicts.ts`): `project_work_item.dedupe_key`,
+6. **Migration 0029** (`src/ledger/migrations/0029_published_ref_conflicts.ts`): `project_work_item.dedupe_key`,
    `hot_paths_json`, `superseded_by` with the partial unique index `project_work_item_dedupe` on `(project_id,
    dedupe_key)`; `ci_trigger_ref_state.superseded_by`, `superseded_at`; `ci_ref_conflict` (kind `rebase` or
    `reimplement`, PR number, head SHA, continued meta-session, work item); `run_rebase` (`pending`, `prepared` or
@@ -7644,6 +7661,8 @@ target must not be private, loopback, link-local or unique-local; at most one re
 document's `client_id` must equal its URL; redirect URIs `https` only; the consent page shows the URL's host. Stdio is
 unchanged.
 
+(Superseded in one respect by the T13.11 as-built below: no redirects are followed at all, per the draft's §5.)
+
 **T13.10 as built (2026-10-19, Delegated; [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md)).** The packages are
 `@modelcontextprotocol/server`, `client` and `core`, exact-pinned 2.3.1 (`client` is a runtime dependency because the
 fake provider CLI shipped in `dist` is an MCP client). `src/mcp/server.ts` and the Git tool shim keep the low-level
@@ -7667,6 +7686,51 @@ used). Neither leg issues or accepts a session id. Evidence: `src/mcp/http-eras.
 2026-07-28 client both initialize and call a tool through the real token checks; no response carries a session id; a
 presented session id is still refused; a non-JSON body is refused), the unchanged T13.9 acceptance in
 `src/mcp/mcp.test.ts`, and every unchanged stdio and in-memory suite.
+
+**T13.11 as built (2026-10-19, Delegated; [ADR-0065](../adr/0065-client-id-metadata-documents.md)).** A `client_id`
+that is an `https` URL names a Client ID Metadata Document (`src/mcp/oauth-cimd.ts`,
+`draft-ietf-oauth-client-id-metadata-document`), accepted while `transport.http.cimd` is `true` (the default;
+`false` makes such a `client_id` an unknown client with no fetch; stdio has no authorization server and is
+unaffected). The identifier must be its own WHATWG serialisation: `https`, a DNS-name host (an IP literal is refused),
+a path other than `/`, no userinfo, query, fragment or dot segments, at most 2048 characters; the server also refuses
+its own origin before fetching. The fetch happens at `GET /authorize` only: the server resolves the host itself and
+refuses the client when
+**any** resolved address is special-use (unspecified, loopback, private, shared address space, link-local,
+unique-local, multicast, documentation, benchmarking or reserved; the IPv4-mapped, NAT64 well-known-prefix, 6to4 and
+Teredo forms of a blocked IPv4 range are blocked too, and `64:ff9b:1::/48` whole); the TLS connection is pinned to
+the checked address with the server name and certificate check set to the host (no second resolution); one `GET`,
+with any redirect refused (the draft's §5 says MUST NOT follow; the Proposed "at most one redirect" above is
+tightened to none); the response must be `200` with a JSON media type; the whole fetch, resolution included, ends
+after 5 s; a body over 64 KiB, declared or received, is refused unparsed; at most 2 fetches run at once; the trust
+store is Node's default, with a certificate authority injectable only through the fetcher's constructor (tests). The
+document's `client_id` must equal the identifier by simple string comparison, then `checkClientMetadata` applies as
+for a registration request. The client is stored in `oauth_client` under `sbc_` + 128 bits of the URL's SHA-256
+(`cimdInternalClientId`, so `oauth_token`, `http_subject` and the `transport.http.clients` mapping are unchanged;
+`oauth_client_id` there may be the URL, mapped to the derived identifier at load) with the URL in `oauth_cimd_client`
+(migration 0028, DDL below). A new URL is `pending` under the registration cap, checked before the fetch; a denied or
+revoked client gets no fetch on its behalf; every authorization request fetches afresh and refreshes the stored
+metadata (nothing is cached across consents); `POST /token` takes the URL as `client_id` and never fetches. The
+consent page shows the URL as the client id, its host on its own line and the name labelled as taken from the
+document; a refused document is an error page with no redirect. The authorization-server metadata carries
+`client_id_metadata_document_supported`. Audit events `cimd_fetched` and `cimd_refused` carry the derived id, the host
+and a reason code, never the document. Evidence: `src/mcp/oauth-cimd.test.ts` ("passes consent with the URL's host
+shown and gets an audience-bound token under the normal PKCE flow"; "refuses a URL resolving to a … address before
+any connection" for loopback, private, link-local, IPv4-mapped, NAT64, unique-local and IPv6 loopback; "refuses a
+redirect, whether it points to a private address or anywhere else"; "refuses an oversize document, declared or
+streamed, without parsing it"; "refuses a slow document at the fetch deadline"; "refuses a document whose client_id
+is not its URL, and one that is not a public-client document"; "applies the pending-registration cap before fetching,
+and refuses a denied client without fetching"; "blocks special-use addresses in every transition form and allows
+public ones"), `src/config/config.test.ts` ("maps a Client Identifier URL under its derived id and takes cimd:
+false"), `src/ledger/ledger.test.ts` ("0028 adds oauth_cimd_client …"); the DCR suites `src/mcp/oauth-clients.test.ts`
+and `src/mcp/oauth-server.test.ts` pass unchanged.
+
+```sql
+CREATE TABLE oauth_cimd_client (         -- migration 0028 (T13.11); the URL behind a derived sbc_ client id
+  client_id  TEXT PRIMARY KEY CHECK (client_id GLOB 'sbc_*') REFERENCES oauth_client(client_id) ON DELETE CASCADE,
+  url        TEXT NOT NULL UNIQUE CHECK (url GLOB 'https://*' AND length(url) <= 2048),
+  fetched_at TEXT NOT NULL
+) STRICT;
+```
 
 ### 20.12 Property tests and coverage (NFR-MAINT-06, T8.11)
 

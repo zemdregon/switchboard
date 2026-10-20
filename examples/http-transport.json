@@ -13,7 +13,8 @@
       "port": 18790,
       "passphrase_hash": "scrypt$17$8$1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "clients": [{ "oauth_client_id": "sbc_0123456789012345678901", "mcp_client": "remote" }],
-      "default_mcp_client": "orchestrator"
+      "default_mcp_client": "orchestrator",
+      "cimd": true
     }
   }
 }

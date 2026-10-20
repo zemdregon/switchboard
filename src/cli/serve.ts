@@ -113,6 +113,7 @@ import { createChannelSearchPort, searchProjectResolver } from "../mcp/channel-s
 import {
   AttemptLimiter,
   AuthorizationServer,
+  CimdFetcher,
   createSwitchboardServer,
   type HttpTransportListener,
   OAuthClientStore,
@@ -1417,6 +1418,9 @@ async function runDaemon(
             authorizationServer: new AuthorizationServer(config.httpTransport, {
               clients: oauthClients,
               tokens: oauthTokens,
+              // T13.11 (FR-MCP-19): Client ID Metadata Documents, fetched under the default limits and address policy
+              // (`transport.http.cimd: false` turns the fetch off; the fetcher is then never consulted).
+              cimd: new CimdFetcher(),
               pairing,
               limiter: passphraseLimiter,
               ...(config.httpTransport.passphraseHash !== undefined

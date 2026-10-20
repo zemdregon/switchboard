@@ -1,5 +1,5 @@
 /**
- * Migration 0028 (T15.7; FR-QUE-07, FR-QUE-05, LLD §20.4, ADR-0050 amendment 1): published-ref conflicts and supersede.
+ * Migration 0029 (T15.7; FR-QUE-07, FR-QUE-05, LLD §20.4, ADR-0050 amendment 1): published-ref conflicts and supersede.
  *
  * `project_work_item` gains three columns:
  * - `dedupe_key`: optional per-project key. The partial unique index refuses a second item with the same key while one

@@ -33,12 +33,21 @@
  * - Lifetimes (Assumption): access token {@link ACCESS_TOKEN_TTL_MS}, refresh token {@link REFRESH_TOKEN_TTL_MS} from
  *   its issue (each rotation issues a new one), consent request {@link CONSENT_REQUEST_TTL_MS}.
  *
+ * T13.11 (FR-MCP-19, LLD §20.11, ADR-0065): a `client_id` that is an `https` URL names a Client ID Metadata Document
+ * (`oauth-cimd.ts`). With `transport.http.cimd` on (the default) and a fetcher wired, `GET /authorize` fetches the
+ * document afresh under the fetcher's limits, stores the metadata under the URL's derived `sbc_` identifier (a new URL
+ * as a `pending` client, under the registration cap), and shows the URL's host on the consent page; then consent and
+ * `POST /token` run exactly as for a registered client. No fetch happens at `/token`, for a denied or revoked client,
+ * for a URL whose origin is this issuer, or when the fetch cap is busy. A refused document is an error page with no
+ * redirect, like an unknown client.
+ *
  * Nothing secret is logged or echoed: `onEvent` receives event names, client ids, methods and reason codes only.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HttpTransportSettings } from "../config/http-transport.js";
 import { mediaType, readBody } from "./http-body.js";
+import { type CimdFetcher, checkCimdClientId, cimdInternalClientId, looksLikeCimdClientId } from "./oauth-cimd.js";
 import type { OAuthClientStore, RegisteredClient } from "./oauth-clients.js";
 import { consentHeaders, consentPage, errorPage, sendHtml } from "./oauth-consent-page.js";
 import type { PairingCodeStore } from "./oauth-pairing.js";
@@ -76,13 +85,24 @@ export type AuthEvent =
   | "code_reused"
   | "token_issued"
   | "token_refused"
-  | "refresh_reused";
+  | "refresh_reused"
+  | "cimd_fetched"
+  | "cimd_refused";
 
-/** Audit fields: never a token, code, passphrase or pairing code. */
-export type AuthEventFields = { client_id?: string; method?: "passphrase" | "pairing_code"; reason?: string };
+/** Audit fields: never a token, code, passphrase or pairing code. `host` is a Client Identifier URL's host (T13.11). */
+export type AuthEventFields = {
+  client_id?: string;
+  method?: "passphrase" | "pairing_code";
+  reason?: string;
+  host?: string;
+};
 
 export interface AuthorizationServerDeps {
-  clients: Pick<OAuthClientStore, "get" | "approve">;
+  /** `registerCimd` and `pendingCapReached` are needed for Client ID Metadata Documents; without them CIMD is off. */
+  clients: Pick<OAuthClientStore, "get" | "approve"> &
+    Partial<Pick<OAuthClientStore, "registerCimd" | "pendingCapReached">>;
+  /** The metadata-document fetcher (T13.11); without one a URL `client_id` is an unknown client. */
+  cimd?: Pick<CimdFetcher, "fetch">;
   tokens: Pick<OAuthTokenStore, "issue" | "verify" | "useRefreshToken" | "revokeClient">;
   /** Pairing-code redemption; without it the fallback is unavailable. */
   pairing?: Pick<PairingCodeStore, "redeem">;
@@ -248,7 +268,69 @@ export class AuthorizationServer {
     sendHtml(res, 405, errorPage("Method not allowed."), { allow: "GET, HEAD, POST" });
   }
 
-  private showConsent(req: IncomingMessage, res: ServerResponse): void {
+  private cimdEnabled(): boolean {
+    return (
+      this.s.cimd &&
+      this.deps.cimd !== undefined &&
+      this.deps.clients.registerCimd !== undefined &&
+      this.deps.clients.pendingCapReached !== undefined
+    );
+  }
+
+  /** The stored client for a presented `client_id`, a Client Identifier URL included; never fetches (T13.11). */
+  private findClient(presented: string): RegisteredClient | undefined {
+    if (!looksLikeCimdClientId(presented)) return this.deps.clients.get(presented);
+    if (!this.cimdEnabled() || checkCimdClientId(presented) === undefined) return undefined;
+    const client = this.deps.clients.get(cimdInternalClientId(presented));
+    return client?.cimdUrl === presented ? client : undefined;
+  }
+
+  /**
+   * T13.11 (FR-MCP-19): the client of an authorization request. A Client Identifier URL is fetched afresh and stored
+   * under its derived identifier; `reason` is the audit reason code when no client results.
+   */
+  private async clientForAuthorize(
+    presented: string,
+  ): Promise<{ client: RegisteredClient } | { client?: undefined; reason: string; host?: string }> {
+    const cimd = this.deps.cimd;
+    const clients = this.deps.clients;
+    if (!looksLikeCimdClientId(presented)) {
+      const client = clients.get(presented);
+      return client !== undefined ? { client } : { reason: "unknown_client" };
+    }
+    if (
+      !this.cimdEnabled() ||
+      cimd === undefined ||
+      clients.registerCimd === undefined ||
+      clients.pendingCapReached === undefined
+    ) {
+      return { reason: "unknown_client" };
+    }
+    const url = checkCimdClientId(presented);
+    if (url === undefined) return { reason: "cimd_client_id" };
+    const host = url.host;
+    // This server's own origin is never fetched: the document would be served by Switchboard itself.
+    if (url.origin === this.s.issuer) return { reason: "cimd_self", host };
+    const internalId = cimdInternalClientId(presented);
+    const known = clients.get(internalId);
+    if (known !== undefined && known.cimdUrl !== presented) return { reason: "cimd_id_conflict", host };
+    // No fetch on behalf of a denied or revoked client: the usual refusal follows without an outbound request.
+    if (known !== undefined && known.status !== "pending" && known.status !== "approved") return { client: known };
+    // A new URL would create a pending client, so the registration cap applies before any outbound request.
+    if (known === undefined && clients.pendingCapReached()) return { reason: "cimd_too_many_pending", host };
+    const fetched = await cimd.fetch(presented);
+    if (!fetched.ok) {
+      this.event("cimd_refused", { reason: fetched.reason, host });
+      return { reason: `cimd_${fetched.reason}`, host };
+    }
+    // The store's methods are called on the store (not as detached functions), so `this` stays bound.
+    const stored = clients.registerCimd(internalId, presented, fetched.metadata);
+    if (!stored.ok) return { reason: `cimd_${stored.reason}`, host };
+    this.event("cimd_fetched", { client_id: internalId, host });
+    return { client: stored.client };
+  }
+
+  private async showConsent(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const q = parseForm(new URL(req.url ?? "/", "http://listener.invalid").search.slice(1));
     if (q === undefined) {
       this.event("authorize_refused", { reason: "duplicate_parameter" });
@@ -256,12 +338,22 @@ export class AuthorizationServer {
       return;
     }
     const clientId = q.get("client_id");
-    const client = clientId !== undefined ? this.deps.clients.get(clientId) : undefined;
-    if (client === undefined) {
-      this.event("authorize_refused", { reason: "unknown_client" });
-      sendHtml(res, 400, errorPage("Invalid authorization request: unknown client."));
+    const found = clientId !== undefined ? await this.clientForAuthorize(clientId) : { reason: "unknown_client" };
+    if (found.client === undefined) {
+      const { reason, host } = found;
+      this.event("authorize_refused", { reason, ...(host !== undefined ? { host } : {}) });
+      sendHtml(
+        res,
+        400,
+        errorPage(
+          reason === "unknown_client"
+            ? "Invalid authorization request: unknown client."
+            : "Invalid authorization request: the client's metadata document could not be fetched or is not valid.",
+        ),
+      );
       return;
     }
+    const client = found.client;
     const redirectUri = q.get("redirect_uri");
     if (redirectUri === undefined || !client.redirectUris.includes(redirectUri)) {
       this.event("authorize_refused", { client_id: client.clientId, reason: "redirect_uri" });
@@ -357,7 +449,9 @@ export class AuthorizationServer {
     const html = consentPage({
       requestId,
       csrf,
-      clientId: client.clientId,
+      // A CIMD client is shown by its URL (the identifier the operator can recognise), with the host on its own line.
+      clientId: client.cimdUrl ?? client.clientId,
+      ...(client.cimdUrl !== undefined ? { metadataHost: new URL(client.cimdUrl).host } : {}),
       ...(client.clientName !== undefined ? { clientName: client.clientName } : {}),
       redirectUri,
       scopes,
@@ -533,7 +627,7 @@ export class AuthorizationServer {
       return;
     }
     const clientId = form.get("client_id");
-    const client = clientId !== undefined ? this.deps.clients.get(clientId) : undefined;
+    const client = clientId !== undefined ? this.findClient(clientId) : undefined;
     if (client === undefined) {
       fail(401, "invalid_client", "unknown_client");
       return;

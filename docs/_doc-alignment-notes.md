@@ -954,7 +954,7 @@ as history.
   `heldLocks()` slot-wait test in `src/lifecycle/verification.test.ts` — is cited in-row and matches the
   named test).
 
-## 51. CI Linux job timeout 20 -> 30 minutes (PR #777, no doc impact, checked 2026-10-20)
+## 54. CI Linux job timeout 20 -> 30 minutes (PR #777, no doc impact, checked 2026-10-20)
 
 - PR #777 changes only `timeout-minutes: 20` to `30` for the Linux job in
   `.github/workflows/ci.yml` (one file, one line; no job added, removed or

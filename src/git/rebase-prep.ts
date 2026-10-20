@@ -3,7 +3,7 @@ import { GitError, git, gitText, parseGitVersion, versionAtLeast } from "../work
 
 /**
  * Controller-side preparation of a rebase run (T15.7; FR-QUE-07, LLD §20.4; FR-GIT-01). When a published ref has become
- * `CONFLICTING` with its base, the admission writes a `run_rebase` row (`pending`, migration 0028). Before the agent
+ * `CONFLICTING` with its base, the admission writes a `run_rebase` row (`pending`, migration 0029). Before the agent
  * starts, the controller (never the agent) merges the current base into the run's worktree files with
  * `git merge-tree --write-tree` (Git >= 2.38), leaving conflict markers for the agent to resolve, and records the base
  * commit as `merge_parent_sha` (`prepared`). The commit tool (`src/git/commit.ts`) then records that commit as the
