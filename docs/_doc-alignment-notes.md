@@ -1086,3 +1086,9 @@ as history.
   is nothing to align; the title is left to the PR author.
 - `node scripts/check-docs.mjs` passes; no doc edits needed for this PR
   beyond this entry. Recorded here only; it does not block PR #794.
+- Addendum (post-merge `4298240`, checked 2026-10-20): `origin/main` has since merged PR #786, which
+  carries the identical line-cap fix, replay test and fixture, so `origin/main...HEAD` is now two files
+  (the LLD ACP-framing reword and this note). The "four files" description above was the pre-merge
+  diff. The conclusion is unchanged: no model or group name moves anywhere, nothing to align.
+  `docs/ROADMAP.md` on disk is now 1,520,314 bytes (growth from merged main work), still the "1.5 MB
+  roadmap" of the LLD text.
