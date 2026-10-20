@@ -654,6 +654,7 @@ async function runDaemon(
       db,
       scratchDir: path.join(config.dataDir, "git-scratch"),
       sanitizePatterns: config.sanitizePatterns,
+      secretScanAllow: config.secretScanAllow,
       ids,
       ...(now ? { now } : {}),
     });
@@ -664,6 +665,7 @@ async function runDaemon(
       db,
       scratchDir: path.join(config.dataDir, "git-scratch"),
       sanitizePatterns: config.sanitizePatterns,
+      secretScanAllow: config.secretScanAllow,
       allowedStates: ["FINALIZING"],
       ids,
       ...(now ? { now } : {}),
