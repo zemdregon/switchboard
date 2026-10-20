@@ -59,6 +59,7 @@ export const APPROVAL_REASONS = [
   "commit_signing",
   "widened_trust_ceiling",
   "widened_providers",
+  "merge_policy",
 ] as const;
 export type ApprovalReason = (typeof APPROVAL_REASONS)[number];
 
@@ -207,7 +208,7 @@ export function checkRagSharing(def: ProjectConfig): void {
  * of published commits, LLD §11.2 says an orchestrator must not invent one; the `identities` list proposed there is not
  * built) and `sign: true` (it would make the controller sign with the operator's key, FR-GIT-10). Widening is measured
  * against the revision in force: a higher effective ceiling, or a provider set that is no longer a subset (absent means
- * every provider).
+ * every provider). T15.8 (FR-SUB-02): `merge_policy.enabled: true` (`merge_policy`).
  */
 export function approvalReasons(
   def: ProjectConfig,
@@ -221,6 +222,9 @@ export function approvalReasons(
     if (c.identity !== undefined) out.add("commit_identity");
     if (c.sign === true) out.add("commit_signing");
   }
+  // T15.8 (FR-SUB-02, ADR-0060 item 1): an orchestrator that turns the merge policy on waits for the operator, on
+  // every revision that keeps it on (Delegated: an approval is per revision, like a push policy other than `none`).
+  if (def.merge_policy?.enabled === true) out.add("merge_policy");
   if (inForce !== undefined) {
     const now = effectiveMaxProfile(clientMax, toResolved(def));
     const before = effectiveMaxProfile(clientMax, toResolved(inForce));

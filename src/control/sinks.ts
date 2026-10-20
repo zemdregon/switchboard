@@ -27,6 +27,7 @@
  * same closed fields.
  */
 import https from "node:https";
+import { MERGE_SINK_REASONS, REF_EVENT_KINDS } from "../ci/merge-codes.js";
 import type { NotificationSinkSettings, SinkEventKind } from "../config/notification-sinks.js";
 import { PROJECT_ID_PATTERN } from "../config/schema.js";
 import { isPrefixedId } from "../ids/index.js";
@@ -67,6 +68,9 @@ export const SINK_REASON_CODES: { readonly [K in SinkEventKind]: readonly string
   project_paused: ["project_paused", "global_paused"],
   queue_low: ["queue_low"],
   digest: ["digest"],
+  // T15.8 (FR-SUB-01, FR-SUB-02, LLD §20.7): the ref event's kind; `merged` or the closed refusal reason.
+  ref_event: REF_EVENT_KINDS,
+  merge_event: MERGE_SINK_REASONS,
 };
 
 /** Reasons a pushed digest counts: the run-level list plus the project-level `stalled_progress` (FR-CTL-14). */

@@ -1,5 +1,7 @@
 export * from "./gh-argv.js";
 export * from "./gh-port.js";
+export * from "./merge-codes.js";
+export * from "./merge-policy.js";
 export * from "./port.js";
 export * from "./published-refs.js";
 export * from "./trigger.js";

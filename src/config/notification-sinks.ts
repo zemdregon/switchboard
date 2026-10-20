@@ -19,7 +19,8 @@
 
 /**
  * LLD §3.4.1 `sink_event_kind`: the closed list of events a sink can receive. `digest` (T14.16, FR-CTL-14) is sent only
- * when the operator configures `control_plane.digest_schedule`.
+ * when the operator configures `control_plane.digest_schedule`. `ref_event` and `merge_event` (T15.8, FR-SUB-01,
+ * FR-SUB-02) are sent only for refs the CI trigger or a project's merge policy watches.
  */
 export const SINK_EVENT_KINDS = [
   "run_terminal",
@@ -30,6 +31,8 @@ export const SINK_EVENT_KINDS = [
   "project_paused",
   "queue_low",
   "digest",
+  "ref_event",
+  "merge_event",
 ] as const;
 export type SinkEventKind = (typeof SINK_EVENT_KINDS)[number];
 
