@@ -1111,3 +1111,17 @@ as history.
   diff. The conclusion is unchanged: no model or group name moves anywhere, nothing to align.
   `docs/ROADMAP.md` on disk is now 1,520,314 bytes (growth from merged main work), still the "1.5 MB
   roadmap" of the LLD text.
+
+## 59. Privileged queue admission (PR #787 superseded; code already on main via PR #784, LLD step 6 fixed here)
+
+- PR #787 carried the same queued-`privileged` admission fix as PR #784, which is merged. Checked 2026-10-20: every
+  `src/` hunk of #787 reverse-applies cleanly on main, and its two new tests (`src/queue/privileged-admission.test.ts`,
+  `src/mcp/route-reasons.test.ts`) are byte-identical to main's, so the superseder adds no code and no test. The
+  LLD §3.2 route-reasons paragraph and §18.4 step 5 are already on main.
+- The one thing main lacked was #787's doc-align correction of
+  [LLD §18.4](design/LLD.md#184-admission-through-the-creating-clients-ceiling-fr-que-01) step 6, applied here and
+  checked against `src/queue/admission.ts`: `message` is optional (an unknown creator client returns
+  `{ kind: "failed", code: "PERMISSION_BLOCKED" }` with no detail), `code` keeps a `SkillAdmissionError` or
+  `LifecycleError` refusal's own code and maps anything else via `toToolError` (`mapError`), and `reason`/`field` are
+  scrubbed and bounded to 300 characters like `message` (`failureDetail`).
+- Docs only; no owner decision needed.
