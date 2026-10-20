@@ -1106,7 +1106,7 @@ as history.
   detail under them); no ROADMAP task row exists for this fix, so no status or evidence field is
   touched. `node scripts/check-docs.mjs` passes. It does not block PR #790.
 
-## 60. LLD `list_runs` scoping restated the subject rule without the admitted-runs exception (from PR #790, fixed in this gate)
+## 60. LLD `list_runs` scoping restated the subject rule without the admitted-runs exception (PR #790)
 
 - Item 59 fixed [LLD §3.3](design/LLD.md#33-network-mcp-transport-m13) and §10/§20.8 for PR #790 but missed the
   parenthetical restatement in the `list_runs` **Scoping** paragraph ("over HTTP only meta-sessions of its own
