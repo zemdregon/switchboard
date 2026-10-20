@@ -6671,17 +6671,21 @@ its own dynamic project allowed), and an item is visible only to its `creator_cl
 is unknown, `INVALID_REQUEST`). Only the creator may cancel over MCP; the operator uses CLI `switchboard queue cancel`
 (FR-OPS-01). Closed schemas live in `src/mcp/schemas.ts`. **Delegated** details:
 
-- `enqueue_work { project_id, request, priority?, depends_on?, idempotency_key? }`. `request` is the closed
+- `enqueue_work { project_id, request, priority?, depends_on?, idempotency_key?, dedupe_key?, hot_paths? }`.
+  `request` is the closed
   `delegate_task` subset frozen in `request_json` (§18.2): `objective`, `trust_profile`, `constraints`,
   `verification_commands`, `routing`, `priority`, `privileged_scope`. At enqueue the server applies the `delegate_task`
   checks that need no workspace: the ceiling against the lower of the client's and the project's maximum (V5,
   `PERMISSION_BLOCKED`), V13, V7 and V8. Admission re-checks under the configuration of that time (§18.4 step 2).
   `depends_on` (at most 32) names the caller's own items. A project already holding `queue.max_items_per_project` rows
   is `INVALID_REQUEST`. The key is stored as `mcp:<key>` so it cannot collide with schedule or CI keys, and is replayed
-  (`replayed: true`) only for the same project, request, priority and `depends_on`.
+  (`replayed: true`) only for the same project, request, priority and `depends_on`. `dedupe_key` (T15.7, 1 to 200
+  characters) is refused with `details.reason` `CONFLICT` while another item of the project holds it; `hot_paths`
+  (T15.7, at most 32 relative globs) serialises the dequeue, see §20.4.
 - `list_work { project_id?, state_in?, limit? }` returns the caller's items ordered as §18.3, at most `limit` (default
   50, at most 200). An item shows `work_item_id`, `project_id`, `state`, `priority`, `trust_profile`, `source_kind`,
-  `depends_on`, `admitted_run_id`, `last_error_code` and timestamps, never the objective or the rest of `request_json`.
+  `depends_on`, `admitted_run_id`, `last_error_code`, `dedupe_key`, `hot_paths`, `superseded_by` and timestamps,
+  never the objective or the rest of `request_json`.
 - `cancel_work { work_item_id }` moves a `PENDING` or `READY` item to `CANCELLED` and returns any other item unchanged.
   `ADMITTING` is not cancelled, so a run never sits behind a `CANCELLED` item; an admitted item is stopped with
   `cancel_run`.
@@ -7384,7 +7388,7 @@ Tests: `src/ci/ci-transient.test.ts` (fake `CiStatusPort`, fake `CiActionsPort` 
   so the controller prepares the worktree: the ref's head with the current base merged in by controller Git, conflicts
   left as markers for the agent to resolve; the commit tool then records the result. Whether the commit tool can record
   a two-parent commit, or must squash the resolution onto the ref, is settled in T15.7 (Assumption: two-parent commit
-  through the same sanitiser and provenance record, FR-GIT-04, FR-GIT-07).
+  through the same sanitiser and provenance record, FR-GIT-04, FR-GIT-07; settled: two-parent commit, see As built below).
 - **Cap and supersede.** Rebase items count against the FR-QUE-05 per-ref counter. At the cap, one re-implementation
   item starts from the current base with the old ref's diff as a context file (untrusted), the old ref's state gets
   `superseded_by` (the new item) and the poller stops watching it.
@@ -7393,6 +7397,71 @@ Tests: `src/ci/ci-transient.test.ts` (fake `CiStatusPort`, fake `CiActionsPort` 
 - **`hot_paths`.** Up to 32 path globs per item. Two items overlap when the literal prefix of any glob of one is a
   prefix of a literal prefix of the other (conservative). The §18.7 dequeue step skips an item that overlaps a running
   item of the same project.
+
+**As built (T15.7, 2026-10-19, Delegated agent work, not owner-approved).** Settled against `gh` 2.102.0 on the
+operator host (`gh pr view --help` lists `number`, `state`, `isDraft`, `mergeable` and `headRefOid` among its JSON
+fields; `--help` only, no call to GitHub):
+
+1. **Commit tool: two-parent commit (the open Assumption, settled; Linus decision v10-D15).** The commit tool records
+   the rebase result as a **two-parent commit** through the unchanged path: the same temporary-index tree, the same
+   sanitiser (built-in, operator and native-session rules) and the same intent, ref update and `git_commit` provenance
+   row (FR-GIT-04, FR-GIT-07). Parent 1 is the publish ref's old tip as before; parent 2 is the base commit the
+   controller merged in (`run_rebase.merge_parent_sha`). The FR-GIT-08 lineage check still demands exactly one new
+   commit, with the merged base added to the excluded set (`rev-list --count <new> --not <base> <old> <merged base>`),
+   so no checkpoint can become reachable. Only the first commit of the run carries parent 2 (it is added only while the
+   merged base is not yet an ancestor of the parent), and the intent and `git_commit` event carry `merge_parent_sha`. A
+   signed commit adds the same parent (`src/git/sign.ts`). Nothing bypasses the sanitiser or the provenance record, so
+   the squash fallback is not used.
+2. **Controller Git preparation** (`prepareRebaseMerge`, `src/git/rebase-prep.ts`). Agents never run Git writes
+   (FR-GIT-01): after the worktree is created and before the provider starts, the lifecycle computes
+   `git merge-tree --write-tree` of the worktree `HEAD` and the project context's `base_ref` (Git 2.38 or later, else the
+   run fails) and writes the result into the worktree files only (`read-tree -u --reset`, then the index back to
+   `HEAD`), so conflicted files carry markers and `HEAD`, the index and every ref stay as they were. A worktree that is
+   not clean, an unresolvable base or a Git failure fails the run before spawn (`TOOL_FAILURE`, `details.reason`
+   `REBASE_PREP_FAILED`); success appends `rebase_prepared {merge_parent_sha, conflicted_paths}`. No Git output is
+   recorded.
+3. **Rebase item.** For an open pull request reported `CONFLICTING` whose head is the tip Switchboard published, with no
+   live conflict item for the ref, the poller enqueues one item with a controller-written objective (facts only: ref,
+   head SHA, pull-request number) and the trigger template's profile and constraints. It continues the meta-session
+   whose run pushed that tip, so its push updates the same branch; only a meta-session the trigger's own
+   `creator_client_id` created is continued (**Delegated**, least privilege), otherwise nothing is admitted
+   (`NO_META_SESSION`). The admission writes `run_rebase` (`pending`) in the run's admission transaction; a run already
+   recorded for the item completes the admission instead of a second run (continuations take no idempotency key). A
+   draft pull request is treated like any other open one. `MERGEABLE`, `UNKNOWN`, `CLOSED`, `MERGED`, no pull request
+   (`gh pr view` exit 1; stderr is never read, so it is not told apart from another exit-1 failure) and a head someone
+   else pushed admit nothing.
+4. **Cap and supersede.** Each rebase item increments `ci_trigger_ref_state.consecutive_fixes` (the FR-QUE-05 counter
+   CI fix-ups use; a CI success resets it as before). A ref still `CONFLICTING` with the counter at the cap and no live
+   item (a failed rebase run, or a pushed head that conflicts again) gets one re-implementation item instead: a new task
+   from the current base (not a continuation), `dedupe_key` `ci_reimplement:<ref>`, whose objective ends with the old
+   change (`git diff <base_ref>...<old head>`, read-only local Git) as one labelled `untrusted_external_text` block it
+   cannot close, redacted and capped at 16 KiB (**Delegated**: the queue request has no file-attachment field, so the
+   "context file" is this block; adding a field would change the external interface). In the same transaction the ref
+   state gets `superseded_by`/`superseded_at`, and every item whose run pushed the ref, and every rebase item of the
+   ref, gets `superseded_by` (releasing its `dedupe_key`). The poller skips a superseded ref entirely (no `gh pr view`,
+   no CI read).
+5. **`dedupe_key` and `hot_paths`** on `enqueue_work` (and in the item view with `superseded_by`). `dedupe_key` is 1 to
+   200 characters; the key is held while the item is live (`PENDING`, `READY`, `ADMITTING`, or `ADMITTED` with its run
+   not terminal) or `DONE` (read as published), and not superseded; `CANCELLED`, `FAILED_ADMISSION` and a closed
+   `ADMITTED` item release it. A held key is refused as `INVALID_REQUEST` with `details.reason` `CONFLICT` and
+   `details.field` `dedupe_key`, for any client of the project (**Delegated**: the §4 taxonomy has no `CONFLICT` code,
+   so the reason carries it as `QUEUE_FULL` does; the holder's id is not returned, since it may be another client's).
+   `hot_paths` is at most 32 relative globs of 1 to 512 characters (no leading `/`, no `..` segment). The literal
+   prefix ends at the first of `* ? [ ] { } ! \`; an empty prefix overlaps everything. "Running" is `ADMITTING`, or
+   `ADMITTED` with its run not terminal; the dequeue takes the first `READY` item in §18.3 order that does not overlap
+   (`claimReadyWorkItem`, `src/queue/hot-paths.ts`). Both enter the idempotency fingerprint.
+6. **Migration 0029** (`src/ledger/migrations/0029_published_ref_conflicts.ts`): `project_work_item.dedupe_key`,
+   `hot_paths_json`, `superseded_by` with the partial unique index `project_work_item_dedupe` on `(project_id,
+   dedupe_key)`; `ci_trigger_ref_state.superseded_by`, `superseded_at`; `ci_ref_conflict` (kind `rebase` or
+   `reimplement`, PR number, head SHA, continued meta-session, work item); `run_rebase` (`pending`, `prepared` or
+   `failed`, `merge_parent_sha`, `conflicted_paths`).
+7. **Argv.** G9 `pr view <branch> --repo <o>/<r> --json number,state,isDraft,mergeable,headRefOid` joins the audited
+   allowlist (`src/ci/gh-argv.ts`); it runs for every watched ref of a project whose trigger is enabled, since FR-QUE-07
+   names no switch and the call is read-only.
+
+Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunner`; no real `gh`),
+`src/mcp/work-queue.test.ts` (the `CONFLICT` refusal over MCP), `src/git/rebase-prep.test.ts` and
+`src/git/commit-merge-parent.test.ts` (real Git in temporary repositories).
 
 ### 20.5 Scheduled digest and progress stall (FR-CTL-14, T14.16)
 

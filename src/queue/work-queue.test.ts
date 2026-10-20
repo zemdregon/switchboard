@@ -7,11 +7,12 @@ import { FakeAdapter, type FakeScenario } from "../adapters/fake/adapter.js";
 import type { ResolvedProfile } from "../adapters/index.js";
 import { AdapterRegistry } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
-import type { ResolvedProject } from "../config/index.js";
+import { pollCiTriggers } from "../ci/trigger.js";
+import type { CiTriggerSettings, ResolvedProject } from "../config/index.js";
 import type { ProjectConfig } from "../config/schema.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, openLedger, type TrustProfile } from "../ledger/index.js";
-import { RunLifecycle } from "../lifecycle/index.js";
+import { RunLifecycle, type RunLifecycleOptions } from "../lifecycle/index.js";
 import { DynamicProjectStore } from "../projects/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import type { AdmitWorkDeps } from "./admission.js";
@@ -78,6 +79,8 @@ async function startQueueFixture(
     projects?: ResolvedProject[];
     projectStore?: DynamicProjectStore;
     scenario?: FakeScenario;
+    /** T15.7: the lifecycle's controller Git preparation of rebase runs. */
+    rebasePrep?: RunLifecycleOptions["rebasePrep"];
   } = {},
 ): Promise<QueueFixture> {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-queue-")));
@@ -108,6 +111,7 @@ async function startQueueFixture(
     allowedRoots: [root],
     globalConcurrency: 4,
     resolveProfile: profileFor,
+    ...(opts.rebasePrep !== undefined ? { rebasePrep: opts.rebasePrep } : {}),
     eligibility: {
       platform: "linux",
       gate: (id, version) => ({
@@ -406,5 +410,126 @@ describe("project work queue (T15.1)", () => {
     expect(f.ledger.markWorkItemDone(a.id)?.state).toBe("DONE");
     expect(f.ledger.getWorkItem(b.id)?.state).toBe("PENDING");
     expect(f.ledger.countAdmissibleWorkItems("app")).toBe(0);
+  });
+});
+
+describe("rebase items (T15.7, FR-QUE-07, LLD §20.4)", () => {
+  let f: QueueFixture;
+  afterEach(async () => {
+    await f?.close();
+  });
+
+  const REF = "refs/heads/sb/feature-1";
+  const SHA = "2".repeat(40);
+  const ciSettings: CiTriggerSettings = {
+    enabled: true,
+    pollIntervalSeconds: 120,
+    ghBinary: "gh",
+    useCheckRunsFallback: false,
+    maxConsecutiveFixes: 2,
+    projects: [
+      {
+        projectId: "app",
+        creatorClientId: "orch",
+        enabled: true,
+        maxConsecutiveFixes: 2,
+        template: { objective: "Fix CI", trustProfile: "edit-untrusted", constraints: [] },
+      },
+    ],
+  };
+  const settings = { maxItemsPerProject: 500, dequeueBatch: 1 };
+
+  /** A finished queued task of `orch` whose run pushed {@link SHA} to {@link REF}; then one conflicting poll. */
+  async function publishedAndConflicting(): Promise<{ metaSessionId: string; rebaseItemId: string }> {
+    const deps = admissionDeps(f);
+    f.ledger.enqueueWorkItem({
+      projectId: "app",
+      creatorClientId: "orch",
+      request: { objective: "Build it", trust_profile: "edit-untrusted", project: "app", constraints: [], routing: {} },
+      sourceKind: "mcp",
+    });
+    expect((await runProjectWorkQueueTick(f.ledger, deps, settings)).admitted).toBe(1);
+    const runId = f.db.prepare("SELECT admitted_run_id AS id FROM project_work_item").get() as { id: string };
+    expect((await f.lifecycle.waitForTerminal(runId.id)).state).toBe("SUCCEEDED");
+    const metaSessionId = f.ledger.getRunRecord(runId.id)?.meta_session_id as string;
+    f.db
+      .prepare(
+        `INSERT INTO git_push (id, run_id, project_id, context_id, remote, ref, head_sha, outcome, detail, requested_by,
+           created_at) VALUES ('gps_t157_rebase_000000000001', ?, 'app', 'main', 'origin', ?, ?, 'ACCEPTED', NULL,
+           'agent_tool', '2026-10-19T01:00:00.000Z')`,
+      )
+      .run(runId.id, REF, SHA);
+    const r = await pollCiTriggers({
+      db: f.db,
+      ledger: f.ledger,
+      port: { latestForPublishedRef: async () => null },
+      pulls: {
+        pullRequestForPublishedRef: async () => ({
+          number: 5,
+          state: "OPEN",
+          isDraft: false,
+          mergeable: "CONFLICTING",
+          headSha: SHA,
+        }),
+      },
+      settings: ciSettings,
+      resolveRemote: async () => ({ owner: "acme", repo: "app" }),
+    });
+    expect(r.rebases).toHaveLength(1);
+    return { metaSessionId, rebaseItemId: r.rebases[0]?.workItemId as string };
+  }
+
+  it("admits the rebase item as a continuation of the publishing meta-session and prepares the merge before spawn", async () => {
+    const preps: { runId: string; worktreePath: string; repoRoot: string; baseRef: string }[] = [];
+    f = await startQueueFixture({
+      rebasePrep: async (q) => {
+        preps.push(q);
+        return { ok: true, mergeParentSha: "a".repeat(40), conflictedPaths: 1 };
+      },
+    });
+    const { metaSessionId, rebaseItemId } = await publishedAndConflicting();
+    expect((await runProjectWorkQueueTick(f.ledger, admissionDeps(f), settings)).admitted).toBe(1);
+    const item = f.ledger.getWorkItem(rebaseItemId);
+    const runId = item?.admitted_run_id as string;
+    expect(f.ledger.getRunRecord(runId)?.meta_session_id).toBe(metaSessionId);
+    expect(f.ledger.getRunRebase(runId)).toMatchObject({ work_item_id: rebaseItemId, publish_ref: REF, head_sha: SHA });
+    expect((await f.lifecycle.waitForTerminal(runId)).state).toBe("SUCCEEDED");
+    expect(preps).toHaveLength(1);
+    expect(preps[0]).toMatchObject({ runId, baseRef: "main" });
+    const events = f.db
+      .prepare("SELECT payload_json FROM run_event WHERE run_id = ? AND type = 'rebase_prepared'")
+      .all(runId) as {
+      payload_json: string;
+    }[];
+    expect(events.map((e) => JSON.parse(e.payload_json))).toEqual([
+      { merge_parent_sha: "a".repeat(40), conflicted_paths: 1 },
+    ]);
+
+    // A crash after the run was admitted but before the item recorded it: the next tick completes the admission with
+    // the recorded run instead of starting a second one.
+    f.db
+      .prepare("UPDATE project_work_item SET state = 'READY', admitted_run_id = NULL, terminal_at = NULL WHERE id = ?")
+      .run(rebaseItemId);
+    const runsBefore = (f.db.prepare("SELECT COUNT(*) AS n FROM run").get() as { n: number }).n;
+    expect((await runProjectWorkQueueTick(f.ledger, admissionDeps(f), settings)).admitted).toBe(1);
+    expect(f.ledger.getWorkItem(rebaseItemId)?.admitted_run_id).toBe(runId);
+    expect((f.db.prepare("SELECT COUNT(*) AS n FROM run").get() as { n: number }).n).toBe(runsBefore);
+  });
+
+  it("fails the rebase run before spawn when the preparation fails or is not wired (fail closed)", async () => {
+    f = await startQueueFixture({ rebasePrep: async () => ({ ok: false, reason: "WORKTREE_DIRTY" }) });
+    const { rebaseItemId } = await publishedAndConflicting();
+    await runProjectWorkQueueTick(f.ledger, admissionDeps(f), settings);
+    const runId = f.ledger.getWorkItem(rebaseItemId)?.admitted_run_id as string;
+    const done = await f.lifecycle.waitForTerminal(runId);
+    expect(done.state).toBe("FAILED");
+    expect(done.failure_code).toBe("TOOL_FAILURE");
+    await f.close();
+
+    f = await startQueueFixture();
+    const second = await publishedAndConflicting();
+    await runProjectWorkQueueTick(f.ledger, admissionDeps(f), settings);
+    const run2 = f.ledger.getWorkItem(second.rebaseItemId)?.admitted_run_id as string;
+    expect((await f.lifecycle.waitForTerminal(run2)).state).toBe("FAILED");
   });
 });

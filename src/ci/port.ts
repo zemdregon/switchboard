@@ -94,6 +94,28 @@ export interface CiActionsPort {
   cancelRun(q: CiRunQuery): Promise<void>;
 }
 
+/** One pull request's mergeability (T15.7, G9); structured facts only. */
+export interface CiPullRequestState {
+  readonly number: number;
+  readonly state: "OPEN" | "CLOSED" | "MERGED";
+  readonly isDraft: boolean;
+  readonly mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  /** Head commit of the pull request (40 lowercase hex). */
+  readonly headSha: string;
+}
+
+/**
+ * The T15.7 read side (FR-QUE-07, ADR-0050 amendment 1 item 9): `gh pr view` of the pull request whose head is a
+ * published branch. Read-only. Resolves null when the branch has no pull request. Throws {@link CiStatusError}.
+ */
+export interface CiPullRequestPort {
+  pullRequestForPublishedRef(q: {
+    owner: string;
+    repo: string;
+    publishRef: string;
+  }): Promise<CiPullRequestState | null>;
+}
+
 export type CiStatusErrorReason = "AUTH_REQUIRED" | "GH_FAILED" | "GH_MISSING" | "PARSE_FAILED" | "TIMEOUT";
 
 export class CiStatusError extends Error {

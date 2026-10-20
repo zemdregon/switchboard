@@ -819,6 +819,10 @@ const WORK_INPUTS = {
       priority: { type: "integer", minimum: -1000, maximum: 1000, default: 0 },
       depends_on: { type: "array", maxItems: 32, uniqueItems: true, items: WORK_ITEM_ID },
       idempotency_key: { type: "string", minLength: 8, maxLength: 128 },
+      // T15.7 (FR-QUE-07, LLD §20.4): refused (`details.reason` CONFLICT) while another item of the project holds it.
+      dedupe_key: { type: "string", minLength: 1, maxLength: 200 },
+      // T15.7: relative path globs; the dequeue never runs two overlapping items of a project at once.
+      hot_paths: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 512 } },
     },
   },
   list_work: {
@@ -1389,6 +1393,9 @@ const WORK_ITEM = {
     created_at: { type: "string" },
     updated_at: { type: "string" },
     terminal_at: NULLABLE_STRING,
+    dedupe_key: NULLABLE_STRING,
+    hot_paths: { type: "array", items: { type: "string" } },
+    superseded_by: NULLABLE_STRING,
     replayed: { type: "boolean" },
   },
 } as const;

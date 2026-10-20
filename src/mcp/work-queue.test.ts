@@ -281,6 +281,38 @@ describe("project work queue MCP tools (T15.1, FR-QUE-01)", () => {
     const foreign = await enqueue({ project_id: "web", request: REQUEST, depends_on: [first.work_item_id] }, "other");
     expect(foreign.body.error.code).toBe("INVALID_REQUEST");
   });
+
+  it("T15.7: refuses a duplicate dedupe_key with CONFLICT for any client of the project, and returns hot_paths", async () => {
+    const first = await enqueueOk({
+      project_id: "web",
+      request: REQUEST,
+      dedupe_key: "parser-crash",
+      hot_paths: ["src/parser/**"],
+    });
+    expect(first).toMatchObject({ dedupe_key: "parser-crash", hot_paths: ["src/parser/**"], superseded_by: null });
+    for (const client of ["orch", "other"]) {
+      const dup = await enqueue({ project_id: "web", request: REQUEST, dedupe_key: "parser-crash" }, client);
+      expect(dup.body.error.code).toBe("INVALID_REQUEST");
+      expect(dup.body.error.details).toMatchObject({ field: "dedupe_key", reason: "CONFLICT" });
+      // The holder's id is never returned to the refused caller.
+      expect(JSON.stringify(dup.body)).not.toContain(first.work_item_id);
+    }
+    expect(itemCount()).toBe(1);
+    // Another project keeps its own keys; a cancelled holder releases the key.
+    await enqueueOk({ project_id: "api", request: REQUEST, dedupe_key: "parser-crash" }, "other");
+    await h.ok("cancel_work", { work_item_id: first.work_item_id });
+    expect(await enqueueOk({ project_id: "web", request: REQUEST, dedupe_key: "parser-crash" })).toMatchObject({
+      dedupe_key: "parser-crash",
+    });
+    const tooMany = await enqueue({
+      project_id: "web",
+      request: REQUEST,
+      hot_paths: Array.from({ length: 33 }, (_, i) => `p${i}/**`),
+    });
+    expect(tooMany.body.error.code).toBe("INVALID_REQUEST");
+    const absolute = await enqueue({ project_id: "web", request: REQUEST, hot_paths: ["/etc/**"] });
+    expect(absolute.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { field: "hot_paths" } });
+  });
 });
 
 describe("project work queue limit (T15.1, LLD §18.1)", () => {

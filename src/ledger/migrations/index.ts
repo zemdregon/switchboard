@@ -28,6 +28,7 @@ import { sql as sql0025 } from "./0025_eval_result.js";
 import { postSql as postSql0026, sql as sql0026 } from "./0026_ledger_chain.js";
 import { sql as sql0027 } from "./0027_verification_result.js";
 import { sql as sql0028 } from "./0028_oauth_cimd_client.js";
+import { sql as sql0029 } from "./0029_published_ref_conflicts.js";
 
 export interface Migration {
   readonly version: number;
@@ -74,4 +75,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 26, name: "ledger_chain", sql: sql0026, backfill: backfillChains, postSql: postSql0026 },
   { version: 27, name: "verification_result", sql: sql0027, foreignKeysOff: true },
   { version: 28, name: "oauth_cimd_client", sql: sql0028 },
+  { version: 29, name: "published_ref_conflicts", sql: sql0029 },
 ];
