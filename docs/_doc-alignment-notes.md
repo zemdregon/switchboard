@@ -1174,3 +1174,16 @@ as history.
   (FR-QUE-01's "admitted exactly as a `delegate_task`"). It now says "every meta-session that a caller's
   `delegate_task` opens", with a pointer to the Exception paragraph, same class of fix as item 60.
 - `node scripts/check-docs.mjs` passes. It does not block PR #790.
+
+## 63. Final doc-align gate pass on PR #790 head cb66827 (checked 2026-10-20, no changes needed)
+
+- Re-verified items 59, 60 and 62 against the code at this head: `bindSubject` is called only from
+  the `delegate_task` handler (`src/mcp/server.ts` line 1194), so controller-admitted meta-sessions
+  are unbound as LLD §20.8 says; `ownRun`, `list_runs` paging and digest `visible` all go through the
+  new `ownSubject`; the `queue:` refusal carries `details.field: "idempotency_key"` over either
+  transport (`src/mcp/errors.ts` `invalid` puts the second argument under `details`); `steer_run`
+  and `explain_route` scoping defer to `get_run`, so they inherit the exception with no restatement
+  to fix. HLD TB-12, ADR-0041 item 7, ROADMAP Q-78, SRS FR-MCP-08/FR-MCP-15/FR-QUE-01/FR-QUE-08,
+  SDD, README, FRD, operations/, CONTRIBUTING.md and SECURITY.md state no fact this PR contradicts.
+- No drift found, no owner decision needed, nothing to edit. `node scripts/check-docs.mjs` passes.
+  It does not block PR #790.
