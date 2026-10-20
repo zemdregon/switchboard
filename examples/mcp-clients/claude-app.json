@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "switchboard": {
+      "command": "node",
+      "args": [
+        "/path/to/switchboard/dist/cli/bin.js",
+        "serve",
+        "--client",
+        "orchestrator",
+        "--config",
+        "/path/to/switchboard-config.json"
+      ]
+    }
+  }
+}

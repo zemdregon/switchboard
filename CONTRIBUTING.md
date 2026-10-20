@@ -8,8 +8,10 @@ status of each). Contributions are code, tests, or documentation edits.
 
 ## Before you start
 
-- Open an issue (use the "Feature or docs request" template) for anything
-  beyond a typo or a small factual fix, so the direction can be agreed first.
+- Open an issue for anything beyond a typo or a small factual fix, so the
+  direction can be agreed first (use the "Bug report" template for something
+  broken, the "Feature or docs request" template for anything else).
+- Participation follows the [code of conduct](CODE_OF_CONDUCT.md).
 - Keep claims about third-party tools dated and sourced. Provider CLI flags,
   permission modes, and terms change; say when you verified them.
 

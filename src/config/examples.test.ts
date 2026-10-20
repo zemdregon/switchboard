@@ -97,3 +97,26 @@ describe("examples/ configs (Y9)", () => {
     expect(loaded.mcpClients.size).toBeGreaterThan(0);
   });
 });
+
+describe("examples/mcp-clients/ snippets (T8.12)", () => {
+  it("every snippet parses as JSON and registers switchboard serve over stdio", () => {
+    const dir = path.join(EXAMPLES_DIR, "mcp-clients");
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith(".json"))
+      .sort();
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const text = readFileSync(path.join(dir, file), "utf8");
+      assertCleanText(file, text);
+      const parsed = JSON.parse(text) as {
+        mcpServers?: Record<string, { command?: unknown; args?: unknown }>;
+      };
+      const entry = parsed.mcpServers?.switchboard;
+      expect(entry, `${file}: must register a switchboard server`).toBeDefined();
+      expect(entry?.command).toBe("node");
+      const args = entry?.args;
+      expect(Array.isArray(args), `${file}: args must be a list`).toBe(true);
+      expect((args as string[]).join(" ")).toContain("serve --client");
+    }
+  });
+});
