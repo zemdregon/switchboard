@@ -8,7 +8,7 @@ import {
   DEFAULT_MAX_LINE_BYTES,
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
-import { classifyCommon } from "../failure.js";
+import { classifyCommon, recoveredDenialWarnings } from "../failure.js";
 import { renderObjective } from "../prompt.js";
 import type {
   AcpMessage,
@@ -35,6 +35,7 @@ import type {
   SkillDelivery,
   Transport,
 } from "../types.js";
+import { DENIAL_CLASSES } from "../types.js";
 
 export const FAKE_CLI_PATH = fileURLToPath(new URL("./cli.mjs", import.meta.url));
 /** The scripted fake ACP agent (T4.8, ADR-0036 conformance plan). */
@@ -341,6 +342,11 @@ export class FakeAdapter implements ProviderAdapter {
       }
       case "error":
         return [{ kind: "provider_error", category: str(e.category) ?? "unknown", message: str(e.message) ?? "" }];
+      case "denied": {
+        // ADR-0072 test seam: a denial the plan classifies (`class`), or none (unclassified).
+        const denial = DENIAL_CLASSES.find((c) => c === e.class);
+        return [{ kind: "permission_denied", tool: str(e.tool) ?? "unknown", ...(denial ? { denial } : {}) }];
+      }
       case "result": {
         const summary = str(e.summary);
         return [{ kind: "result", ok: e.ok === true, ...(summary ? { summary } : {}) }];
@@ -363,6 +369,9 @@ export class FakeAdapter implements ProviderAdapter {
       ...(nativeSessionId ? { nativeSessionId } : {}),
       ...(summary ? { summary } : {}),
     };
+    // ADR-0072 (JSONL mode, as Claude Code): recovered `profile`-class denials become warnings, not a failure.
+    const warnings =
+      !this.#acp && events.some((e) => e.kind === "permission_denied") ? recoveredDenialWarnings(events) : [];
     const clean = this.#acp
       ? acpRunSucceeded(events, exit)
       : exit.outcome === "exited" &&
@@ -370,10 +379,9 @@ export class FakeAdapter implements ProviderAdapter {
         exit.expectedExitCodes.includes(exit.exitCode) &&
         final?.kind === "result" &&
         final.ok &&
-        !events.some(
-          (e) => e.kind === "provider_error" || e.kind === "permission_denied" || e.kind === "sandbox_violation",
-        );
-    if (clean) return { ok: true, ...base };
+        !events.some((e) => e.kind === "provider_error" || e.kind === "sandbox_violation") &&
+        warnings !== undefined;
+    if (clean) return { ok: true, ...base, ...(warnings !== undefined && warnings.length > 0 ? { warnings } : {}) };
     const c = this.classifyFailure({
       events,
       exit,

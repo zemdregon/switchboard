@@ -1,5 +1,5 @@
 /** Failure taxonomy (LLD §4) and shared classification helpers for adapters. */
-import type { FailureClassification, FailureEvidence } from "./types.js";
+import type { FailureClassification, FailureEvidence, NormalizedEvent, RunWarning } from "./types.js";
 
 export const FAILURE_CODES = [
   "AUTH_REQUIRED",
@@ -82,4 +82,27 @@ export function classifyCommon(
     return { code: "TOOL_FAILURE", detail: `exit code ${exit.exitCode}` };
   }
   return { code: "OUTPUT_PROTOCOL_ERROR", detail: "no result event" };
+}
+
+/** ADR-0072: a provider tool name as a warning may carry it (no agent text); anything else is `unknown`. */
+const WARNING_TOOL = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+/**
+ * ADR-0072: whether the events of a run the provider reported as successful still hold blocking evidence. Recovered
+ * `permission_denied` events of the `profile` class (a tool or command the trust profile does not allow) are not
+ * blocking; any other denial (security-class or unclassified: fail closed), a `provider_error`, a `sandbox_violation`
+ * or a `tool_call` the tool-call guard flagged is. Returns the warnings to record when nothing blocks (empty when the
+ * run had no denial), else undefined; the caller then classifies the failure as before.
+ */
+export function recoveredDenialWarnings(events: readonly NormalizedEvent[]): RunWarning[] | undefined {
+  const counts = new Map<string, number>();
+  for (const e of events) {
+    if (e.kind === "provider_error" || e.kind === "sandbox_violation") return undefined;
+    if (e.kind === "tool_call" && e.violation !== undefined) return undefined;
+    if (e.kind !== "permission_denied") continue;
+    if (e.denial !== "profile") return undefined;
+    const tool = WARNING_TOOL.test(e.tool) ? e.tool : "unknown";
+    counts.set(tool, (counts.get(tool) ?? 0) + 1);
+  }
+  return [...counts].map(([tool, count]) => ({ code: "PERMISSION_DENIED_RECOVERED", tool, count }));
 }

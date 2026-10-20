@@ -36,6 +36,7 @@
  * `<branch_prefix><meta-session id>`, never a run branch or a worktree path.
  */
 
+import { RUN_WARNING_CODES, type RunWarning } from "../adapters/types.js";
 import { HELD_LOAD_REASON, LOAD_HOLD_EVENT, LOAD_RELEASE_EVENT } from "../capacity/host-load.js";
 import { budgetControlFacts } from "../control/budgets.js";
 import { loopBreakerControlFacts } from "../control/loop-attention.js";
@@ -77,6 +78,8 @@ export interface Envelope {
     changed_files?: number;
     verification: Record<string, unknown>[];
     verification_summary?: VerificationSummaryView;
+    /** ADR-0072: recovered, non-security denials of a run that succeeded. */
+    warnings?: RunWarning[];
   };
   artifacts: Record<string, string>;
   usage: { reported: ReportedUsage[] | null; estimated: null; capacity_confidence: null };
@@ -169,6 +172,8 @@ interface TransitionPayload {
   changed_files?: number;
   /** T3.10: per-command verification summaries (index, outcome, exit status; never argv or output). */
   verification?: unknown;
+  /** ADR-0072: the terminal transition's recovered-denial warnings. */
+  warnings?: unknown;
 }
 
 export function buildEnvelope(
@@ -220,6 +225,9 @@ export function buildEnvelope(
       (v): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v),
     );
   }
+
+  const warnings = warningsView(terminal?.warnings);
+  if (warnings.length > 0) result.warnings = warnings;
 
   const verificationSummary = summaryView(summaryPayload, scrub);
   if (verificationSummary !== undefined) result.verification_summary = verificationSummary;
@@ -413,4 +421,21 @@ function operatorOnlyStripped(json: string): string {
   } catch {
     return JSON.stringify({ unparseable: true });
   }
+}
+
+const WARNING_TOOL = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+/** ADR-0072: the stored warnings re-checked against the closed shape on read; anything else is dropped. */
+function warningsView(raw: unknown): RunWarning[] {
+  if (!Array.isArray(raw)) return [];
+  const out: RunWarning[] = [];
+  for (const w of raw) {
+    if (typeof w !== "object" || w === null) continue;
+    const { code, tool, count } = w as Record<string, unknown>;
+    if (!RUN_WARNING_CODES.some((c) => c === code)) continue;
+    if (typeof tool !== "string" || !WARNING_TOOL.test(tool)) continue;
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 1) continue;
+    out.push({ code: code as RunWarning["code"], tool, count });
+  }
+  return out;
 }

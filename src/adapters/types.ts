@@ -304,7 +304,16 @@ export type NormalizedEvent =
   | { kind: "message"; role: "assistant"; text: string }
   | { kind: "usage"; source: "provider_reported"; metrics: Record<string, number | string | null> }
   | { kind: "rate_limit"; resetAt?: string; reportedCategory?: string }
-  | { kind: "permission_denied"; tool: string }
+  | {
+      kind: "permission_denied";
+      tool: string;
+      /**
+       * ADR-0072: what kind of denial the adapter positively identified. Only `profile` (a tool or command the trust
+       * profile does not allow, e.g. Claude Code's dontAsk `mode` denial) is recoverable; every other class, and an
+       * absent class, keeps failing the run (fail closed).
+       */
+      denial?: DenialClass;
+    }
   | { kind: "sandbox_violation"; detail: string }
   | { kind: "provider_error"; category: string; message: string }
   | { kind: "result"; ok: boolean; summary?: string }
@@ -359,6 +368,24 @@ export interface FailureClassification {
 }
 
 /** Proposed: the normalized outcome of one provider invocation. */
+/**
+ * ADR-0072: closed denial classes of a `permission_denied` event. `profile` is the recoverable class; `git_write` (a
+ * Switchboard Git deny rule, FR-GIT-01) and `outside_worktree` (a file tool confined to the worktree or a location
+ * outside the allowed roots) are security-class. No class means unknown, which is treated as security-class.
+ */
+export const DENIAL_CLASSES = ["profile", "git_write", "outside_worktree"] as const;
+export type DenialClass = (typeof DENIAL_CLASSES)[number];
+
+/** ADR-0072: closed warning codes of a run result. */
+export const RUN_WARNING_CODES = ["PERMISSION_DENIED_RECOVERED"] as const;
+
+/** ADR-0072: one run-result warning; `tool` is a sanitised tool name, never agent text. */
+export interface RunWarning {
+  code: (typeof RUN_WARNING_CODES)[number];
+  tool: string;
+  count: number;
+}
+
 export interface RunResult {
   ok: boolean;
   failureCode?: FailureCode;
@@ -366,6 +393,8 @@ export interface RunResult {
   summary?: string;
   nativeSessionId?: string;
   unknownEventCount: number;
+  /** ADR-0072: present only on a successful result whose recovered, non-security denials did not fail it. */
+  warnings?: RunWarning[];
 }
 
 /** Proposed: bind to a provider-native session for resume (FR-SES-03). */

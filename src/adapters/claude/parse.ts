@@ -22,7 +22,7 @@
  * weekly limit · resets 12pm (UTC)", exit 1; a reset hour with no date). The `rejected` `rate_limit_event` shape above
  * is still an Assumption from a synthetic fixture.
  */
-import type { NormalizedEvent, ParseState } from "../types.js";
+import type { DenialClass, NormalizedEvent, ParseState } from "../types.js";
 
 type Json = Record<string, unknown>;
 
@@ -128,7 +128,28 @@ function systemDenialEvents(e: Json, state: ParseState): NormalizedEvent[] {
     state.claudeDeniedToolUseIds ??= new Set();
     state.claudeDeniedToolUseIds.add(id);
   }
-  return [...bindSession(e, state), { kind: "permission_denied", tool: str(e.tool_name) ?? "unknown" }];
+  const tool = str(e.tool_name) ?? "unknown";
+  const denial = claudeDenialClass(tool, str(e.decision_reason_type));
+  return [...bindSession(e, state), { kind: "permission_denied", tool, ...(denial ? { denial } : {}) }];
+}
+
+/**
+ * ADR-0072: the class of a `system/permission_denied` event from its `decision_reason_type` (values seen on claude
+ * 2.1.294 in the operator's run streams, 2026-10-20; the `message` text is never read):
+ * - `mode` on `Bash`: a command no allow rule admits, denied by `--permission-mode dontAsk` -> `profile` (recoverable).
+ *   `mode` on any other tool is left unclassified: a file-tool write to Git or settings files that `--restricted`
+ *   reserves for a person would be denied the same way.
+ * - `rule`: a `--disallowedTools` rule matched; Switchboard passes only the FR-GIT-01 Git deny rules -> `git_write`.
+ * - `other`: seen only for a file tool outside the working directory (`--restricted` confinement) -> `outside_worktree`.
+ * - anything else, including `subcommandResults` (a compound command one of whose parts was denied; the part's own
+ *   reason is not reported; seen for Git and `gh` deny rules) -> unclassified, which fails the run (fail closed).
+ * A `result.permission_denials` entry with no `system` event before it carries no reason and stays unclassified.
+ */
+export function claudeDenialClass(tool: string, reason: string | undefined): DenialClass | undefined {
+  if (reason === "mode") return tool === "Bash" ? "profile" : undefined;
+  if (reason === "rule") return "git_write";
+  if (reason === "other") return "outside_worktree";
+  return undefined;
 }
 
 function resultEvents(e: Json, state: ParseState): NormalizedEvent[] {

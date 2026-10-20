@@ -42,7 +42,8 @@
 // `edit_files` (T9.7, FR-GIT-09) plays an agent WITHOUT a tool channel: the objective on stdin is a JSON plan
 // `{"files": {"<rel path>": "<content>" | null}, "summary": "<text>" | null, "ok": true}`; it writes (or, for null,
 // deletes) the files in its working directory and ends with a `result` event carrying the summary (none when null).
-// `ok: false` ends as a task failure (exit 1). No Git command is run. An optional `"usage": {...}` object of numbers is
+// `ok: false` ends as a task failure (exit 1). No Git command is run. Optional `calls` and `denials` (ADR-0072) are
+// reported before the result. An optional `"usage": {...}` object of numbers is
 // reported as one `usage` event before the result (T8.14).
 //
 // Handoff prompts (T5.5, LLD §15.5; additive): a plan scenario reads its JSON plan from the text after the first line
@@ -227,6 +228,10 @@ async function editFilesScenario() {
     writeFileSync(rel, content); // relative to cwd, the run worktree
     emit({ type: "tool", tool: "edit", name: "write_file", target: rel });
   }
+  // ADR-0072 (additive): `"calls": [{tool, name, command?, target?}]` reports tool calls (run nothing, as `tool_calls`)
+  // and `"denials": [{"tool": "<name>", "class"?: "<denial class>"}]` reports one denied tool call each, before the result.
+  for (const c of Array.isArray(plan.calls) ? plan.calls : []) emit({ type: "tool", ...c });
+  for (const d of Array.isArray(plan.denials) ? plan.denials : []) emit({ type: "denied", ...d });
   const ok = plan.ok !== false;
   const summary = typeof plan.summary === "string" ? plan.summary : undefined;
   // T8.14 (additive): `"usage": {"input_tokens": n, ...}` reports provider usage, for the evaluation's usage column.
@@ -434,5 +439,7 @@ async function gitAttemptsScenario() {
     setInterval(() => {}, 1000);
     return;
   }
+  // ADR-0072 (additive): denials reported after the steps, as in `edit_files`.
+  for (const d of Array.isArray(plan?.denials) ? plan.denials : []) emit({ type: "denied", ...d });
   emit({ type: "result", ok: true, summary: "git attempts made" });
 }

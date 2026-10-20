@@ -434,6 +434,20 @@ const ENVELOPE = {
             summary_artifact_id: ARTIFACT_ID,
           },
         },
+        // ADR-0072: recovered, non-security permission denials of a run that succeeded; closed codes, no agent text.
+        warnings: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["code", "tool", "count"],
+            properties: {
+              code: { enum: ["PERMISSION_DENIED_RECOVERED"] },
+              tool: { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,64}$" },
+              count: { type: "integer", minimum: 1 },
+            },
+          },
+        },
       },
     },
     artifacts: { type: "object", additionalProperties: ARTIFACT_ID },
