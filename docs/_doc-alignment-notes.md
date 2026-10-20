@@ -974,7 +974,36 @@ as history.
 - `node scripts/check-docs.mjs` passes; no doc edits needed for this PR
   beyond this entry. Recorded here only; it does not block PR #777.
 
-## 55. Trusted-development prefix rules stragglers (from PR #782, fixed in this gate)
+## 55. Claude 16 MiB stdout line cap (PR #786, no doc impact beyond the in-PR LLD update, checked 2026-10-20)
+
+- PR #786 (`fix(claude): parser tolerates oversize tool results instead of OUTPUT_PROTOCOL_ERROR`,
+  supersedes #783) adds `CLAUDE_STDOUT_LINE_BYTES = 16 MiB` (`src/adapters/claude/adapter.ts`) and compiles
+  it as the Claude adapter's `Invocation.maxLineBytes` instead of `DEFAULT_MAX_LINE_BYTES` (1 MiB,
+  `src/exec/jsonl.ts`); every other adapter still compiles the 1 MiB default (verified by grep over
+  `src/adapters/*/adapter.ts`: grok, antigravity, cursor, codex, fake, opencode, kimi and muse all pass
+  `DEFAULT_MAX_LINE_BYTES`, only claude passes `CLAUDE_STDOUT_LINE_BYTES`). New tests in
+  `src/adapters/claude/claude.test.ts` replay the trimmed recording
+  `src/adapters/claude/fixtures/oversize-edit-result.jsonl` (an `Edit` `user` event echoing the whole
+  pre-edit `docs/ROADMAP.md` in `tool_use_result.originalFile`, a valid 1,550,255-byte line): recorded size
+  now succeeds, while a line over the Claude cap and a truncated final oversize line still end
+  `OUTPUT_PROTOCOL_ERROR`.
+- The owner document for line framing ([LLD §8](design/LLD.md#8-run-supervisor-details)) is updated in the
+  same PR and matches the code on this branch: the 1 MiB default with the per-adapter `maxLineBytes`
+  override, the Claude 16 MiB exception with the run id (`run_01M5BST6XW3JGHKCCNW6EJ8R6V`), the byte count
+  (1,550,255, matching `RECORDED_LINE_BYTES` in the test and the fixture's own header note) and the
+  still-fails-closed statement (matching the over-cap and truncation tests). No other document states a
+  Claude line cap: the README has no Claude parser section (its one `maxLineBytes` sentence is the Grok
+  section, still on the default); SRS FR-EXE, SDD, HLD, TDD, `docs/operations/`, CONTRIBUTING.md,
+  SECURITY.md, CLAUDE.md and AGENTS.md carry no line-cap figure (the ROADMAP "1 MiB" rows concern Git ref
+  caps and the Grok over-limit fixture test, both still true). No new ADR: the change tunes a Proposed
+  bound through the existing per-adapter override mechanism, keeps the failure taxonomy (over-cap lines
+  still end `OUTPUT_PROTOCOL_ERROR`), and is recorded as Delegated (Linus decision, 2026-10-20) in LLD §8
+  and the code comment, not owner-approved. No ROADMAP task row exists for this fix and none is invented
+  here.
+- `node scripts/check-docs.mjs` passes; `npx tsc --noEmit` passes (the `DEFAULT_MAX_LINE_BYTES` import
+  removal in the Claude adapter leaves no stale use). Recorded here only; it does not block PR #786.
+
+## 56. Trusted-development prefix rules stragglers (from PR #782, fixed in this gate)
 
 - PR #782 changes the Claude `trusted-development` shell allowlist compile from one exact `Bash(<entry>)` rule per
   entry to `Bash(<entry>)` plus `Bash(<entry> *)` (`shellRules` with `form: "prefix"` in

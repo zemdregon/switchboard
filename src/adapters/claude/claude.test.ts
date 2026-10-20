@@ -1,15 +1,17 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { syntheticBundle } from "../../continuity/fixtures/handoff-bundle.js";
 import { INSTRUCTION_MARKER, renderHandoffPrompt } from "../../continuity/render.js";
+import { DEFAULT_MAX_LINE_BYTES } from "../../exec/index.js";
 import { SIGNING_AGENT_VARIABLES } from "../../git/sign.js";
 import { resolveTrustProfile } from "../../policy/profiles.js";
 import type { ProfileOverride } from "../../policy/types.js";
 import { auditInvocation, BYPASS_FLAGS, BypassFlagError, findBypassFlags } from "../audit.js";
 import { missingRequiredKinds, runConformanceCase, runConformanceSuite } from "../conformance.js";
 import { LOOSE_SCOPE, privilegedProfile, scopeShapes } from "../fixtures/privileged.js";
+import { replayLauncher } from "../fixtures/replay.js";
 import {
   GIT_GLOBAL_FLAGS,
   GIT_GLOBAL_OPTIONS_WITH_VALUE,
@@ -35,6 +37,7 @@ import {
   CLAUDE_BYPASS_OUTSIDE_PRIVILEGED,
   CLAUDE_GIT_DENY_RULES,
   CLAUDE_LOGIN_COMMAND,
+  CLAUDE_STDOUT_LINE_BYTES,
   ClaudeAdapter,
 } from "./adapter.js";
 import {
@@ -1323,6 +1326,72 @@ describe("claude conformance on recorded (synthetic) fixtures", () => {
     });
     expect(report.result?.unknownEventCount).toBe(1);
     expect(readFileSync(join(c.request.workspace.cwd, "hello.txt"), "utf8")).toContain("synthetic");
+  });
+});
+
+describe("claude oversize tool-result line (run_01M5BST6XW3JGHKCCNW6EJ8R6V, trimmed recording)", () => {
+  // The recorded failing line: an Edit's `user` event echoing the whole 1.5 MB pre-edit file in `originalFile`.
+  const RECORDED_LINE_BYTES = 1_550_255;
+  const template = readFileSync(fixturePath("oversize-edit-result.jsonl"), "utf8").trimEnd().split("\n");
+  const bigIndex = template.findIndex((l) => l.startsWith(`{"type":"user"`) && l.includes("{{ORIGINAL_FILE}}"));
+  /** The fixture with `originalFile` filled so its line is exactly `lineBytes` bytes; `cut` truncates that line. */
+  const inflated = (lineBytes: number, cut = false): string => {
+    const line = template[bigIndex] ?? "";
+    const room = lineBytes - Buffer.byteLength(line) + "{{ORIGINAL_FILE}}".length;
+    const row = "| T9.14 | row \\u00a7 |\\n"; // JSON-escaped text, as Claude Code writes it
+    const filler = row.repeat(Math.floor(room / row.length)) + "x".repeat(room % row.length); // never splits an escape
+    const big = line.replace("{{ORIGINAL_FILE}}", filler);
+    const lines = cut ? [...template.slice(0, bigIndex), big.slice(0, big.length / 2)] : template.with(bigIndex, big);
+    const file = join(makeCwd(), "stdout.jsonl");
+    writeFileSync(file, cut ? lines.join("\n") : `${lines.join("\n")}\n`);
+    return file;
+  };
+  const caseFor = (file: string, kind: "success" | "malformed_output", expectOk: boolean) => ({
+    kind,
+    profile: EDIT_UNTRUSTED,
+    adapter: new ClaudeAdapter({
+      binaryPath: process.execPath,
+      launcherArgs: replayLauncher("claude", file),
+      timeouts: { wallClockMs: 20_000, idleMs: 5_000, killGraceMs: 300 },
+    }),
+    request: {
+      runId: "run_claude_oversize",
+      objective: "synthetic objective",
+      constraints: [],
+      workspace: { cwd: makeCwd(), writable: true },
+    },
+    expect: expectOk
+      ? { ok: true, nativeSessionId: DEFAULT_SESSION_ID }
+      : { ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" as const },
+  });
+
+  it("the recorded line is valid JSON over the 1 MiB default and under the Claude cap", () => {
+    const line = readFileSync(inflated(RECORDED_LINE_BYTES), "utf8").split("\n")[bigIndex] ?? "";
+    expect(Buffer.byteLength(line)).toBe(RECORDED_LINE_BYTES);
+    expect(RECORDED_LINE_BYTES).toBeGreaterThan(DEFAULT_MAX_LINE_BYTES);
+    expect(RECORDED_LINE_BYTES).toBeLessThan(CLAUDE_STDOUT_LINE_BYTES);
+    const doc = JSON.parse(line) as { type: string; tool_use_result: { originalFile: string } };
+    expect(doc.type).toBe("user");
+    expect(doc.tool_use_result.originalFile).toContain("\u00a7");
+    expect(compiled(EDIT_UNTRUSTED).maxLineBytes).toBe(CLAUDE_STDOUT_LINE_BYTES);
+  });
+
+  it("a recorded-size Edit result line no longer fails the run", async () => {
+    const report = await runConformanceCase(caseFor(inflated(RECORDED_LINE_BYTES), "success", true));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: true, summary: "Updated docs/ROADMAP.md." });
+  });
+
+  it("a line over the Claude cap still fails closed as OUTPUT_PROTOCOL_ERROR", async () => {
+    const report = await runConformanceCase(caseFor(inflated(CLAUDE_STDOUT_LINE_BYTES + 1), "malformed_output", false));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
+  });
+
+  it("a truncated final oversize line still fails closed as OUTPUT_PROTOCOL_ERROR", async () => {
+    const report = await runConformanceCase(caseFor(inflated(RECORDED_LINE_BYTES, true), "malformed_output", false));
+    expect(report.checks.filter((k) => !k.ok)).toEqual([]);
+    expect(report.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
   });
 });
 
