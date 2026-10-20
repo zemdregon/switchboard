@@ -182,6 +182,7 @@ import {
   makeFinalizeCommit,
   sessionHasGitPolicyViolation,
 } from "../git/finalize.js";
+import { readHeadPin } from "../git/head-pin.js";
 import { RefGuard } from "../git/ref-guard.js";
 import { CHANNEL_MCP_CONFIG_FILE } from "../git/tool-protocol.js";
 import {
@@ -226,6 +227,11 @@ import {
   requirementsFor,
 } from "../routing/index.js";
 import type { Telemetry } from "../telemetry/index.js";
+import {
+  type ProviderOtlpRunSession,
+  startProviderOtlpForRun,
+  withProviderOtlpEnv,
+} from "../telemetry/provider-otlp.js";
 import { type DelegateSpanFacts, SpanTracker } from "../telemetry/spans.js";
 import { usageObservationsFromEvents } from "../usage/index.js";
 import { gitText } from "../workspace/git.js";
@@ -247,6 +253,7 @@ import {
   evaluateBypass,
 } from "./approval.js";
 import { crashPoint } from "./crash-point.js";
+import { admitsDocsAlignment, DOCS_ALIGNMENT_EVENT, takeDocsAlignment } from "./docs-alignment.js";
 import { requestHash } from "./request.js";
 import {
   planResumeDirectory,
@@ -647,6 +654,11 @@ export interface RunLifecycleOptions {
    * absent from the config) means no span emission; either way emission is fire-and-forget and never fails a run.
    */
   readonly telemetry?: Telemetry;
+  /**
+   * T8.15 (FR-TEL-06, LLD §20.13, ADR-0062): per-run loopback OTLP metrics receiver. Unset or `enabled: false`
+   * means no listener for any run; `manifestDir` overrides the manifest directory (tests only).
+   */
+  readonly providerOtlp?: { enabled: boolean; manifestDir?: string };
   /** Injectable clock for `started_at` / `finished_at`. */
   readonly now?: () => Date;
   /**
@@ -2292,6 +2304,26 @@ export class RunLifecycle {
       return this.cancelEarly(runId);
     }
 
+    // T8.15 (FR-TEL-06, LLD §20.13, ADR-0062): the per-run loopback OTLP metrics receiver. Off by default; a
+    // provider whose manifest declares no `otlp_metrics` gets no listener and no extra environment. A receiver
+    // that cannot start never fails the run: the run proceeds with no provider telemetry.
+    let providerOtlp: ProviderOtlpRunSession | undefined;
+    try {
+      providerOtlp = await startProviderOtlpForRun({
+        enabled: this.opts.providerOtlp?.enabled === true,
+        provider: req.provider,
+        runId,
+        sessionId: run0.meta_session_id,
+        ...(this.opts.providerOtlp?.manifestDir !== undefined
+          ? { manifestDir: this.opts.providerOtlp.manifestDir }
+          : {}),
+      });
+    } catch {
+      // A receiver that cannot bind never fails the run (commented, not empty: the fallback is `undefined`).
+      providerOtlp = undefined;
+    }
+    inv = withProviderOtlpEnv(inv, providerOtlp);
+
     // RUNNING (T9): pid/pgid persisted in the same transaction, before any output is read (LLD §8).
     let spawned = false;
     // T8.2: the provider.spawn span covers the observed process lifetime (onSpawn to process exit).
@@ -2408,7 +2440,10 @@ export class RunLifecycle {
         let turnInv: Invocation;
         try {
           await environment.teardown(environmentRun);
-          turnInv = (await environment.prepare(environmentRun, withChannel(compiled))).invocation;
+          turnInv = withProviderOtlpEnv(
+            (await environment.prepare(environmentRun, withChannel(compiled))).invocation,
+            providerOtlp,
+          );
         } catch (err) {
           if (!(err instanceof EnvironmentRefusal)) throw err;
           this.steerUndelivered(runId, "resume_refused", notes.length, { stage: "environment", reason: err.reason });
@@ -2476,6 +2511,8 @@ export class RunLifecycle {
     } finally {
       // LLD §12.2: the socket is closed and removed when the run leaves RUNNING; calls in progress finish first.
       await channel?.close();
+      // T8.15: the per-run OTLP listener closes with the run's other per-run resources; totals are drained below.
+      await providerOtlp?.close();
       // T10.1 (FR-PRJ-05): the container is removed when the run ends, whatever ended it; idempotent, never throws.
       await environment.teardown(environmentRun);
     }
@@ -2501,6 +2538,8 @@ export class RunLifecycle {
         backingProvider: reported?.backingProvider ?? null,
       });
     }
+    // T8.10 (FR-SKL-11, LLD §20.6): a docs-alignment run's report leaves the worktree before verification and finalize.
+    const alignment = await this.collectDocsAlignment(runId, meta, ws);
     let pending = pendingOf(exec, out);
     const exitFields = { exit_code: out.exit.exitCode, exit_signal: out.exit.signal };
     const exitPayload = { exit_outcome: out.exit.outcome, group_empty: out.groupEmpty };
@@ -2548,12 +2587,13 @@ export class RunLifecycle {
       ws,
       pending,
       out,
-      verification ? { ...streams, ...verification.artifacts } : streams,
+      { ...streams, ...alignment, ...verification?.artifacts },
       {
         commitChannel: runCommitChannel,
         nativeSessionIds: nativeIds,
       },
       verification?.summary,
+      providerOtlp,
     );
   }
 
@@ -2584,6 +2624,9 @@ export class RunLifecycle {
       (this.opts.outerSandboxRequiredProfiles !== undefined &&
         profile !== undefined &&
         this.opts.outerSandboxRequiredProfiles.includes(profile as string));
+    // T8.10 (FR-EXE-10, LLD §20.6): the commit and tree the commands are about to run on, read with a temporary index.
+    const publishRef = this.refGuard.publishRefOf(metaSessionId);
+    const pin = await readHeadPin(ws.worktreePath, publishRef);
     const stage = startVerification({
       commands,
       cwd: ws.worktreePath,
@@ -2619,15 +2662,26 @@ export class RunLifecycle {
     const summary = result.commands.map(verificationSummary);
     const artifacts: Record<string, string> = {};
     try {
-      const body = verificationReport(result, (b) => this.opts.artifacts.redactContent(b));
+      const body = verificationReport(result, (b) => this.opts.artifacts.redactContent(b), pin);
       const stored = await this.opts.artifacts.put(body);
-      artifacts.test_report = this.ledger.insertArtifact({
+      const reportId = this.ledger.insertArtifact({
         runId,
         metaSessionId,
         kind: "test_report",
         sha256: stored.sha256,
         sizeBytes: stored.sizeBytes,
         mediaType: "application/json",
+      });
+      artifacts.test_report = reportId;
+      // T8.10: keyed by (publish_ref, head_sha) in the ledger, never by a file name.
+      this.ledger.recordVerificationResult({
+        runId,
+        metaSessionId,
+        publishRef,
+        headSha: pin.headSha,
+        treeSha: pin.treeSha,
+        outcome: result.outcome,
+        artifactId: reportId,
       });
     } catch (err) {
       const detail = `verification report could not be stored: ${errorText(err)}`;
@@ -2651,6 +2705,49 @@ export class RunLifecycle {
       };
     } else pending = { kind: "success" };
     return { pending, summary, artifacts };
+  }
+
+  /**
+   * T8.10 (FR-SKL-11, LLD §20.6, `docs-alignment.ts`): for a run that admitted the docs-alignment skill, take
+   * `docs_alignment.json` out of the worktree, store a valid report as a `docs_alignment` artifact (redacted) and record
+   * its verdict and SHA as a run event. Never changes the run's outcome; a storage failure records `stored: false`.
+   */
+  private async collectDocsAlignment(
+    runId: string,
+    metaSessionId: string,
+    ws: PreparedWorkspace,
+  ): Promise<Record<string, string>> {
+    if (ws.mode !== "worktree") return {};
+    const resolved = this.ledger.listRunEvents(runId).find((e) => e.type === SKILL_RESOLVED_EVENT);
+    if (resolved === undefined || !admitsDocsAlignment(JSON.parse(resolved.payload_json))) return {};
+    const taken = await takeDocsAlignment(ws.worktreePath);
+    if (taken.kind === "absent") {
+      this.ledger.appendRunEvent({ runId, type: DOCS_ALIGNMENT_EVENT, payload: { present: false } });
+      return {};
+    }
+    if (taken.kind === "invalid") {
+      this.ledger.appendRunEvent({ runId, type: DOCS_ALIGNMENT_EVENT, payload: { present: true, valid: false } });
+      return {};
+    }
+    const { report } = taken;
+    const facts = { present: true, valid: true, verdict: report.verdict, head_sha: report.head_sha };
+    try {
+      const body = this.opts.artifacts.redactContent(Buffer.from(JSON.stringify({ v: 1, ...report }), "utf8"));
+      const stored = await this.opts.artifacts.put(body);
+      const id = this.ledger.insertArtifact({
+        runId,
+        metaSessionId,
+        kind: "docs_alignment",
+        sha256: stored.sha256,
+        sizeBytes: stored.sizeBytes,
+        mediaType: "application/json",
+      });
+      this.ledger.appendRunEvent({ runId, type: DOCS_ALIGNMENT_EVENT, payload: { ...facts, artifact_id: id } });
+      return { docs_alignment: id };
+    } catch {
+      this.ledger.appendRunEvent({ runId, type: DOCS_ALIGNMENT_EVENT, payload: { ...facts, stored: false } });
+      return {};
+    }
   }
 
   /** M1 preflight (no `eligibility` option): probe and auth only (T8 codes as in M1). */
@@ -2747,6 +2844,7 @@ export class RunLifecycle {
     streams: Record<string, string>,
     git: { commitChannel: "injected" | "finalize-only" | "none"; nativeSessionIds: readonly string[] },
     verification?: readonly Record<string, unknown>[],
+    providerOtlp?: ProviderOtlpRunSession,
   ): Promise<void> {
     let outcome = pending;
     const artifacts: Record<string, string> = { ...streams };
@@ -2858,6 +2956,11 @@ export class RunLifecycle {
         provider: run.provider ?? "unknown",
         model: run.model,
       })) {
+        this.ledger.insertUsageObservation(obs);
+      }
+      // T8.15 (FR-TEL-06, FR-CAP-01): figures the provider's OTLP export reported are stored as `provider_reported`
+      // observations for the run in the same transaction; no figures means no rows (null, never zero).
+      for (const obs of providerOtlp?.drain({ runId, provider: run.provider ?? "unknown", model: run.model }) ?? []) {
         this.ledger.insertUsageObservation(obs);
       }
       if (outcome.kind === "success") this.move(run, "SUCCEEDED", { finished_at: finished }, payload);

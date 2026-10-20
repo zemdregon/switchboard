@@ -180,6 +180,11 @@ export class RefGuard {
     this.prefix = options.publishPrefix ?? DEFAULT_PUBLISH_PREFIX;
   }
 
+  /** T8.10 (LLD §20.6): the meta-session's local publish ref under this guard's prefix. */
+  publishRefOf(metaSessionId: string): string {
+    return publishRefFor(metaSessionId, this.prefix);
+  }
+
   /**
    * Record the LEASED snapshot for a run with a prepared worktree (idempotent: an existing snapshot is returned). Throws
    * when the repository cannot be read; the caller fails the run before spawn (fail closed).

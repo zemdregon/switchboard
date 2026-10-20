@@ -32,7 +32,7 @@ import { detectOuterSandbox, findOnPath, groupAlive, type OuterSandboxAvailabili
 import { GIT_POLICY_VIOLATION_EVENT, type ViolationEntry } from "../git/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
-import { slotAddress, tryAcquireSlot } from "../lock/index.js";
+import { type HeldLock, heldLocks, slotAddress, tryAcquireSlot } from "../lock/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import {
   LifecycleError,
@@ -676,6 +676,33 @@ describe("verification slots (T3.22, FR-EXE-09, LLD §8.1)", () => {
     } finally {
       await held?.release();
     }
+  }, 60_000);
+
+  it("no box-wide lock is held during a slot wait; the slot is held only while commands run (T8.10, LLD §20.14)", async () => {
+    // Instrumented, not timed: `heldLocks()` lists every lock the lock module has handed out in this process.
+    const limits = limitsFor(1);
+    const holder = await holdSlot(limits); // another process holds the only slot
+    expect(heldLocks()).toEqual([]);
+    const seen: { wait?: HeldLock[]; spawn?: HeldLock[] } = {};
+    const stage = startVerification({
+      commands: [[NODE, "-e", "process.exit(0)"]],
+      cwd: root,
+      envAllowlist: ["PATH"],
+      wallClockMs: 60_000,
+      limits,
+      onSlotWait: () => {
+        seen.wait = [...heldLocks()];
+        holder.kill("SIGKILL"); // the kernel frees the slot; the stage takes it on its next attempt
+      },
+      onSpawn: () => {
+        seen.spawn = [...heldLocks()];
+      },
+    });
+    const result = await stage.done;
+    expect(result.outcome).toBe("passed");
+    expect(seen.wait).toEqual([]); // no data-directory lock, no slot, nothing at all while waiting
+    expect(seen.spawn).toEqual([{ kind: "verification_slot", index: 0 }]); // the guard fires once a slot is held
+    expect(heldLocks()).toEqual([]); // released with the last command
   }, 60_000);
 
   it("cancel while waiting for a slot ends CANCELLED without running a command", async () => {

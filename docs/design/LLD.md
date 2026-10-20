@@ -996,7 +996,9 @@ schema and fails on any unbounded node, so a new tool or field cannot silently r
       "artifacts": { "type": "object", "additionalProperties": { "type": "string" } },   // kind -> art_ id
       "approval": { "type": "object", "required": ["status","requested_at"], "properties": {   // privileged only (M3, §3.1)
           "status": { "enum": ["PENDING","APPROVED","DENIED"] }, "requested_at": { "type": "string" } } },
-      "usage": { "type": "object", "properties": { "reported": {}, "estimated": {}, "capacity_confidence": { "type": ["number","null"] } } } } } } }
+      "usage": { "type": "object", "properties": { "reported": {}, "estimated": {}, "capacity_confidence": { "type": ["number","null"] } } },
+      "verification": { "type": "object", "properties": { "verified_at_sha": {}, "tree_sha": {}, "stale": {} } },  // T8.10 (FR-EXE-10): newest verification pin; `stale` computed on read, see §20.6
+      } } } }
 ```
 
 The envelope never contains raw transcripts or credential material (FR-MCP-04); `provider_stdout`/`provider_stderr`
@@ -1070,7 +1072,7 @@ meta-session (collected by retention GC, [§5](#5-workspace-and-lease-algorithm)
 (type and bounded payload; no raw output).
 **`cancel_run`** `{ run_id, reason? }` returns the envelope; cancellation is asynchronous (WF-4) and the status may
 still be non-terminal. Cancelling a terminal run is a no-op returning its envelope.
-**`get_artifacts`** `{ run_id, kinds?: ["diff"|"test_report"|"changed_files"|"log_summary"|"handoff_view"|"pr_draft"|"handoff_condense"],
+**`get_artifacts`** `{ run_id, kinds?: ["diff"|"test_report"|"changed_files"|"log_summary"|"handoff_view"|"pr_draft"|"handoff_condense"|"docs_alignment"],
 max_inline_bytes?: int }` returns `[{artifact_id, kind, sha256, size_bytes, inline_text?}]`; inline only when under
 `max_inline_bytes` (default 65536, proposed target). `pr_draft` exists only when the PR-draft task produced an accepted
 draft (M11, [§13.6](#136-task-contracts)); Switchboard never opens a pull request with it (FR-INN-11). `handoff_condense`
@@ -2716,7 +2718,13 @@ that any use is contractually compliant (NFR-COMP-01).
     "network_protocol_reverse_engineering": { "const": false },
     "commercial_multi_user_status": { "enum": ["requires-review","reviewed-permitted","reviewed-prohibited"] }, // [R2] shows requires-review; others Proposed
     "source_revision": { "type": "string" },                          // provider terms date or id reviewed
-    "notes": { "type": "string" } } }
+    "notes": { "type": "string" },
+    "otlp_metrics": { "type": "object", "properties": {              // T8.15, FR-TEL-06, ADR-0063: optional; absent unless the cited provider docs were checked
+      "endpoint_env": { "type": "string" },                         // OTLP/HTTP metrics endpoint variable (set to the run's loopback receiver)
+      "protocol_env": { "type": "string" },                         // optional, pinned to http/json when the provider documents it
+      "resource_attributes_env": { "type": "string" },               // optional run/task resource-attributes variable (provider-documented)
+      "docs": { "type": "string" } },                               // provider-documentation citation; required when declared
+      "required": ["endpoint_env","docs"], "additionalProperties": false } } }
 ```
 
 **Eligibility effect (FR-POL-07, FR-ADP-03).** The adapter is ineligible if: no manifest exists (failure code
@@ -2727,7 +2735,9 @@ the manifest fails validation (fail closed); the run's auth mode is not in `auth
 `reviewed-prohibited`. In the single-operator deployment
 `requires-review` is recorded but does not block (Assumption,
 [ADR-0011](../adr/0011-single-operator-local-deployment.md)); multi-user or resale use is out of scope. The three
-`const: false` fields mean a manifest that claims otherwise cannot load.
+`const: false` fields mean a manifest that claims otherwise cannot load. A provider whose manifest omits
+`otlp_metrics` gets no per-run OTLP listener and no extra environment (T8.15, FR-TEL-06,
+[ADR-0063](../adr/0063-per-run-provider-otlp-metrics-receiver.md)); no shipped manifest declares it yet.
 `switchboard adapters validate <provider>` (T4.4, FR-OPS-02) updates
 `validated_cli_version`, `validated_on`, `validated_version_range` and appends a dated evidence sentence to `notes`, and
 nothing else, only after the probe (FR-ADP-02 steps 1 to 5), an `OK` auth preflight and the conformance subset including
@@ -2787,11 +2797,12 @@ credential-like values (including OAuth access or refresh tokens, API keys and w
 paths (use run-relative paths), provider reasoning text (NFR-PRIV-02), MCP request or response bodies, and inner-agent
 prompt or response text. Large payloads are artifacts referenced by ID and hash only, never inlined on spans.
 
-**Configuration (FR-TEL-02, NFR-PRIV-01).** One optional key, documented in [TDD §3.1](TDD.md#31-configuration):
+**Configuration (FR-TEL-02, FR-TEL-06, NFR-PRIV-01).** Two optional keys, documented in [TDD §3.1](TDD.md#31-configuration):
 
 | Key | Default | Behaviour |
 | --- | --- | --- |
-| `telemetry.otlp_endpoint` | absent (no export) | When omitted or empty, Switchboard does not load `@opentelemetry/api` or an OTLP exporter at startup, opens no telemetry listener, and makes no outbound OTLP connection (NFR-PRIV-01). When set, it must be an `http` or `https` URL validated at config load (T8.1); traces export to that endpoint only. |
+| `telemetry.otlp_endpoint` | absent (no export) | When omitted or empty, Switchboard does not load `@opentelemetry/api` or an OTLP exporter at startup, opens no trace-export listener (the T8.15 per-run provider-OTLP receiver is separate: loopback-only, off by default, next row), and makes no outbound OTLP connection (NFR-PRIV-01). When set, it must be an `http` or `https` URL validated at config load (T8.1); traces export to that endpoint only. |
+| `telemetry.provider_otlp` | `false` (no receiver) | When anything but `true`, no per-run receiver opens for any run. When `true`, a run whose provider manifest cites `otlp_metrics` gets one loopback listener (FR-TEL-06, T8.15, [ADR-0063](../adr/0063-per-run-provider-otlp-metrics-receiver.md); [§20.13](#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417)). |
 
 **Lazy load and export pipeline (T8.1, ADR-0012).** OTel packages are imported only after a non-empty
 `telemetry.otlp_endpoint` is loaded, on first span export, not at module top level, so configs without telemetry match
@@ -2963,7 +2974,10 @@ T11, T14) in `src/lifecycle/verification.ts`, driven by `src/lifecycle/lifecycle
   exit_code, signal?, duration_ms, output_truncated?}`. No argv and no output appear in events or the envelope
   (FR-TEL-03). The `test_report` artifact (`application/json`, version 1) holds `{v, outcome, commands: [{index, argv,
   outcome, exit_code, signal, duration_ms, stdout, stderr, stdout_truncated, stderr_truncated}]}`; it is stored even
-  when the stage was cancelled or failed, and `get_artifacts` returns it.
+  when the stage was cancelled or failed, and `get_artifacts` returns it. Since T8.10 the body also carries `head_sha`
+  (null when the worktree's tree differs from that commit's) and `tree_sha`, and each stored report gets one
+  `verification_result` row keyed by `(publish_ref, head_sha)` (T8.10, FR-EXE-10,
+  [§20.6](#206-head-pinned-verification-evidence-and-the-docs-alignment-skill-fr-exe-10-fr-skl-11-t810)).
 - **Bounds and redaction.** Each stream is captured up to 1 MiB per command (`VERIFICATION_OUTPUT_CAP_BYTES`) and then
   truncated with the marker `[switchboard: output truncated after <n> bytes]`. Argv and output pass through the artifact
   store's redactor (FR-TEL-03, NFR-SEC-01) before they are put into JSON, and the store redacts the whole body again
@@ -7415,7 +7429,7 @@ fields; `--help` only, no call to GitHub):
    prefix ends at the first of `* ? [ ] { } ! \`; an empty prefix overlaps everything. "Running" is `ADMITTING`, or
    `ADMITTED` with its run not terminal; the dequeue takes the first `READY` item in §18.3 order that does not overlap
    (`claimReadyWorkItem`, `src/queue/hot-paths.ts`). Both enter the idempotency fingerprint.
-6. **Migration 0027** (`src/ledger/migrations/0027_published_ref_conflicts.ts`): `project_work_item.dedupe_key`,
+6. **Migration 0028** (`src/ledger/migrations/0028_published_ref_conflicts.ts`): `project_work_item.dedupe_key`,
    `hot_paths_json`, `superseded_by` with the partial unique index `project_work_item_dedupe` on `(project_id,
    dedupe_key)`; `ci_trigger_ref_state.superseded_by`, `superseded_at`; `ci_ref_conflict` (kind `rebase` or
    `reimplement`, PR number, head SHA, continued meta-session, work item); `run_rebase` (`pending`, `prepared` or
@@ -7468,13 +7482,42 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
 - **SHA in the report.** Before the verification stage, controller Git records `HEAD` and computes the worktree's tree
   with a temporary index (`GIT_INDEX_FILE`), never touching the run's index. The `test_report` gains `head_sha` and
   `tree_sha`; `head_sha` is kept only when `tree_sha` equals `HEAD^{tree}`.
-- **Read.** `get_run` adds `verification.verified_at_sha` and `verification.stale`, which is true when the run's
-  published ref (§12.3) has moved to another commit.
+- **Read.** `get_run` adds `verification.verified_at_sha`, `verification.tree_sha` and `verification.stale`
+  (`stale` is true when the run's
+  published ref (§12.3) has moved to another commit).
 - **Skill.** `examples/skills/docs-alignment.md` is an ordinary skill file (§19); its run writes
   `docs_alignment.json` `{head_sha, verdict: "aligned" | "conflict", notes}` as an artifact (notes untrusted). A fix is
   a normal commit through the commit tool on the item's own branch.
 - **Lessons kept from the harness gate.** Results are keyed in the ledger by `(publish_ref, head_sha)`, never by a file
   name, and no gate holds a box-wide lock while it waits for a verification slot.
+
+*As built (2026-10-19, T8.10, Delegated agent work, not owner-approved):*
+
+1. **Pin** (`src/git/head-pin.ts`, `readHeadPin`). In a Switchboard worktree the commit tool moves the run's publish ref
+   (§12.3), not the worktree's `HEAD`, so the candidate commit is the publish ref's commit when that ref exists and the
+   worktree's `HEAD` otherwise (Delegated reading of "`HEAD`"). The tree is built in a fresh private directory with
+   `GIT_INDEX_FILE`: `read-tree <candidate>`, `add -A` with nested repositories excluded (as a commit-tool `commit`
+   without paths), `write-tree`. `head_sha` is the candidate only when that tree equals `<candidate>^{tree}`. Any Git
+   error gives no SHA (fail closed) and never fails the run. The pin is read in VERIFYING before the first command,
+   after native skill files are removed (§19.8).
+2. **Report and ledger.** The `test_report` body gains `head_sha` (null when the trees differ) and `tree_sha`.
+   Migration 0027 adds `verification_result` (`id` `vrs_*`, `run_id`, `meta_session_id`, `publish_ref`, `head_sha`,
+   `tree_sha`, `outcome`, `artifact_id`, `created_at`; index on `(publish_ref, head_sha)`), one row per stage whose
+   report was stored, and widens `artifact.kind` with `docs_alignment` (the table rebuild of migrations 0016 and 0022).
+3. **Read.** The run envelope gains `verification: {verified_at_sha, tree_sha, stale}` from the run's newest
+   `verification_result`. `stale` is computed on read from the ledger's newest `git_commit` for the run's publish ref
+   (Linus decision v10 (a); no poller change): true when that head is another commit. Delegated (fail closed): a result
+   without a SHA is always `stale: true`, so it never counts as verification at the current head.
+4. **Docs-alignment report** (`src/lifecycle/docs-alignment.ts`). Only for a run whose `skill_resolved` event names
+   `docs-alignment`: after the agent exits and before verification, the controller removes `docs_alignment.json` from
+   the worktree root (so no commit or push can carry it and the pin is not dirtied by it), reads it only as a regular
+   file of at most 16 KiB, and checks it strictly (exactly `head_sha`, `verdict`, `notes`; a 40 or 64 character
+   lower-case SHA; notes at most 8000 characters). A valid report is stored as a redacted `docs_alignment` artifact and
+   a `docs_alignment` run event records `{present, valid, verdict, head_sha, artifact_id}`; `notes` never enters an
+   event. An invalid report records `valid: false` and stores nothing. The verdict is reported, never acted on: no
+   commit, push or merge follows from it, and the push tool still refuses a protected target (`TARGET_PROTECTED`,
+   §12.6). The example skill is not enabled by default (Linus decision v10 (b)); the operator adds and approves it like
+   any skill (§19.1, §19.10).
 
 ### 20.7 Opt-in merge policy and ref events (FR-SUB-01, FR-SUB-02, T15.8, ADR-0060)
 
@@ -7652,9 +7695,15 @@ a second time with `--coverage` and uploads `coverage/` as the `coverage-report`
   read-only and reports each chain's length and head hash, or `fail` naming the table and the first broken row's id.
   It detects edits made without the chain code; it does not detect a recomputed chain or a truncated tail
   (ADR-0064).
-- **Provider OTLP (FR-TEL-06).** An ADR (new local listener, per-provider environment additions) first. Proposed: one
-  listener per run on `127.0.0.1:0`, metrics only, attribute allowlist, the provider's documented OTLP variables named
-  in its manifest after they are checked against the provider's documentation.
+- **Provider OTLP (FR-TEL-06).** Done (2026-10-19, T8.15, Delegated agent work, not owner-approved):
+  [ADR-0063](../adr/0063-per-run-provider-otlp-metrics-receiver.md) (new local listener) landed in the same PR, committed
+  first. One listener per run on `127.0.0.1:0` for the run's lifetime, metrics only over OTLP/HTTP JSON (no protobuf
+  or gRPC, no new dependency), 1 MiB body cap (Assumption), a closed token/cost metric allowlist mapped to
+  `provider_reported` usage observations for that run, forbidden attributes dropped, run/task ids injected by the
+  controller and never trusted from the payload. `telemetry.provider_otlp` defaults off (off opens no socket); a
+  provider gets a listener only with a cited `otlp_metrics` manifest declaration, and none declares one yet. Tests:
+  `src/telemetry/provider-otlp.test.ts`, the T8.15 block in `src/lifecycle/lifecycle.test.ts`, and the config and
+  manifest declaration tests.
 - **Evaluation (FR-OPS-06).** `switchboard eval run <suite>`: a suite file in the data directory, each task replayed as
   a normal run, graded in a network-off container through the ADR-0052 driver with the tests outside the agent's
   worktree; results in a new `eval_result` table.
@@ -7772,6 +7821,14 @@ a second time with `--coverage` and uploads `coverage/` as the `coverage-report`
 - **Slot wait does not fail open.** A wait that outlasts the stage's wall clock ends the stage with
   `outcome: "timeout"` (§8). The operator's shim runs the command after 30 minutes instead; Switchboard keeps the
   fail-closed behaviour on purpose.
+- *As built (2026-10-19, T8.10, Delegated agent work, not owner-approved):* the lock module lists every lock it hands
+  out in this process (`heldLocks()`, `src/lock/held.ts`: the data-directory lock and each verification slot) from
+  acquisition to release. It is instrumentation, not a control. The verification stage takes no lock before or while it
+  waits for a slot, and holds exactly one slot while its commands run (test "no box-wide lock is held during a slot
+  wait" in `src/lifecycle/verification.test.ts`, no sleeps). The `serve` process holds its own data-directory lock
+  for its lifetime; that lock is never waited on (a second acquirer fails at once, `acquireDataDirLock`), so it
+  cannot form a wait chain with a slot. The fail-closed timeout is the existing test "a wait longer than the
+  wall-clock limit ends the run TIMEOUT".
 - **Network-off login probe.** When login volumes are mounted in containers
   ([ADR-0013](../adr/0013-projects-environments-and-contexts.md)), FR-AUTH-02's probe runs inside the container with
   networking off. A probe that cannot decide offline reports `Unverified`, never `AUTH_REQUIRED`: Antigravity stayed

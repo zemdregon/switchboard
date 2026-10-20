@@ -2,10 +2,13 @@
 
 Each file is a complete `config.json` in the shape `loadConfig` (`src/config/load.ts`) reads: strict JSON, so
 documentation lives here instead of inside the files (any comment key would stop startup as an unknown key).
-`src/config/examples.test.ts` loads every `*.json` file in this directory, so a new example is tested automatically.
+`src/config/examples.test.ts` loads every top-level `*.json` file in this directory, so a new example is tested automatically.
 
 Conventions: every path is under `/home/you/...`; replace that prefix with your own directories first. Domains are
 `*.example.test` placeholders. There are no secrets, tokens or provider bypass flags anywhere in these files.
+
+MCP client snippets live in [`mcp-clients/`](mcp-clients/README.md): one stdio snippet per client (Claude app,
+Grok bot, OpenClaw), parse-checked by `src/config/examples.test.ts`.
 
 | File | What it shows | Change first |
 | --- | --- | --- |
@@ -14,3 +17,12 @@ Conventions: every path is under `/home/you/...`; replace that prefix with your 
 | `projects-and-push.json` | One project with a repository context, `branch` push policy and commit signing off. | The context `path`, the `push` remote and prefix, and the commit `identity`. |
 | `http-transport.json` | Loopback HTTP transport with OAuth (M13): replace the placeholder `passphrase_hash` with the output of `switchboard consent hash-passphrase` before serving. | `public_url`, `port`, `passphrase_hash` and the OAuth client mapping. |
 | `approval-and-sinks.json` | A `privileged` client that still requires operator approval, plus a notification sink for approval events. | The sink `url` (and any `ntfy` server, topic or token you add). |
+
+## Skills
+
+`skills/` holds example skill files (LLD §19.1). They are not configuration and are not enabled by default: an operator
+adds one with `switchboard skills add docs-alignment --file <path>` and approves it like any other skill.
+
+| File | What it does |
+| --- | --- |
+| `skills/docs-alignment.md` | Checks README, ROADMAP and ADRs against the code at the run's commit and writes `docs_alignment.json` with `aligned` or `conflict` (FR-SKL-11, LLD §20.6). Switchboard stores it as the run's `docs_alignment` artifact; it never commits or pushes it. |

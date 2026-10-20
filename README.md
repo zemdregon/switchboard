@@ -7,6 +7,49 @@ Switchboard is a headless controller that lets one orchestrating agent delegate 
 documented automation surfaces, behind a single MCP tool surface. It runs on your own machine and reuses the logins
 you already made with those CLIs. Switchboard itself never handles provider credentials.
 
+## Quickstart
+
+Build from a clone (Switchboard is not published to npm and has no releases):
+
+```sh
+git clone https://github.com/zemdregon/switchboard.git switchboard
+cd switchboard
+npm ci && npm run build
+```
+
+Copy [`examples/minimal.json`](examples/minimal.json) to a config file and point `allowed_roots` at a directory
+that exists (that file is the whole config: `schema_version`, `allowed_roots` and one `mcp_clients` entry):
+
+```sh
+cp examples/minimal.json ~/.config/switchboard/config.json
+# edit allowed_roots to list a directory that exists, e.g. /home/you/projects
+node dist/cli/bin.js doctor --config ~/.config/switchboard/config.json
+```
+
+Below, `switchboard` means `node /path/to/switchboard/dist/cli/bin.js` (see
+[Install from source](#install-from-source)). `doctor` exits 0 when the environment and config are sound; provider
+lines read `[warn]` until a provider CLI is installed and logged in natively (see
+[Log in to the providers (natively)](#log-in-to-the-providers-natively)).
+
+Start the server for the `orchestrator` client and send it one task on the test-only fake adapter (no provider CLI
+is called; the fake registers only while `SWITCHBOARD_TEST_FAKE_ADAPTER` carries its exact sentinel, documented in
+[TDD §3.6](docs/design/TDD.md#36-testing-strategy)):
+
+```sh
+export SWITCHBOARD_TEST_FAKE_ADAPTER=enable-test-only-fake-adapter
+node dist/cli/bin.js serve --client orchestrator --config ~/.config/switchboard/config.json
+```
+
+Then, from an MCP client (see [Run as an MCP server](#run-as-an-mcp-server)), call `delegate_task` with, for
+example:
+
+```json
+{"objective": "add a hello-world script", "workspace_path": "/home/you/projects/demo", "trust_profile": "edit-untrusted"}
+```
+
+(`workspace_path` must sit under an `allowed_roots` entry and be a Git checkout.) The call returns a `run_id` at
+once; poll `get_run` for its outcome.
+
 ## Status
 
 Pre-release. The package is private and is not published to any registry; you build it from source.
@@ -86,10 +129,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [#558](https://github.com/zemdregon/switchboard/pull/558)), export-time allowlist enforcement (T8.4,
   [#549](https://github.com/zemdregon/switchboard/pull/549)), the operator version canary (T8.5) and a CI test that
   excludes routing after a synthetic binary version bump until `adapters validate` records the version (T8.6) are done
-  on fakes. Own-repository evaluation (T8.14) is also `Done` on fakes (see
-  [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
-  [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks)). M8 acceptance closure (T8.7) is `Done`; M8 stays
-  `Partial` until the operator records a dry run of the scheduled version canary on a real CLI upgrade. See
+  on fakes. Own-repository evaluation (T8.14) is also `Done` on fakes, and the per-run provider OTLP receiver
+  (T8.15, `telemetry.provider_otlp`, off by default) is also done on fakes. M8 acceptance closure (T8.7) is
+  `Done`; M8 stays `Partial` until the operator records a dry run of the scheduled version canary on a real CLI
+  upgrade. See
   [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and
   [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 - **Milestone 10 (container environments) is `Partial`.** The environment port, MCP admission and `serve` composition
@@ -172,7 +215,7 @@ Pre-release. The package is private and is not published to any registry; you bu
 - **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
   decisions 76 and 77: T15.6 is Done on fakes (2026-10-19, Delegated agent work, not owner-approved), T15.7 is
   Done on fakes (2026-10-19, Delegated agent work, not owner-approved; published-ref conflicts and supersede,
-  migration 0027, `src/ci/ref-conflicts.test.ts`), T15.8 is Planned and T15.9 is Done; the M15 scope below stays
+  migration 0028, `src/ci/ref-conflicts.test.ts`), T15.8 is Planned and T15.9 is Done; the M15 scope below stays
   Done on fakes
   (2026-10-18, Delegated
   agent work,
@@ -384,6 +427,9 @@ profile names exist; which of them a provider can run is listed in [Trust profil
 `list_capabilities`. Read
 [Known limitations](#known-limitations) before relying on it.
 
+The milestone status log (per-milestone progress with dated evidence) lives in
+[ROADMAP §11](docs/ROADMAP.md#11-milestone-status-log-moved-from-the-readme-t812).
+
 ## Single operator, your own accounts
 
 Switchboard is designed for **one operator on one machine**, using that operator's own provider logins
@@ -459,8 +505,9 @@ Minimal example:
 }
 ```
 
-More complete starting points live in [`examples/`](examples/README.md): each file loads as is (replace the
-`/home/you/...` paths first).
+More complete starting points live in [`examples/`](examples/README.md): each top-level `*.json` config loads as is
+(replace the `/home/you/...` paths first). The [`mcp-clients/`](examples/mcp-clients/README.md) snippets are MCP
+client settings, not Switchboard configs.
 
 Keys (from `src/config/schema.ts`; the `projects` key is described below the table):
 
@@ -491,6 +538,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `model_groups` | no | Operator-named groups of models across providers (T7.13, FR-RTE-10): `{ "<name>": { "members": [{ "provider": "<config provider id>", "model": "<model id or alias>" }] } }`. Names match `^[a-z][a-z0-9_-]{0,31}$`, at most 32 groups; each group lists 1 to 32 members in order (order is the last tie-break). Startup refuses an unknown provider id, a duplicate pair, an empty group, a malformed name or model, and unknown keys; the one exception is the test-only `fake` adapter id, accepted as a member `provider` (and in `capacity.subscriptions.<name>.providers`) only when that adapter is registered (`serve` with the test-only fake switch, TDD §3.6), and refused as before otherwise. A member whose model the registry cannot resolve is accepted and reported by `doctor` (below), not refused. Names and members are configuration only. Full shape: [LLD §17.7](docs/design/LLD.md#177-model-groups-fr-rte-10-fr-rte-11). |
 | `timeouts.preflight_ttl_seconds` | no | Integer 0 to 3600. How long a successful adapter preflight is cached (default 60); 0 disables the cache. |
 | `telemetry.otlp_endpoint` | no | `http` or `https` URL for OTLP/HTTP trace export. When omitted or empty, Switchboard does not load OpenTelemetry at startup and makes no outbound telemetry connection. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [LLD §7](docs/design/LLD.md#7-telemetry-spans). |
+| `telemetry.provider_otlp` | no | Boolean (default off). When `true`, a run whose provider manifest cites `otlp_metrics` gets a per-run loopback OTLP/HTTP-JSON metrics receiver (`127.0.0.1:0`, T8.15, FR-TEL-06); anything else means no receiver opens for any run. No shipped manifest declares `otlp_metrics` yet, so the switch alone changes nothing. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [ADR-0063](docs/adr/0063-per-run-provider-otlp-metrics-receiver.md). |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
 | `git.secret_scan.allow` | no | Up to 64 entries `{ "rule_id", "path" }` for the pre-push secret scan ([LLD §20.9](docs/design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061)). Every push, by the agent's `push` tool or `git push` on the CLI and in every profile including an approved bypass run, scans the added lines it would publish with the built-in rules (`src/artifacts/redact.ts`: private-key blocks, AWS, GitHub, `sk-`, Slack and JWT shapes, Switchboard's own tokens, `Bearer` headers and `password=`-style assignments) and refuses with `SECRET_SCAN_BLOCKED` on a hit, recording the rule id, path and line and never the value. An entry lets a hit of `rule_id` through at paths the glob matches (`fixtures/**`); an unknown rule id stops startup. There is no other switch: to publish anyway, push by hand. |
 | `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query, and `shares_subscription_with` must be one of the provider config ids listed below this table (`claude-code`, `codex`, ...) or `null`: any other string stops startup, so `doctor` fails its config check naming the key and `inner test` exits 1 before sending anything. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
@@ -659,7 +707,9 @@ landed.
 
 **Trace export (T8.0, T8.1).** Set `telemetry.otlp_endpoint` to an `http` or `https` URL when you want OTLP/HTTP traces.
 When the key is absent or empty, `serve` behaves as before M8: no OpenTelemetry packages load at startup and nothing
-listens for telemetry. Invalid URLs are rejected at config load without echoing the value. Spans are intended to carry
+listens for trace export. (The per-run provider OTLP receiver below is separate: it stays shut unless
+`telemetry.provider_otlp` is `true`.) Invalid URLs are rejected at config load without echoing the value. Spans are
+intended to carry
 only allowlisted attributes from controller-observed facts (prompts, commands and credentials never belong on spans);
 see [LLD §7](docs/design/LLD.md#7-telemetry-spans) and [ADR-0012](docs/adr/0012-telemetry-at-wrapper-boundary.md).
 
@@ -709,8 +759,19 @@ corrections in [#571](https://github.com/zemdregon/switchboard/pull/571) and req
 [#575](https://github.com/zemdregon/switchboard/pull/575). M8 itself stays `Partial` until the operator records a dry
 run of the scheduled canary on a real CLI upgrade (T8.5).
 
+**Per-run provider OTLP receiver (T8.15).** `Done` on fakes (2026-10-19, Delegated agent work, not owner-approved):
+with `telemetry.provider_otlp: true`, a run whose provider manifest declares `otlp_metrics` (with a
+provider-documentation citation) gets a loopback-only OTLP/HTTP-JSON metrics receiver (`127.0.0.1` ephemeral port)
+for the run's lifetime; token and cost figures it accepts become `provider_reported` usage observations for that run,
+forbidden attributes are dropped, and run/task ids are injected by the controller, never trusted from the payload.
+With the switch off (the default) no listener opens; a provider without a declaration gets no listener and no extra
+environment. No shipped manifest declares `otlp_metrics` yet. No protobuf, no gRPC, no new dependency. See
+[ADR-0063](docs/adr/0063-per-run-provider-otlp-metrics-receiver.md) and
+[LLD §20.13](docs/design/LLD.md#2013-tamper-evident-ledger-provider-telemetry-evaluation-brief-and-critic-t813-t815-t814-t514-t1417).
+
 Tests on fakes: `src/config/config.test.ts`, `src/telemetry/index.test.ts`, `src/telemetry/spans.test.ts`,
 `src/telemetry/allowlist.test.ts`, `src/telemetry/collector-lifecycle.test.ts`, `src/telemetry/collector.test.ts`,
+`src/telemetry/provider-otlp.test.ts`, `src/lifecycle/lifecycle.test.ts` (T8.15 block),
 `src/adapters/version-canary.test.ts`, `src/adapters/version-bump-preflight.test.ts`. Per-task evidence is in
 [ROADMAP §6.15](docs/ROADMAP.md#615-m8-hardening-tasks).
 
@@ -2819,7 +2880,11 @@ worktree, with no shell (`;`, `$( )` and `*` are passed literally), the run's en
 SSH-agent or GnuPG variables) and the run's wall-clock limit. The first command that fails, times out or cannot start
 ends the run `FAILED` with `TEST_FAILURE`; the agent's own summary is kept. `get_run` shows each command's outcome and
 exit code, and `get_artifacts` returns the full output as a `test_report` (at most 1 MiB per stream, secret patterns
-redacted). `cancel_run` stops a running command, and a controller restart ends the run `PROCESS_CRASH` without running
+redacted). Since T8.10 each stored report also records the commit and tree the commands ran on (`head_sha`, null when
+the worktree differs, and `tree_sha`); `get_run` exposes the newest pin as `verification.verified_at_sha`/`tree_sha`
+with `stale` when the run's published ref has since moved, and a run of the example `docs-alignment` skill stores its
+report as a `docs_alignment` artifact ([LLD §20.6][t810]). `cancel_run` stops a running command, and a controller
+restart ends the run `PROCESS_CRASH` without running
 the commands again. They are refused under `inspect-untrusted`. **They run on your host as your user, outside any
 provider sandbox** (ROADMAP owner decision 11, R-24): they can read your files and use the network. Supply them only for
 repositories you trust. A Git ref they move is reported as a policy violation and controller refs are put back, but a
@@ -2828,6 +2893,8 @@ environment (there is no config key yet) and the commands run inside bubblewrap 
 the rest of the host is read-only and every namespace, network included, is unshared. Without a working `bwrap` the
 commands do not run and the run ends `TEST_FAILURE`; they never fall back to running unconfined. `doctor` reports
 whether bubblewrap is usable. Confinement does not hide files your user can read (ROADMAP T3.11, ADR-0051).
+
+[t810]: docs/design/LLD.md#206-head-pinned-verification-evidence-and-the-docs-alignment-skill-fr-exe-10-fr-skl-11-t810
 
 **Verification slots.** Set any `limits.verification_*` key (ROADMAP T3.22, FR-EXE-09) and the verification commands of
 every run on this host share that many slots (default 2): a run with no free slot waits in `VERIFYING` (recorded as a

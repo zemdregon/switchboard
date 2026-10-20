@@ -82,6 +82,27 @@ describe("loadConfig", () => {
         loadConfig({ configPath: write({ ...base(), telemetry: { endpoint: "http://collector.test" } }) }),
       ).toThrow(/telemetry.endpoint: unknown key/);
     });
+
+    it("leaves the per-run provider OTLP receiver off unless explicitly enabled (T8.15, FR-TEL-06)", () => {
+      for (const telemetry of [{ provider_otlp: false }, { otlp_endpoint: "http://127.0.0.1:4318/v1/traces" }]) {
+        const loaded = loadConfig({ configPath: write({ ...base(), telemetry }) }).telemetry;
+        expect(loaded?.providerOtlp).toBeUndefined();
+      }
+      expect(loadConfig({ configPath: write({ ...base(), telemetry: { provider_otlp: true } }) }).telemetry).toEqual({
+        providerOtlp: true,
+      });
+      expect(
+        loadConfig({
+          configPath: write({
+            ...base(),
+            telemetry: { otlp_endpoint: "http://127.0.0.1:4318/v1/traces", provider_otlp: true },
+          }),
+        }).telemetry,
+      ).toEqual({ otlpEndpoint: "http://127.0.0.1:4318/v1/traces", providerOtlp: true });
+      expect(() => loadConfig({ configPath: write({ ...base(), telemetry: { provider_otlp: "yes" } }) })).toThrow(
+        /telemetry.provider_otlp/,
+      );
+    });
   });
 
   it("rejects an unknown top-level key with its path", () => {

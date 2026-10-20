@@ -272,6 +272,8 @@ export const MCP_ARTIFACT_KINDS = [
   "handoff_view",
   "pr_draft",
   "handoff_condense",
+  // T8.10 (FR-SKL-11, LLD §20.6): the docs-alignment report; its `notes` are untrusted text.
+  "docs_alignment",
 ] as const;
 
 const TRUST_PROFILE = {
@@ -436,6 +438,17 @@ const ENVELOPE = {
       additionalProperties: false,
       required: ["reason", "since"],
       properties: { reason: { const: "held_load" }, since: { type: "string" } },
+    },
+    // T8.10 (FR-EXE-10, LLD §20.6): the newest verification result's pin; `stale` computed on read.
+    verification: {
+      type: "object",
+      additionalProperties: false,
+      required: ["verified_at_sha", "tree_sha", "stale"],
+      properties: {
+        verified_at_sha: { type: ["string", "null"], pattern: "^([0-9a-f]{40}|[0-9a-f]{64})$" },
+        tree_sha: { type: ["string", "null"], pattern: "^([0-9a-f]{40}|[0-9a-f]{64})$" },
+        stale: { type: "boolean" },
+      },
     },
     replayed: { type: "boolean" },
     // T16.4 (FR-SKL-07, LLD §19.2): `get_run` only, a run's pinned skills; never text. `delivery` is null until dispatch.

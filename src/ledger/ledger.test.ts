@@ -61,6 +61,7 @@ const EXPECTED_TABLES = [
   "skill_event",
   "skill_version",
   "usage_observation",
+  "verification_result",
   "workspace_checkpoint",
 ];
 
@@ -420,7 +421,7 @@ describe("ledger migrations", () => {
         )
         .run(),
     ).toThrow(/CHECK/u);
-    // The current writer reads migration 27's columns (T15.7), so the ledger behaviour is checked on the latest schema.
+    // The current writer reads migration 28's columns (T15.7), so the ledger behaviour is checked on the latest schema.
     migrate(d);
     const item = ledger.enqueueWorkItem({
       projectId: "p",
@@ -466,7 +467,7 @@ describe("ledger migrations", () => {
     const ledger = createLedger(d);
 
     // Existing work queue item on v19: a plain insert, as a writer of this schema version did (the current writer
-    // needs migration 27's columns, T15.7).
+    // needs migration 28's columns, T15.7).
     d.prepare(
       `INSERT INTO project_work_item (id, project_id, creator_client_id, state, priority, request_json, source_kind,
          created_at, updated_at) VALUES ('que_v19', 'proj-1', 'client-a', 'READY', 0, '{}', 'mcp', 't', 't')`,

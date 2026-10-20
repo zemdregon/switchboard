@@ -33,6 +33,22 @@ describe("manifest validation", () => {
   it("rejects unknown keys", () => {
     expect(() => parse({ ...valid(), extra: 1 })).toThrow(ManifestError);
   });
+  it("accepts a declared otlp_metrics block and rejects bad env names or a missing citation (T8.15)", () => {
+    const declared = {
+      endpoint_env: "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+      protocol_env: "OTEL_EXPORTER_OTLP_PROTOCOL",
+      resource_attributes_env: "OTEL_RESOURCE_ATTRIBUTES",
+      docs: "https://example.test/provider-docs#otlp",
+    };
+    expect(parse({ ...valid(), otlp_metrics: declared }).otlp_metrics).toEqual(declared);
+    expect(parse({ ...valid() }).otlp_metrics).toBeUndefined();
+    // The citation is required: an uncited declaration stays undeclared.
+    expect(() => parse({ ...valid(), otlp_metrics: { endpoint_env: "OTEL_X" } })).toThrow(ManifestError);
+    // Environment names are closed to the shell-safe uppercase form.
+    expect(() =>
+      parse({ ...valid(), otlp_metrics: { endpoint_env: "otel-lower", docs: "https://example.test/d" } }),
+    ).toThrow(ManifestError);
+  });
   it("rejects manifests claiming forbidden capabilities", () => {
     for (const k of [
       "credential_export_allowed",
