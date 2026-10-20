@@ -489,7 +489,9 @@ export function runEnvironments(
 /**
  * LLD §5.2 (FR-PRJ-02 note, ADR-0067): the workspace manager's base refresh. A run's project resolves to its
  * configured definition, else a dynamic project's revision in force (as admission does); only a primary context that
- * sets `base_remote` fetches. The fetch uses the allowlisted environment of the controller's own push (ADR-0028).
+ * sets `base_remote` fetches. ADR-0074: a dynamic project's primary `clone_url` context resolves (`toResolved`) with
+ * its default base remote (its push remote, else `origin`), so every new meta-session of a cloned project fetches
+ * first. The fetch uses the allowlisted environment of the controller's own push (ADR-0028).
  */
 export function serveBaseRefresh(
   config: Pick<ResolvedConfig, "projects">,
@@ -1527,6 +1529,9 @@ async function runDaemon(
         resolveContext: resolvePushContext,
         pulls: new GhPullRequestPort({ binary: config.ciTrigger.ghBinary, sourceEnv: io.env }),
       },
+      // ADR-0074 (LLD §3.4.15): `refresh_project_base` and `rebase_session`, with the same allowlisted fetch environment
+      // as the first-worktree refresh and the controller's own push (ADR-0028).
+      base: { db, ids, sourceEnv: io.env, ...(now ? { now } : {}) },
       // ADR-0070 (LLD §3.4.13): `merge_run_pr`, offered with `publish_run`: the T15.8 gate on the poller's port, or,
       // when `ci_trigger.enabled` is false, the same G10 to G12 port on `ci_trigger.gh_binary`. Not limited to
       // `ci_trigger.projects`; the project's own merge policy in force decides.

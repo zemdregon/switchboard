@@ -2494,6 +2494,44 @@ allowed. A G15 failure is `TOOL_FAILURE` `gh_error`, `retryable: true`. Refusals
 head_sha, pr_number, reason? }` (ids, SHAs and codes only). Tests: `src/mcp/update-run-branch.test.ts`,
 `src/mcp/tools-list-callable.test.ts`, the G15 audit in `src/ci/gh-argv.test.ts`.
 
+#### 3.4.15 `refresh_project_base` and `rebase_session` (ADR-0074)
+
+*Added 2026-10-20 (Linus, design authority; details Delegated, not owner-approved).* Code: `src/mcp/base-tools.ts`,
+`src/git/session-rebase.ts`, `src/git/base-refresh.ts`, schemas in `src/mcp/schemas.ts`, wired in `src/cli/serve.ts`.
+Decision record: [ADR-0074](../adr/0074-fresh-base-for-cloned-projects-and-session-rebase.md); algorithm §5.2.1.
+
+**Offered** when the server has the base port (`serve` always wires it) and the client's ceiling is above
+`inspect-untrusted`, never in a `console` profile; listed right after the publish tools. Otherwise both are answered
+exactly like an unknown tool (`tools/list` and `callTool` read the same `offeredDescriptors`).
+
+A project is **remote-backed** when its primary context has an effective base remote (`base_remote`, or the §5.2.1
+default for a `clone_url` context); any other project is `INVALID_REQUEST` `NOT_REMOTE_BACKED`.
+
+**`refresh_project_base`.** Input (closed): `{ project_id }`, resolved as `search_project_context` resolves `project`
+(a configured project in the client's list, or the client's own dynamic project in force; anything else `INVALID_REQUEST
+"unknown project"`). The §5.2 refresh runs at once under the worktree serialisation, its event on the client's newest
+run of the project in that repository that the caller's subject may see (none: no event, Delegated). Output (closed):
+`{ project_id, base_ref, remote, base_commit, previous_commit, remote_commit, reason }`: `base_commit` is where a new
+meta-session of the project starts now (the fetched commit, or the local branch when it is current or ahead),
+`previous_commit` the remote-tracking ref before the fetch (or null), `remote_commit` after it, `reason` the §5.2
+reason code. An outcome other than `fetched` is `TOOL_FAILURE` `BASE_REFRESH_FAILED` with `details.fetch_reason`
+(retryable for `REPO_BUSY`, `FETCH_FAILED` and `FETCH_TIMEOUT`).
+
+**`rebase_session`.** Input (closed): `{ session_id, expected_head_sha?: 40 or 64 lowercase hex }`. The meta-session
+must be this client's and HTTP subject's (as `continue_task`; otherwise `INVALID_REQUEST "unknown meta-session <id>"`),
+`ACTIVE`, without a non-terminal run (`ACTIVE_RUN`), with a project (`NOT_REMOTE_BACKED` otherwise) re-resolved as
+above, whose primary context's repository is the meta-session's (`NOT_REMOTE_BACKED`). Then §5.2.1. Output (closed):
+`{ session_id, previous_head, new_head, base_commit, rebased_commits, publish?: { previous_tip, new_tip } }`. Refusals,
+all before anything about the session changes: `INVALID_REQUEST` with `details.reason` `CONFLICT`
+(`details.conflicting_paths`), `HEAD_MOVED`, `ACTIVE_RUN`, `NOTHING_TO_REBASE`, `MERGE_COMMIT`, `TOO_MANY_COMMITS`,
+`NOT_REMOTE_BACKED`; `PERMISSION_BLOCKED` `SIGNING_UNAVAILABLE`, `IDENTITY_REQUIRED`, `REPO_CONFIG_UNSAFE`,
+`PUBLISH_HISTORY_UNVERIFIED`; `TOOL_FAILURE` `BASE_REFRESH_FAILED` (`details.fetch_reason`), `REPO_BUSY` and
+`PUBLISH_REF_MOVED` (retryable), `GIT_TOO_OLD`, `GIT_FAILED`. The fetch of step 3 may already have moved the
+remote-tracking ref (recorded) when a later step refuses.
+
+**`publish_run` after a rebase.** A push the remote rejects as not a fast-forward is `PERMISSION_BLOCKED`
+`NON_FAST_FORWARD` (it was `TOOL_FAILURE`); the controller never forces (Q-112).
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added
@@ -2962,9 +3000,66 @@ and its own `git fetch` stays denied.
 **Crash safety.** The event is appended after the fetch. A crash between the two leaves a moved tracking ref without a
 record: a later run's guard reports it (`other`, `report`), and step 2 does not trust it until the next recorded fetch.
 
-**Not covered.** A later run of the meta-session starts from the meta-session head, not a refreshed base; rebase
-preparation (§20.4) still resolves `base_ref` locally. `https` and `ssh` remotes are not tested (tests use `file`
-remotes).
+**Not covered.** A later run of the meta-session starts from the meta-session head, not a refreshed base (an
+orchestrator can call `rebase_session` first, §5.2.1); rebase preparation (§20.4) still resolves `base_ref` locally.
+`https` and `ssh` remotes are not tested (tests use `file` remotes).
+
+#### 5.2.1 Cloned projects and session rebase (ADR-0074)
+
+*Built 2026-10-20 (Linus, design authority; refinements Delegated, not owner-approved),
+[ADR-0074](../adr/0074-fresh-base-for-cloned-projects-and-session-rebase.md). Code: `defaultBaseRemote`,
+`effectiveBaseRemote`, `checkBaseRemote` and `toResolved` in `src/projects/rules.ts`; `src/git/session-rebase.ts`
+(`rebaseSession`); `src/mcp/base-tools.ts`; the tools in §3.4.15.*
+
+**Default base remote.** A dynamic definition's primary context with `clone_url` and no `base_remote` resolves with
+`baseRemote` = its `push.remote` when set, else `origin` (the remote `ensureClone` creates). `serveBaseRefresh`
+therefore runs the algorithm above before every new meta-session's first worktree of such a project; nothing else
+changes. Configured projects (whose contexts cannot carry `clone_url`) and `path` contexts keep the opt-in rule.
+
+**`base_remote` on a `clone_url` context** (`create_project`, `update_project`, after the structure check): any value
+other than `origin` is `PERMISSION_BLOCKED` `BASE_REMOTE_NOT_CLONE_REMOTE` (`details.field` names it). An explicit
+value that differs from the default waits for approval with reason `base_remote` (Delegated); the default or an equal
+explicit value does not.
+
+**Session rebase** (`rebaseSession`, called by `rebase_session`). Inputs: the meta-session, the primary context's
+`base_ref`, effective base remote, `identity` and `sign`, and an optional expected head. Let `B` be the meta-session's
+`base_commit` and `H` its `head_commit`.
+
+1. Refuse `NOTHING_TO_REBASE` without `repo_root`, `B` or `H`; `ACTIVE_RUN` (with `run_id`) when a run of the
+   meta-session is not terminal or holds the lease; `HEAD_MOVED` when the expected head is not `H`; `GIT_TOO_OLD`
+   below Git 2.40. Then, under the per-repository worktree serialisation, check those again and refuse `REPO_BUSY`
+   when any meta-session of the repository holds a lease, and `REPO_CONFIG_UNSAFE` when the repository's configuration
+   names a `merge.<driver>.driver`.
+2. The publish chain: the newest `git_commit` row of the meta-session names the publish ref `P`. When `P` resolves to a
+   commit other than `B`, its tip must be that ref's newest provenance row (`PUBLISH_HISTORY_UNVERIFIED` otherwise),
+   `sign: true` is `SIGNING_UNAVAILABLE` and a missing `identity` is `IDENTITY_REQUIRED`.
+3. The fetch: `refreshBase` (steps 1 to 6 above) with the event on the meta-session's newest run. An outcome other
+   than `fetched` is `BASE_REFRESH_FAILED` (`details.fetch_reason`). The fresh base `F` is the event's `base_commit`,
+   else the local branch (`CURRENT`, `LOCAL_AHEAD`). When `F` is `B` or an ancestor of it, nothing changes and the
+   result has `new_head = H` and `rebased_commits = 0`.
+4. Both chains `B..H` and `B..P` (each must start at `B`; a merge commit is `MERGE_COMMIT`, more than 500 commits
+   `TOO_MANY_COMMITS`; every commit of `B..P` must have a provenance row) are replayed onto `F`, oldest first: for a
+   commit `C` on the current tip `T`, `git merge-tree --write-tree --no-messages --name-only -z --merge-base=C^ T C`.
+   Exit 1 collects the conflicting paths and the replay goes on, so one `CONFLICT` refusal lists them all (sorted, at
+   most 50, `details.conflicting_paths`). A tree equal to `T`'s is dropped (empty on the new base). Otherwise
+   `git commit-tree <tree> -p T -F -` with the original message and author (name, e-mail, date), the committer
+   `Switchboard <switchboard@localhost>` for the checkpoint chain and the context `identity` for the publish chain, and
+   the current time. Only unreachable objects exist until step 5.
+5. Commit: `git update-ref --no-deref P <new tip> <old tip>` (compare-and-swap; failure `PUBLISH_REF_MOVED`), then one
+   ledger transaction: step 1's session checks again, `UPDATE meta_session SET head_commit = <new head>,
+   base_commit = F` guarded by the old head, base and no lease; one `git_commit` row per replayed controller commit,
+   copied from the original's (new id, `commit_sha`, `tree_sha`, `created_at`; `patch_id` and `tool_event_id` null);
+   and one `session_rebased` run event on the newest run: `{v: 1, previous_head, new_head, previous_base_commit,
+   base_commit, rebased_commits, dropped_commits, publish: {ref, previous_tip, new_tip, commits: [{from, to}] (at most
+   100)} | null}`. A failure in the transaction moves `P` back.
+
+The next `prepare` of the meta-session starts from the new `head_commit` (step 2 of §5 is unchanged), and the commit
+tool's lineage check and the push's history check run from the new `base_commit`. Nothing is pushed. A publish ref an
+earlier push put on the remote is no longer an ancestor; the non-forced push is rejected and `publish_run` answers
+`PERMISSION_BLOCKED` `NON_FAST_FORWARD` (Q-112). **Crash safety:** a crash after step 5's `update-ref` and before the
+transaction leaves a publish tip without a provenance row; the push refuses it (`PUBLISH_HISTORY_UNVERIFIED`) and the
+operator can move `P` back to the tip the ledger names. The replayed checkpoint chain is reachable only from
+`head_commit` until the next run's branch is created on it (Q-113).
 
 ### 5.3 Project setup step (ADR-0071)
 

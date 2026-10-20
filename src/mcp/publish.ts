@@ -206,6 +206,15 @@ function acceptedPushOf(
 function pushRefusal(r: PushResult): ToolError {
   const details = { reason: r.reason, push_id: r.pushId };
   if (r.reason === "NOTHING_TO_PUSH") return invalid("the publish ref has no commit to push", details);
+  // ADR-0074 (Q-112): after rebase_session the branch pushed before is not an ancestor; the controller never forces.
+  if (r.reason === "NON_FAST_FORWARD") {
+    return new ToolError(
+      "PERMISSION_BLOCKED",
+      "push refused (NON_FAST_FORWARD): the remote branch is not an ancestor of the publish head (for example after " +
+        "rebase_session); the controller never force-pushes",
+      details,
+    );
+  }
   if (POLICY_REASONS.has(r.reason)) return new ToolError("PERMISSION_BLOCKED", `push refused (${r.reason})`, details);
   return new ToolError("TOOL_FAILURE", `push failed (${r.reason})`, details);
 }
