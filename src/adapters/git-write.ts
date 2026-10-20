@@ -506,3 +506,119 @@ function commandVerdict(command: string, depth: number): GitCommandVerdict | und
 export function gitWriteInCommand(command: string): GitCommandVerdict | undefined {
   return commandVerdict(command, 0);
 }
+
+/**
+ * ADR-0072 follow-up (Linus, 2026-10-20): Git subcommands a provider's Git deny rule (FR-GIT-01) may have blocked
+ * without the attempt being security-class: reads and local ref or index verbs. Anything else (push, send-pack, remote,
+ * fetch, pull, config, update-ref, symbolic-ref, submodule, clone, worktree, rebase, bisect, an alias, ...) is
+ * security-class. The denied command never ran; the FR-GIT-03 ref check backs this up.
+ */
+const GIT_RULE_LOCAL_SUBCOMMANDS: readonly string[] = [
+  ...GIT_READ_ONLY_SUBCOMMANDS,
+  "branch",
+  "tag",
+  "stash",
+  "checkout",
+  "switch",
+  "reset",
+  "restore",
+  "add",
+  "rm",
+  "mv",
+  "commit",
+  "merge",
+  "cherry-pick",
+  "revert",
+  "notes",
+  "reflog",
+];
+/** Git global options that change nothing about which repository is used (`--bare` and every option with a value do). */
+const GIT_RULE_HARMLESS_GLOBALS = GIT_GLOBAL_FLAGS.filter((f) => f !== "--bare");
+/** Options of a local subcommand that run another program or write a file anywhere. */
+const GIT_RULE_RISKY_ARGS = /^(-O|--open-files-in-pager|--output|--exec|-x$|--upload-pack|--receive-pack)/;
+/** Shell words that may open a simple command (`for ...; do git log ...; done`, `if git ...; then`). */
+const SHELL_KEYWORDS = new Set(["do", "then", "else", "elif", "if", "while", "until", "!", "{", "time"]);
+const GIT_OR_GH_TEXT = /(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_]|$)/;
+/** Proposed bound: a longer command is not parsed and counts as security-class. */
+export const GIT_RULE_COMMAND_MAX_CHARS = 16_384;
+
+/**
+ * ADR-0072 follow-up: why a shell command that a Git deny rule blocked is security-class, or `undefined` when every Git
+ * invocation in it is a read or a local ref verb (`git branch -a`, `git tag -l`, `git stash list`, `git log`,
+ * `git checkout`), which makes the denial recoverable. Lexical and conservative, never executes anything: the command
+ * is split on `; & | newline ( )`, `$(` and backticks ({@link splitSimpleCommands}); in each simple command, after
+ * shell keywords and `NAME=value` prefixes, the first word is the program. Security-class: a missing, oversized or
+ * empty command; no Git invocation found (the rule's match cannot be explained); any `gh`; a `git-<name>` program; a
+ * dynamic program; a `GIT_*` assignment; a launcher, shell or `eval` whose arguments mention `git` or `gh`; `git` or
+ * `gh` as a later argument of another program (`find -exec`, `xargs`); a Git global option other than the harmless
+ * flags (`-C`, `-c`, `--git-dir`, `--work-tree`, `--exec-path`, `--bare`, ...); a dynamic subcommand or one outside the
+ * local set (`push`, `send-pack`, `remote`, `fetch`, `pull`, `config`, `update-ref`, `symbolic-ref`, ...); and a local
+ * subcommand with an option that runs a program or writes a file elsewhere (`-O`, `--output`, `--exec`).
+ */
+export function gitDenyRuleSecurityReason(command: string | undefined): string | undefined {
+  if (command === undefined || command.trim() === "") return "denied command not found";
+  if (command.length > GIT_RULE_COMMAND_MAX_CHARS) return "denied command too long to check";
+  const scan = ruleScan(command, 0);
+  return scan.reason ?? (scan.sawGit ? undefined : "no git invocation found");
+}
+
+function ruleScan(command: string, depth: number): { reason?: string; sawGit: boolean } {
+  if (depth > 4) return { reason: "command nesting too deep to check", sawGit: false };
+  let sawGit = false;
+  for (const all of splitSimpleCommands(command)) {
+    // A substitution inside double quotes stays inside its word (`echo "$(git push)"`): scan it as a command too.
+    for (const w of all) {
+      const at = w.search(/\$\(|`/);
+      if (at === -1) continue;
+      const inner = ruleScan(w.slice(at), depth + 1);
+      if (inner.reason !== undefined) return inner;
+      sawGit ||= inner.sawGit;
+    }
+    let i = 0;
+    while (i < all.length && SHELL_KEYWORDS.has(all[i] as string)) i++;
+    for (; i < all.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(all[i] as string); i++) {
+      if ((all[i] as string).startsWith("GIT_")) return { reason: "a GIT_ variable is set", sawGit };
+    }
+    const words = all.slice(i);
+    const program = words[0];
+    if (program === undefined) continue;
+    const name = basename(program);
+    if (isDynamic(program)) return { reason: `dynamic program \`${program}\``, sawGit };
+    if (GIT_PUBLISHING_PROGRAMS.includes(name)) return { reason: `\`${name}\` can push to a Git host`, sawGit };
+    if (name.startsWith("git-")) return { reason: `\`${name}\` is a git subprogram`, sawGit };
+    if (name !== "git") {
+      const launcher = COMMAND_LAUNCHERS.includes(name) || PREFIX_LAUNCHERS.has(name) || SHELLS.has(name);
+      for (const w of words.slice(1)) {
+        const b = basename(w);
+        if (b === "git" || GIT_PUBLISHING_PROGRAMS.includes(b) || isGitSubprogram(b)) {
+          return { reason: `\`${name}\` runs \`${b}\``, sawGit };
+        }
+        if (launcher && GIT_OR_GH_TEXT.test(w)) return { reason: `\`${name}\` may run git or gh`, sawGit };
+      }
+      continue;
+    }
+    sawGit = true;
+    let j = 1;
+    while (j < words.length && (words[j] as string).startsWith("-")) {
+      const w = words[j] as string;
+      if (!GIT_RULE_HARMLESS_GLOBALS.includes(w))
+        return {
+          reason: `git global option \`${w.split("=", 1)[0]}\``,
+          sawGit,
+        };
+      j++;
+    }
+    const sub = words[j];
+    if (sub === undefined) continue;
+    if (isDynamic(sub)) return { reason: `dynamic git subcommand \`${sub}\``, sawGit };
+    if (!GIT_RULE_LOCAL_SUBCOMMANDS.includes(sub)) return { reason: `\`git ${sub}\` is not a local git verb`, sawGit };
+    const risky = words.slice(j + 1).find((w) => GIT_RULE_RISKY_ARGS.test(w));
+    if (risky !== undefined) {
+      return {
+        reason: `\`git ${sub} ${risky.split("=", 1)[0]}\` runs a program or writes elsewhere`,
+        sawGit,
+      };
+    }
+  }
+  return { sawGit };
+}

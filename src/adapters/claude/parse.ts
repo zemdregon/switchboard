@@ -22,7 +22,8 @@
  * weekly limit · resets 12pm (UTC)", exit 1; a reset hour with no date). The `rejected` `rate_limit_event` shape above
  * is still an Assumption from a synthetic fixture.
  */
-import type { NormalizedEvent, ParseState } from "../types.js";
+import { GIT_RULE_COMMAND_MAX_CHARS, gitDenyRuleSecurityReason } from "../git-write.js";
+import type { DenialClass, NormalizedEvent, ParseState } from "../types.js";
 
 type Json = Record<string, unknown>;
 
@@ -87,7 +88,21 @@ function toolCall(block: Json): NormalizedEvent {
   return { kind: "tool_call", tool, name, ...(target ? { target } : {}), ...(command ? { command } : {}) };
 }
 
-function assistantEvents(e: Json): NormalizedEvent[] {
+/** Proposed bound on remembered `Bash` commands per parse; past it a `rule` denial finds no command (fail closed). */
+const MAX_REMEMBERED_COMMANDS = 4096;
+
+/** ADR-0072 follow-up: remember a `Bash` tool_use's command by id so a later `rule` denial of it can be classified. */
+function rememberBashCommand(block: Json, state: ParseState): void {
+  const id = str(block.id);
+  const command = str(obj(block.input)?.command);
+  if (str(block.name) !== "Bash" || id === undefined || command === undefined) return;
+  if (command.length > GIT_RULE_COMMAND_MAX_CHARS) return;
+  state.claudeBashCommands ??= new Map();
+  if (state.claudeBashCommands.size >= MAX_REMEMBERED_COMMANDS) state.claudeBashCommands.clear();
+  state.claudeBashCommands.set(id, command);
+}
+
+function assistantEvents(e: Json, state: ParseState): NormalizedEvent[] {
   const out: NormalizedEvent[] = [];
   for (const raw of arr(obj(e.message)?.content)) {
     const block = obj(raw);
@@ -97,6 +112,7 @@ function assistantEvents(e: Json): NormalizedEvent[] {
       const text = str(block.text);
       if (text) out.push({ kind: "message", role: "assistant", text: bound(text) });
     } else if (t === "tool_use") {
+      rememberBashCommand(block, state);
       out.push(toolCall(block));
     }
     // Other block types (e.g. thinking) are dropped: observable facts only, no reasoning text (NFR-PRIV-02).
@@ -128,7 +144,40 @@ function systemDenialEvents(e: Json, state: ParseState): NormalizedEvent[] {
     state.claudeDeniedToolUseIds ??= new Set();
     state.claudeDeniedToolUseIds.add(id);
   }
-  return [...bindSession(e, state), { kind: "permission_denied", tool: str(e.tool_name) ?? "unknown" }];
+  const tool = str(e.tool_name) ?? "unknown";
+  const command = id !== undefined ? state.claudeBashCommands?.get(id) : undefined;
+  if (id !== undefined) state.claudeBashCommands?.delete(id);
+  const denial = claudeDenialClass(tool, str(e.decision_reason_type), command);
+  return [...bindSession(e, state), { kind: "permission_denied", tool, ...(denial ? { denial } : {}) }];
+}
+
+/**
+ * ADR-0072: the class of a `system/permission_denied` event from its `decision_reason_type` (values seen on claude
+ * 2.1.294 in the operator's run streams, 2026-10-20; the `message` text is never read):
+ * - `mode` on `Bash`: a command no allow rule admits, denied by `--permission-mode dontAsk` -> `profile` (recoverable).
+ *   `mode` on any other tool is left unclassified: a file-tool write to Git or settings files that `--restricted`
+ *   reserves for a person would be denied the same way.
+ * - `rule`: a `--disallowedTools` rule matched; Switchboard passes only the FR-GIT-01 Git deny rules. ADR-0072
+ *   follow-up (Linus, 2026-10-20): on `Bash`, the denied `tool_use`'s command is checked by
+ *   {@link gitDenyRuleSecurityReason}; when every Git invocation in it is a read or a local ref verb (`git branch -a`,
+ *   `git log`) -> `git_rule_local` (recoverable). Otherwise (push, remote, config, `gh`, `-C`/`--git-dir`, ..., or no
+ *   command found or parsed) -> `git_write`.
+ * - `subcommandResults`: a compound or single shell command one of whose parts a deny rule matched (the part's own
+ *   reason is not reported; seen for Git and `gh` deny rules, for example `git branch -a --contains <sha>` in
+ *   run_01M5D74KSXB5VVC4FZD0D3Q92C). Treated exactly like `rule`: on `Bash` the whole denied command is checked by
+ *   {@link gitDenyRuleSecurityReason}, so every part must be a Git read or local ref verb for `git_rule_local`;
+ *   anything else, including no Git invocation, no command found, or another tool -> `git_write` (fails the run).
+ * - `other`: seen only for a file tool outside the working directory (`--restricted` confinement) -> `outside_worktree`.
+ * - anything else -> unclassified, which fails the run (fail closed).
+ * A `result.permission_denials` entry with no `system` event before it carries no reason and stays unclassified.
+ */
+export function claudeDenialClass(tool: string, reason: string | undefined, command?: string): DenialClass | undefined {
+  if (reason === "mode") return tool === "Bash" ? "profile" : undefined;
+  if (reason === "rule" || reason === "subcommandResults") {
+    return tool === "Bash" && gitDenyRuleSecurityReason(command) === undefined ? "git_rule_local" : "git_write";
+  }
+  if (reason === "other") return "outside_worktree";
+  return undefined;
 }
 
 function resultEvents(e: Json, state: ParseState): NormalizedEvent[] {
@@ -178,7 +227,7 @@ export function parseClaudeLine(line: string, state: ParseState): NormalizedEven
       if (subtype === "permission_denied") return systemDenialEvents(e, state);
       break;
     case "assistant":
-      return [...bindSession(e, state), ...assistantEvents(e)];
+      return [...bindSession(e, state), ...assistantEvents(e, state)];
     case "user":
       // Tool results: observable outcome is already captured by tool_call + result/permission_denials.
       return bindSession(e, state);

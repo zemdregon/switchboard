@@ -78,7 +78,7 @@ import { DEFAULT_IDLE_MS, DEFAULT_KILL_GRACE_MS, DEFAULT_WALL_CLOCK_MS } from ".
 import { CHANNEL_MCP_CONFIG_FILE, TOOL_NAMES, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../../git/tool-protocol.js";
 import type { PrivilegedScope } from "../../policy/types.js";
 import { channelToolRule, SAFE_MODE_FLAG } from "../audit.js";
-import { classifyCommon } from "../failure.js";
+import { classifyCommon, recoveredDenialWarnings } from "../failure.js";
 import {
   GIT_GLOBAL_FLAGS,
   GIT_GLOBAL_OPTIONS_WITH_VALUE,
@@ -848,16 +848,17 @@ export class ClaudeAdapter implements ProviderAdapter {
       ...(nativeSessionId ? { nativeSessionId } : {}),
       ...(summary ? { summary } : {}),
     };
+    // ADR-0072: recovered `profile`-class denials do not fail a run that otherwise succeeded; they become warnings.
+    const warnings = events.some((e) => e.kind === "permission_denied") ? recoveredDenialWarnings(events) : [];
     const clean =
       exit.outcome === "exited" &&
       exit.exitCode !== null &&
       exit.expectedExitCodes.includes(exit.exitCode) &&
       final?.kind === "result" &&
       final.ok &&
-      !events.some(
-        (e) => e.kind === "provider_error" || e.kind === "permission_denied" || e.kind === "sandbox_violation",
-      );
-    if (clean) return { ok: true, ...base };
+      !events.some((e) => e.kind === "provider_error" || e.kind === "sandbox_violation") &&
+      warnings !== undefined;
+    if (clean) return { ok: true, ...base, ...(warnings.length > 0 ? { warnings } : {}) };
     const c = this.classifyFailure({
       events,
       exit,

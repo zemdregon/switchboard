@@ -171,7 +171,7 @@ import {
 } from "../environment/index.js";
 import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import { procStartTicks } from "../exec/proc-info.js";
-import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
+import { ChannelOpenError, GIT_TOOL_DENIED, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { GitPublisher } from "../git/commit.js";
 import { credentialReachFromJson, signingReachFromJson } from "../git/credential-reach.js";
 import {
@@ -184,6 +184,7 @@ import {
 } from "../git/finalize.js";
 import { readHeadPin } from "../git/head-pin.js";
 import { RefGuard } from "../git/ref-guard.js";
+import { SECRET_SCAN_HIT_EVENT } from "../git/secret-scan.js";
 import { CHANNEL_MCP_CONFIG_FILE } from "../git/tool-protocol.js";
 import {
   AFFINITY_SWITCH_REASONS,
@@ -2580,6 +2581,12 @@ export class RunLifecycle {
     // T8.10 (FR-SKL-11, LLD §20.6): a docs-alignment run's report leaves the worktree before verification and finalize.
     const alignment = await this.collectDocsAlignment(runId, meta, ws);
     let pending = pendingOf(exec, out);
+    // ADR-0072: recovered denials do not rescue a run in which the controller itself refused a security-class action.
+    const recovered = out.result.warnings ?? [];
+    const refusal = pending.kind === "success" && recovered.length > 0 ? this.securityRefusal(runId) : undefined;
+    if (refusal !== undefined) {
+      pending = { kind: "failure", code: "PERMISSION_BLOCKED", detail: `denied: ${recovered[0]?.tool}; ${refusal}` };
+    }
     const exitFields = { exit_code: out.exit.exitCode, exit_signal: out.exit.signal };
     const exitPayload = { exit_outcome: out.exit.outcome, group_empty: out.groupEmpty };
     const commands = req.verification_commands ?? [];
@@ -2873,6 +2880,26 @@ export class RunLifecycle {
     }
   }
 
+  /**
+   * ADR-0072: a security-class refusal the controller recorded for the run while it ran, or undefined. Fail closed:
+   * every tool-channel refusal (`git_tool_denied`: a path outside the worktree, a refused push, a token or binding
+   * mismatch, ...) and every secret-scan hit that is not the commit-stage warning (a blocked push) counts.
+   */
+  private securityRefusal(runId: string): string | undefined {
+    for (const e of this.ledger.listRunEvents(runId)) {
+      if (e.type === GIT_TOOL_DENIED) return "tool channel refusal";
+      if (e.type !== SECRET_SCAN_HIT_EVENT) continue;
+      let stage: unknown;
+      try {
+        stage = (JSON.parse(e.payload_json) as { stage?: unknown }).stage;
+      } catch {
+        stage = undefined;
+      }
+      if (stage !== "commit") return "secret scan block";
+    }
+    return undefined;
+  }
+
   /** FINALIZING → terminal (T15–T17): checkpoint, diff, head disposition (FRD §4.4), lease release. */
   private async finalize(
     runId: string,
@@ -2901,13 +2928,19 @@ export class RunLifecycle {
         // checkpoint, so an agent's commits end up as working-tree content of the checkpoint, never in its history.
         // It never throws for Git problems (recorded as a violation) and never changes the outcome.
         // T9.11: serialised per repository with other runs' ref checks and checkpoints (see `repoFinalizeQueue`).
-        const success = outcome.kind === "success";
         const { assessment, fin } = await this.serialisedPerRepo(ws.repoRoot, async () => {
           gitViolations = (await this.refGuard.checkAtFinalizing(runId)).violations;
+          // ADR-0072: a Git write that reached the refs (FR-GIT-03) keeps a run with recovered denials failed, as
+          // before; without recovered denials the violation does not change the outcome (unchanged).
+          if (outcome.kind === "success" && gitViolations > 0 && (out.result.warnings?.length ?? 0) > 0) {
+            const tool = out.result.warnings?.[0]?.tool;
+            outcome = { kind: "failure", code: "PERMISSION_BLOCKED", detail: `denied: ${tool}; git refs changed` };
+          }
           const assessment = await this.opts.workspace.assessMutation(runId);
-          const fin = await this.opts.workspace.finalize(runId, { advanceHead: success });
+          const fin = await this.opts.workspace.finalize(runId, { advanceHead: outcome.kind === "success" });
           return { assessment, fin };
         });
+        const success = outcome.kind === "success";
         artifacts.diff = fin.diffArtifactId;
         artifacts.changed_files = fin.changedFilesArtifactId;
         changedFiles = fin.changedFiles.length;
@@ -2982,6 +3015,10 @@ export class RunLifecycle {
       ...(out.result.summary ? { summary: out.result.summary.slice(0, SUMMARY_MAX) } : {}),
       ...(out.result.nativeSessionId ? { native_session_id: out.result.nativeSessionId } : {}),
       ...(verification ? { verification } : {}),
+      // ADR-0072: the recovered denials of a run that succeeded (closed codes, sanitised tool names, counts).
+      ...(outcome.kind === "success" && (out.result.warnings?.length ?? 0) > 0
+        ? { warnings: out.result.warnings }
+        : {}),
     };
     const finished = this.nowIso();
     let failedRun: RunRecord | undefined;
@@ -4193,6 +4230,8 @@ function compactEvent(ev: NormalizedEvent): Record<string, unknown> {
   switch (ev.kind) {
     case "tool_call":
       return { kind: ev.kind, tool: ev.tool, ...(ev.denied ? { denied: true } : {}) };
+    case "permission_denied":
+      return { kind: ev.kind, ...(ev.denial ? { denial: ev.denial } : {}) };
     case "provider_error":
       return { kind: ev.kind, category: ev.category.slice(0, 64) };
     case "result":
