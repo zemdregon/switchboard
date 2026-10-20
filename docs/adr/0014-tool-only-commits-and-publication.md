@@ -12,6 +12,9 @@
   [ADR-0006](0006-worktree-checkpoints-no-blind-replay.md)
 - Extended by: [ADR-0016](0016-inner-agent.md), which allows a commit message to be drafted by the inner agent and
   sanitised exactly as in item 3; the decision here is unchanged.
+- Narrowed by: [ADR-0067](0067-privileged-run-own-worktree-commits.md) (Proposed 2026-10-20, not owner-approved; a
+  dispatched `privileged` run's own `git add`/`git commit` in its worktree is allowed and folded into the checkpoint).
+  Owner acceptance of this narrowing of owner decisions 7 and 22 is open.
 - Supersedes in part: [ADR-0006](0006-worktree-checkpoints-no-blind-replay.md), only its clause "The controller never
   pushes to remotes". Its worktree, checkpoint and no-replay decisions stand.
 

@@ -1164,10 +1164,15 @@ as history.
   §12.5 (new bullet), [ADR-0067](adr/0067-privileged-run-own-worktree-commits.md) and the ADR index. The request came
   from the operator's task, not a recorded owner decision; the ADR says so.
 - Left for other lanes, not stale text: FR-GIT-01's requirement sentence ("no ability to create commits") still reads
-  absolute, qualified only by the dated note; HLD and ADR-0014/0017/0039 describe the Git-write denial without the
-  privileged exception and point to it only through ADR-0067's "narrows" line; provider-side deny rules (for example
+  absolute, qualified only by the dated note; provider-side deny rules (for example
   Claude's `--disallowedTools Bash(git commit *)`) are unchanged, so a provider that honours them under bypass still
   refuses the commit itself. Whether those rules should be compiled differently for privileged runs is open.
+- Addendum (doc-align #798, 2026-10-20): forward pointers to the exception added without touching any decision:
+  ADR-0014/0017/0027/0039 status lines, FRD BR-27 and PRD CAP-11/non-goals dated notes, TDD §3.10 layer 5, LLD §12.5
+  intro, SDD summary + FR-GIT-01/03 rows, HLD TB-7 (all marked Proposed, not owner-approved). ADR-0067 decision 1
+  reworded: `env -C`/`chroot` make the directory unknown for that command only; only the `cd`-family cases persist.
+  Unresolved (needs zemdregon): the exception narrows owner decisions 7 and 22 / ADR-0014 decision 1 without an owner
+  decision; see the gate result file.
 
 ## 62. Doc-align gate pass on PR #790 (checked 2026-10-20, one inline precision fix)
 

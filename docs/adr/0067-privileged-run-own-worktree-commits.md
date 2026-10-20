@@ -26,9 +26,9 @@ even though the ref check would have kept the commits as checkpoint content (BR-
    directory followed across the run's tool calls). `git add` and `git commit` are not writes when all of these hold:
    no Git global option before the subcommand (`-C`, `-c`, `--git-dir`, `--work-tree`, ...); no `GIT_DIR`-style
    environment prefix; the shell directory is known and inside the worktree (`cd`, `pushd`, `popd` are followed
-   lexically; a dynamic target, `cd` alone, `cd -`, `popd`, `source`, a `cd` behind another command, `env -C` or
-   `chroot` makes it unknown, and that persists into later calls); no word names a path outside the worktree
-   (absolute, `~`, or `..` escaping it);
+   lexically; a dynamic target, `cd` alone, `cd -`, `popd`, `source` or a `cd` behind another command makes it
+   unknown persistently (into later calls), while `env -C` or `chroot` makes it unknown for that command only); no word
+   names a path outside the worktree (absolute, `~`, or `..` escaping it);
    and for `commit`, no `--amend` (the lexical check cannot tell whether HEAD was created in this run, so every amend
    is refused: fail closed). Every other subcommand is judged exactly as before, so push, fetch, branch, tag,
    update-ref, checkout, switch, reset, rebase, merge, stash and config stay `PERMISSION_BLOCKED`.

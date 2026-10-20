@@ -3992,7 +3992,8 @@ At LEASED the controller records `git for-each-ref` for the whole repository (al
 in size) as a hash plus the list of ref names and SHAs in a `run_event` payload. At FINALIZING it repeats the listing and
 compares: expected differences are the run branch and the publish ref moved by the controller. For the run branch it also
 checks that every commit between the base and the head was made by the controller. Any other difference, or a foreign
-commit on the run branch, appends `git_policy_violation` (names of refs and SHAs, never messages), the foreign commits are
+commit on the run branch outside the privileged-run exception below ([ADR-0067](../adr/0067-privileged-run-own-worktree-commits.md),
+Proposed), appends `git_policy_violation` (names of refs and SHAs, never messages), the foreign commits are
 not reachable from the publish ref, and the tree content is kept as the working-tree changes the post-run checkpoint
 records (FRD BR-27). The comparison reads the whole repository, so it also covers writes made through the main
 repository's Git directory.

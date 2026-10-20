@@ -4,7 +4,10 @@
   [ADR-0019](0019-per-client-privileged-approval.md) for MCP clients configured `privileged_approval: "not_required"`
   (2026-10-13); items 5 and 6 (item 6's "No MCP tool approves"; item 5's "`APPROVED` by the operator CLI", since a
   proxied approval satisfies it) are superseded in part by
-  [ADR-0047](0047-approval-proxy-over-mcp.md) for clients the operator marks `approval_proxy` (Proposed, 2026-10-15)
+  [ADR-0047](0047-approval-proxy-over-mcp.md) for clients the operator marks `approval_proxy` (Proposed, 2026-10-15);
+  Switchboard-side Git-write enforcement narrowed by [ADR-0067](0067-privileged-run-own-worktree-commits.md)
+  (Proposed 2026-10-20, not owner-approved: a dispatched `privileged` run's own `git add`/`git commit` in its worktree
+  passes the tool-call guard and the ref check; provider-side deny rules unchanged)
 - Date: 2026-10-12
 - Numbering: drafted as ADR-0016 on the M3 plan branch; renumbered ADR-0017 on 2026-10-13 when main, merged first,
   had already used 0016 for [the inner agent](0016-inner-agent.md). Owner decision 17 was numbered 14 on that branch
