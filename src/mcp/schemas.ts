@@ -694,7 +694,10 @@ const DIGEST = {
                 run_id: RUN_ID,
                 ts: { type: "string" },
                 type: { enum: [REF_EVENT_TYPE, MERGE_EVENT_TYPE] },
-                code: { enum: [...REF_EVENT_KINDS, "merged", "refused"] },
+                // `merged` is already a ref_event kind: list it once. A duplicate enum item makes get_digest's output
+                // schema invalid to a draft-07 meta-schema check (enum `uniqueItems`), which a strict MCP client can
+                // treat as a failed tools/list (see src/mcp/tools-list-callable.test.ts).
+                code: { enum: [...new Set<string>([...REF_EVENT_KINDS, "merged", "refused"])] },
                 reason: { enum: [...MERGE_REFUSAL_REASONS] },
                 publish_ref: { type: "string" },
                 head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
