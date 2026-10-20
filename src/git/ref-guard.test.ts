@@ -20,6 +20,7 @@ import {
   GIT_POLICY_VIOLATION_EVENT,
   GIT_REF_CHECK_EVENT,
   GIT_REF_SNAPSHOT_EVENT,
+  GIT_RUN_COMMITS_EVENT,
   RefGuard,
   type ViolationEntry,
 } from "./ref-guard.js";
@@ -252,7 +253,7 @@ describe("RefGuard (T9.5)", () => {
     });
   });
 
-  it("does not depend on the trust profile: a privileged bypass run is checked and restored the same way", async () => {
+  it("a privileged bypass run without a dispatch approval check is checked and restored the same way", async () => {
     const guard = new RefGuard({ ledger });
     const { run, branch, worktree } = await preparedRun({ trust: "privileged" });
     expect(JSON.parse(run.policy_snapshot_json).bypassApproved).toBe(true);
@@ -263,5 +264,95 @@ describe("RefGuard (T9.5)", () => {
     g(worktree, "tag", "bypass-tag");
     expect(await guard.checkAtFinalizing(run.id)).toMatchObject({ result: "violation", violations: 2 });
     expect(g(repo, "rev-parse", branch)).toBe(ledger.getRunCheckpointCommit(run.id, "pre"));
+  });
+});
+
+// run_01M5C2EKGX: a privileged run's own `git commit` in its worktree is allowed (FR-GIT-01) and is checkpoint content.
+describe("RefGuard: a dispatched privileged run's own commits on its run branch", () => {
+  const dispatched = async () => {
+    const r = await preparedRun({ trust: "privileged" });
+    ledger.appendRunEvent({
+      runId: r.run.id,
+      type: "privileged_dispatch",
+      payload: { approval_id: "appr_1", bypass_approved: true },
+    });
+    return r;
+  };
+
+  it("accepts commits that descend from pre: no violation, recorded, folded into one controller checkpoint", async () => {
+    const guard = new RefGuard({ ledger });
+    const { run, branch, worktree } = await dispatched();
+    await guard.snapshotAtLeased(run.id);
+    const pre = ledger.getRunCheckpointCommit(run.id, "pre") as string;
+    writeFileSync(path.join(worktree, "a.txt"), "a\n");
+    g(worktree, "add", "-A");
+    g(worktree, "commit", "-q", "-m", "agent 1");
+    writeFileSync(path.join(worktree, "b.txt"), "b\n");
+    g(worktree, "add", "-A");
+    g(worktree, "commit", "-q", "-m", "agent 2");
+    g(worktree, "commit", "-q", "--amend", "-m", "agent 2 amended"); // its own commit: still descends from pre
+    writeFileSync(path.join(worktree, "c.txt"), "uncommitted\n");
+    const tip = g(repo, "rev-parse", branch);
+
+    expect(await guard.checkAtFinalizing(run.id)).toEqual({ result: "clean", violations: 0 });
+    expect(violationsOf(run.id)).toEqual([]);
+    const recorded = events(run.id).find((e) => e.type === GIT_RUN_COMMITS_EVENT)?.p;
+    expect(recorded).toMatchObject({ v: 1, ref: branch, pre, tip, commit_count: 2 });
+    expect(events(run.id).find((e) => e.type === GIT_REF_CHECK_EVENT)?.p).toMatchObject({
+      result: "clean",
+      run_commits: 2,
+    });
+    expect(g(repo, "rev-parse", branch)).toBe(pre);
+
+    // The checkpoint records the committed and the uncommitted work alike, on top of pre.
+    const fin = await workspace.finalize(run.id);
+    expect(fin.committed).toBe(true);
+    expect(g(repo, "rev-parse", `${fin.postCommit}^`)).toBe(pre);
+    expect(fin.changedFiles.map((f) => f.path).sort()).toEqual(["a.txt", "b.txt", "c.txt"]);
+  });
+
+  it("an amend or reset of pre does not descend from it and stays a violation, put back", async () => {
+    const guard = new RefGuard({ ledger });
+    const { run, branch, worktree } = await dispatched();
+    await guard.snapshotAtLeased(run.id);
+    const pre = ledger.getRunCheckpointCommit(run.id, "pre") as string;
+    writeFileSync(path.join(worktree, "a.txt"), "a\n");
+    g(worktree, "add", "-A");
+    g(worktree, "commit", "-q", "--amend", "-m", "rewrites the pre checkpoint");
+    expect(await guard.checkAtFinalizing(run.id)).toMatchObject({ result: "violation", violations: 1 });
+    expect(violationsOf(run.id).map((v) => [v.scope, v.action])).toEqual([["run_branch", "restore"]]);
+    expect(events(run.id).some((e) => e.type === GIT_RUN_COMMITS_EVENT)).toBe(false);
+    expect(g(repo, "rev-parse", branch)).toBe(pre);
+  });
+
+  it("accepts the run-branch commits but still reports other refs the agent changed", async () => {
+    const guard = new RefGuard({ ledger });
+    const { run, branch, worktree } = await dispatched();
+    await guard.snapshotAtLeased(run.id);
+    writeFileSync(path.join(worktree, "a.txt"), "a\n");
+    g(worktree, "add", "-A");
+    g(worktree, "commit", "-q", "-m", "agent");
+    g(worktree, "tag", "agent-tag");
+    g(worktree, "branch", "agent-branch");
+    expect(await guard.checkAtFinalizing(run.id)).toMatchObject({ result: "violation", violations: 2 });
+    expect(violationsOf(run.id).map((v) => [v.scope, v.ref])).toEqual([
+      ["other", "refs/heads/agent-branch"],
+      ["other", "refs/tags/agent-tag"],
+    ]);
+    expect(events(run.id).find((e) => e.type === GIT_RUN_COMMITS_EVENT)?.p).toMatchObject({ commit_count: 1 });
+    expect(g(repo, "rev-parse", branch)).toBe(ledger.getRunCheckpointCommit(run.id, "pre"));
+  });
+
+  it("a moved worktree HEAD is not accepted: the run branch commits are a violation as before", async () => {
+    const guard = new RefGuard({ ledger });
+    const { run, worktree } = await dispatched();
+    await guard.snapshotAtLeased(run.id);
+    writeFileSync(path.join(worktree, "a.txt"), "a\n");
+    g(worktree, "add", "-A");
+    g(worktree, "commit", "-q", "-m", "agent");
+    g(worktree, "checkout", "-q", "--detach");
+    await guard.checkAtFinalizing(run.id);
+    expect(violationsOf(run.id).map((v) => v.scope)).toEqual(["worktree_head", "run_branch"]);
+    expect(events(run.id).some((e) => e.type === GIT_RUN_COMMITS_EVENT)).toBe(false);
   });
 });

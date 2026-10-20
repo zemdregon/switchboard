@@ -217,3 +217,99 @@ describe("gitWriteRisk (FR-GIT-01 lexical check)", () => {
     ]);
   });
 });
+
+describe("gitWriteInCommand: a privileged run's own git add and git commit (FR-GIT-01, run_01M5C2EKGX)", () => {
+  const WT = "/work/sb/worktrees/sess/run";
+  const scope = (cwd: string | null = WT) => ({ worktree: WT, cwd });
+  const verdict = (command: string, cwd?: string | null) => gitWriteInCommand(command, scope(cwd))?.level;
+
+  it.each([
+    "git add -A",
+    "git add src/a.ts ./b.ts",
+    "git commit -m 'feat: x'",
+    "git add -A && git commit -q -m done",
+    `git commit -F msg.txt --author "A <a@example.test>"`,
+    `git commit -m "$(cat <<'EOF'\nfix: y\nEOF\n)"`,
+    "cd src && git add . && git commit -m x",
+    "cd ../run/src; git add a.ts",
+    "timeout 60 git commit -m x",
+    "sh -c 'git add -A && git commit -m x'",
+    "git commit --fixup HEAD",
+  ])("allowed in the run's worktree: %s", (command) => {
+    expect(verdict(command)).toBeUndefined();
+  });
+
+  it.each([
+    // push, fetch, ref and branch changes, checkout/switch/reset/rebase stay denied
+    "git push origin HEAD",
+    "git add -A && git commit -m x && git push",
+    "git fetch origin",
+    "git branch feature",
+    "git tag v1",
+    "git update-ref refs/heads/main HEAD",
+    "git checkout -b other",
+    "git switch main",
+    "git reset --hard HEAD~1",
+    "git rebase main",
+    "git merge main",
+    "git stash",
+    "git config user.name x",
+    // -C, other global options and environment redirection
+    "git -C /work/repo commit -m x",
+    "git -C . commit -m x",
+    "git --git-dir=/work/repo/.git commit -m x",
+    "git --work-tree=/tmp add -A",
+    "git -c core.hooksPath=/tmp commit -m x",
+    "git --no-pager commit -m x",
+    "GIT_DIR=/work/repo/.git git commit -m x",
+    "GIT_WORK_TREE=/tmp git add -A",
+    // a path or directory outside the worktree
+    "git add /work/repo/README.md",
+    "git add ../../other/file",
+    "git add ~/notes.txt",
+    "git commit --pathspec-from-file=/tmp/list -m x",
+    "cd /work/repo && git commit -m x",
+    "cd .. && git add -A",
+    "cd && git commit -m x",
+    "cd $REPO; git commit -m x",
+    "cd - && git commit -m x",
+    "pushd /tmp; git add -A",
+    "popd; git commit -m x",
+    "X=1 cd /work/repo && git commit -m x",
+    "builtin cd /work/repo; git commit -m x",
+    "eval 'cd /work/repo'; git commit -m x",
+    "source env.sh && git commit -m x",
+    "sh -c 'cd /work/repo && git commit -m x'",
+    "env -C /work/repo git commit -m x",
+    "env --chdir=/work/repo git add -A",
+    "chroot / git commit -m x",
+    // --amend: the lexical check cannot tell which commit is amended
+    "git commit --amend --no-edit",
+    "git commit --am -m x",
+  ])("still a write: %s", (command) => {
+    expect(verdict(command)).toBe("write");
+  });
+
+  it("follows the shell directory across calls and fails closed once it is lost", () => {
+    const s = scope();
+    expect(gitWriteInCommand("cd src", s)).toBeUndefined();
+    expect(s.cwd).toBe(`${WT}/src`);
+    expect(gitWriteInCommand("git commit -m x", s)).toBeUndefined();
+    expect(gitWriteInCommand("cd /work/repo", s)).toBeUndefined();
+    expect(gitWriteInCommand("git commit -m x", s)?.level).toBe("write");
+    expect(gitWriteInCommand(`cd ${WT}`, s)).toBeUndefined();
+    expect(gitWriteInCommand("git add -A", s)).toBeUndefined();
+    // A nested shell's `cd` does not move the outer shell.
+    expect(gitWriteInCommand("bash -c 'cd /tmp'", s)).toBeUndefined();
+    expect(s.cwd).toBe(WT);
+    gitWriteInCommand("cd $SOMEWHERE", s);
+    expect(s.cwd).toBeNull();
+    expect(gitWriteInCommand("git add -A", s)?.level).toBe("write");
+    expect(verdict("git add -A", null)).toBe("write");
+  });
+
+  it("without a run scope, git commit is a write as before", () => {
+    expect(gitWriteInCommand("git commit -m x")?.level).toBe("write");
+    expect(gitWriteInCommand("git add -A")?.level).toBe("uncertain");
+  });
+});

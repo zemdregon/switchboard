@@ -1111,3 +1111,18 @@ as history.
   diff. The conclusion is unchanged: no model or group name moves anywhere, nothing to align.
   `docs/ROADMAP.md` on disk is now 1,520,314 bytes (growth from merged main work), still the "1.5 MB
   roadmap" of the LLD text.
+
+## 59. Privileged runs may commit in their own worktree (ADR-0067, run_01M5C2EKGX; resolved on the branch)
+
+- Behaviour change: a dispatched `privileged` run was failed `PERMISSION_BLOCKED` for `git commit` in its own worktree
+  (`run_01M5C2EKGX`), and its work rolled back. The tool-call guard now allows `git add` / `git commit` there (no Git
+  global option, no path or shell directory outside the worktree, no `--amend`), and the FR-GIT-03 ref check accepts
+  run-branch commits that descend from `pre`, records them (`git_run_commits`) and folds them into the checkpoint.
+- Documents updated in the same change: SRS FR-GIT-01 and FR-GIT-03 (dated notes; requirement text unchanged), LLD
+  §12.5 (new bullet), [ADR-0067](adr/0067-privileged-run-own-worktree-commits.md) and the ADR index. The request came
+  from the operator's task, not a recorded owner decision; the ADR says so.
+- Left for other lanes, not stale text: FR-GIT-01's requirement sentence ("no ability to create commits") still reads
+  absolute, qualified only by the dated note; HLD and ADR-0014/0017/0039 describe the Git-write denial without the
+  privileged exception and point to it only through ADR-0067's "narrows" line; provider-side deny rules (for example
+  Claude's `--disallowedTools Bash(git commit *)`) are unchanged, so a provider that honours them under bypass still
+  refuses the commit itself. Whether those rules should be compiled differently for privileged runs is open.

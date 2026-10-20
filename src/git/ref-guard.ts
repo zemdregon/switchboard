@@ -19,7 +19,13 @@ import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish
  *   this check, so its tip must still be the run's `pre` checkpoint commit (ledger). Anything else (an agent `git
  *   commit`, `reset`, `update-ref` or deletion) is a violation; the ref is moved back to the `pre` commit with a
  *   compare-and-swap, which leaves the worktree's files and index alone, so the agent's tree is kept as the working-tree
- *   content the post-run checkpoint records (BR-27) and the agent's commits are not on the run branch.
+ *   content the post-run checkpoint records (BR-27) and the agent's commits are not on the run branch. Exception
+ *   (operator request, 2026-10-20): in a privileged run that passed its dispatch approval check, a tip that strictly
+ *   descends from the `pre` commit, with the worktree `HEAD` still on the run branch, is the agent's own `git commit`
+ *   work (FR-GIT-01 allows it there). It is not a violation: a `git_run_commits` event records the commits, and the
+ *   ref is moved back to `pre` the same way, so the controller's checkpoint records them exactly as it records
+ *   uncommitted work (one checkpoint commit, native-skill paths unstaged, diff against `pre`). An amend or reset of
+ *   the `pre` commit or anything older does not descend from it and stays a violation.
  * - **Worktree `HEAD`**: must still be the symbolic ref to the run branch; otherwise (`checkout -b`, detached `HEAD`)
  *   it is a violation and is pointed back, so the checkpoint lands on the run branch.
  * - **Publish ref** of the run's meta-session: may only hold commits the controller built. A value is accepted when it
@@ -56,6 +62,10 @@ import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish
 export const GIT_REF_SNAPSHOT_EVENT = "git_ref_snapshot";
 export const GIT_REF_CHECK_EVENT = "git_ref_check";
 export const GIT_POLICY_VIOLATION_EVENT = "git_policy_violation";
+/** A privileged run's own commits on its run branch, folded into the checkpoint (not a violation). */
+export const GIT_RUN_COMMITS_EVENT = "git_run_commits";
+/** The lifecycle's `PRIVILEGED_DISPATCH_EVENT` (not imported: the lifecycle imports this module). */
+const PRIVILEGED_DISPATCH = "privileged_dispatch";
 
 /** Bounds on what one snapshot or violation event stores (Proposed, Delegated; ADR-0027). */
 export interface RefGuardLimits {
@@ -162,6 +172,14 @@ interface RunFacts {
   readonly preCommit: string | undefined;
 }
 
+/** The agent's run-branch commits accepted for a privileged run, to be folded into the checkpoint. */
+interface RunCommits {
+  readonly ref: string;
+  readonly pre: string;
+  readonly tip: string;
+  readonly commits: { shas: string[]; count: number };
+}
+
 interface Restore {
   readonly scope: "run_branch" | "worktree_head" | "publish_ref";
   readonly ref: string;
@@ -252,6 +270,7 @@ export class RefGuard {
     let violations: ViolationEntry[];
     let current: Map<string, string>;
     let linkViolations = 0;
+    let runCommits: RunCommits | undefined;
     try {
       // T10.3: the worktree's `.git` link first; recorded (intent before effect), then restored, before anything is read
       // through it. A restore that fails throws into the `check_failed` path below.
@@ -275,7 +294,29 @@ export class RefGuard {
         await restoreWorktreeGitLink(facts.worktreePath, link.adminDir);
       }
       current = await listRefs(facts.repoRoot);
-      violations = await this.compare(facts, snapshot, current);
+      ({ violations, runCommits } = await this.compare(facts, snapshot, current));
+      if (runCommits) {
+        // Intent before effect: the accepted commits are recorded, then the run branch goes back to `pre` (files and
+        // index kept) so the checkpoint that follows records them. A failed move is a `check_failed` below.
+        this.ledger.appendRunEvent({
+          runId,
+          type: GIT_RUN_COMMITS_EVENT,
+          payload: {
+            v: 1,
+            ref: runCommits.ref,
+            pre: runCommits.pre,
+            tip: runCommits.tip,
+            commit_count: runCommits.commits.count,
+            commits: runCommits.commits.shas.slice(0, this.limits.maxForeignCommits),
+          },
+        });
+        await this.restore(facts, {
+          scope: "run_branch",
+          ref: runCommits.ref,
+          from: runCommits.tip,
+          to: runCommits.pre,
+        });
+      }
     } catch (err) {
       const entry: ViolationEntry = {
         scope: "guard",
@@ -309,6 +350,7 @@ export class RefGuard {
           result: "violation",
           violation_count: linkViolations,
           restored: [{ scope: "worktree_link", ref: ".git", to: null, ok: true }],
+          ...(runCommits ? { run_commits: runCommits.commits.count } : {}),
         },
       });
       return { result: "violation", violations: linkViolations };
@@ -317,7 +359,13 @@ export class RefGuard {
       this.ledger.appendRunEvent({
         runId,
         type: GIT_REF_CHECK_EVENT,
-        payload: { v: 1, result: "clean", digest_before: snapshot?.digest ?? null, digest_after: afterDigest },
+        payload: {
+          v: 1,
+          result: "clean",
+          digest_before: snapshot?.digest ?? null,
+          digest_after: afterDigest,
+          ...(runCommits ? { run_commits: runCommits.commits.count } : {}),
+        },
       });
       return { result: "clean", violations: 0 };
     }
@@ -349,7 +397,13 @@ export class RefGuard {
     this.ledger.appendRunEvent({
       runId,
       type: GIT_REF_CHECK_EVENT,
-      payload: { v: 1, result: "violation", violation_count: violations.length + linkViolations, restored },
+      payload: {
+        v: 1,
+        result: "violation",
+        violation_count: violations.length + linkViolations,
+        restored,
+        ...(runCommits ? { run_commits: runCommits.commits.count } : {}),
+      },
     });
     return { result: "violation", violations: violations.length + linkViolations };
   }
@@ -380,6 +434,14 @@ export class RefGuard {
     return undefined;
   }
 
+  /** A privileged run that passed its dispatch approval check (T3.4), the only runs allowed their own commits. */
+  private privilegedDispatched(facts: RunFacts): boolean {
+    return (
+      facts.run.trust_profile === "privileged" &&
+      this.ledger.listRunEvents(facts.run.id).some((e) => e.type === PRIVILEGED_DISPATCH)
+    );
+  }
+
   private reachedRunning(runId: string): boolean {
     return this.ledger.listRunEvents(runId).some((e) => {
       if (e.type !== "state_transition") return false;
@@ -391,8 +453,9 @@ export class RefGuard {
     facts: RunFacts,
     snapshot: RefSnapshotV1 | undefined,
     current: Map<string, string>,
-  ): Promise<ViolationEntry[]> {
+  ): Promise<{ violations: ViolationEntry[]; runCommits?: RunCommits }> {
     const out: ViolationEntry[] = [];
+    let runCommits: RunCommits | undefined;
     const own = new Set([facts.runBranchRef, facts.publishRef]);
 
     if (!snapshot) {
@@ -463,6 +526,19 @@ export class RefGuard {
         ...entry("run_branch", facts.runBranchRef, null, runNow, "report"),
         detail: "no pre-run checkpoint recorded",
       });
+    } else if (
+      runNow !== null &&
+      runNow !== runExpected &&
+      wtHead.symref === facts.runBranchRef &&
+      this.privilegedDispatched(facts) &&
+      (await isAncestor(facts.repoRoot, runExpected, runNow))
+    ) {
+      runCommits = {
+        ref: facts.runBranchRef,
+        pre: runExpected,
+        tip: runNow,
+        commits: await foreignCommits(facts.repoRoot, runNow, [runExpected], new Set()),
+      };
     } else if (runNow !== runExpected) {
       const foreign = runNow ? await foreignCommits(facts.repoRoot, runNow, [runExpected], new Set()) : undefined;
       out.push({
@@ -493,7 +569,7 @@ export class RefGuard {
         });
       }
     }
-    return out;
+    return runCommits ? { violations: out, runCommits } : { violations: out };
   }
 
   /**
@@ -644,6 +720,12 @@ async function foreignCommits(
     .split("\n")
     .filter((s) => s !== "" && !controller.has(s));
   return { shas, count: shas.length };
+}
+
+/** Whether `ancestor` is reachable from `tip` (`git merge-base --is-ancestor`); false when Git cannot tell. */
+async function isAncestor(repoRoot: string, ancestor: string, tip: string): Promise<boolean> {
+  const r = await git(["merge-base", "--is-ancestor", ancestor, tip], { cwd: repoRoot, okCodes: [1, 128] });
+  return r.code === 0;
 }
 
 /** `for-each-ref` over the repository: every ref name and the object it points at. */
