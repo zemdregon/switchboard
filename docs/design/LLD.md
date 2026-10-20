@@ -3992,7 +3992,8 @@ At LEASED the controller records `git for-each-ref` for the whole repository (al
 in size) as a hash plus the list of ref names and SHAs in a `run_event` payload. At FINALIZING it repeats the listing and
 compares: expected differences are the run branch and the publish ref moved by the controller. For the run branch it also
 checks that every commit between the base and the head was made by the controller. Any other difference, or a foreign
-commit on the run branch, appends `git_policy_violation` (names of refs and SHAs, never messages), the foreign commits are
+commit on the run branch outside the privileged-run exception below ([ADR-0067](../adr/0067-privileged-run-own-worktree-commits.md),
+Proposed), appends `git_policy_violation` (names of refs and SHAs, never messages), the foreign commits are
 not reachable from the publish ref, and the tree content is kept as the working-tree changes the post-run checkpoint
 records (FRD BR-27). The comparison reads the whole repository, so it also covers writes made through the main
 repository's Git directory.
@@ -4037,6 +4038,21 @@ silent:
   `link_changed` violation with action `restore`, appended in its own `git_policy_violation` event before the expected
   file is written back; the `git_ref_check` event lists `{scope: "worktree_link", ok}` among its restores.
   `WorkspaceManager.assessMutation`, `finalize` and `rollback` restore it too (unrecorded, defence in depth).
+- **A privileged run's own commits (2026-10-20, [ADR-0067](../adr/0067-privileged-run-own-worktree-commits.md),
+  operator task request, realisation Delegated).** For a `privileged` run with a `privileged_dispatch` event, a run
+  branch tip that strictly descends from `pre` (`git merge-base --is-ancestor`), with the worktree `HEAD` still the
+  symbolic ref to the run branch, is not a violation. A `git_run_commits` event (`v`, `ref`, `pre`, `tip`,
+  `commit_count`, at most 50 `commits`) is appended, then the run branch is moved back to `pre` (compare-and-swap; files
+  and index kept), and the `git_ref_check` event gains `run_commits`. The checkpoint that follows records the commits
+  as it records uncommitted work (one commit on `pre`, native-skill paths unstaged, diff against `pre`). A failed move
+  is `check_failed`. A tip that does not descend from `pre`, a moved worktree `HEAD` and every other ref stay as above.
+  The tool-call guard (`src/adapters/tool-guard.ts`) allows the matching commands: for such a run
+  `gitWriteInCommand(command, runCommits)` (`src/adapters/git-write.ts`) does not count `git add` or `git commit` as a
+  write when there is no Git global option before the subcommand, no `GIT_DIR`-style prefix, the shell directory
+  (followed lexically through `cd`, `pushd` and `popd` across the run's tool calls; unknown after a dynamic target,
+  bare `cd`, `cd -`, `popd`, `source`, a `cd` behind another command, `env -C` or `chroot`) is inside the worktree,
+  no word names a path outside the worktree, and `commit` has no `--amend`. Every other subcommand is judged as before.
+  Tests: `src/adapters/git-write.test.ts`, `src/adapters/tool-guard.test.ts`, `src/git/ref-guard.test.ts`.
 - **Fail closed.** A check that cannot complete is a `check_failed` violation; a run that reached RUNNING without a
   snapshot is `snapshot_missing` and its own refs are still checked against the ledger.
 - **Not covered.** Per-worktree refs (`refs/worktree/`, `refs/bisect/`), objects written without a ref, and a push that

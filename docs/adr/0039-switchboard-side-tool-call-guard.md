@@ -1,6 +1,7 @@
 # ADR-0039: Switchboard-side tool-call guard, provider-state reach and repository agent config refusal
 
-- Status: Proposed
+- Status: Proposed. Narrowed by [ADR-0067](0067-privileged-run-own-worktree-commits.md) (Proposed 2026-10-20, not
+  owner-approved: a `privileged` run's own `git add`/`git commit` in its worktree is not a `git_write`).
 - Date: 2026-10-14
 - Decided by: Delegated (agent, 2026-10-14, at the orchestrator's request), under [owner decision
   25](../ROADMAP.md#42-owner-decisions) for everything outside bypass mode. Not a zemdregon quote and not

@@ -380,7 +380,96 @@ function branchVerdict(args: readonly string[]): GitCommandVerdict | undefined {
   return undefined;
 }
 
-function gitVerdict(words: readonly string[]): GitCommandVerdict | undefined {
+/**
+ * Where a privileged run's own `git add` / `git commit` may run (operator request, 2026-10-20; FR-GIT-01): the run's
+ * worktree root and the shell's current directory as far as the lexical check can follow it (`cd`, `pushd`, `popd`).
+ * `cwd` is `null` once it cannot be followed (a dynamic or missing `cd` argument, `cd -`, `popd`); `git add` and `git
+ * commit` are then writes again. The guard keeps one scope per run and lets {@link gitWriteInCommand} update `cwd`, so a
+ * `cd` in one tool call counts for the next (fail closed for shells that keep their directory between calls).
+ */
+export interface RunCommitScope {
+  readonly worktree: string;
+  cwd: string | null;
+}
+
+/** Subcommands a privileged run may use inside its own worktree, with {@link RunCommitScope}. */
+const RUN_COMMIT_SUBCOMMANDS = new Set(["add", "commit"]);
+const DIR_CHANGERS = new Set(["cd", "pushd", "popd"]);
+
+/** Lexical `path.posix.resolve` without touching the file system (no symlinks followed). */
+function resolveLexical(base: string, p: string): string {
+  const parts = p.startsWith("/") ? [] : base.split("/").filter(Boolean);
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") parts.pop();
+    else parts.push(seg);
+  }
+  return `/${parts.join("/")}`;
+}
+
+const within = (root: string, p: string): boolean => {
+  const r = resolveLexical("/", root);
+  return p === r || p.startsWith(r === "/" ? "/" : `${r}/`);
+};
+
+/**
+ * Follow the shell's directory through one simple command. `cd`/`pushd`/`popd` (after `NAME=value` prefixes) change it;
+ * `source`/`.` and any other command naming one of them (`builtin cd`, `command cd`) make it unknown. Git itself never
+ * changes the shell's directory.
+ */
+function trackDir(words: readonly string[], scope: RunCommitScope): void {
+  const start = words.findIndex((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+  if (start === -1) return;
+  const rest = words.slice(start);
+  const first = basename(rest[0] as string);
+  if (first === "git") return;
+  if (DIR_CHANGERS.has(first)) scope.cwd = changeDir(rest, scope.cwd);
+  else if (first === "source" || first === "." || rest.some((w) => DIR_CHANGERS.has(basename(w)))) scope.cwd = null;
+}
+
+/** `cd <dir>` and friends: the directory afterwards, or `null` when the lexical check cannot tell. */
+function changeDir(words: readonly string[], cwd: string | null): string | null {
+  if (cwd === null || basename(words[0] as string) === "popd") return null;
+  const args = words.slice(1).filter((w) => w !== "--");
+  if (args.length !== 1) return null; // `cd` alone goes to HOME; options such as `-P` are not followed
+  const target = args[0] as string;
+  if (isDynamic(target) || target === "-" || target.startsWith("~") || target.startsWith("-")) return null;
+  return resolveLexical(cwd, target);
+}
+
+/**
+ * Why a privileged run's `git add` / `git commit` (words after the subcommand in `args`) is still a write, or
+ * `undefined` when it stays inside the run's own worktree and branch. Denied: any Git global option before the
+ * subcommand (`-C`, `--git-dir`, `--work-tree`, `-c`, ...), a shell directory outside the worktree or unknown, a word
+ * naming a path outside the worktree (absolute, `~`, or `..` escaping it), and `git commit --amend` (the lexical check
+ * cannot tell whether HEAD was created in this run; Delegated, fail closed; the FR-GIT-03 ref check also refuses any
+ * run-branch history that does not descend from the pre-run checkpoint).
+ */
+function runCommitDenial(
+  sub: string,
+  globals: readonly string[],
+  args: readonly string[],
+  scope: RunCommitScope,
+): string | undefined {
+  if (globals.length > 0) return `\`git ${globals[0]} ${sub}\` can act on another repository or branch`;
+  if (scope.cwd === null || !within(scope.worktree, scope.cwd)) {
+    return `\`git ${sub}\` outside the run's worktree`;
+  }
+  for (const w of args) {
+    if (sub === "commit" && w.startsWith("--am") && "--amend".startsWith(w.split("=", 1)[0] as string)) {
+      return "`git commit --amend` can rewrite a commit not created in this run";
+    }
+    const value = w.startsWith("-") ? w.slice(w.indexOf("=") + 1 || w.length) : w;
+    if (value === "" || isDynamic(value)) continue;
+    const pathLike = value.startsWith("/") || value.startsWith("~") || value.split("/").includes("..");
+    if (pathLike && (value.startsWith("~") || !within(scope.worktree, resolveLexical(scope.cwd, value)))) {
+      return `\`git ${sub}\` names a path outside the run's worktree`;
+    }
+  }
+  return undefined;
+}
+
+function gitVerdict(words: readonly string[], scope?: RunCommitScope): GitCommandVerdict | undefined {
   let i = 1;
   while (i < words.length) {
     const w = words[i] as string;
@@ -404,6 +493,10 @@ function gitVerdict(words: readonly string[]): GitCommandVerdict | undefined {
   if (sub === undefined) return undefined;
   if (isDynamic(sub)) return { level: "uncertain", reason: `dynamic git subcommand \`${sub}\`` };
   if (sub === "branch") return branchVerdict(words.slice(i + 1));
+  if (scope !== undefined && RUN_COMMIT_SUBCOMMANDS.has(sub)) {
+    const reason = runCommitDenial(sub, words.slice(1, i), words.slice(i + 1), scope);
+    return reason === undefined ? undefined : { level: "write", reason };
+  }
   if (GIT_WRITE_SUBCOMMANDS.includes(sub))
     return { level: "write", reason: `\`git ${sub}\` can create commits, change refs or push` };
   if (!GIT_READ_ONLY_SUBCOMMANDS.includes(sub)) {
@@ -414,7 +507,7 @@ function gitVerdict(words: readonly string[]): GitCommandVerdict | undefined {
   return undefined;
 }
 
-function simpleVerdict(words: readonly string[], depth: number): GitCommandVerdict | undefined {
+function simpleVerdict(words: readonly string[], depth: number, scope?: RunCommitScope): GitCommandVerdict | undefined {
   if (depth > 6) return { level: "uncertain", reason: "command nesting too deep to check" };
   let i = 0;
   let envRisk: string | undefined;
@@ -426,7 +519,7 @@ function simpleVerdict(words: readonly string[], depth: number): GitCommandVerdi
   const rest = words.slice(i);
   const program = rest[0];
   if (program === undefined) return undefined;
-  const v = programVerdict(rest, depth);
+  const v = programVerdict(rest, depth, scope);
   if (v !== undefined && envRisk !== undefined && v.level === "uncertain") {
     return { level: "write", reason: `${envRisk} set for a git command` };
   }
@@ -436,20 +529,26 @@ function simpleVerdict(words: readonly string[], depth: number): GitCommandVerdi
   return v;
 }
 
-function programVerdict(words: readonly string[], depth: number): GitCommandVerdict | undefined {
+function programVerdict(
+  words: readonly string[],
+  depth: number,
+  scope?: RunCommitScope,
+): GitCommandVerdict | undefined {
   const program = words[0] as string;
   if (isDynamic(program)) return { level: "uncertain", reason: `dynamic program \`${program}\`` };
   const name = basename(program);
-  if (name === "git") return gitVerdict(words);
+  if (name === "git") return gitVerdict(words, scope);
   if (name.startsWith("git-")) return { level: "write", reason: `\`${name}\` is a git subprogram` };
   if (GIT_PUBLISHING_PROGRAMS.includes(name))
     return { level: "uncertain", reason: `\`${name}\` can push to a Git host` };
-  if (name === "eval") return commandVerdict(words.slice(1).join(" "), depth + 1);
+  // `eval` runs in this shell, so its `cd` counts; a nested shell starts here but its `cd` does not change ours.
+  if (name === "eval") return commandVerdict(words.slice(1).join(" "), depth + 1, scope);
+  const child = (): RunCommitScope | undefined => (scope === undefined ? undefined : { ...scope });
   if (SHELLS.has(name)) {
     for (let j = 1; j < words.length; j++) {
       const w = words[j] as string;
       if (/^-[a-zA-Z]*c[a-zA-Z]*$/.test(w) && words[j + 1] !== undefined) {
-        return commandVerdict(words[j + 1] as string, depth + 1);
+        return commandVerdict(words[j + 1] as string, depth + 1, child());
       }
     }
     return undefined;
@@ -473,15 +572,21 @@ function programVerdict(words: readonly string[], depth: number): GitCommandVerd
       j++;
     }
     const inner = words.slice(j);
-    return inner.length === 0 ? undefined : simpleVerdict(inner, depth + 1);
+    // `env -C dir` / `env --chdir=dir` and `chroot` run the command somewhere else: its directory is unknown.
+    const moves =
+      name === "chroot" || (name === "env" && words.slice(1, j).some((w) => /^(-[a-zA-Z]*C|--chdir)/.test(w)));
+    const innerScope = scope !== undefined && moves ? { ...scope, cwd: null } : scope;
+    return inner.length === 0 ? undefined : simpleVerdict(inner, depth + 1, innerScope);
   }
   return undefined;
 }
 
-function commandVerdict(command: string, depth: number): GitCommandVerdict | undefined {
+function commandVerdict(command: string, depth: number, scope?: RunCommitScope): GitCommandVerdict | undefined {
   let uncertain: GitCommandVerdict | undefined;
   for (const words of splitSimpleCommands(command)) {
-    const v = simpleVerdict(words, depth);
+    // Lexical order only: `(cd x); git commit` and `cd x || git commit` are judged as if the `cd` took effect.
+    if (scope !== undefined) trackDir(words, scope);
+    const v = simpleVerdict(words, depth, scope);
     if (v?.level === "write") return v;
     uncertain ??= v;
   }
@@ -502,7 +607,12 @@ function commandVerdict(command: string, depth: number): GitCommandVerdict | und
  * extension (`timeout 600 npx vitest run src/cli/git-push.test.ts`) is an argument, not a Git subprogram. `uncertain`: the check cannot tell (a dynamic program or subcommand, an unknown
  * subcommand that may be an alias, `gh`). Not covered, by design: scripts and interpreters (`python -c`, `make`);
  * the FR-GIT-03 ref snapshot is the backstop for those.
+ *
+ * With `runCommits` (privileged runs only, operator request 2026-10-20): `git add` and `git commit` are not writes when
+ * they run in the run's own worktree, with no Git global option, no path outside the worktree and no `--amend`
+ * ({@link RunCommitScope}); `cd`, `pushd` and `popd` in the line update `runCommits.cwd`. Every other subcommand
+ * (push, fetch, branch and ref changes, checkout, switch, reset, rebase, ...) is judged exactly as without it.
  */
-export function gitWriteInCommand(command: string): GitCommandVerdict | undefined {
-  return commandVerdict(command, 0);
+export function gitWriteInCommand(command: string, runCommits?: RunCommitScope): GitCommandVerdict | undefined {
+  return commandVerdict(command, 0, runCommits);
 }

@@ -1,7 +1,8 @@
 # ADR-0027: Ref snapshots at LEASED and FINALIZING, and what the controller restores on a Git policy violation
 
 - Status: Accepted; expected differences extended by [ADR-0028](0028-controller-push-and-credential-reach.md) (the
-  remote-tracking ref a controller push updates)
+  remote-tracking ref a controller push updates) and narrowed by [ADR-0067](0067-privileged-run-own-worktree-commits.md)
+  (Proposed 2026-10-20, not owner-approved: a dispatched `privileged` run's own run-branch commits are accepted, not violations)
 - Date: 2026-10-13
 - Decided by: Delegated (agent), under [owner decision 25](../ROADMAP.md#42-owner-decisions) (best practice for a
   decision that does not change what a bypass run may do; this one keeps bypass runs' Git-write denial exactly as owner

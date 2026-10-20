@@ -15,10 +15,11 @@ import {
 import { REPO_AGENT_CONFIG_PATHS, repoAgentConfigRefusal } from "../policy/repo-agent-config.js";
 import { FakeAdapter } from "./fake/adapter.js";
 import { FAKE_PROFILE } from "./fake/cases.js";
+import { LOOSE_SCOPE, privilegedProfile } from "./fixtures/privileged.js";
 import { gitWriteInCommand, splitSimpleCommands } from "./git-write.js";
 import { startAdapterRun } from "./run.js";
 import { guardToolCall } from "./tool-guard.js";
-import type { Invocation } from "./types.js";
+import type { Invocation, ResolvedProfile } from "./types.js";
 
 const HOME = "/home/canary";
 const level = (c: string) => gitWriteInCommand(c)?.level;
@@ -133,6 +134,18 @@ describe("guardToolCall", () => {
     expect(guardToolCall({ tool: "shell", command: "git status" }, ctx)).toBeUndefined();
   });
 
+  it("a privileged run's own git add / git commit pass; push and -C stay denied, provider state still checked", () => {
+    const shell = (command: string) => ({ tool: "shell" as const, command });
+    const priv = { ...ctx, runCommits: { worktree: ctx.cwd, cwd: ctx.cwd } };
+    expect(guardToolCall(shell("git add -A && git commit -m x"), priv)).toBeUndefined();
+    expect(guardToolCall(shell("git add -A && git commit -m x"), ctx)).toMatchObject({ kind: "git_write" });
+    expect(guardToolCall(shell("git commit -m x && git push"), priv)).toMatchObject({ kind: "git_write" });
+    expect(guardToolCall(shell("git -C /work/other commit -m x"), priv)).toMatchObject({ kind: "git_write" });
+    expect(guardToolCall(shell("git commit -m x; cat ~/.codex/auth.json"), priv)).toMatchObject({
+      kind: "provider_state",
+    });
+  });
+
   // The git- path and read-only `git branch` fixes in `gitWriteInCommand` must not open a credential read: once a line
   // is no longer a Git write, the provider-state check still sees it.
   it("a git- path or read-only git branch is allowed, a credential read beside it stays denied", () => {
@@ -193,13 +206,16 @@ describe("a run whose provider ignored its deny rules is failed by Switchboard (
   const dir = mkdtempSync(join(tmpdir(), "sb-q64-"));
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-  const runPlan = async (calls: unknown[]) => {
+  const runPlan = async (calls: unknown[], profile?: Pick<ResolvedProfile, "name" | "privilegedScope">) => {
     const adapter = new FakeAdapter({ scenario: "tool_calls" });
     const inv = adapter.compile(
       { runId: "r", objective: JSON.stringify({ calls }), constraints: [], workspace: { cwd: dir, writable: true } },
       FAKE_PROFILE,
     ) as Invocation;
-    const out = await startAdapterRun(adapter, inv, { baseEnv: { ...process.env, HOME } }).done;
+    const out = await startAdapterRun(adapter, inv, {
+      baseEnv: { ...process.env, HOME },
+      ...(profile ? { profile } : {}),
+    }).done;
     const failure = adapter.classifyFailure({
       events: out.events,
       exit: out.exit,
@@ -223,6 +239,37 @@ describe("a run whose provider ignored its deny rules is failed by Switchboard (
   it("fails a run that named the provider login file, without reading it", async () => {
     const { failure } = await runPlan([{ tool: "shell", name: "bash", command: "test -r ~/.grok/auth.json" }]);
     expect(failure.code).toBe("SANDBOX_VIOLATION");
+  });
+
+  // run_01M5C2EKGX: a privileged run that committed its finished work in its own worktree was failed PERMISSION_BLOCKED.
+  it("does not fail a privileged run for `git add` / `git commit` in its own worktree", async () => {
+    const { out, failure } = await runPlan(
+      [
+        { tool: "shell", name: "bash", command: "git add -A" },
+        { tool: "shell", name: "bash", command: "git commit -m 'feat: done'" },
+      ],
+      privilegedProfile(LOOSE_SCOPE),
+    );
+    expect(out.events.filter((e) => e.kind === "tool_call" && e.violation !== undefined)).toEqual([]);
+    expect(failure.code).not.toBe("PERMISSION_BLOCKED");
+  });
+
+  it.each([
+    "git push origin HEAD",
+    "git fetch origin",
+    "git checkout -b other",
+    "git -C /elsewhere commit -m x",
+    "cd / && git commit -m x",
+    "git commit --amend --no-edit",
+  ])("still fails a privileged run for `%s`", async (command) => {
+    const { failure } = await runPlan([{ tool: "shell", name: "bash", command }], privilegedProfile(LOOSE_SCOPE));
+    expect(failure.code).toBe("PERMISSION_BLOCKED");
+  });
+
+  it("still fails a non-privileged run, or a privileged one without a scope binding, for `git commit`", async () => {
+    const calls = [{ tool: "shell", name: "bash", command: "git commit -m x" }];
+    expect((await runPlan(calls)).failure.code).toBe("PERMISSION_BLOCKED");
+    expect((await runPlan(calls, { name: "privileged" })).failure.code).toBe("PERMISSION_BLOCKED");
   });
 
   it("leaves an ordinary run alone", async () => {

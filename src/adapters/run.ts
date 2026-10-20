@@ -123,10 +123,15 @@ export interface AdapterRunOptions {
   acp?: AdapterRunAcpOptions;
 }
 
-/** The guard's context for one run: HOME from the run's base environment (Switchboard's own when absent). */
+/**
+ * The guard's context for one run: HOME from the run's base environment (Switchboard's own when absent). A privileged
+ * run (the lifecycle passes its profile only after the dispatch approval check, T3.4) gets a {@link RunCommitScope}
+ * over its worktree, so its own `git add` / `git commit` there are allowed (operator request, 2026-10-20).
+ */
 function toolGuardContext(cwd: string, opts: AdapterRunOptions, bypass: boolean): ToolGuardContext {
   const home = (opts.baseEnv ?? process.env).HOME;
-  return { cwd, bypass, ...(home ? { home } : {}) };
+  const privileged = opts.profile?.name === "privileged" && opts.profile.privilegedScope !== undefined;
+  return { cwd, bypass, ...(home ? { home } : {}), ...(privileged ? { runCommits: { worktree: cwd, cwd } } : {}) };
 }
 
 export interface AdapterRun {

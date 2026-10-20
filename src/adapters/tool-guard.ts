@@ -6,7 +6,9 @@
  * text is still never persisted (NFR-PRIV-02).
  *
  * - `git_write` (FR-GIT-01): the parsed command can create commits, move refs or push. Always enforced, bypass runs
- *   included (the owner keeps Git-write denial in bypass, ADR-0017); classified `PERMISSION_BLOCKED`.
+ *   included (the owner keeps Git-write denial in bypass, ADR-0017); classified `PERMISSION_BLOCKED`. One exception
+ *   (operator request, 2026-10-20): a privileged run (`runCommits` set) may `git add` and `git commit` in its own
+ *   worktree ({@link RunCommitScope}); the FR-GIT-03 ref check then accepts those commits on the run branch.
  * - `provider_state` (FR-AUTH-01): the call names a path under a provider config or credential directory. Enforced for
  *   every run except an approved bypass run (owner decision 25 restricts nothing about bypass); classified
  *   `SANDBOX_VIOLATION`.
@@ -14,7 +16,7 @@
  * Only `write` verdicts of {@link gitWriteInCommand} count; `uncertain` ones are left to the FR-GIT-03 ref snapshot.
  */
 import { commandReachesProviderState, pathReachesProviderState } from "../policy/provider-state.js";
-import { gitWriteInCommand } from "./git-write.js";
+import { gitWriteInCommand, type RunCommitScope } from "./git-write.js";
 import type { NormalizedEvent } from "./types.js";
 
 export interface ToolViolation {
@@ -27,6 +29,11 @@ export interface ToolGuardContext {
   readonly home?: string;
   /** True only for a run whose bypass the controller verified (`bypassPermitted`). */
   readonly bypass: boolean;
+  /**
+   * Set only for a privileged run: its worktree and the shell directory followed across this run's tool calls, so
+   * `git add` / `git commit` there are not Git writes. Mutable: each shell call's `cd` updates `cwd`.
+   */
+  readonly runCommits?: RunCommitScope;
 }
 
 /**
@@ -47,7 +54,7 @@ export function guardToolCall(
   // A shell tool's command line is `command` (transient) or, for adapters that keep it, the clipped `target`.
   const command = call.tool === "shell" ? (call.command ?? call.target) : undefined;
   if (command !== undefined) {
-    const git = gitWriteInCommand(command);
+    const git = gitWriteInCommand(command, ctx.runCommits);
     if (git?.level === "write") return { kind: "git_write", reason: git.reason };
   }
   if (ctx.bypass) return undefined;
