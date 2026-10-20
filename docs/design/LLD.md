@@ -2239,6 +2239,12 @@ project-admin call is still recorded, FR-PRJ-10). A console name with no registe
 invented. Config load refuses an unknown `tool_profile` value and refuses `console` together with `manage_projects:
 true`, which would otherwise be a silent no-op.
 
+As built (unknown-tool `details.tools`, 2026-10-20, Delegated, not owner-approved): both `tools/call`
+unknown-tool refusals report `details.tools` as exactly the names `tools/list` returns for that client, derived from
+the same descriptors (`offeredDescriptors` in `src/mcp/server.ts`), so the list can never lag the registered set
+(work-queue, skill and approval-proxy tools included when offered). Pinned by `src/mcp/unknown-tool.test.ts`
+(`details.tools` equals the sorted `tools/list` names for an orchestrator and a console client).
+
 #### 3.4.11 Consent-page approval link (FR-CTL-09, ADR-0047)
 
 A secondary way to decide one pending approval (ADR-0047 Decision 3), after the CLI (§3.1) and the approval proxy
