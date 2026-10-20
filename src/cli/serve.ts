@@ -84,11 +84,13 @@ import {
   ConsentLinkStore,
   Critic,
   createConsentApprovalSource,
+  type DecisionAnnouncement,
   NO_PROJECT_ID,
   OnceGate,
   SinkDispatcher,
   sinkOutcomeRecorder,
   transitionNotifier,
+  withDecisionLinks,
 } from "../control/index.js";
 import {
   type ContainerRuntime,
@@ -1065,26 +1067,32 @@ async function runDaemon(
   // T14.10 (FR-CTL-09, ADR-0047 Decision 3): single-use, expiring consent-page links, only with the HTTP transport. A
   // sweep on each operator poll issues a link for every decidable approval without a live one and logs its URL, which
   // is not a credential: opening it still needs the passphrase or a pairing code (FR-MCP-17).
+  // T14.15 (FR-CTL-13, Linus decision (b)): the same store and page also carry one link per option of each open
+  // decision request (`withDecisionLinks`); the token machinery is unchanged.
   const consentLinks = config.httpTransport
     ? new ConsentLinkStore({
         issuer: config.httpTransport.issuer,
-        source: createConsentApprovalSource({
+        source: withDecisionLinks(
+          createConsentApprovalSource({
+            ledger,
+            clientIds: [...config.mcpClients.keys()],
+            projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+            applyDecision: (req) => lifecycle.applyApprovalDecision(req),
+            ...(sinks !== undefined
+              ? {
+                  announce: (a: ApprovalAnnouncement) =>
+                    sinks.emit({
+                      projectId: a.projectId,
+                      eventKind: "approval_decided",
+                      reasonCode: a.kind,
+                      runId: a.runId,
+                    }),
+                }
+              : {}),
+          }),
           ledger,
-          clientIds: [...config.mcpClients.keys()],
-          projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
-          applyDecision: (req) => lifecycle.applyApprovalDecision(req),
-          ...(sinks !== undefined
-            ? {
-                announce: (a: ApprovalAnnouncement) =>
-                  sinks.emit({
-                    projectId: a.projectId,
-                    eventKind: "approval_decided",
-                    reasonCode: a.kind,
-                    runId: a.runId,
-                  }),
-              }
-            : {}),
-        }),
+          [...config.mcpClients.keys()],
+        ),
         ...(now ? { now } : {}),
       })
     : undefined;
@@ -1375,6 +1383,20 @@ async function runDaemon(
               }),
           }
         : {}),
+      // T14.15 (FR-CTL-13, LLD §20.3): the decision tools on both transports; a new decision reaches the sinks as
+      // `decision_requested` (reason `awaiting_decision`, no run, never its text).
+      decisions:
+        sinks !== undefined
+          ? {
+              announce: (a: DecisionAnnouncement) =>
+                sinks.emit({
+                  projectId: a.projectId,
+                  eventKind: "decision_requested",
+                  reasonCode: "awaiting_decision",
+                  runId: null,
+                }),
+            }
+          : {},
       // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.
       subjectBindings: new SubjectBindingStore(db, now ? { now } : {}),
       // T12.6 (FR-RAG-06): read-only search over a project's store; absent without an embedding backend (FR-RAG-04).

@@ -114,9 +114,9 @@ async function call(c: Client, name: string, args: Record<string, unknown>): Pro
 }
 
 describe("serve wires the skill store (T16.9; FR-SKL-08, LLD §19.9)", () => {
-  it("disabled (no skills key, or enabled: false) offers the same 17 tools; enabled adds only the skill tools for an orchestrator", async () => {
+  it("disabled (no skills key, or enabled: false) offers the same 19 tools (17 plus the T14.15 request_decision and list_decisions); enabled adds only the skill tools for an orchestrator", async () => {
     const absent = await listTools("orch");
-    expect(absent).toHaveLength(17);
+    expect(absent).toHaveLength(19);
     for (const t of SKILL_TOOLS) expect(absent.map((x) => x.name)).not.toContain(t);
 
     writeConfig({ skills: { enabled: false } });

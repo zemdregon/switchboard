@@ -40,6 +40,10 @@ const OPT_REJECT = "  --reject            projects approve only: reject the revi
 const OPT_ALL = "  --all               skills list only: also list retired names";
 const OPT_BODY = "  --body              skills show only: print the version body";
 const OPT_FILE = "  --file <path>       skills add only: the skill file to validate and store";
+const OPT_OPTION = "  --option <n>        decisions decide only: the 1-based option to choose";
+const OPT_DECISION_NOTE = "  --note <text>       decisions decide: an operator note of at most 2000 characters";
+const OPT_DECISION_FILTERS =
+  "  --project <id>, --state <open|decided|withdrawn>  decisions list only: filter by project or state";
 const OPT_FROM_REPOSITORY =
   "  --from-repository   skills add only: the file lives inside a project context or allowed root";
 
@@ -284,6 +288,23 @@ export const COMMAND_HELP: readonly CommandHelpEntry[] = [
     summary: "List, show, enable, disable, approve, deny and create schedules.",
     options: [OPT_PROJECT, OPT_JSON, OPT_CONFIG],
     example: "switchboard schedule list",
+  },
+  {
+    name: "decisions",
+    global: [
+      "  decisions list [--project <id>] [--state <state>]",
+      "                      List decision requests with their question and options (untrusted client text; read-only)",
+      "  decisions decide <dec_id> --option <n> [--note <text>]",
+      "                      Decide one open decision request: its work item resumes or is cancelled, its enqueue list is",
+      "                      added once under the requesting client; deciding twice is refused (CONFLICT)",
+    ],
+    usage: [
+      "switchboard decisions list [--project <id>] [--state <state>]",
+      "switchboard decisions decide <dec_id> --option <n> [--note <text>]",
+    ],
+    summary: "List and decide the decision requests MCP clients made (the operator side of request_decision).",
+    options: [OPT_DECISION_FILTERS, OPT_OPTION, OPT_DECISION_NOTE, OPT_JSON, OPT_CONFIG],
+    example: "switchboard decisions decide dec_01J9Z8XK3M4N5P6Q7R8S9T0V1W --option 1",
   },
   {
     name: "eval",

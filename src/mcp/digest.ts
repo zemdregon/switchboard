@@ -36,6 +36,9 @@
  * - `held` (T3.24, FR-CAP-12, LLD §20.2) lists the listed runs the host load hold keeps in `QUEUED` (reason
  *   `held_load`, the envelope's `hold`). It is present only when non-empty, so a controller without the hold returns
  *   exactly the digest it did before.
+ * - `open_decisions` (T14.15, FR-CTL-13, LLD §20.3) lists the caller's open decision requests of a listed project
+ *   (`decision_id`, `work_item_id`, reason `awaiting_decision`, `requested_at`), oldest first, present only when
+ *   non-empty. The question, options and note are not in the digest; `list_decisions` returns them, labelled untrusted.
  */
 
 import { createHash } from "node:crypto";
@@ -84,8 +87,17 @@ export interface DigestProject {
   failed: Envelope[];
   /** T3.24: present only when a listed run is held by the host load hold. */
   held?: { run_id: string; reason: "held_load"; envelope: Envelope }[];
+  /** T14.15: present only when this client has an open decision in the project. Ids and times only, no text. */
+  open_decisions?: OpenDecisionItem[];
   pending_approvals: ApprovalProxyItem[];
   untrusted_summaries: { run_id: string; field: "result.summary"; content: UntrustedText }[];
+}
+
+export interface OpenDecisionItem {
+  decision_id: string;
+  work_item_id: string | null;
+  reason: "awaiting_decision";
+  requested_at: string;
 }
 
 export interface Digest {
@@ -106,6 +118,8 @@ export interface DigestOptions {
   control?: ControlPlaneFacts;
   /** T14.16: a project's `queue.stall_hours`; undefined (or absent) means off. */
   stallHours?: (projectId: string) => number | undefined;
+  /** T14.15: the caller's open decisions in a project, oldest first; absent means none are listed. */
+  openDecisions?: (projectId: string) => OpenDecisionItem[];
   scanBudget?: number;
 }
 
@@ -136,6 +150,7 @@ export function assembleDigest(
       now: options.now,
       control,
       ...(options.stallHours !== undefined ? { stallHours: options.stallHours } : {}),
+      ...(options.openDecisions !== undefined ? { openDecisions: options.openDecisions } : {}),
     });
 
   if (sinceCursor === undefined) {
@@ -190,17 +205,24 @@ function assembleProjects(
   sections: { terminal: (run: RunRecord) => boolean; terminalMax: number },
   projectIds: Iterable<string>,
   scrub: (s: string) => string,
-  attention: { now: Date; control: ControlPlaneFacts; stallHours?: (projectId: string) => number | undefined },
+  attention: {
+    now: Date;
+    control: ControlPlaneFacts;
+    stallHours?: (projectId: string) => number | undefined;
+    openDecisions?: (projectId: string) => OpenDecisionItem[];
+  },
 ): DigestProject[] {
   const { control } = attention;
   const byProject = new Map<string, DigestProject>();
   for (const id of [...new Set(projectIds)].sort()) {
     const stall = progressStallOf(ledger, id, { now: attention.now, stallHours: attention.stallHours?.(id) });
+    const decisions = attention.openDecisions?.(id) ?? [];
     byProject.set(id, {
       project_id: id,
       paused: isAdmissionPaused(ledger, id),
       budget: { exhausted: control.budgetExhausted(id) || control.budgetExhausted("*") },
       ...(stall.active ? { project_needs_attention: stall } : {}),
+      ...(decisions.length > 0 ? { open_decisions: decisions } : {}),
       needs_attention: [],
       finished: [],
       failed: [],

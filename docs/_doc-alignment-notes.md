@@ -974,7 +974,36 @@ as history.
 - `node scripts/check-docs.mjs` passes; no doc edits needed for this PR
   beyond this entry. Recorded here only; it does not block PR #777.
 
-## 55. Trusted-development prefix rules stragglers (from PR #782, fixed in this gate)
+## 55. Claude 16 MiB stdout line cap (PR #786, no doc impact beyond the in-PR LLD update, checked 2026-10-20)
+
+- PR #786 (`fix(claude): parser tolerates oversize tool results instead of OUTPUT_PROTOCOL_ERROR`,
+  supersedes #783) adds `CLAUDE_STDOUT_LINE_BYTES = 16 MiB` (`src/adapters/claude/adapter.ts`) and compiles
+  it as the Claude adapter's `Invocation.maxLineBytes` instead of `DEFAULT_MAX_LINE_BYTES` (1 MiB,
+  `src/exec/jsonl.ts`); every other adapter still compiles the 1 MiB default (verified by grep over
+  `src/adapters/*/adapter.ts`: grok, antigravity, cursor, codex, fake, opencode, kimi and muse all pass
+  `DEFAULT_MAX_LINE_BYTES`, only claude passes `CLAUDE_STDOUT_LINE_BYTES`). New tests in
+  `src/adapters/claude/claude.test.ts` replay the trimmed recording
+  `src/adapters/claude/fixtures/oversize-edit-result.jsonl` (an `Edit` `user` event echoing the whole
+  pre-edit `docs/ROADMAP.md` in `tool_use_result.originalFile`, a valid 1,550,255-byte line): recorded size
+  now succeeds, while a line over the Claude cap and a truncated final oversize line still end
+  `OUTPUT_PROTOCOL_ERROR`.
+- The owner document for line framing ([LLD §8](design/LLD.md#8-run-supervisor-details)) is updated in the
+  same PR and matches the code on this branch: the 1 MiB default with the per-adapter `maxLineBytes`
+  override, the Claude 16 MiB exception with the run id (`run_01M5BST6XW3JGHKCCNW6EJ8R6V`), the byte count
+  (1,550,255, matching `RECORDED_LINE_BYTES` in the test and the fixture's own header note) and the
+  still-fails-closed statement (matching the over-cap and truncation tests). No other document states a
+  Claude line cap: the README has no Claude parser section (its one `maxLineBytes` sentence is the Grok
+  section, still on the default); SRS FR-EXE, SDD, HLD, TDD, `docs/operations/`, CONTRIBUTING.md,
+  SECURITY.md, CLAUDE.md and AGENTS.md carry no line-cap figure (the ROADMAP "1 MiB" rows concern Git ref
+  caps and the Grok over-limit fixture test, both still true). No new ADR: the change tunes a Proposed
+  bound through the existing per-adapter override mechanism, keeps the failure taxonomy (over-cap lines
+  still end `OUTPUT_PROTOCOL_ERROR`), and is recorded as Delegated (Linus decision, 2026-10-20) in LLD §8
+  and the code comment, not owner-approved. No ROADMAP task row exists for this fix and none is invented
+  here.
+- `node scripts/check-docs.mjs` passes; `npx tsc --noEmit` passes (the `DEFAULT_MAX_LINE_BYTES` import
+  removal in the Claude adapter leaves no stale use). Recorded here only; it does not block PR #786.
+
+## 56. Trusted-development prefix rules stragglers (from PR #782, fixed in this gate)
 
 - PR #782 changes the Claude `trusted-development` shell allowlist compile from one exact `Bash(<entry>)` rule per
   entry to `Bash(<entry>)` plus `Bash(<entry> *)` (`shellRules` with `form: "prefix"` in
@@ -992,7 +1021,7 @@ as history.
   AGENTS.md forbids editing it, and its status line already records the ADR-0066 amendment).
 - `node scripts/check-docs.mjs` passes. It does not block PR #782.
 
-## 56. LLD §3.3 stated the HTTP subject-binding rule without the admitted-runs exception (from PR #790, fixed in this gate)
+## 57. LLD §3.3 stated the HTTP subject-binding rule without the admitted-runs exception (from PR #790, fixed in this gate)
 
 - PR #790 (`fix(mcp): HTTP clients see admitted runs`, superseding #781) changes `ownSubject` in
   `src/mcp/server.ts` so a meta-session the controller opened to admit the caller's own queued work item
@@ -1019,3 +1048,40 @@ as history.
   FR-QUE-01 and FR-QUE-08 need no rewording (the prefix reservation and owner-visibility are LLD-level
   detail under them); no ROADMAP task row exists for this fix, so no status or evidence field is
   touched. `node scripts/check-docs.mjs` passes. It does not block PR #790.
+## 56. Decision requests (T14.15, PR #789): SRS as-built notes fixed here; two stragglers left for other lanes
+
+- This PR builds T14.15 (Done 2026-10-20) and updates the ROADMAP T14.15 row, the M14 row (`FR-CTL-13 (T14.15, Done)`),
+  the SDD FR-CTL-13 row (Proposed to Done), ADR-0048 item 3 (`decision_requested`), LLD §20.3 ("As built") and the
+  README tool/CLI tables. Verified against the code in this gate: migration 0030 after 0029 in
+  `src/ledger/migrations/index.ts`; 2–6 options, recommendation 1–n, labels 200 chars, question/note 2000 chars, at
+  most 8 enqueue entries (`src/control/decisions.ts` `MIN/MAX_DECISION_*`); actions `resume`/`reroute`/`cancel`/`none`
+  (`src/ledger/decisions.ts`); tool gating (`decisionsOffered` excludes `console`, `decideOffered` needs
+  `approval_proxy`, same server factory for stdio and network transport); consent links via `withDecisionLinks`;
+  no expiry timer; CLI states `open|decided|withdrawn` (`DECISION_STATES`); second resolution refused
+  (`CONFLICT`); `serve.ts` announces `decision_requested` / `awaiting_decision` with `run_id` null after the
+  request commits. The PR's own LLD §20.3 "As built" claims all match.
+- Fixed in this gate (docs only, Delegated, code as source of truth): the SRS FR-CTL-03 note predicted
+  `awaiting_decision` would join the run-level `needs_attention` list when T14.15 is built — as built it is a
+  project-level `open_decisions` digest entry and the `decision_requested` sink reason instead (a parked item has
+  no run; `NEEDS_ATTENTION_PRIORITY` has no such entry; LLD §20.3 item 6). SRS FR-CTL-13 ("raise `needs_attention`
+  with reason `awaiting_decision`") and the SRS FR-CTL-14 Built note ("hold-reason and open-decision counts join
+  when T3.24 and T14.15 build them") carried the same prediction; both now carry as-built notes pointing at
+  LLD §20.3 item 6 and §20.5. LLD §20.5's "join when T3.24 builds them" sentence (T3.24 is Done 2026-10-19 and the
+  counts still lack hold-reason leaves) now states the as-built exclusion for both hold and open decisions; LLD
+  §3.4.9 gains the `decision_requested` reason code and its producer bullet; LLD §3.4.10's conditional-tools
+  parenthetical gains decision tools; the README control-plane section gains the `decision_requested` filter kind,
+  the decision surface-table rows and the T14.15 test list; TDD §3.1's `notification_sinks[]` row gains the
+  `decision_requested` kind and FR-CTL-13; ROADMAP §9.2 lists T14.15 among the Done 2026-10-19 rows (cf. item 46
+  for the precedent). The SRS requirement sentences themselves (FR-CTL-13/14) are unchanged: they state intent,
+  and the as-built notes record current coverage.
+- Left unchanged (other lanes, out of this gate's scope): the `DigestCounts` comment in `src/control/sinks.ts`
+  ("Hold and open-decision counts join when T3.24 and T14.15 build them") is now stale the same way LLD §20.5 was,
+  but it lives in `src/**` and this gate edits documentation only — a code-lane follow-up should sync it
+  (cf. items 15, 25 and 28 for the same manifest/manifest-comment precedent). The HLD component rows still cite
+  COMP-MCP `FR-CTL-01..11` while the SDD maps FR-CTL-13 to COMP-MCP/COMP-PRJ/COMP-LED/COMP-OPS; this PR does not
+  widen that class (the mapping predates the branch — only the SDD status word flipped), so it stays with the
+  HLD owner per item 9. Checked and left unchanged: the SDD FR-CTL-03 row (no SDD row enumerates the
+  needs-attention reason list, so nothing cites the old prediction), the FRD (no work-item state enumeration to
+  update for `PARKED_DECISION`), the README Status M14 bullet and the §11 frozen log (per §11, later status lives
+  in §6 and the README Status block; the M14 row carries T14.15 with evidence).
+- `node scripts/check-docs.mjs` passes. It does not block PR #789.
