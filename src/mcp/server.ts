@@ -656,6 +656,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         ...(context.sign ? { sign: true as const } : {}),
         // T5.14 (FR-SES-07): the brief's hash, read now; an unreadable brief refuses the run (fail closed).
         ...admitBrief(project, deps.config.allowedRoots),
+        // FR-EXE-01: the project's provider idle window, frozen like the rest.
+        ...(project.providerIdleMs !== undefined ? { provider_idle_ms: project.providerIdleMs } : {}),
       },
     };
   };

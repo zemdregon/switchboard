@@ -161,6 +161,51 @@ describe("needs_attention derives each of the five reasons from ledger rows (T14
     });
   });
 
+  it("idle_timeout_work_kept: FAILED on an idle timeout with changed files; the newest run of its meta-session only", () => {
+    const failOn = (s: string, code: string, detail: string, changed: number | undefined) => {
+      const created = ledger.createRun({
+        metaSessionId: s,
+        state: "RUNNING",
+        trustProfile: "edit-untrusted",
+        policySnapshot: {},
+        request: {},
+        requestHash: "h",
+        clientId: "orch",
+        projectId: "web",
+      });
+      if (changed !== undefined) {
+        ledger.appendRunEvent({ runId: created.id, type: "checkpoint", payload: { kind: "pre", commit: "a" } });
+        ledger.appendRunEvent({
+          runId: created.id,
+          type: "checkpoint",
+          payload: { kind: "post", commit: "b", committed: true, changed_files: changed },
+        });
+      }
+      ledger.casRunState({
+        runId: created.id,
+        from: "RUNNING",
+        to: "FAILED",
+        expectedVersion: created.version,
+        set: { failure_code: code, failure_detail: detail },
+        payload: { to: "FAILED" },
+      });
+      return record(created.id);
+    };
+    const kept = failOn(session(), "PROCESS_TIMEOUT", "idle timeout", 30);
+    expect(attention(kept)).toEqual({ active: true, reason: "idle_timeout_work_kept" });
+    // No changed files, no checkpoint, a wall-clock timeout or another failure: nothing to salvage, no flag.
+    expect(attention(failOn(session(), "PROCESS_TIMEOUT", "idle timeout", 0))).toEqual({ active: false });
+    expect(attention(failOn(session(), "PROCESS_TIMEOUT", "idle timeout", undefined))).toEqual({ active: false });
+    expect(attention(failOn(session(), "PROCESS_TIMEOUT", "wall_clock timeout", 3))).toEqual({ active: false });
+    expect(attention(failOn(session(), "TOOL_FAILURE", "idle timeout", 3))).toEqual({ active: false });
+    // A successor in the same meta-session supersedes it.
+    const s = session();
+    const older = failOn(s, "PROCESS_TIMEOUT", "idle timeout", 2);
+    clock += 1000;
+    run(s, "SUCCEEDED");
+    expect(attention(older)).toEqual({ active: false });
+  });
+
   it("parked_loop: meta_session.parked_loop is set; the newest run shows it, an older FAILED run failed_after_retry", () => {
     const control = plantControlPlane();
     const s = session();
@@ -295,6 +340,7 @@ describe("needs_attention: no flag, priority and fail-closed defaults", () => {
       "ci_fix_stuck",
       "awaiting_approval",
       "stalled",
+      "idle_timeout_work_kept",
       "failed_after_retry",
     ]);
     expect(matchingReasons(all, later)).toEqual([

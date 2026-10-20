@@ -43,7 +43,9 @@
 // `{"files": {"<rel path>": "<content>" | null}, "summary": "<text>" | null, "ok": true}`; it writes (or, for null,
 // deletes) the files in its working directory and ends with a `result` event carrying the summary (none when null).
 // `ok: false` ends as a task failure (exit 1). No Git command is run. An optional `"usage": {...}` object of numbers is
-// reported as one `usage` event before the result (T8.14).
+// reported as one `usage` event before the result (T8.14). `"stall": true` writes the files, then idles until killed
+// with no result; `"linger": true` emits the result, then one background-task notification, and idles until killed,
+// as Claude Code did while a background shell was still running (idle-timeout regression, FR-EXE-01).
 //
 // Handoff prompts (T5.5, LLD §15.5; additive): a plan scenario reads its JSON plan from the text after the first line
 // that is exactly `[instruction from the orchestrator]`, when there is one (the rendered bundle comes before it); a
@@ -234,9 +236,17 @@ async function editFilesScenario() {
     const metrics = Object.fromEntries(Object.entries(plan.usage).filter(([, v]) => typeof v === "number"));
     emit({ type: "usage", ...metrics });
   }
+  if (plan.stall === true) {
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (!ok) emit({ type: "error", category: "tool", message: "task failed" });
   emit({ type: "result", ok, ...(summary !== undefined ? { summary } : {}) });
   if (!ok) process.exitCode = 1;
+  if (plan.linger === true) {
+    emit({ type: "background_task", status: "running" });
+    setInterval(() => {}, 1000);
+  }
 }
 
 async function gitCommitScenario() {
