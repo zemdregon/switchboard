@@ -1,9 +1,18 @@
 import type Database from "better-sqlite3";
 import type { IdGenerator } from "../ids/index.js";
+import { hotPathsOverlap, hotPathsProblem, storedHotPaths } from "../queue/hot-paths.js";
 
-export type WorkItemState = "PENDING" | "READY" | "ADMITTING" | "ADMITTED" | "DONE" | "CANCELLED" | "FAILED_ADMISSION";
+export type WorkItemState =
+  | "PENDING"
+  | "READY"
+  | "ADMITTING"
+  | "ADMITTED"
+  | "DONE"
+  | "CANCELLED"
+  | "FAILED_ADMISSION"
+  | "PARKED_DECISION";
 
-/** Every {@link WorkItemState}, in migration 0017's CHECK order. */
+/** Every {@link WorkItemState}, in migration 0017's CHECK order (`PARKED_DECISION` from migration 0030, T14.15). */
 export const WORK_ITEM_STATES: readonly WorkItemState[] = [
   "PENDING",
   "READY",
@@ -12,11 +21,21 @@ export const WORK_ITEM_STATES: readonly WorkItemState[] = [
   "DONE",
   "CANCELLED",
   "FAILED_ADMISSION",
+  "PARKED_DECISION",
 ];
 
-export type WorkSourceKind = "mcp" | "schedule" | "ci_trigger";
+/** `decision`: an item a decision enqueued on resolution (T14.15, migration 0030). */
+export type WorkSourceKind = "mcp" | "schedule" | "ci_trigger" | "decision";
 
-export type WorkEventType = "enqueued" | "ready" | "admitted" | "done" | "cancelled" | "admission_failed";
+export type WorkEventType =
+  | "enqueued"
+  | "ready"
+  | "admitted"
+  | "done"
+  | "cancelled"
+  | "admission_failed"
+  | "parked"
+  | "unparked";
 
 export interface WorkItemRow {
   id: string;
@@ -33,6 +52,27 @@ export interface WorkItemRow {
   created_at: string;
   updated_at: string;
   terminal_at: string | null;
+  /** T15.7 (migration 0029): per-project dedupe key, `null` when unset. */
+  dedupe_key: string | null;
+  /** T15.7: JSON array of path globs, `null` when unset. */
+  hot_paths_json: string | null;
+  /** T15.7: the re-implementation item that superseded the ref this item worked on. */
+  superseded_by: string | null;
+}
+
+/** Bounds of a `dedupe_key` (T15.7). */
+export const DEDUPE_KEY_MIN = 1;
+export const DEDUPE_KEY_MAX = 200;
+
+/**
+ * T15.7 (FR-QUE-07, LLD §20.4): a second item with the same `dedupe_key` in a project while one is live, or published
+ * (`DONE`) and not superseded. The MCP layer reports it as `CONFLICT`.
+ */
+export class WorkItemDedupeConflictError extends Error {
+  override readonly name = "WorkItemDedupeConflictError";
+  constructor(readonly dedupeKey: string) {
+    super("a work item with this dedupe_key is already live or published in the project");
+  }
 }
 
 export interface EnqueueWorkItemInput {
@@ -46,6 +86,10 @@ export interface EnqueueWorkItemInput {
   predecessorIds?: readonly string[];
   /** When set, enqueue returns the existing row if the key matches (same creator). */
   idempotentReturnExisting?: boolean;
+  /** T15.7: refused with {@link WorkItemDedupeConflictError} while another item holds the key. */
+  dedupeKey?: string | null;
+  /** T15.7: up to 32 relative path globs (`src/queue/hot-paths.ts`). */
+  hotPaths?: readonly string[] | null;
 }
 
 export interface WorkListFilter {
@@ -68,7 +112,10 @@ export interface WorkQueueLedgerSlice {
   releaseAdmittingToReady(workItemId: string): boolean;
   completeWorkAdmission(
     workItemId: string,
-    outcome: { kind: "admitted"; runId: string } | { kind: "retry" } | { kind: "failed"; code: string },
+    outcome:
+      | { kind: "admitted"; runId: string }
+      | { kind: "retry" }
+      | { kind: "failed"; code: string; detail?: Readonly<Record<string, unknown>> },
   ): WorkItemRow | undefined;
   markWorkItemDone(workItemId: string): WorkItemRow | undefined;
   /**
@@ -92,6 +139,50 @@ export interface WorkQueueLedgerSlice {
   readProgressStallFacts(projectId: string): ProgressStallFacts;
   /** T14.16 (FR-CTL-14, LLD §20.5): work items of every project by state (integer counts for the pushed digest). */
   countWorkItemsByState(): Partial<Record<WorkItemState, number>>;
+  /** T15.7 (LLD §20.4): the `pending` controller Git preparation of a rebase run; call inside the admission transaction. */
+  insertRunRebase(input: { runId: string; workItemId: string; publishRef: string; headSha: string }): void;
+  getRunRebase(runId: string): RunRebaseRow | undefined;
+  /** T15.7: the rebase run already admitted for a work item, if any (admission idempotency after a crash). */
+  findRunRebaseForWorkItem(workItemId: string): RunRebaseRow | undefined;
+  /** T15.7: the `ci_ref_conflict` row that enqueued a work item, if any. */
+  getRefConflictForWorkItem(workItemId: string): RefConflictRow | undefined;
+  /**
+   * T14.15 (FR-CTL-13, LLD §20.3): park a PENDING or READY item for decision `decisionId` (`PARKED_DECISION`, which
+   * the §18.7 dequeue never claims). Undefined, and nothing written, for any other state. Joins a caller's transaction.
+   */
+  parkWorkItem(workItemId: string, decisionId: string): WorkItemRow | undefined;
+  /**
+   * T14.15: end the parking of a `PARKED_DECISION` item: `resume` returns it to READY (PENDING while a predecessor is
+   * not DONE, as at enqueue), `cancel` ends it CANCELLED. Undefined for an item that is not parked.
+   */
+  unparkWorkItem(workItemId: string, decisionId: string, outcome: "resume" | "cancel"): WorkItemRow | undefined;
+}
+
+/** T15.7 (migration 0029): one `run_rebase` row. */
+export interface RunRebaseRow {
+  run_id: string;
+  work_item_id: string;
+  publish_ref: string;
+  head_sha: string;
+  merge_parent_sha: string | null;
+  state: "pending" | "prepared" | "failed";
+  conflicted_paths: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** T15.7 (migration 0029): one `ci_ref_conflict` row. */
+export interface RefConflictRow {
+  id: string;
+  project_id: string;
+  remote: string;
+  publish_ref: string;
+  head_sha: string;
+  pr_number: number;
+  kind: "rebase" | "reimplement";
+  meta_session_id: string | null;
+  work_item_id: string;
+  observed_at: string;
 }
 
 /** T14.16: one project's `READY` count, the oldest `READY` item's `created_at` and the newest `DONE` `terminal_at`. */
@@ -102,7 +193,12 @@ export interface ProgressStallFacts {
 }
 
 const ITEM_COLS = `id, project_id, creator_client_id, state, priority, request_json, source_kind, source_id,
-  idempotency_key, admitted_run_id, last_error_code, created_at, updated_at, terminal_at`;
+  idempotency_key, admitted_run_id, last_error_code, created_at, updated_at, terminal_at, dedupe_key, hot_paths_json,
+  superseded_by`;
+
+/** The partial unique index `project_work_item_dedupe` of migration 0029, as a predicate. */
+const DEDUPE_HELD = `dedupe_key IS NOT NULL AND superseded_by IS NULL
+  AND state NOT IN ('CANCELLED', 'FAILED_ADMISSION') AND (state = 'DONE' OR terminal_at IS NULL)`;
 
 function rowFromDb(r: WorkItemRow): WorkItemRow {
   return r;
@@ -278,6 +374,21 @@ export function createWorkQueueLedgerSlice(
         }
         const priority = input.priority ?? 0;
         if (priority < -1000 || priority > 1000) throw new Error("priority out of range");
+        const dedupeKey = input.dedupeKey ?? null;
+        if (dedupeKey !== null) {
+          if (dedupeKey.length < DEDUPE_KEY_MIN || dedupeKey.length > DEDUPE_KEY_MAX) {
+            throw new Error("dedupe_key length out of range");
+          }
+          const held = db
+            .prepare(`SELECT 1 FROM project_work_item WHERE project_id = ? AND dedupe_key = ? AND ${DEDUPE_HELD}`)
+            .get(input.projectId, dedupeKey);
+          if (held !== undefined) throw new WorkItemDedupeConflictError(dedupeKey);
+        }
+        const hotPaths = input.hotPaths ?? null;
+        if (hotPaths !== null) {
+          const problem = hotPathsProblem(hotPaths);
+          if (problem !== undefined) throw new Error(problem);
+        }
         const at = ts();
         const id = ids.id("que");
         const preds = input.predecessorIds ?? [];
@@ -286,8 +397,8 @@ export function createWorkQueueLedgerSlice(
         const initialState: WorkItemState = preds.some(isBlockingPredecessor) ? "PENDING" : "READY";
         db.prepare(
           `INSERT INTO project_work_item (id, project_id, creator_client_id, state, priority, request_json, source_kind,
-            source_id, idempotency_key, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            source_id, idempotency_key, created_at, updated_at, dedupe_key, hot_paths_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).run(
           id,
           input.projectId,
@@ -300,6 +411,8 @@ export function createWorkQueueLedgerSlice(
           input.idempotencyKey ?? null,
           at,
           at,
+          dedupeKey,
+          hotPaths === null || hotPaths.length === 0 ? null : JSON.stringify(hotPaths),
         );
         if (preds.length > 0 && wouldCycle(preds)) throw new Error("dependency cycle");
         for (const pred of preds) {
@@ -347,6 +460,8 @@ export function createWorkQueueLedgerSlice(
         if (item === undefined) return undefined;
         if (!operator && item.creator_client_id !== byClientId) return undefined;
         if (item.state === "DONE" || item.state === "CANCELLED" || item.state === "FAILED_ADMISSION") return undefined;
+        // T14.15: a parked item belongs to its open decision; only resolving the decision moves it (fail closed).
+        if (item.state === "PARKED_DECISION") return undefined;
         // ADMITTING: the scheduler is admitting it now; cancelling here could leave a run behind a CANCELLED item.
         if (item.state === "ADMITTED" || item.state === "ADMITTING") return undefined;
         const at = ts();
@@ -358,13 +473,31 @@ export function createWorkQueueLedgerSlice(
 
     claimReadyWorkItem(projectId) {
       return immediate(() => {
-        const row = db
+        // T15.7 (LLD §20.4): skip a READY item whose hot paths overlap those of a running item of the project
+        // (ADMITTING, or ADMITTED with its run not yet terminal). Items without hot paths never overlap.
+        const running = (
+          db
+            .prepare(
+              `SELECT hot_paths_json FROM project_work_item
+               WHERE project_id = ? AND hot_paths_json IS NOT NULL
+                 AND (state = 'ADMITTING' OR (state = 'ADMITTED' AND terminal_at IS NULL))`,
+            )
+            .all(projectId) as { hot_paths_json: string }[]
+        ).map((r) => storedHotPaths(r.hot_paths_json));
+        const ready = db
           .prepare(
             `SELECT ${ITEM_COLS} FROM project_work_item
              WHERE project_id = ? AND state = 'READY'
-             ORDER BY priority DESC, created_at ASC, id ASC LIMIT 1`,
+             ORDER BY priority DESC, created_at ASC, id ASC`,
           )
-          .get(projectId) as WorkItemRow | undefined;
+          .all(projectId) as WorkItemRow[];
+        let row: WorkItemRow | undefined;
+        for (const candidate of ready) {
+          const mine = storedHotPaths(candidate.hot_paths_json);
+          if (mine.length > 0 && running.some((r) => hotPathsOverlap(mine, r))) continue;
+          row = candidate;
+          break;
+        }
         if (row === undefined) return undefined;
         const at = ts();
         const n = db
@@ -402,7 +535,8 @@ export function createWorkQueueLedgerSlice(
             "FAILED_ADMISSION",
             { last_error_code: outcome.code, terminal_at: at },
             "admission_failed",
-            { code: outcome.code },
+            // The admission path's secret-free reason (`AdmissionFailureDetail`), beside the code; `code` wins.
+            { ...(outcome.detail ?? {}), code: outcome.code },
           );
           notifyQueueChange(item.project_id);
           return res;
@@ -473,6 +607,65 @@ export function createWorkQueueLedgerSlice(
         n: number;
       }[];
       return Object.fromEntries(rows.map((r) => [r.state, r.n]));
+    },
+
+    insertRunRebase(input) {
+      const at = ts();
+      db.prepare(
+        `INSERT INTO run_rebase (run_id, work_item_id, publish_ref, head_sha, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+      ).run(input.runId, input.workItemId, input.publishRef, input.headSha, at, at);
+    },
+
+    getRunRebase(runId) {
+      return db.prepare("SELECT * FROM run_rebase WHERE run_id = ?").get(runId) as RunRebaseRow | undefined;
+    },
+
+    findRunRebaseForWorkItem(workItemId) {
+      return db
+        .prepare("SELECT * FROM run_rebase WHERE work_item_id = ? ORDER BY created_at, run_id LIMIT 1")
+        .get(workItemId) as RunRebaseRow | undefined;
+    },
+
+    getRefConflictForWorkItem(workItemId) {
+      return db.prepare("SELECT * FROM ci_ref_conflict WHERE work_item_id = ?").get(workItemId) as
+        | RefConflictRow
+        | undefined;
+    },
+
+    parkWorkItem(workItemId, decisionId) {
+      return immediate(() => {
+        const item = getWorkItemFixed(workItemId);
+        if (item === undefined || (item.state !== "PENDING" && item.state !== "READY")) return undefined;
+        const res = setState(workItemId, "PARKED_DECISION", {}, "parked", {
+          decision_id: decisionId,
+          from: item.state,
+        });
+        if (res !== undefined) notifyQueueChange(item.project_id);
+        return res;
+      });
+    },
+
+    unparkWorkItem(workItemId, decisionId, outcome) {
+      return immediate(() => {
+        const item = getWorkItemFixed(workItemId);
+        if (item === undefined || item.state !== "PARKED_DECISION") return undefined;
+        const detail = { decision_id: decisionId };
+        let res: WorkItemRow | undefined;
+        if (outcome === "cancel") {
+          res = setState(workItemId, "CANCELLED", { terminal_at: ts() }, "cancelled", detail);
+        } else {
+          const preds = db
+            .prepare(`SELECT predecessor_id FROM project_work_dependency WHERE successor_id = ?`)
+            .all(workItemId) as { predecessor_id: string }[];
+          // As at enqueue: only DONE predecessors release the item (a CANCELLED one keeps it PENDING, fail closed).
+          const blocked = preds.some((p) => isBlockingPredecessor(p.predecessor_id));
+          res = setState(workItemId, blocked ? "PENDING" : "READY", {}, "unparked", detail);
+          if (res !== undefined && !blocked) appendEvent(workItemId, "ready", detail);
+        }
+        if (res !== undefined) notifyQueueChange(item.project_id);
+        return res;
+      });
     },
 
     countAdmissibleWorkItems(projectId) {

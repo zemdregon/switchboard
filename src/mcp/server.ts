@@ -109,6 +109,13 @@
  *   item and returns any other item unchanged (an admitted item is stopped with `cancel_run`). T15.9 (FR-QUE-08,
  *   LLD §20.8): the tools are also offered over the network transport, but only to an `orchestrator` client, under
  *   the same scope check as `delegate_task` (FR-MCP-14); the mapped client's ceiling applies exactly as on stdio.
+ * - Decision requests (T14.15; FR-CTL-13, FR-CTL-08, LLD §20.3): `request_decision` and `list_decisions` for an
+ *   `orchestrator` client and `decide` only for an `approval_proxy` one, over both transports, once `serve` wires
+ *   `deps.decisions` (`./decision-tools.ts`, `../control/decisions.ts`). `request_decision` takes a project as the
+ *   `list_runs` filter does, names only this client's own work item, and runs the `enqueue_work` request checks on
+ *   each enqueue entry. A decision is visible to its requester; `decide` resolves only the decisions of the proxy's
+ *   targets (another is unknown), and a second resolution is INVALID_REQUEST with `details.reason` CONFLICT (no
+ *   taxonomy code names a conflict, as QUEUE_FULL; Delegated).
  * - Skill tools (T16.9; FR-SKL-08, FR-CTL-11, LLD §19.9, ADR-0056 item 12): `list_skills` and `get_skill` exist only
  *   when the skill store is wired (`deps.skills`) and `skills.enabled` is true, and only for an `orchestrator` client
  *   (they are outside the console set). Both read the T16.1 store and write nothing. Visibility is
@@ -169,9 +176,29 @@ import {
   type ApprovalProxyToolName,
   approvalProxyToolDescriptors,
   createApprovalProxy,
+  MCP_PROXY_DECIDER_PREFIX,
+  proxyTargets,
 } from "../control/approval-proxy.js";
+import {
+  type DecisionAnnouncement,
+  DecisionError,
+  decisionTextView,
+  decisionView,
+  requestDecision,
+  resolveDecision,
+} from "../control/decisions.js";
 import { snapshotEnvironment } from "../environment/index.js";
-import type { Ledger, RunRecord, RunState, TrustProfile, WorkItemRow, WorkItemState } from "../ledger/index.js";
+import {
+  type DecisionOption,
+  type DecisionState,
+  type Ledger,
+  type RunRecord,
+  type RunState,
+  type TrustProfile,
+  WorkItemDedupeConflictError,
+  type WorkItemRow,
+  type WorkItemState,
+} from "../ledger/index.js";
 import {
   type EligibilityAnswer,
   type EligibilityQuestion,
@@ -189,9 +216,10 @@ import {
   type PrivilegedScope,
   type ProjectSnapshot,
   parsePrivilegedScope,
-  resolveTrustProfile,
+  privilegedEligibilityProfile,
 } from "../policy/index.js";
 import type { DynamicProjectStore } from "../projects/index.js";
+import { hotPathsProblem, storedHotPaths } from "../queue/hot-paths.js";
 import { DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT } from "../queue/scheduler.js";
 import { deleteRagStore } from "../retrieval/store.js";
 import {
@@ -235,7 +263,14 @@ import {
   versionInjectable,
 } from "../skills/index.js";
 import { gitText } from "../workspace/git.js";
-import { assembleDigest } from "./digest.js";
+import {
+  type AnyDecisionToolName,
+  DECIDE_TOOL_NAMES,
+  DECISION_TOOL_NAMES,
+  decisionInputs,
+  decisionToolDescriptors,
+} from "./decision-tools.js";
+import { assembleDigest, type OpenDecisionItem } from "./digest.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
 import type { SubjectBindings } from "./http-subjects.js";
@@ -364,6 +399,11 @@ export interface McpServerDeps {
    * sink is configured.
    */
   readonly announcePendingRevision?: (a: PendingRevisionAnnouncement) => void;
+  /**
+   * T14.15 (FR-CTL-13, LLD §20.3): the decision service. Absent means `request_decision`, `list_decisions` and `decide`
+   * do not exist for this server; `announce` tells the sinks a decision is waiting (`decision_requested`, no text).
+   */
+  readonly decisions?: { readonly announce?: (a: DecisionAnnouncement) => void };
 }
 
 /** T16.9: what the skill tools read. Nothing here is written. */
@@ -1027,7 +1067,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       trustProfile: profile,
       clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
       cwd: workspace,
-      ...(scope?.ok ? { profile: eligibilityProfile(scope.scope) } : {}),
+      ...(scope?.ok ? { profile: privilegedEligibilityProfile(scope.scope) } : {}),
       ...(minimumCapability !== undefined ? { minimumCapability } : {}),
     };
     // T7.15 (LLD §17.7): with a group or an explicit model, each member is a stage-1 candidate.
@@ -1174,7 +1214,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         trustProfile: profile,
         clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
         cwd: workspace,
-        ...(approvedScope?.ok ? { profile: eligibilityProfile(approvedScope.scope) } : {}),
+        ...(approvedScope?.ok ? { profile: privilegedEligibilityProfile(approvedScope.scope) } : {}),
         ...(minimumCapability !== undefined ? { minimumCapability } : {}),
       });
 
@@ -1417,8 +1457,20 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         ...attentionAt(),
         // T14.16 (FR-CTL-14): the configured project's `queue.stall_hours`; unset means no `stalled_progress`.
         stallHours: (id: string) => deps.config.projects?.find((p) => p.id === id)?.queue?.stallHours,
+        openDecisions: openDecisionsOf,
       },
     );
+
+  /** T14.15 (FR-CTL-13): this client's open decisions in a project, ids and times only (no decision text). */
+  function openDecisionsOf(projectId: string): OpenDecisionItem[] {
+    const open = ledger.listDecisions({ requesterClientIds: [deps.clientId], projectId, states: ["open"], limit: 50 });
+    return open.map((d) => ({
+      decision_id: d.id,
+      work_item_id: d.work_item_id,
+      reason: "awaiting_decision",
+      requested_at: d.created_at,
+    }));
+  }
 
   /** T14.6 (FR-CTL-05, LLD §3.4.4): see the module comment; the row is written as `mcp:<client_id>`. */
   const setProjectPaused = async (a: Args, paused: boolean) => {
@@ -1466,6 +1518,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       created_at: item.created_at,
       updated_at: item.updated_at,
       terminal_at: item.terminal_at,
+      dedupe_key: item.dedupe_key,
+      hot_paths: storedHotPaths(item.hot_paths_json),
+      superseded_by: item.superseded_by,
       ...extra,
     };
   };
@@ -1478,10 +1533,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return project === undefined ? maxTrustProfile : effectiveMaxProfile(maxTrustProfile, project);
   };
 
-  const enqueueWork = async (a: Args) => {
-    const projectId = a.project_id as string;
-    checkListProject(projectId);
-    const request = a.request as Args;
+  /**
+   * The `enqueue_work` request checks that need no workspace (V5 against the lower of the client's and the project's
+   * maximum now, V13, V7, V8, V15); `prefix` names the request in `details.field`. Also run on each entry of a
+   * decision's enqueue list (T14.15), so a decision can never queue what this client could not queue itself.
+   */
+  const checkQueuedRequest = (projectId: string, request: Args, prefix = "request."): void => {
     const profile = request.trust_profile as TrustProfile;
     const effectiveMax = listProjectCeiling(projectId);
     if (profileRank(profile) > profileRank(effectiveMax)) {
@@ -1499,11 +1556,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     }
     const scopeArg = request.privileged_scope;
     if (profile === "privileged" && scopeArg === undefined) {
-      throw invalid("trust_profile privileged requires privileged_scope", { field: "request.privileged_scope" });
+      throw invalid("trust_profile privileged requires privileged_scope", { field: `${prefix}privileged_scope` });
     }
     if (profile !== "privileged" && scopeArg !== undefined) {
       throw invalid(`privileged_scope is allowed only with trust_profile privileged (got ${profile})`, {
-        field: "request.privileged_scope",
+        field: `${prefix}privileged_scope`,
       });
     }
     if (scopeArg !== undefined) {
@@ -1515,23 +1572,50 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const verification = request.verification_commands as string[][];
     if (verification.length > 0 && profile === "inspect-untrusted") {
       throw invalid("verification_commands are refused under inspect-untrusted (FRD V7)", {
-        field: "request.verification_commands",
+        field: `${prefix}verification_commands`,
       });
     }
     const verificationProblem = verificationCommandsProblem(verification);
     if (verificationProblem !== undefined) {
-      throw invalid(verificationProblem, { field: "request.verification_commands" });
+      throw invalid(verificationProblem, { field: `${prefix}verification_commands` });
     }
     checkRouting(request.routing as Routing | undefined);
-    skillFieldsOf(request, "request."); // V15 at enqueue; the fields are stored and resolve at the item's admission
+    skillFieldsOf(request, prefix); // V15 at enqueue; the fields are stored and resolve at the item's admission
+  };
+
+  const enqueueWork = async (a: Args) => {
+    const projectId = a.project_id as string;
+    checkListProject(projectId);
+    const request = a.request as Args;
+    checkQueuedRequest(projectId, request);
 
     const predecessors = [...((a.depends_on as string[] | undefined) ?? [])].sort();
     for (const id of predecessors) ownWorkItem(id);
     const frozen = { ...request, project: projectId }; // LLD §18.2 request_json
     const priority = a.priority as number;
     const key = a.idempotency_key === undefined ? undefined : `mcp:${a.idempotency_key as string}`;
-    const fingerprint = (p: string, req: unknown, prio: number, preds: string[]) =>
-      requestHash({ project_id: p, request: req, priority: prio, depends_on: preds });
+    const dedupeKey = (a.dedupe_key as string | undefined) ?? null;
+    const hotPaths = (a.hot_paths as string[] | undefined) ?? null;
+    if (hotPaths !== null) {
+      const problem = hotPathsProblem(hotPaths);
+      if (problem !== undefined) throw invalid(problem, { field: "hot_paths" });
+    }
+    const fingerprint = (
+      p: string,
+      req: unknown,
+      prio: number,
+      preds: string[],
+      dedupe: string | null,
+      hot: readonly string[],
+    ) =>
+      requestHash({
+        project_id: p,
+        request: req,
+        priority: prio,
+        depends_on: preds,
+        ...(dedupe !== null ? { dedupe_key: dedupe } : {}),
+        ...(hot.length > 0 ? { hot_paths: hot } : {}),
+      });
     const limit = deps.config.queue?.maxItemsPerProject ?? DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT;
     return ledger.immediate(() => {
       if (key !== undefined) {
@@ -1543,7 +1627,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
               JSON.parse(prior.request_json),
               prior.priority,
               ledger.listWorkItemPredecessors(prior.id),
-            ) === fingerprint(projectId, frozen, priority, predecessors);
+              prior.dedupe_key,
+              storedHotPaths(prior.hot_paths_json),
+            ) === fingerprint(projectId, frozen, priority, predecessors, dedupeKey, hotPaths ?? []);
           if (!same) throw invalid(IDEMPOTENCY_CONFLICT);
           return workView(prior, { replayed: true });
         }
@@ -1554,15 +1640,27 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           max_items_per_project: limit,
         });
       }
-      const item = ledger.enqueueWorkItem({
-        projectId,
-        creatorClientId: deps.clientId,
-        request: frozen,
-        sourceKind: "mcp",
-        idempotencyKey: key ?? null,
-        priority,
-        predecessorIds: predecessors,
-      });
+      let item: WorkItemRow;
+      try {
+        item = ledger.enqueueWorkItem({
+          projectId,
+          creatorClientId: deps.clientId,
+          request: frozen,
+          sourceKind: "mcp",
+          idempotencyKey: key ?? null,
+          priority,
+          predecessorIds: predecessors,
+          dedupeKey,
+          hotPaths,
+        });
+      } catch (err) {
+        // T15.7 (LLD §20.4): no taxonomy code names a held key, so CONFLICT is the reason (as QUEUE_FULL, errors.ts).
+        // The holder's id is not returned: it may belong to another client of the project.
+        if (err instanceof WorkItemDedupeConflictError) {
+          throw invalid(err.message, { field: "dedupe_key", reason: "CONFLICT" });
+        }
+        throw err;
+      }
       return workView(item);
     });
   };
@@ -1588,6 +1686,93 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     enqueue_work: enqueueWork,
     list_work: listWork,
     cancel_work: cancelWork,
+  };
+
+  // ---- T14.15 decision requests (FR-CTL-13, LLD §20.3): see `./decision-tools.ts` ---------------------------------
+
+  /** Orchestrator tools, once `serve` wires the decision service; `decide` additionally needs `approval_proxy`. */
+  const decisionsOffered = deps.decisions !== undefined && client.toolProfile !== "console";
+  const decideOffered = decisionsOffered && client.approvalProxy === true;
+  const decisionValidators = compileDecisionValidators();
+  const decisionToolError = (err: unknown): unknown => {
+    if (!(err instanceof DecisionError)) return err;
+    return invalid(err.message, {
+      ...(err.reason === "CONFLICT" ? { reason: "CONFLICT" } : {}),
+      ...(err.field !== undefined ? { field: err.field } : {}),
+    });
+  };
+
+  const requestDecisionTool = async (a: Args) => {
+    const projectId = a.project_id as string;
+    checkListProject(projectId);
+    const enqueue = (a.enqueue as { request: Args; priority: number }[] | undefined) ?? [];
+    enqueue.forEach((e, i) => {
+      checkQueuedRequest(projectId, e.request, `enqueue[${i}].request.`);
+    });
+    const limit = deps.config.queue?.maxItemsPerProject ?? DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT;
+    if (enqueue.length > 0 && ledger.countWorkItemsForProject(projectId) + enqueue.length > limit) {
+      throw invalid(`the work queue of project ${projectId} cannot take ${enqueue.length} more items`, {
+        field: "enqueue",
+        max_items_per_project: limit,
+      });
+    }
+    if (a.work_item_id !== undefined) ownWorkItem(a.work_item_id as string);
+    try {
+      const row = requestDecision(
+        ledger,
+        {
+          projectId,
+          ...(a.work_item_id !== undefined ? { workItemId: a.work_item_id as string } : {}),
+          requesterClientId: deps.clientId,
+          question: a.question as string,
+          options: a.options as DecisionOption[],
+          recommendedOption: a.recommended_option as number,
+          enqueue,
+        },
+        deps.decisions?.announce,
+      );
+      return decisionView(row);
+    } catch (err) {
+      throw decisionToolError(err);
+    }
+  };
+
+  const listDecisionsTool = async (a: Args) => {
+    if (a.project_id !== undefined) checkListProject(a.project_id as string);
+    const rows = ledger.listDecisions({
+      requesterClientIds: [deps.clientId],
+      ...(a.project_id !== undefined ? { projectId: a.project_id as string } : {}),
+      ...(a.state_in !== undefined ? { states: a.state_in as DecisionState[] } : {}),
+      limit: a.limit as number,
+    });
+    return { decisions: rows.map(decisionTextView) };
+  };
+
+  const decideTool = async (a: Args) => {
+    try {
+      const r = resolveDecision(ledger, {
+        decisionId: a.decision_id as string,
+        option: a.option as number,
+        ...(a.note !== undefined ? { note: a.note as string } : {}),
+        decidedBy: `${MCP_PROXY_DECIDER_PREFIX}${deps.clientId}`,
+        // FR-CTL-08: only the decisions of the clients the operator listed for this proxy (default: itself).
+        requesters: proxyTargets(deps.clientId, client),
+      });
+      return {
+        ...decisionView(r.decision),
+        action: r.action,
+        work_item_state: r.workItem?.state ?? null,
+        enqueued_work_item_ids: r.enqueued.map((w) => w.id),
+      };
+    } catch (err) {
+      throw decisionToolError(err);
+    }
+  };
+
+  const decisionHandlers: Record<AnyDecisionToolName, (a: Args) => Promise<object>> = {
+    request_decision: requestDecisionTool,
+    list_decisions: listDecisionsTool,
+    decide: decideTool,
   };
 
   const cancelRun = async (a: Args): Promise<Envelope> => {
@@ -1727,7 +1912,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         try {
           profiles =
             p === "privileged"
-              ? REPRESENTATIVE_PRIVILEGED_SCOPES.map((sc) => eligibilityProfile(sc))
+              ? REPRESENTATIVE_PRIVILEGED_SCOPES.map((sc) => privilegedEligibilityProfile(sc))
               : [lifecycle.resolveProfile(p)];
         } catch {
           continue; // COMP-POL does not resolve this profile: unsupported, fail closed
@@ -1916,6 +2101,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(approvalProxy !== undefined
         ? approvalProxyToolDescriptors().map((d) => ({ ...d, outputSchema: withError(d.outputSchema) }))
         : []),
+      // T14.15: orchestrator tools once wired; `decide` only for an approval_proxy client.
+      ...(decisionsOffered ? decisionToolDescriptors(decideOffered) : []),
     ]);
   /** The names `tools/list` returns right now; what the unknown-tool error reports in `details.tools`. */
   const offeredToolNames = (): string[] => offeredDescriptors().map((d) => d.name);
@@ -1998,6 +2185,18 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         const validate = workValidators[tool];
         if (!validate(args)) throw schemaError(validate.errors ?? []);
         return ok(await workHandlers[tool](args));
+      }
+      if (
+        ((DECISION_TOOL_NAMES as readonly string[]).includes(name) && decisionsOffered) ||
+        ((DECIDE_TOOL_NAMES as readonly string[]).includes(name) && decideOffered)
+      ) {
+        // T14.15 (FR-CTL-13, FR-CTL-08): when not offered (no approval_proxy for decide, a console client, or no
+        // decision service) it is answered exactly like an unknown tool.
+        const tool = name as AnyDecisionToolName;
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        const validate = decisionValidators[tool];
+        if (!validate(args)) throw schemaError(validate.errors ?? []);
+        return ok(await decisionHandlers[tool](args));
       }
       if (!(TOOL_NAMES as readonly string[]).includes(name)) {
         throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, { tools: offeredToolNames() });
@@ -2097,21 +2296,6 @@ const REPRESENTATIVE_PRIVILEGED_SCOPES: readonly PrivilegedScope[] = [
   },
 ];
 
-/**
- * The snapshot V11 compiles against for a `privileged` request: the scope resolved with placeholder hash and approval
- * ID (the real ones exist only inside the admission transaction). `bypassApproved` is false whatever the scope says
- * (it is known only at dispatch), so {@link admissible} defers an adapter's compile refusal to dispatch.
- */
-function eligibilityProfile(scope: PrivilegedScope): ResolvedProfile {
-  return resolveTrustProfile("privileged", {
-    privileged: {
-      scope,
-      scopeHash: "0".repeat(64),
-      approvalId: "apv_00000000000000000000000000",
-    },
-  });
-}
-
 function compileValidators(): Record<ToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
   return Object.fromEntries(TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
@@ -2132,6 +2316,16 @@ function compileWorkValidators(): Record<WorkQueueToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
   return Object.fromEntries(WORK_QUEUE_TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
     WorkQueueToolName,
+    ValidateFunction
+  >;
+}
+
+function compileDecisionValidators(): Record<AnyDecisionToolName, ValidateFunction> {
+  const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
+  const inputs = decisionInputs();
+  const names = [...DECISION_TOOL_NAMES, ...DECIDE_TOOL_NAMES];
+  return Object.fromEntries(names.map((n) => [n, ajv.compile(inputs[n])])) as Record<
+    AnyDecisionToolName,
     ValidateFunction
   >;
 }

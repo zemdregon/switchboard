@@ -61,14 +61,15 @@ every verb below, and each write verb is behind its own project switch, off by d
 - **Item 8, cancel stale queued runs** (FR-QUE-06): `gh run cancel <run-id>`, only with
   `ci_trigger.cancel_stale_queued: true`, only for a run whose status is `queued` (never `in_progress`) on a published
   ref whose head SHA is no longer that ref's head. This stays inside "branches the project published".
-- **Item 9, read mergeability** (FR-QUE-07, FR-SUB-01): `gh pr view` with a closed `--json` field list (number,
-  state, draft, mergeable, head SHA, check results), read-only.
+- **Item 9, read mergeability** (FR-QUE-07, FR-SUB-01): `gh pr view` with the closed `--json` field list
+  `number,state,isDraft,mergeable,headRefOid` (G9; no check results — required-check gating is item 10, T15.8), read-only.
 - **Item 10, merge** (FR-SUB-02): `gh pr merge <number> --<method> --match-head-commit <sha>`, only for a project
   whose merge policy is on, under the gate of [ADR-0060](0060-opt-in-head-pinned-merge-policy.md).
 
 Every other `gh` verb stays refused, and the argv allowlist test keeps proving it. Exact field names and flags are
 checked against the installed `gh` in ROADMAP T15.6 to T15.8 before code relies on them
-(T15.6 done: `gh` 2.102.0, `--help` only, no call to GitHub; T15.7–T15.8 pending)
+(T15.6 done: `gh` 2.102.0, `--help` only, no call to GitHub; T15.7 done the same way for item 9, whose closed field
+list is `number,state,isDraft,mergeable,headRefOid`; T15.8 pending)
 ([LLD §20.1](../design/LLD.md#201-ci-transient-handling-fr-que-06-t156),
 [§20.4](../design/LLD.md#204-published-ref-conflicts-and-supersede-fr-que-07-t157),
 [§20.7](../design/LLD.md#207-opt-in-merge-policy-and-ref-events-fr-sub-01-fr-sub-02-t158-adr-0060)).

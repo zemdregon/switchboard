@@ -579,6 +579,21 @@ const DIGEST = {
               properties: { run_id: RUN_ID, reason: { const: "held_load" }, envelope: ENVELOPE },
             },
           },
+          // T14.15 (FR-CTL-13, LLD §20.3): this client's open decisions; present only when there is one. No text.
+          open_decisions: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["decision_id", "work_item_id", "reason", "requested_at"],
+              properties: {
+                decision_id: { type: "string" },
+                work_item_id: NULLABLE_STRING,
+                reason: { const: "awaiting_decision" },
+                requested_at: { type: "string" },
+              },
+            },
+          },
           pending_approvals: {
             type: "array",
             items: {
@@ -785,7 +800,8 @@ const INPUTS = {
 const WORK_ITEM_ID = { type: "string", pattern: "^que_[0-9A-HJKMNP-TV-Z]{26}$", maxLength: 30 } as const;
 const WORK_STATE = {
   type: "string",
-  enum: ["PENDING", "READY", "ADMITTING", "ADMITTED", "DONE", "CANCELLED", "FAILED_ADMISSION"],
+  // T14.15 (FR-CTL-13): PARKED_DECISION, an item waiting for its open decision.
+  enum: ["PENDING", "READY", "ADMITTING", "ADMITTED", "DONE", "CANCELLED", "FAILED_ADMISSION", "PARKED_DECISION"],
 } as const;
 const DELEGATE = INPUTS.delegate_task.properties;
 const WORK_INPUTS = {
@@ -819,6 +835,10 @@ const WORK_INPUTS = {
       priority: { type: "integer", minimum: -1000, maximum: 1000, default: 0 },
       depends_on: { type: "array", maxItems: 32, uniqueItems: true, items: WORK_ITEM_ID },
       idempotency_key: { type: "string", minLength: 8, maxLength: 128 },
+      // T15.7 (FR-QUE-07, LLD §20.4): refused (`details.reason` CONFLICT) while another item of the project holds it.
+      dedupe_key: { type: "string", minLength: 1, maxLength: 200 },
+      // T15.7: relative path globs; the dequeue never runs two overlapping items of a project at once.
+      hot_paths: { type: "array", maxItems: 32, items: { type: "string", minLength: 1, maxLength: 512 } },
     },
   },
   list_work: {
@@ -826,7 +846,7 @@ const WORK_INPUTS = {
     additionalProperties: false,
     properties: {
       project_id: PROJECT_REF,
-      state_in: { type: "array", items: WORK_STATE, minItems: 1, maxItems: 7, uniqueItems: true },
+      state_in: { type: "array", items: WORK_STATE, minItems: 1, maxItems: 8, uniqueItems: true },
       limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
     },
   },
@@ -1382,13 +1402,16 @@ const WORK_ITEM = {
     state: WORK_STATE,
     priority: { type: "integer" },
     trust_profile: NULLABLE_STRING,
-    source_kind: { type: "string", enum: ["mcp", "schedule", "ci_trigger"] },
+    source_kind: { type: "string", enum: ["mcp", "schedule", "ci_trigger", "decision"] },
     depends_on: { type: "array", items: { type: "string" } },
     admitted_run_id: NULLABLE_STRING,
     last_error_code: NULLABLE_STRING,
     created_at: { type: "string" },
     updated_at: { type: "string" },
     terminal_at: NULLABLE_STRING,
+    dedupe_key: NULLABLE_STRING,
+    hot_paths: { type: "array", items: { type: "string" } },
+    superseded_by: NULLABLE_STRING,
     replayed: { type: "boolean" },
   },
 } as const;

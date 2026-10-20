@@ -72,7 +72,7 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { osLoadReader } from "../capacity/host-load.js";
-import { CiTriggerPoller, GhCiStatusPort, resolveGithubRemote } from "../ci/index.js";
+import { CiTriggerPoller, GhCiStatusPort, resolveGithubRemote, supersededDiffOf } from "../ci/index.js";
 import { ConfigError, loadConfig, primaryContext, type ResolvedConfig } from "../config/index.js";
 import { collectDigestCounts, digestPushFor } from "../control/digest-push.js";
 import {
@@ -84,11 +84,13 @@ import {
   ConsentLinkStore,
   Critic,
   createConsentApprovalSource,
+  type DecisionAnnouncement,
   NO_PROJECT_ID,
   OnceGate,
   SinkDispatcher,
   sinkOutcomeRecorder,
   transitionNotifier,
+  withDecisionLinks,
 } from "../control/index.js";
 import {
   type ContainerRuntime,
@@ -103,6 +105,7 @@ import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal 
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
 import { GitPusher, pushContextResolver } from "../git/push.js";
+import { prepareRebaseMerge } from "../git/rebase-prep.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createClassifyRouteFeaturesHook, createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/index.js";
 import { createLedger, openLedger, RagLedger } from "../ledger/index.js";
@@ -653,6 +656,7 @@ async function runDaemon(
       db,
       scratchDir: path.join(config.dataDir, "git-scratch"),
       sanitizePatterns: config.sanitizePatterns,
+      secretScanAllow: config.secretScanAllow,
       ids,
       ...(now ? { now } : {}),
     });
@@ -663,6 +667,7 @@ async function runDaemon(
       db,
       scratchDir: path.join(config.dataDir, "git-scratch"),
       sanitizePatterns: config.sanitizePatterns,
+      secretScanAllow: config.secretScanAllow,
       allowedStates: ["FINALIZING"],
       ids,
       ...(now ? { now } : {}),
@@ -926,6 +931,8 @@ async function runDaemon(
   );
   const lifecycle = new RunLifecycle({
     ledger,
+    // T15.7 (FR-QUE-07, LLD §20.4): controller Git merges the current base into a rebase run's worktree before spawn.
+    rebasePrep: (q) => prepareRebaseMerge(db, q),
     workspace,
     artifacts,
     adapters: registry,
@@ -1060,26 +1067,32 @@ async function runDaemon(
   // T14.10 (FR-CTL-09, ADR-0047 Decision 3): single-use, expiring consent-page links, only with the HTTP transport. A
   // sweep on each operator poll issues a link for every decidable approval without a live one and logs its URL, which
   // is not a credential: opening it still needs the passphrase or a pairing code (FR-MCP-17).
+  // T14.15 (FR-CTL-13, Linus decision (b)): the same store and page also carry one link per option of each open
+  // decision request (`withDecisionLinks`); the token machinery is unchanged.
   const consentLinks = config.httpTransport
     ? new ConsentLinkStore({
         issuer: config.httpTransport.issuer,
-        source: createConsentApprovalSource({
+        source: withDecisionLinks(
+          createConsentApprovalSource({
+            ledger,
+            clientIds: [...config.mcpClients.keys()],
+            projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+            applyDecision: (req) => lifecycle.applyApprovalDecision(req),
+            ...(sinks !== undefined
+              ? {
+                  announce: (a: ApprovalAnnouncement) =>
+                    sinks.emit({
+                      projectId: a.projectId,
+                      eventKind: "approval_decided",
+                      reasonCode: a.kind,
+                      runId: a.runId,
+                    }),
+                }
+              : {}),
+          }),
           ledger,
-          clientIds: [...config.mcpClients.keys()],
-          projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
-          applyDecision: (req) => lifecycle.applyApprovalDecision(req),
-          ...(sinks !== undefined
-            ? {
-                announce: (a: ApprovalAnnouncement) =>
-                  sinks.emit({
-                    projectId: a.projectId,
-                    eventKind: "approval_decided",
-                    reasonCode: a.kind,
-                    runId: a.runId,
-                  }),
-              }
-            : {}),
-        }),
+          [...config.mcpClients.keys()],
+        ),
         ...(now ? { now } : {}),
       })
     : undefined;
@@ -1187,7 +1200,7 @@ async function runDaemon(
   // T15.3 (FR-QUE-03, LLD §18.7 step 2, ADR-0050): CI is polled through the operator's `gh` before the queue dequeue
   // (step 3), so a fix-up item can be admitted on the same tick. Off unless `ci_trigger.enabled`; no `gh` call otherwise.
   // T15.6 (FR-QUE-06, ADR-0050 amendment 1): the same port is the write side, used only for a project whose
-  // `rerun_failed` or `cancel_stale_queued` switch is on.
+  // `rerun_failed` or `cancel_stale_queued` switch is on. T15.7: and the read-only mergeability side (G9).
   const ciTrigger = config.ciTrigger;
   const ciPort = ciTrigger.enabled
     ? new GhCiStatusPort({
@@ -1203,6 +1216,15 @@ async function runDaemon(
           ledger,
           port: ciPort,
           actions: ciPort,
+          // T15.7 (FR-QUE-07, LLD §20.4): read-only `gh pr view` of each watched ref; the superseded ref's diff is read
+          // with local read-only Git from the project's primary context.
+          pulls: ciPort,
+          supersededDiff: async ({ projectId, headSha }) => {
+            const project = config.projects.find((p) => p.id === projectId);
+            if (project === undefined) return undefined;
+            const ctx = primaryContext(project);
+            return supersededDiffOf(ctx.path, ctx.baseRef, headSha);
+          },
           settings: ciTrigger,
           resolveRemote: async (projectId, remote) => {
             const project = config.projects.find((p) => p.id === projectId);
@@ -1361,6 +1383,20 @@ async function runDaemon(
               }),
           }
         : {}),
+      // T14.15 (FR-CTL-13, LLD §20.3): the decision tools on both transports; a new decision reaches the sinks as
+      // `decision_requested` (reason `awaiting_decision`, no run, never its text).
+      decisions:
+        sinks !== undefined
+          ? {
+              announce: (a: DecisionAnnouncement) =>
+                sinks.emit({
+                  projectId: a.projectId,
+                  eventKind: "decision_requested",
+                  reasonCode: "awaiting_decision",
+                  runId: null,
+                }),
+            }
+          : {},
       // T13.5 (FR-MCP-15, Q-78): stdio sees only meta-sessions with no HTTP subject; HTTP sees only its own.
       subjectBindings: new SubjectBindingStore(db, now ? { now } : {}),
       // T12.6 (FR-RAG-06): read-only search over a project's store; absent without an embedding backend (FR-RAG-04).

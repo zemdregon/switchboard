@@ -77,6 +77,13 @@ export {
   UNSAFE_REPO_CONFIG_PATTERN,
 } from "./push.js";
 export {
+  MIN_MERGE_TREE_GIT_VERSION,
+  type PrepareRebaseMergeInput,
+  type PrepareRebaseMergeResult,
+  prepareRebaseMerge,
+  type RebasePrepFailure,
+} from "./rebase-prep.js";
+export {
   DEFAULT_REF_GUARD_LIMITS,
   GIT_POLICY_VIOLATION_EVENT,
   GIT_REF_CHECK_EVENT,

@@ -4,12 +4,15 @@ import { deriveOpenWork, type OpenWorkRun } from "../continuity/open-work.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import { insertChainedRunEvent, nextChainLink } from "./chain.js";
 import { type ControlPlaneLedgerSlice, createControlPlaneLedgerSlice } from "./control-plane.js";
+import { createDecisionLedgerSlice, type DecisionLedgerSlice } from "./decisions.js";
 import { DecisionRefusedError } from "./errors.js";
 import { createScheduleLedgerSlice, type ScheduleLedgerSlice } from "./schedule.js";
 import {
   createWorkQueueLedgerSlice,
   type EnqueueWorkItemInput,
   type ProgressStallFacts,
+  type RefConflictRow,
+  type RunRebaseRow,
   type WorkItemRow,
   type WorkItemState,
   type WorkListFilter,
@@ -746,7 +749,7 @@ export interface InnerTaskStateRow {
   version: number;
 }
 
-export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
+export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, DecisionLedgerSlice {
   createMetaSession(input: NewMetaSession): MetaSessionRow;
   getMetaSession(id: string): MetaSessionRow | undefined;
   createRun(input: NewRun): RunRow;
@@ -1052,7 +1055,10 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   releaseAdmittingToReady(workItemId: string): boolean;
   completeWorkAdmission(
     workItemId: string,
-    outcome: { kind: "admitted"; runId: string } | { kind: "retry" } | { kind: "failed"; code: string },
+    outcome:
+      | { kind: "admitted"; runId: string }
+      | { kind: "retry" }
+      | { kind: "failed"; code: string; detail?: Readonly<Record<string, unknown>> },
   ): WorkItemRow | undefined;
   markWorkItemDone(workItemId: string): WorkItemRow | undefined;
   closeWorkItemForRun(runId: string, runState: "SUCCEEDED" | "FAILED" | "CANCELLED"): WorkItemRow | undefined;
@@ -1065,6 +1071,13 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice {
   // ---- T14.16 additions (digest push and progress stall, FR-CTL-14, LLD §20.5) -------------------------------
   readProgressStallFacts(projectId: string): ProgressStallFacts;
   countWorkItemsByState(): Partial<Record<WorkItemState, number>>;
+  insertRunRebase(input: { runId: string; workItemId: string; publishRef: string; headSha: string }): void;
+  getRunRebase(runId: string): RunRebaseRow | undefined;
+  findRunRebaseForWorkItem(workItemId: string): RunRebaseRow | undefined;
+  getRefConflictForWorkItem(workItemId: string): RefConflictRow | undefined;
+  // ---- T14.15 additions (decision requests, FR-CTL-13, LLD §20.3) --------------------------------------------
+  parkWorkItem(workItemId: string, decisionId: string): WorkItemRow | undefined;
+  unparkWorkItem(workItemId: string, decisionId: string, outcome: "resume" | "cancel"): WorkItemRow | undefined;
 }
 
 export {
@@ -1077,6 +1090,17 @@ export {
   OPERATOR_RESUME_REQUESTED,
   type PendingPauseRequest,
 } from "./control-plane.js";
+export {
+  DECISION_ACTIONS,
+  DECISION_STATES,
+  type DecisionAction,
+  type DecisionLedgerSlice,
+  type DecisionListFilter,
+  type DecisionOption,
+  type DecisionRequestRow,
+  type DecisionState,
+  type NewDecisionRequest,
+} from "./decisions.js";
 export type {
   CreateScheduleInput,
   ScheduleApprovalState,
@@ -1087,11 +1111,13 @@ export type {
 export type {
   EnqueueWorkItemInput,
   ProgressStallFacts,
+  RefConflictRow,
+  RunRebaseRow,
   WorkItemRow,
   WorkItemState,
   WorkListFilter,
 } from "./work-queue.js";
-export { WORK_ITEM_STATES } from "./work-queue.js";
+export { WORK_ITEM_STATES, WorkItemDedupeConflictError } from "./work-queue.js";
 
 export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledger {
   const ids = deps.ids ?? defaultIds;
@@ -2354,5 +2380,7 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
     ...createControlPlaneLedgerSlice(db, { ids, ts, immediate }),
     // T15.2 (FR-QUE-02): schedules (migration 0019).
     ...createScheduleLedgerSlice(db, { ids, ts, immediate }),
+    // T14.15 (FR-CTL-13): decision requests (migration 0030).
+    ...createDecisionLedgerSlice(db, { ids, ts }),
   };
 }

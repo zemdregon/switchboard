@@ -214,8 +214,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
-  decisions 76 and 77: T15.6 is Done on fakes (2026-10-19, Delegated agent work, not owner-approved), T15.7
-  and T15.8 are Planned and T15.9 is Done; the M15 scope below stays Done on fakes
+  decisions 76 and 77: T15.6 is Done on fakes (2026-10-19, Delegated agent work, not owner-approved), T15.7 is
+  Done on fakes (2026-10-19, Delegated agent work, not owner-approved; published-ref conflicts and supersede,
+  migration 0029, `src/ci/ref-conflicts.test.ts`), T15.8 is Planned and T15.9 is Done; the M15 scope below stays
+  Done on fakes
   (2026-10-18, Delegated
   agent work,
   not owner-approved; the `serve` low-water wiring below is a separate open fix)). The durable per-project work queue
@@ -231,6 +233,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   Transient CI faults are handled (T15.6: `cancelled`/`timed_out` are recorded as `CI_INFRA` with no fix-up and never
   count toward the cap; per-project `rerun_failed` and `cancel_stale_queued` switches, both off by default, enable one
   `gh run rerun --failed` per (ref, head, job) and cancel of queued runs on superseded heads).
+  A ref reported `CONFLICTING` by read-only `gh pr view` admits one rebase item (T15.7, cap shared with the fix-up
+  cap); at the cap one re-implementation item from the current base supersedes the old ref, and work items may carry
+  a `dedupe_key` (a second live item with the same key is refused) and `hot_paths` (overlapping items never run together).
   A project may set a queue low-water mark (T15.4: `projects.<id>.queue.low_water`, off by default): when the
   admissible count (`READY` items, or `PENDING` items whose dependencies can still be met) drops below the mark, one
   `queue_low` sink event fires, re-armed only when the count rises back to the mark. The detector is covered on fakes
@@ -536,7 +541,7 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 | `telemetry.otlp_endpoint` | no | `http` or `https` URL for OTLP/HTTP trace export. When omitted or empty, Switchboard does not load OpenTelemetry at startup and makes no outbound telemetry connection. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [LLD §7](docs/design/LLD.md#7-telemetry-spans). |
 | `telemetry.provider_otlp` | no | Boolean (default off). When `true`, a run whose provider manifest cites `otlp_metrics` gets a per-run loopback OTLP/HTTP-JSON metrics receiver (`127.0.0.1:0`, T8.15, FR-TEL-06); anything else means no receiver opens for any run. No shipped manifest declares `otlp_metrics` yet, so the switch alone changes nothing. See [Telemetry and adapter versioning](#telemetry-and-adapter-versioning-milestone-8) and [ADR-0063](docs/adr/0063-per-run-provider-otlp-metrics-receiver.md). |
 | `git.sanitize_patterns` | no | Up to 16 extra regular-expression sources (200 characters each, restricted subset in `src/git/safe-pattern.ts`). A commit-message line that matches one is removed, in addition to the built-in attribution rules. |
-| `git.secret_scan.allow` | no | Up to 64 entries `{ "rule_id", "path" }` for the pre-push secret scan ([LLD §20.9](docs/design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061)). Every push, by the agent's `push` tool or `git push` on the CLI and in every profile including an approved bypass run, scans the added lines it would publish with the built-in rules (`src/artifacts/redact.ts`: private-key blocks, AWS, GitHub, `sk-`, Slack and JWT shapes, Switchboard's own tokens, `Bearer` headers and `password=`-style assignments) and refuses with `SECRET_SCAN_BLOCKED` on a hit, recording the rule id, path and line and never the value. An entry lets a hit of `rule_id` through at paths the glob matches (`fixtures/**`); an unknown rule id stops startup. There is no other switch: to publish anyway, push by hand. |
+| `git.secret_scan.allow` | no | Up to 64 entries `{ "rule_id", "path" }` for the secret scan ([LLD §20.9](docs/design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061)). Every push, by the agent's `push` tool or `git push` on the CLI and in every profile including an approved bypass run, scans the added lines it would publish with the built-in rules (`src/artifacts/redact.ts`: private-key blocks, AWS, GitHub, `sk-`, Slack and JWT shapes, Switchboard's own tokens, `Bearer` headers and `password=`-style assignments) and refuses with `SECRET_SCAN_BLOCKED` on a hit, recording the rule id, path and line and never the value. The commit tool runs the same scan over the added lines of the new commit and records each hit as a `secret_scan_hit` warning event (`stage: "commit"`) without refusing. An entry lets a hit of `rule_id` through at paths the glob matches (`fixtures/**`); an unknown rule id stops startup. There is no other switch: to publish anyway, push by hand. |
 | `inner_agent` | no | The optional inner agent (ADR-0016): a cheap or self-hosted model for small tasks. Off unless you write the section and set `enabled: true`; there is no default backend, model or task, and no key, token or header field (a hosted service goes through a gateway you run). Shape: `{ "enabled", "backend": { "kind": "http", "base_url", "model", "timeout_ms"?, "max_concurrency"?, "allow_remote"?, "shares_subscription_with"? }, "tasks": { "<task>": { "enabled", ... } }, "breaker"?, "suspension"? }`; `base_url` may not carry userinfo or a query, and `shares_subscription_with` must be one of the provider config ids listed below this table (`claude-code`, `codex`, ...) or `null`: any other string stops startup, so `doctor` fails its config check naming the key and `inner test` exits 1 before sending anything. Full shape: LLD section 13.1. Inspect it with `doctor` and `inner status`. |
 | `rag` | no | The optional retrieval index (ADR-0031): off unless you configure an `embedding` backend. No credential fields; `mode` defaults to `auto` (on only when a backend exists and the project allows). Projects and contexts may narrow caps and exclusions; `use_global` and `contribute_to_global` default to false and cannot be set on dynamic projects. Full shape: [LLD §14.1](docs/design/LLD.md#141-configuration-shape) and [Retrieval index](#retrieval-index-milestone-12). |
 | `profiles.<name>` | no | Overrides for `inspect-untrusted`, `edit-untrusted`, `test-sandboxed` or `trusted-development`: `file_access`, `shell`, `shell_allowlist`, `network`, `network_allowlist`, `repo_config`. They may tighten or loosen a default; `doctor` lists them and every run records them. `privileged` has none. See the `edit-untrusted` limit under [Trust profiles](#trust-profiles). |
@@ -816,7 +821,8 @@ Control-plane knobs live in `config.json` (no duplicate schema here):
   provider after a large diff, findings attached as untrusted text that never changes the original run; `enabled`
   default `false`, `min_diff_lines` integer 1 to 1 000 000 default 400; config-file key only (not a dynamic project
   definition); absent means off.
-- `notification_sinks[]`: webhook and ntfy kinds, filters (including the `digest` kind, T14.16) and rate
+- `notification_sinks[]`: webhook and ntfy kinds, filters (including the `digest` kind, T14.16, and the
+  `decision_requested` kind, T14.15, FR-CTL-13, which carries no decision text) and rate
   limits, plus an optional webhook `authorization`
   value sent as the `Authorization` header (FR-CTL-12, T14.14, ADR-0048); off by default.
 
@@ -829,6 +835,8 @@ See [TDD §3.1](docs/design/TDD.md#31-configuration) and [LLD §3.4](docs/design
 | `get_digest`, `list_runs`, `get_run` | yes | yes | yes (read) |
 | `delegate_task`, `cancel_run`, … | yes | subset (`delegate_task` only) | no extra |
 | `list_pending_approvals`, `decide_approval` | no | no | yes |
+| `request_decision`, `list_decisions` | yes | no | no extra (`decide` only) |
+| `decide` | no | no | yes (an `approval_proxy` client decides only decisions of its targets) |
 | `pause_project`, `resume_project`, `steer_run` | yes | yes | no |
 
 Tool outputs use closed controller fields only (no transcripts). Pending approvals expose an `approval_digest`, not
@@ -859,6 +867,11 @@ Fixtures only; no live provider CLI:
   (served-resource link).
 - Webhook authorization (T14.14, FR-CTL-12): `src/config/notification-sinks.test.ts`, `src/cli/cli.test.ts` (doctor
   `set`/`unset` suite); header-delivery and canary scans in `src/control/sinks.test.ts`.
+- Decision requests (T14.15, FR-CTL-13): `src/mcp/decisions.test.ts` (park and exactly-once resume/reroute/cancel,
+  digest `open_decisions` without text, sink payload without text, tool gating by profile and proxy flag, consent
+  links) and `src/ledger/ledger.test.ts` (migration 0030 on a version 29 database keeps every work item, event and
+  T15.7 column); operator side `switchboard decisions list`/`decide`
+  in `src/cli/decisions.ts`.
 - Scheduled digest push and progress stall (T14.16, FR-CTL-14): `src/control/digest-push.test.ts` (metadata-only
   digest on schedule, stall derivation, project-level flag on `get_digest`) and
   `src/config/digest-stall-config.test.ts` (off by default, resolution, refusal of bad cron and stall values).
@@ -1032,6 +1045,9 @@ Only one `serve` can hold a data directory at a time.
 | `delete_project` | project management | Remove a dynamic project once none of its runs is going; its history stays. | Only with `manage_projects: true` |
 | `list_pending_approvals` | approval | Pending approvals for this client, with digests (never scope bodies). | Only with `approval_proxy: true`; `console` sees it |
 | `decide_approval` | approval | Decide a pending approval with its matching digest. | Only with `approval_proxy: true`; `console` sees it |
+| `request_decision` | decision | Ask the operator a question with two to six options and a recommendation; optionally park one of this client's work items (`PARKED_DECISION`) and carry work items to enqueue on the decision. Sinks hear `decision_requested`, never the text. | Orchestrator profile only (stdio and network transport); `console` sees none |
+| `list_decisions` | decision | Decisions this client requested, with question, options and note labelled `untrusted_client_text`. | Orchestrator profile only (stdio and network transport); `console` sees none |
+| `decide` | decision | Decide one open decision of a client this proxy may act for: the item resumes or is cancelled and the enqueue list is added once, as the requesting client; deciding twice is refused (`CONFLICT`). | Only with `approval_proxy: true`, orchestrator profile; `console` sees none |
 
 A `console` tool-profile client sees only `get_digest`, `list_runs`, `get_run`, `delegate_task`, `steer_run`,
 `pause_project` and `resume_project`, plus the two approval tools when it has `approval_proxy`; every other tool needs
@@ -1295,6 +1311,7 @@ subsections below give the full behaviour; `switchboard --help` prints the same 
 | `resume` | Lift the operator pause set by `pause` (a project paused by an MCP client stays paused) | `--json` | [Control plane](#control-plane-milestone-14) |
 | `consent hash-passphrase`, `consent pair` | Hash the HTTP consent-page passphrase for config; print a one-time pairing code (Switchboard's own secrets, never a provider sign-in) | `--json` | [ROADMAP §6.10](docs/ROADMAP.md#610-m13-network-mcp-transport-tasks) |
 | `schedule list`, `schedule show <id>`, `schedule enable <id>`, `schedule disable <id>`, `schedule approve <id>`, `schedule deny <id>`, `schedule create <cron> <project> <template_json>` | List, inspect, enable, disable, approve, reject and create UTC cron schedules (off by default) | `--project` (list), `--json` | [ROADMAP §6.14](docs/ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks) |
+| `decisions list`, `decisions decide <dec_id> --option <n>` | List decision requests with their (untrusted) question and options; decide one as the operator: its work item resumes or is cancelled and its enqueue list is added once; deciding twice is refused | `--project`, `--state` (list), `--option`, `--note` (decide), `--json` | [LLD §20.3](docs/design/LLD.md#203-decision-requests-fr-ctl-13-t1415) |
 | `skills list`, `skills show <name>[@n]`, `skills add <name>`, `skills approve <name>@<n>`, `skills revoke <name>@<n>`, `skills retire <name>`, `skills unretire <name>`, `skills diff <name>@<a> <name>@<b>` | Skill store: list, inspect, validate and store a version, approve, revoke, retire and diff | `--all`, `--body`, `--file`, `--from-repository`, `--note`, `--json` | [Switchboard-controlled skills](#switchboard-controlled-skills-milestone-16) |
 
 ### Operator commands

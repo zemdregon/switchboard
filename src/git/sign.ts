@@ -121,6 +121,8 @@ export interface SignedCommitTreeOptions {
   readonly tree: string;
   /** Omit for a root commit (the `projects validate` test signature). */
   readonly parent?: string;
+  /** T15.7: further parents after {@link parent} (a rebase run's merged base); default none. Needs `parent`. */
+  readonly extraParents?: readonly string[];
   /** Passed on standard input exactly as given (`commit-tree -F -`). */
   readonly message: string;
   /** The six `GIT_AUTHOR_*` / `GIT_COMMITTER_*` variables; any other key throws. */
@@ -159,6 +161,7 @@ export async function signedCommitTree(opts: SignedCommitTreeOptions): Promise<S
       "commit-tree",
       opts.tree,
       ...(opts.parent ? ["-p", opts.parent] : []),
+      ...(opts.parent ? (opts.extraParents ?? []).flatMap((p) => ["-p", p]) : []),
       "-S",
       "-F",
       "-",
