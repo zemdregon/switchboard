@@ -3073,7 +3073,7 @@ other than the fake compiles `acp-stdio`.
   the client (`src/exec/acp/`) keeps stdin open and writes JSON-RPC to it. No process outlives its run or serves two
   runs (not FR-EXE-04's persistent transport).
 - **Framing.** Each stdout line is one UTF-8 JSON-RPC 2.0 object (newline-delimited, no embedded newline, ACP
-  transports page). Max message 1 MiB (the JSONL `maxLineBytes`). `OUTPUT_PROTOCOL_ERROR` (kill the group, keep the
+  transports page). Max message 1 MiB (the JSONL default `maxLineBytes`, `DEFAULT_MAX_LINE_BYTES`). `OUTPUT_PROTOCOL_ERROR` (kill the group, keep the
   data) for: an oversize line, invalid UTF-8 or JSON, a JSON array, `jsonrpc` other than `"2.0"`, a response to an id
   the client did not send, a message for another `sessionId`, more than 8 unanswered agent-to-client requests, or a
   `protocolVersion` other than 1 in the `initialize` result. No line is ignorable: ACP forbids non-protocol stdout.
