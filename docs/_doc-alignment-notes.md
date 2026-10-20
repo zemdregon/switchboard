@@ -973,3 +973,31 @@ as history.
   code-vs-document contradiction to fix or record as a conflict.
 - `node scripts/check-docs.mjs` passes; no doc edits needed for this PR
   beyond this entry. Recorded here only; it does not block PR #777.
+
+## 55. Claude 16 MiB stdout line cap (PR #794, no doc drift, checked 2026-10-20)
+
+- PR #794 raises only the Claude adapter's compiled `maxLineBytes` from the
+  1 MiB default to 16 MiB (`CLAUDE_STDOUT_LINE_BYTES` in
+  `src/adapters/claude/adapter.ts`, set in `compile`; every other adapter
+  still compiles `DEFAULT_MAX_LINE_BYTES` from `src/exec/jsonl.ts`), with a
+  replay test over the trimmed fixture
+  `src/adapters/claude/fixtures/oversize-edit-result.jsonl` and an LLD §8
+  "Line framing" update on the branch (Delegated Linus decision, run
+  `run_01M5BST6XW3JGHKCCNW6EJ8R6V`, 1,550,255-byte `originalFile` line).
+- No document is stale against it: LLD §8 already carries the per-adapter
+  qualifier and the Claude sentence (the ACP framing sentence names the
+  default, which still holds — no adapter overrides the ACP path); the LLD
+  §2 `Invocation` interface claims no default; the README's two `1 MiB`
+  hits are the Grok section (still on the default) and the verification
+  output cap (a different cap); TDD, the requirements, `operations/`,
+  CONTRIBUTING.md and SECURITY.md state no line-cap fact this PR touches;
+  the ROADMAP `OUTPUT_PROTOCOL_ERROR` rows belong to other lanes. The
+  fixture's byte count and run id match the LLD text, and `docs/ROADMAP.md`
+  on disk is 1,514,451 bytes, consistent with the "1.5 MB roadmap" account.
+- Note (metadata only, not a document conflict): the PR title says "move
+  model/group names out of src/", but the diff (`origin/main...HEAD`, four
+  files) contains no model or group name moves — only the line-cap fix, its
+  test and the LLD update. Nothing in the repo claims such a move, so there
+  is nothing to align; the title is left to the PR author.
+- `node scripts/check-docs.mjs` passes; no doc edits needed for this PR
+  beyond this entry. Recorded here only; it does not block PR #794.
