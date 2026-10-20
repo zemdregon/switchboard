@@ -61,8 +61,8 @@ every verb below, and each write verb is behind its own project switch, off by d
 - **Item 8, cancel stale queued runs** (FR-QUE-06): `gh run cancel <run-id>`, only with
   `ci_trigger.cancel_stale_queued: true`, only for a run whose status is `queued` (never `in_progress`) on a published
   ref whose head SHA is no longer that ref's head. This stays inside "branches the project published".
-- **Item 9, read mergeability** (FR-QUE-07, FR-SUB-01): `gh pr view` with a closed `--json` field list (number,
-  state, draft, mergeable, head SHA, check results), read-only.
+- **Item 9, read mergeability** (FR-QUE-07, FR-SUB-01): `gh pr view` with the closed `--json` field list
+  `number,state,isDraft,mergeable,headRefOid` (G9; no check results — required-check gating is item 10, T15.8), read-only.
 - **Item 10, merge** (FR-SUB-02): `gh pr merge <number> --<method> --match-head-commit <sha>`, only for a project
   whose merge policy is on, under the gate of [ADR-0060](0060-opt-in-head-pinned-merge-policy.md).
 

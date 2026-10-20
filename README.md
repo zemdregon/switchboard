@@ -170,8 +170,10 @@ Pre-release. The package is private and is not published to any registry; you bu
   [Control plane (milestone 14)](#control-plane-milestone-14) and
   [ROADMAP §6.13](docs/ROADMAP.md#613-m14-control-plane-tasks).
 - **Milestone 15 (project queue, schedules and CI triggers) is `Partial`** (reopened 2026-10-19 for owner
-  decisions 76 and 77: T15.6 is Done on fakes (2026-10-19, Delegated agent work, not owner-approved), T15.7
-  and T15.8 are Planned and T15.9 is Done; the M15 scope below stays Done on fakes
+  decisions 76 and 77: T15.6 is Done on fakes (2026-10-19, Delegated agent work, not owner-approved), T15.7 is
+  Done on fakes (2026-10-19, Delegated agent work, not owner-approved; published-ref conflicts and supersede,
+  migration 0027, `src/ci/ref-conflicts.test.ts`), T15.8 is Planned and T15.9 is Done; the M15 scope below stays
+  Done on fakes
   (2026-10-18, Delegated
   agent work,
   not owner-approved; the `serve` low-water wiring below is a separate open fix)). The durable per-project work queue
@@ -187,6 +189,9 @@ Pre-release. The package is private and is not published to any registry; you bu
   Transient CI faults are handled (T15.6: `cancelled`/`timed_out` are recorded as `CI_INFRA` with no fix-up and never
   count toward the cap; per-project `rerun_failed` and `cancel_stale_queued` switches, both off by default, enable one
   `gh run rerun --failed` per (ref, head, job) and cancel of queued runs on superseded heads).
+  A ref reported `CONFLICTING` by read-only `gh pr view` admits one rebase item (T15.7, cap shared with the fix-up
+  cap); at the cap one re-implementation item from the current base supersedes the old ref, and work items may carry
+  a `dedupe_key` (a second live item with the same key is refused) and `hot_paths` (overlapping items never run together).
   A project may set a queue low-water mark (T15.4: `projects.<id>.queue.low_water`, off by default): when the
   admissible count (`READY` items, or `PENDING` items whose dependencies can still be met) drops below the mark, one
   `queue_low` sink event fires, re-armed only when the count rises back to the mark. The detector is covered on fakes
