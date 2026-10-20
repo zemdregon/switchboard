@@ -375,7 +375,7 @@ after choosing their provider (a plug-in from `scripts/live/providers/` for smok
 malicious leg) and before `dist/` is loaded or any provider process is spawned (probe, auth
 status, `switchboard serve`). `SWITCHBOARD_LIVE_BUDGET_FILE` names the operator's budget file; unset, the scripts behave
 as on `main` and print one stderr warning. The file format is owned by the header of `scripts/live/budget.mjs` and shown
-in the [README](../../README.md#live-test-budget-guard): `schema_version` 1, `window_hours`, `global_max_runs`,
+in the [README](../guide/live-testing.md#live-test-budget-guard): `schema_version` 1, `window_hours`, `global_max_runs`,
 `min_gap_seconds`, `purposes`, `providers.<id>.max_runs` and `.model`, optional `audit_log`. Unknown keys, a malformed
 file, a relative path or a path inside the repository refuse (fail closed). The decision (`decide`, pure, clock
 injected) refuses, in this order, a purpose (`SWITCHBOARD_LIVE_PURPOSE`) not on the allowlist, a provider not listed, a

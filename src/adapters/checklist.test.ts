@@ -337,7 +337,7 @@ describe("TDD §4.9 adapter-addition checklist against the T4.1 scratch adapter 
     }
   });
 
-  it("item 12, registry entry: one entry with id, configId, kind, label and create, registered at runtime and kept out of BUILTIN_PROVIDERS; README login row does not apply (synthetic test adapter, not a user-facing provider), so the README names none", () => {
+  it("item 12, registry entry: one entry with id, configId, kind, label and create, registered at runtime and kept out of BUILTIN_PROVIDERS; login row does not apply (synthetic test adapter, not a user-facing provider), so the getting-started guide names none", () => {
     expect(SCRATCH_PROVIDER).toMatchObject({ id: SCRATCH_ID, configId: SCRATCH_CONFIG_ID, kind: "real" });
     expect(SCRATCH_PROVIDER.label).toMatch(/synthetic/i);
     expect(SCRATCH_PROVIDER.create?.({})).toBeInstanceOf(ScratchAdapter);
@@ -348,7 +348,7 @@ describe("TDD §4.9 adapter-addition checklist against the T4.1 scratch adapter 
     } finally {
       off();
     }
-    const readme = readFileSync(path.join(ROOT, "README.md"), "utf8").split("\n");
+    const readme = readFileSync(path.join(ROOT, "docs", "guide", "getting-started.md"), "utf8").split("\n");
     const header = readme.indexOf("| Provider | Login step the adapter reports | Status of that step |");
     expect(header).toBeGreaterThan(-1);
     const end = readme.findIndex((l, i) => i > header && !l.startsWith("|"));
