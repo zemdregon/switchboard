@@ -87,6 +87,108 @@ describe("claudeDenialClass (ADR-0072 mapping)", () => {
   });
 });
 
+/** The shape of the `rule`-denied command of run_01M5D1YRABBYPBGFGWZGZHT18C (paths synthetic). */
+const PROD_RULE_COMMAND =
+  'for f in $(git ls-files src | head -20); do echo "$f $(git log -1 --format=%cs -- "$f")"; done; git branch -a';
+
+/**
+ * The prod stream shape: four dontAsk (`mode`) shell denials and one Git deny-rule (`rule`) denial of `command`, each
+ * after its `tool_use`, then a successful `result`. `ruleToolUse: false` drops the denied `tool_use` line.
+ */
+function prodShape(command: string, o: { ruleToolUse?: boolean } = {}): string[] {
+  const S = "{{SESSION_ID}}";
+  const lines = [
+    JSON.stringify({
+      type: "system",
+      subtype: "init",
+      session_id: S,
+      model: "synthetic-model",
+    }),
+  ];
+  const call = (id: string, cmd: string, reason: string, withToolUse = true) => {
+    if (withToolUse) {
+      const content = [{ type: "tool_use", id, name: "Bash", input: { command: cmd } }];
+      lines.push(
+        JSON.stringify({
+          type: "assistant",
+          session_id: S,
+          message: { role: "assistant", content },
+        }),
+      );
+    }
+    lines.push(
+      JSON.stringify({
+        type: "system",
+        subtype: "permission_denied",
+        tool_name: "Bash",
+        tool_use_id: id,
+        decision_reason_type: reason,
+        message: "scrubbed",
+        session_id: S,
+      }),
+    );
+  };
+  for (let i = 1; i <= 4; i++) call(`toolu_mode_${i}`, `synthetic-build-step-${i}`, "mode");
+  call("toolu_rule", command, "rule", o.ruleToolUse ?? true);
+  lines.push(
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "Done.",
+      session_id: S,
+    }),
+  );
+  return lines;
+}
+
+describe("Claude Git deny-rule denials by command (ADR-0072 follow-up)", () => {
+  it("maps a rule denial by the denied command; no command or another tool -> git_write", () => {
+    expect(claudeDenialClass("Bash", "rule", PROD_RULE_COMMAND)).toBe("git_rule_local");
+    expect(claudeDenialClass("Bash", "rule", "git push origin x")).toBe("git_write");
+    expect(claudeDenialClass("Bash", "rule")).toBe("git_write");
+    expect(claudeDenialClass("Write", "rule", "git branch -a")).toBe("git_write");
+  });
+
+  it("prod shape: 4 mode denials + a rule denial of a read-only git loop -> ok with both warnings", async () => {
+    const r = await replay({ lines: prodShape(PROD_RULE_COMMAND) });
+    expect(r.failureCode, r.failureDetail).toBeUndefined();
+    expect(r).toMatchObject({
+      ok: true,
+      warnings: [
+        { code: "PERMISSION_DENIED_RECOVERED", tool: "Bash", count: 4 },
+        { code: "GIT_RULE_DENIED_RECOVERED", tool: "Bash", count: 1 },
+      ],
+    });
+  });
+
+  it.each([
+    ["git push origin x"],
+    ["git -C ../x branch"],
+    ["gh pr merge 12 --squash"],
+    ["git log -1; git remote set-url origin https://example.test/x.git"],
+    ['echo "$(git push origin x)"; git branch -a'],
+    ["for f in a b; do $f; done; git branch -a"],
+    ["git branch -a | xargs git push origin"],
+    ["unparseable 'quote"],
+  ])("rule denial of %j -> PERMISSION_BLOCKED", async (command) => {
+    const r = await replay({ lines: prodShape(command) });
+    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    expect(r.warnings).toBeUndefined();
+  });
+
+  it("a rule denial whose tool_use was never seen -> PERMISSION_BLOCKED (fail closed)", async () => {
+    const r = await replay({
+      lines: prodShape("git branch -a", { ruleToolUse: false }),
+    });
+    expect(r).toMatchObject({
+      ok: false,
+      failureCode: "PERMISSION_BLOCKED",
+      failureDetail: "denied: Bash",
+    });
+  });
+});
+
 describe("Claude Code replay of a recovered run (ADR-0072)", () => {
   it("recovered dontAsk shell denials + success -> ok with a warning", async () => {
     const r = await replay();

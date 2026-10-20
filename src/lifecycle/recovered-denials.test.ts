@@ -90,6 +90,9 @@ const RESOLVED: ResolvedProject[] = [
 ];
 
 const DENIED_BASH = { tool: "Bash", class: "profile" };
+/** The shape of the `rule`-denied command of run_01M5D1YRABBYPBGFGWZGZHT18C (paths synthetic). */
+const PROD_RULE_COMMAND =
+  'for f in $(git ls-files src | head -20); do echo "$f $(git log -1 --format=%cs -- "$f")"; done; git branch -a';
 const plan = (over: Record<string, unknown> = {}) =>
   JSON.stringify({ files: { "README.md": "hello\n" }, summary: "Greet in the README", ...over });
 
@@ -163,6 +166,36 @@ const transition = (runId: string, rule: string) =>
 const terminalPayload = (runId: string) =>
   events(runId).findLast((e) => e.type === "state_transition")?.p as Record<string, unknown>;
 
+/** `publish_run` pushes the run's finalize commit to the LOCAL bare remote. */
+async function expectPublishable(runId: string): Promise<void> {
+  const resolveContext = projectPushContextResolver({
+    projects: RESOLVED.map((p) => ({ ...p, contexts: p.contexts.map((c) => ({ ...c, path: repo })) })),
+    store: new DynamicProjectStore(db, { ids: createIdGenerator() }),
+    clients: new Map(),
+  });
+  const pusher = new GitPusher({
+    db,
+    resolveContext,
+    sourceEnv: { PATH: process.env.PATH, HOME: path.join(root, "home") },
+    ids: createIdGenerator(),
+  });
+  const published = await publishRun(
+    { ledger, artifacts, clientId: "c", clientProjects: ["web"], scrub: (s) => s },
+    {
+      pusher,
+      resolveContext,
+      pulls: {
+        findForBranch: async () => null,
+        create: async () => ({ number: 1, url: "https://github.com/acme/web/pull/1" }),
+      },
+    },
+    ledger.getRunRecord(runId) as RunRecord,
+    { openPullRequest: false, draft: true },
+  );
+  expect(published.publication.reused).toBe(false);
+  expect(g(bare, "rev-parse", `refs/heads/${published.publication.branch}`)).toBe(published.publication.head_sha);
+}
+
 beforeEach(() => {
   root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-denied-")));
   repo = path.join(root, "repo");
@@ -214,32 +247,24 @@ describe("recovered, non-security denials (ADR-0072)", () => {
     expect(envelope.status).toBe("SUCCEEDED");
     expect(envelope.result.warnings).toEqual(warnings);
 
-    const resolveContext = projectPushContextResolver({
-      projects: RESOLVED.map((p) => ({ ...p, contexts: p.contexts.map((c) => ({ ...c, path: repo })) })),
-      store: new DynamicProjectStore(db, { ids: createIdGenerator() }),
-      clients: new Map(),
-    });
-    const pusher = new GitPusher({
-      db,
-      resolveContext,
-      sourceEnv: { PATH: process.env.PATH, HOME: path.join(root, "home") },
-      ids: createIdGenerator(),
-    });
-    const published = await publishRun(
-      { ledger, artifacts, clientId: "c", clientProjects: ["web"], scrub: (s) => s },
-      {
-        pusher,
-        resolveContext,
-        pulls: {
-          findForBranch: async () => null,
-          create: async () => ({ number: 1, url: "https://github.com/acme/web/pull/1" }),
-        },
-      },
-      ledger.getRunRecord(runId) as RunRecord,
-      { openPullRequest: false, draft: true },
-    );
-    expect(published.publication.reused).toBe(false);
-    expect(g(bare, "rev-parse", `refs/heads/${published.publication.branch}`)).toBe(published.publication.head_sha);
+    await expectPublishable(runId);
+  });
+
+  it("prod shape (run_01M5D1YR...): 4 dontAsk Bash denials + a Git deny-rule hit on a read-only loop -> SUCCEEDED", async () => {
+    // ADR-0072 follow-up: the `rule` denial's command was a `git log` loop plus `git branch -a`; the guard sees the
+    // same command and finds no Git write.
+    const calls = [{ tool: "shell", name: "Bash", command: PROD_RULE_COMMAND }];
+    const denials = [DENIED_BASH, DENIED_BASH, DENIED_BASH, DENIED_BASH, { tool: "Bash", class: "git_rule_local" }];
+    const { runId, done } = await runOnce(makeLifecycle(), plan({ calls, denials }));
+    expect(done.state, done.failure_detail ?? "").toBe("SUCCEEDED");
+    expect(finalizeEvent(runId)).toMatchObject({ outcome: "committed" });
+    const warnings = [
+      { code: "PERMISSION_DENIED_RECOVERED", tool: "Bash", count: 4 },
+      { code: "GIT_RULE_DENIED_RECOVERED", tool: "Bash", count: 1 },
+    ];
+    expect(terminalPayload(runId).warnings).toEqual(warnings);
+    expect(buildEnvelope(ledger, done, (s) => s).result.warnings).toEqual(warnings);
+    await expectPublishable(runId);
   });
 
   it("a run without denials records no warnings", async () => {
@@ -329,6 +354,19 @@ describe("security-class or unclassified denials still fail (ADR-0072)", () => {
     });
     const runId = await failsAsToday(attempts, "PERMISSION_BLOCKED", /git refs changed/, makeLifecycle("git_attempts"));
     expect(transition(runId, "T12")).toMatchObject({ pending: "success" });
+  });
+
+  it("Git refs changed after a recovered local Git deny-rule hit (ADR-0072 follow-up, FR-GIT-03)", async () => {
+    const attempts = JSON.stringify({
+      steps: [{ op: "branch", name: "agent-branch" }],
+      denials: [{ tool: "Bash", class: "git_rule_local" }],
+    });
+    await failsAsToday(
+      attempts,
+      "PERMISSION_BLOCKED",
+      /^denied: Bash; git refs changed$/,
+      makeLifecycle("git_attempts"),
+    );
   });
 });
 

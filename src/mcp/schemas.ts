@@ -442,7 +442,7 @@ const ENVELOPE = {
             additionalProperties: false,
             required: ["code", "tool", "count"],
             properties: {
-              code: { enum: ["PERMISSION_DENIED_RECOVERED"] },
+              code: { enum: ["PERMISSION_DENIED_RECOVERED", "GIT_RULE_DENIED_RECOVERED"] },
               tool: { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,64}$" },
               count: { type: "integer", minimum: 1 },
             },

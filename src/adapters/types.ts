@@ -328,6 +328,11 @@ export interface ParseState {
   resumeNativeSessionId?: string;
   /** Claude Code only (C-10): `tool_use_id`s already reported from a `system/permission_denied` event, so the `result` event's `permission_denials` entry for the same call is not reported twice. */
   claudeDeniedToolUseIds?: Set<string>;
+  /**
+   * Claude Code only (ADR-0072 follow-up): the command line of each `Bash` `tool_use` by id, kept only until a
+   * `rule` denial of that id is classified (bounded; a missing entry classifies as security-class).
+   */
+  claudeBashCommands?: Map<string, string>;
   /** ACP only (T4.8): scratch state of the shared `session/update` mapper (`src/exec/acp/events.ts`). */
   acp?: AcpParseState;
 }
@@ -372,12 +377,17 @@ export interface FailureClassification {
  * ADR-0072: closed denial classes of a `permission_denied` event. `profile` is the recoverable class; `git_write` (a
  * Switchboard Git deny rule, FR-GIT-01) and `outside_worktree` (a file tool confined to the worktree or a location
  * outside the allowed roots) are security-class. No class means unknown, which is treated as security-class.
+ * `git_rule_local` (ADR-0072 follow-up) is also recoverable: a Git deny rule blocked a command whose Git invocations
+ * are only reads or local ref verbs (`git branch -a`, `git log`), never a push, remote, config or repository redirect.
  */
-export const DENIAL_CLASSES = ["profile", "git_write", "outside_worktree"] as const;
+export const DENIAL_CLASSES = ["profile", "git_write", "outside_worktree", "git_rule_local"] as const;
 export type DenialClass = (typeof DENIAL_CLASSES)[number];
 
-/** ADR-0072: closed warning codes of a run result. */
-export const RUN_WARNING_CODES = ["PERMISSION_DENIED_RECOVERED"] as const;
+/**
+ * ADR-0072: closed warning codes of a run result. `PERMISSION_DENIED_RECOVERED` for `profile` denials,
+ * `GIT_RULE_DENIED_RECOVERED` for `git_rule_local` denials.
+ */
+export const RUN_WARNING_CODES = ["PERMISSION_DENIED_RECOVERED", "GIT_RULE_DENIED_RECOVERED"] as const;
 
 /** ADR-0072: one run-result warning; `tool` is a sanitised tool name, never agent text. */
 export interface RunWarning {

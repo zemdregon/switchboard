@@ -4,6 +4,7 @@ import {
   GIT_GLOBAL_OPTIONS_WITH_VALUE,
   GIT_READ_ONLY_SUBCOMMANDS,
   GIT_WRITE_SUBCOMMANDS,
+  gitDenyRuleSecurityReason,
   gitWriteInCommand,
   gitWriteRisk,
   gitWriteRisks,
@@ -215,5 +216,56 @@ describe("gitWriteRisk (FR-GIT-01 lexical check)", () => {
     expect(gitWriteRisks(["git status", "git push", "npm test"])).toEqual([
       { command: "git push", reason: expect.stringContaining("push") },
     ]);
+  });
+});
+
+describe("gitDenyRuleSecurityReason: which Git deny-rule hits are security-class (ADR-0072 follow-up)", () => {
+  it.each([
+    'for f in $(git ls-files src | head -20); do echo "$f $(git log -1 --format=%cs -- "$f")"; done; git branch -a',
+    "git branch -a",
+    "git tag -l",
+    "git stash list",
+    "git log --oneline -5 && git status",
+    "git checkout -b feature",
+    "git switch main",
+    "git reset --hard HEAD",
+    "LC_ALL=C git --no-pager log -1",
+    "if git branch --show-current; then echo ok; fi",
+  ])("local: %j", (cmd) => {
+    expect(gitDenyRuleSecurityReason(cmd)).toBeUndefined();
+  });
+
+  it.each([
+    ["git push origin x", /not a local git verb/],
+    ["git send-pack ../r main", /not a local git verb/],
+    ["git remote add up https://example.test/r.git", /not a local git verb/],
+    ["git fetch https://example.test/r.git", /not a local git verb/],
+    ["git pull", /not a local git verb/],
+    ["git config core.hooksPath /tmp/h", /not a local git verb/],
+    ["git update-ref refs/heads/main HEAD~1", /not a local git verb/],
+    ["git symbolic-ref HEAD refs/heads/x", /not a local git verb/],
+    ["git -C ../x branch", /global option `-C`/],
+    ["git -c alias.l=!sh log", /global option `-c`/],
+    ["git --git-dir=../x/.git branch -a", /global option `--git-dir`/],
+    ["git --work-tree ../x status", /global option `--work-tree`/],
+    ["git --exec-path=/tmp log", /global option `--exec-path`/],
+    ["gh pr merge 1", /`gh` can push/],
+    ["/usr/bin/gh api repos", /`gh` can push/],
+    ["GIT_DIR=../x/.git git branch -a", /GIT_ variable/],
+    ["git-receive-pack .", /git subprogram/],
+    ["git $SUB", /dynamic git subcommand/],
+    ["$CMD branch", /dynamic program/],
+    ["sh -c 'git push origin x'", /may run git or gh/],
+    ["env git push", /runs `git`/],
+    ["find . -exec git push \\;", /runs `git`/],
+    ['echo "$(git push origin x)"; git branch -a', /not a local git verb/],
+    ["git grep -Ovim x", /runs a program/],
+    ["git log --output=/tmp/x", /writes elsewhere/],
+    ["echo nothing to see", /no git invocation/],
+    ["", /not found/],
+    [undefined, /not found/],
+    [`git log ${"a".repeat(20_000)}`, /too long/],
+  ])("security-class: %j", (cmd, reason) => {
+    expect(gitDenyRuleSecurityReason(cmd)).toMatch(reason);
   });
 });

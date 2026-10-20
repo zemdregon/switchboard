@@ -521,7 +521,7 @@ export type NormalizedEvent =
   | { kind: 'usage'; source: 'provider_reported'; metrics: Record<string, number|string|null> }
   | { kind: 'rate_limit'; resetAt?: string; reportedCategory?: string }
   | { kind: 'permission_denied'; tool: string;                          // -> PERMISSION_BLOCKED, except a recovered
-      denial?: 'profile'|'git_write'|'outside_worktree' }                 //    `profile` denial (ADR-0072, §4)
+      denial?: 'profile'|'git_write'|'outside_worktree'|'git_rule_local' } //  `profile`/`git_rule_local` denial (ADR-0072, §4)
   | { kind: 'sandbox_violation'; detail: string }                       // -> SANDBOX_VIOLATION
   | { kind: 'provider_error'; category: string; message: string }
   | { kind: 'result'; ok: boolean; summary?: string }
@@ -994,7 +994,7 @@ schema and fails on any unbounded node, so a new tool or field cannot silently r
           "changed_files": { "type": "integer" },
           "verification": { "type": "array", "items": { "type": "object" } },   // per command, §8.1
           "verification_summary": { "type": "object" },  // M11, T11.9: display-only prose, see §13.6
-          "warnings": { "type": "array", "items": { "type": "object" } } } },  // ADR-0072: { code: "PERMISSION_DENIED_RECOVERED", tool, count }
+          "warnings": { "type": "array", "items": { "type": "object" } } } },  // ADR-0072: { code: "PERMISSION_DENIED_RECOVERED"|"GIT_RULE_DENIED_RECOVERED", tool, count }
       "artifacts": { "type": "object", "additionalProperties": { "type": "string" } },   // kind -> art_ id
       "approval": { "type": "object", "required": ["status","requested_at"], "properties": {   // privileged only (M3, §3.1)
           "status": { "enum": ["PENDING","APPROVED","DENIED"] }, "requested_at": { "type": "string" } } },
@@ -2458,7 +2458,7 @@ of replay follows FR-WS-04.
 | Code | Meaning | Retryable? | Workspace action | Typical sources |
 | --- | --- | --- | --- | --- |
 | `AUTH_REQUIRED` | Provider not logged in; operator must log in natively | No | None (no mutation expected); report login command | `authPreflight`; headless auth error (FR-AUTH-02) |
-| `PERMISSION_BLOCKED` | Operation denied by profile/permission rules, or caller above its max profile | No | Roll back if mutated | Provider permission-denied event, except a recovered `profile`-class denial in a run that otherwise succeeded, which is a `result.warnings` entry instead ([ADR-0072](../adr/0072-recovered-denials-are-warnings.md)); MCP caller check (FR-MCP-06, FR-POL-05) |
+| `PERMISSION_BLOCKED` | Operation denied by profile/permission rules, or caller above its max profile | No | Roll back if mutated | Provider permission-denied event, except a recovered `profile`- or `git_rule_local`-class denial in a run that otherwise succeeded, which is a `result.warnings` entry instead ([ADR-0072](../adr/0072-recovered-denials-are-warnings.md)); MCP caller check (FR-MCP-06, FR-POL-05) |
 | `SANDBOX_VIOLATION` | Sandbox blocked an action | No | Roll back if mutated; flag for operator review | Provider sandbox event; outer sandbox denial (FR-POL-05) |
 | `MODEL_UNAVAILABLE` | Requested model not present or not entitled | No (re-route may succeed) | None | Provider error category; model registry miss |
 | `QUOTA_EXHAUSTED` | Subscription limit hit | No automatic retry; fail over, queue until known reset, or return (FR-CAP-06) | Roll back if mutated | Provider-reported limit; billing error category |

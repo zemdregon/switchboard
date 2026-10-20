@@ -1,6 +1,7 @@
 # ADR-0072: Recovered, non-security permission denials are run warnings, not failures
 
-- Status: Accepted (built 2026-10-20).
+- Status: Accepted (built 2026-10-20). Amended 2026-10-20 by Linus: the `rule` mapping, see
+  [Follow-up](#follow-up-2026-10-20-git-deny-rule-hits-on-local-verbs).
 - Date: 2026-10-20
 - Decided by: Linus (design authority), 2026-10-20. The ruling (items 1 to 4 below) is Linus's; the exact class
   mapping (item 5) and the details marked **Delegated** were made while building it and are not owner-approved.
@@ -60,9 +61,10 @@ command the profile does not allow, and then works around it, failed the whole r
      never read): `mode` on `Bash` -> `profile` (a command no allow rule admits, denied by dontAsk); `mode` on any other
      tool -> unclassified (a file-tool write to Git, settings or tool-configuration files that `--restricted` reserves for
      a person would be denied the same way); `rule` -> `git_write` (the only `--disallowedTools` rules Switchboard
-     passes are the FR-GIT-01 Git deny rules); `other` -> `outside_worktree` (seen only for `--restricted` file-tool
-     confinement); `subcommandResults` (a compound command one of whose parts was denied; the part's reason is not
-     reported; seen for Git and `gh` deny rules) and anything else -> unclassified. A `result.permission_denials` entry
+     passes are the FR-GIT-01 Git deny rules; *narrowed 2026-10-20, see the Follow-up below*); `other` ->
+     `outside_worktree` (seen only for `--restricted` file-tool confinement); `subcommandResults` (a compound command
+     one of whose parts was denied; the part's reason is not reported; seen for Git and `gh` deny rules) and anything
+     else -> unclassified. A `result.permission_denials` entry
      with no `system` event before it carries no reason and stays unclassified.
    - The fake adapter's JSONL mode takes the class from its plan (test seam).
    - Every other adapter, and every ACP-driven denial, sets no class, so their denials keep failing the run exactly as
@@ -75,7 +77,8 @@ command the profile does not allow, and then works around it, failed the whole r
 
 - A Claude run that hit a dontAsk shell denial and recovered now succeeds and can be published; the warning tells the
   orchestrator which tool was denied and how often.
-- A run with a Git deny-rule hit still fails, even when the denied command was a read (`git branch -a`, `git log` in
+- *(Narrowed 2026-10-20 by the Follow-up below: a deny-rule hit on a read or local ref verb is now recoverable.)*
+  A run with a Git deny-rule hit still fails, even when the denied command was a read (`git branch -a`, `git log` in
   a loop: Claude's deny rules are lexical, ADR-0015). Both runs above had one such non-`mode` denial (a `rule` denial in
   the first, an `other` Glob outside the worktree in the second), so under this mapping they would still end `FAILED`;
   whether a lexical Git-rule hit on a command the guard reads as non-writing, or a read-only file tool outside the
@@ -84,3 +87,35 @@ command the profile does not allow, and then works around it, failed the whole r
   (for example `~/.ssh`) denied by dontAsk is a recoverable `profile` denial. Widening that classification is a separate
   change.
 - No migration: the warnings live in the terminal transition's payload, which the envelope already reads.
+
+## Follow-up (2026-10-20): Git deny-rule hits on local verbs
+
+- Decided by: Linus (design authority), 2026-10-20. The exact local-verb set, the tokenizer and the bounds are
+  **Delegated**, not owner-approved. This narrows item 5's `rule` row; the text above is kept as the original record.
+
+In `run_01M5D1YRABBYPBGFGWZGZHT18C` the single `rule` denial was a Bash loop of `git log -1 ... -- $f` plus
+`git branch -a`, which matched the FR-GIT-01 deny rule `Bash(git branch *)`. Claude's deny rules are lexical, so the
+rule blocked a read before it ran; nothing was written. Under the ruling, security-class Git denials are pushes and
+remote or transport writes and anything that can redirect Git to another repository, not every verb the deny list
+happens to match.
+
+For a Claude `rule` denial of `Bash`, the parser looks up the denied `tool_use` by the `permission_denied` event's
+`tool_use_id` and reads its `input.command` (`gitDenyRuleSecurityReason` in `src/adapters/git-write.ts`; nothing is
+executed). The command is split on `;`, `&`, `|`, newlines, `(`, `)`, `$(` and backticks; in each simple command the
+program is the first word after shell keywords (`do`, `then`, ...) and `NAME=value` prefixes.
+
+| `rule` denial on `Bash` whose command ... | Class (as of 2026-10-20) |
+| --- | --- |
+| only runs `git` with a read subcommand or a local ref or index verb (`branch`, `tag`, `stash`, `checkout`, `switch`, `reset`, `restore`, `add`, `rm`, `mv`, `commit`, `merge`, `cherry-pick`, `revert`, `notes`, `reflog`, and the read-only set of `GIT_READ_ONLY_SUBCOMMANDS`), with only harmless global flags (`--no-pager`, `-P`, ...) | `git_rule_local` (recoverable; warning `GIT_RULE_DENIED_RECOVERED`, tool `Bash`) |
+| runs any other Git subcommand (`push`, `send-pack`, `remote`, `fetch`, `pull`, `config`, `update-ref`, `symbolic-ref`, `submodule`, `clone`, `worktree`, `rebase`, `bisect`, an alias, ...) or a dynamic one | `git_write` (fail) |
+| uses a Git global option other than the harmless flags (`-C`, `-c`, `--git-dir`, `--work-tree`, `--exec-path`, `--namespace`, `--bare`, ...) | `git_write` (fail) |
+| runs `gh`, a `git-<name>` program, a dynamic program, sets a `GIT_*` variable, passes `git`/`gh` to another program (`xargs`, `find -exec`) or to a launcher, shell or `eval` | `git_write` (fail) |
+| gives a local verb an option that runs a program or writes elsewhere (`-O`, `--output`, `--exec`, `-x`, `--upload-pack`, `--receive-pack`) | `git_write` (fail) |
+| cannot be found (no `tool_use` with that id seen, or past the bound of 4096 remembered commands), is empty, longer than 16384 characters, or contains no `git` invocation | `git_write` (fail closed) |
+| `rule` on any tool other than `Bash` | `git_write` (fail) |
+
+Unchanged: `mode` on `Bash` -> `profile`; `other` (file tool outside the worktree) -> `outside_worktree`; every
+unknown reason, `subcommandResults` and result-only denials -> unclassified (fail). The FR-GIT-03 ref check at
+FINALIZING still fails a run with recovered denials when any ref moved, and the tool-call guard, sandbox, channel and
+provider-failure rules of items 3 and 4 still apply. `fetch` and `pull` are security-class whatever their arguments
+(**Delegated**: simpler and stricter than "with a URL or remote write").
