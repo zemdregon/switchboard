@@ -6700,8 +6700,8 @@ run output carries one. Where a provider's CLI can report the signed-in account'
 optional adapter method reads them, and the result is shown beside the projection.
 
 **Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
-(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex and Cursor
-implement it.
+(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex, Cursor and Grok
+Build implement it.
 
 ```jsonc
 // ProviderUsageReport
@@ -6733,6 +6733,28 @@ under `~/.codex` (ADR-0003).
 | `rateLimitReachedType`, `ordinaryUsageAllowed` | `limit_reached`, `limit_reached_type`, only from the provider's flags, never inferred from a full window |
 
 `accountId` and every other field are dropped.
+
+**Optional report fields** (ADR-0083). A report may also carry `period` (`kind`: `weekly`, `monthly`, `daily` or
+`unknown`; `starts_at`; `resets_at`), the provider's current usage period even when no used share is reported;
+`amounts[]` (`id`, `value`, `unit: "unspecified"`, `key`), reported amounts whose unit the provider does not state; and
+`unreported[]`, keys the reader knows but the answer omitted (unreported, never 0). Codex sets none of them.
+
+**Grok Build wire exchange** (`src/adapters/grok/usage.ts`, ADR-0083). The adapter runs `grok agent --no-leader stdio`
+through the same `ProbeRunner` (`PATH` and `HOME`, 20 s timeout, **Proposed**). It writes two JSON-RPC lines:
+`initialize` (id 1, `protocolVersion: 1`) and `_x.ai/billing` (id 2, `{}`), and holds stdin open until the id-2 answer,
+because the agent exits at stdin end-of-file before answering. The `initialize` answer (agent id, hostname) is
+discarded. Grok fetches the figures from xAI with its own login; Switchboard reads no file under `~/.grok`.
+
+| Provider field (`_x.ai/billing` result) | Report field |
+| --- | --- |
+| `subscription_tier` | `plan` |
+| `config.currentPeriod.type` (`USAGE_PERIOD_TYPE_WEEKLY`, `_MONTHLY`, `_DAILY`) | `period.kind` (`weekly`, `monthly`, `daily`, else `unknown`) |
+| `config.currentPeriod.start`, `end` (fallback `config.billingPeriodStart`, `billingPeriodEnd`) | `period.starts_at`, `period.resets_at` (ISO) |
+| `config.creditUsagePercent` (**Assumption:** 0 to 100) | window `credit_period`: `used_fraction` = percent / 100, `window_seconds` = period length, `resets_at` = period end; absent → no window, key in `unreported` |
+| `config.prepaidBalance.val`, `onDemandCap.val`, `onDemandUsed.val`, `monthlyLimit.val` | `amounts[]` `prepaid_balance`, `on_demand_cap`, `on_demand_used`, `monthly_limit` (unit `unspecified`); absent → `unreported` |
+
+`limit_reached` and `limit_reached_type` are null and `credits` is null: Grok's answer has no such flag. Every other
+field is dropped. An answer without `config` is `unknown` ("`_x.ai/billing` answered without config").
 
 **Failure rules.** A spawn failure, a timeout, a missing answer or a JSON-RPC error returns `ProviderUsageUnavailable`
 with a short reason. An unknown figure is never headroom (BR-50).
@@ -6774,7 +6796,9 @@ into pacing is possible follow-up work and is not done.
 **Surfaces.** `get_capacity` (the output schema gains an optional `provider_usage` per provider), `switchboard capacity`
 (text and `--json`) and `switchboard doctor` (a separate "Provider-reported usage" section, informational, never
 changes `ok`). Text shows fractions, not percentages (FR-CAP-03 wording rule), and "remaining" appears only on
-`provider_reported` lines. Tests: `src/adapters/codex/usage.test.ts` (recorded redacted fixture
+`provider_reported` lines. Tests: `src/adapters/grok/usage.test.ts` (recorded fixture
+`src/adapters/grok/fixtures/billing-supergrok-weekly.json` and a synthetic one),
+`src/adapters/codex/usage.test.ts` (recorded redacted fixture
 `src/adapters/codex/fixtures/usage/app-server-rate-limits.jsonl` and two synthetic ones),
 `src/capacity/provider-usage.test.ts`, and the block "provider_usage on get_capacity, capacity and doctor (ADR-0079,
 FR-CAP-13)" in `src/mcp/get-capacity.test.ts`.

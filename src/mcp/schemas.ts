@@ -1113,6 +1113,32 @@ const PROVIDER_USAGE = {
             },
           ],
         },
+        // ADR-0083 (Grok Build): optional period, amounts and unreported keys.
+        period: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "starts_at", "resets_at"],
+          properties: {
+            kind: { enum: ["weekly", "monthly", "daily", "unknown"] },
+            starts_at: { type: ["string", "null"] },
+            resets_at: { type: ["string", "null"] },
+          },
+        },
+        amounts: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "value", "unit", "key"],
+            properties: {
+              id: { type: "string" },
+              value: { type: "number" },
+              unit: { const: "unspecified" },
+              key: { type: "string" },
+            },
+          },
+        },
+        unreported: { type: "array", items: { type: "string" } },
         // ADR-0080 (Cursor): optional, as shown by the provider.
         reset_label: { type: ["string", "null"] },
         reset_precision: { enum: ["day", null] },
