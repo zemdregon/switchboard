@@ -13,6 +13,7 @@ import type { PacingSettings, SubscriptionSettings } from "../config/capacity.js
 import type { PacingMode } from "../config/schema.js";
 import type { Ledger } from "../ledger/index.js";
 import { canonicalJson } from "../lifecycle/request.js";
+import type { ProviderQuotaReport } from "../usage/copilot-quota.js";
 import { type ProjectSwitchCounts, switchCounts } from "./cache.js";
 import { type CapacityProviderInfo, collectCapacityInputs } from "./collect.js";
 import { type EstimatorSettings, estimateCapacity, type ProviderCapacity } from "./estimate.js";
@@ -67,6 +68,11 @@ export interface CapacityProjection {
    * JSON of an unconfigured projection does not gain a key.
    */
   pacing?: PacingSubscriptionView[];
+  /**
+   * Usage-only providers (no run adapter): the quota the provider itself reported, attached by `get_capacity` and
+   * `switchboard capacity` after projecting. Never computed here, so the projection stays pure; absent otherwise.
+   */
+  provider_quota?: ProviderQuotaReport[];
 }
 
 /** Estimator settings plus the optional subscription block (T6.13). Callers without it are unchanged. */

@@ -6358,7 +6358,8 @@ No migration: every column used exists since migration 0001.
     "confidence_runs": 10,           // 1..1000; terminal runs in the window at which confidence reaches 1 (Q-69)
     "queue_horizon_seconds": 0,      // 0..86400; BR-9 wait for a known reset; 0 = never wait (Q-72)
     "breaker": { "failure_threshold": 3, "open_seconds": 300 },   // 1..100, 1..86400 (Q-70)
-    "retry": { "max_attempts": 3, "base_ms": 2000, "cap_ms": 120000 } // 1..10, 1..600000, 1..3600000; §9 values (Q-71)
+    "retry": { "max_attempts": 3, "base_ms": 2000, "cap_ms": 120000 } // 1..10, 1..600000, 1..3600000; §9 values (Q-71),
+    "copilot_quota": true             // FR-CAP-14, §16.11; false = no `gh` call, no provider_quota block
   },
   "providers": { "<id>": { "concurrency": 1 } }  // 1..64, T6.9; default limits.per_provider_concurrency
 }
@@ -6441,6 +6442,7 @@ per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surfa
 quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
 and `confidence`, labelled "estimate".
 
+FR-CAP-14 adds an optional top-level `provider_quota` array and the `copilot` provider argument (§16.11).
 T6.18 builds the provider's `provider_usage` report (§16.12) from recorded run output for Claude Code, absent when no
 windowed figure is current.
 
@@ -6948,6 +6950,63 @@ Observed on 1.4.3: a bucket at `remaining_fraction` 1 reports a `reset_time` of 
 started), so that `resets_at` moves on every read. Tests: `src/adapters/antigravity/usage.test.ts` and
 `src/mcp/get-capacity-antigravity-usage.test.ts` (the real probe runner against a stand-in `agy` that prints the
 recorded answers).
+
+### 16.11 Provider-reported quota of a usage-only provider (FR-CAP-14, ADR-0081)
+
+*Owner of the `provider_quota` schema (Delegated, not owner-approved).* A usage-only provider has no run adapter and no
+registry entry. Today the only one is GitHub Copilot, id `copilot`. Its quota never reaches routing, pacing, the
+estimator, `REMAINING_KEYS` or `USAGE_KEYS` (BR-60).
+
+**Configuration.** `capacity.copilot_quota`, boolean, default `true`. `false` turns the reader off: no `gh` call is
+made and `provider_quota` is absent.
+
+**Reader.** One read, cached in memory for 60 s and single-flight (concurrent callers share one in-flight call):
+
+1. Run `gh api /copilot_internal/user` with `execFile` (no shell), the allowlisted environment `ghEnv` of the CI
+   trigger (ADR-0050, no token variable), a 10 s timeout and stderr dropped. Switchboard never reads the token (ADR-0003).
+2. Parse stdout as JSON through a field allowlist. Kept: the plan (`copilot_plan`), the SKU (`access_type_sku`), the
+   reset date (`quota_reset_date_utc`) and, for `chat`, `completions` and `premium_interactions` under
+   `quota_snapshots`: `entitlement`, `remaining`, `percent_remaining`, `unlimited`, `overage_count`,
+   `overage_permitted`. Dropped, never stored or logged: every other key, including the account id, login, analytics
+   tracking id, endpoints and organisation lists. Source keys: [research note](../research/copilot-usage-2026-10-21.md).
+3. Any failure yields an `unavailable` entry, never a tool error. Reason (closed list): `gh_missing` (no `gh` binary),
+   `auth_required` (`gh` not logged in or not authorised for the call), `gh_failed` (other non-zero exit),
+   `timeout` (over 10 s), `unparseable` (not JSON or not the allowlisted shape), `no_quota` (parsed, but no quota
+   snapshot present).
+
+**Entry, status `ok`:**
+
+```jsonc
+{ "provider": "copilot", "usage_only": true, "status": "ok",
+  "source": "provider_reported",                 // every figure below is provider_reported (FR-CAP-03, BR-50)
+  "via": "gh api /copilot_internal/user",
+  "observed_at": "<ISO time of the read>",
+  "plan": "<copilot_plan>", "sku": "<access_type_sku>",
+  "reset_at": { "at": "<ISO time>", "source": "provider_reported" },   // or null
+  "quotas": [ {
+    "id": "premium_interactions",                // or "chat" or "completions"
+    "unit": "premium_requests",                  // "chat_requests" for chat, "code_completions" for completions
+    "unlimited": false, "entitlement": 0, "remaining": 0, "used": 0,
+    "percent_remaining": 0,                      // provider-reported, not an estimate
+    "overage_count": 0, "overage_permitted": false,
+    "reset_at": { "at": "<ISO time>", "source": "provider_reported" }  // or null
+  } ] }
+```
+
+**Entry, status `unavailable`:** `{ "provider": "copilot", "usage_only": true, "status": "unavailable",
+"source": "unknown", "via": "gh api /copilot_internal/user", "observed_at": "<ISO time>", "reason": "<closed reason>" }`.
+
+**`get_capacity` projection.** `provider_quota` is an optional top-level array, present only when the reader is on.
+No `provider` argument: the §16.3 projection unchanged plus `provider_quota: [<copilot entry>]`.
+`{"provider":"copilot"}` is accepted (it is not a registry id; §16.3's unknown-id refusal does not apply to it):
+`providers: []` plus `provider_quota: [<copilot entry>]`. Any other named provider: unchanged, no `provider_quota`.
+With the reader off, `{"provider":"copilot"}` is refused like any unknown id (`src/mcp/get-capacity.test.ts`).
+
+**CLI.** `switchboard capacity` prints a `copilot (usage-only ...)` section after the provider blocks and accepts
+`--provider copilot`; `--json` includes `provider_quota`. `doctor` is unchanged. The wording rule of §16.3 applies:
+"remaining" is printed only with "provider-reported".
+
+**Risk.** The endpoint is GitHub-internal and undocumented (ADR-0081); a shape change surfaces as `unparseable`.
 
 ### 16.12 Claude Code usage windows from run output (FR-CAP-15, ADR-0088)
 

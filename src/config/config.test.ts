@@ -1151,6 +1151,7 @@ describe("capacity (T6.2; LLD §16.1, ADR-0043)", () => {
     queueHorizonSeconds: 0,
     breaker: { failureThreshold: 3, openSeconds: 300 },
     retry: { maxAttempts: 3, baseMs: 2000, capMs: 120000 },
+    copilotQuota: true,
   };
 
   it("defaults every key to the LLD §16.1 value (Assumptions; queue horizon 0 means never wait)", () => {
@@ -1169,6 +1170,7 @@ describe("capacity (T6.2; LLD §16.1, ADR-0043)", () => {
       queue_horizon_seconds: 86400,
       breaker: { failure_threshold: 100, open_seconds: 1 },
       retry: { max_attempts: 10, base_ms: 5, cap_ms: 5 },
+      copilot_quota: false,
     }).capacity;
     expect(c).toEqual({
       windowSeconds: 60,
@@ -1176,7 +1178,17 @@ describe("capacity (T6.2; LLD §16.1, ADR-0043)", () => {
       queueHorizonSeconds: 86400,
       breaker: { failureThreshold: 100, openSeconds: 1 },
       retry: { maxAttempts: 10, baseMs: 5, capMs: 5 },
+      copilotQuota: false,
     });
+  });
+
+  it("copilot_quota (ADR-0081): default true, a boolean opt-out, anything else refused", () => {
+    expect(load({}).capacity.copilotQuota).toBe(true);
+    expect(load({ copilot_quota: true }).capacity.copilotQuota).toBe(true);
+    expect(load({ copilot_quota: false }).capacity.copilotQuota).toBe(false);
+    for (const bad of ["false", 0, 1, null, {}]) {
+      expect(() => load({ copilot_quota: bad })).toThrow(/\$\.capacity\.copilot_quota/);
+    }
   });
 
   it("is strict: unknown keys, non-integers, out-of-range values and base_ms above cap_ms fail", () => {
