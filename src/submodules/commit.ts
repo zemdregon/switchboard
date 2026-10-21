@@ -25,7 +25,7 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import type Database from "better-sqlite3";
-import { signedCommitTree, repoSigningConfigUnsafe } from "../git/sign.js";
+import { repoSigningConfigUnsafe, signedCommitTree } from "../git/sign.js";
 import { git, gitText } from "../workspace/git.js";
 import { excludePathspec } from "../workspace/nested.js";
 import { isFullSha } from "./errors.js";
@@ -169,8 +169,8 @@ export async function planSubmoduleCommits(input: {
   const groups: SubmoduleGroupPlan[] = [];
   const skipped: SubmoduleSkip[] = [];
   for (const [key, entries] of groupByKey(input.record)) {
-    const inScope = (e: AttachedSubmodule) =>
-      e.writable && (input.scope.all || input.scope.explicit.has(e.path)) ? true : false;
+    const inScope = (e: AttachedSubmodule): boolean =>
+      e.writable && (input.scope.all || input.scope.explicit.has(e.path));
     const reportReadOnly = input.scope.all ? entries.filter((e) => !e.writable) : [];
     if (!entries.some(inScope) && reportReadOnly.length === 0) continue;
     const store = (entries[0] as AttachedSubmodule).store;
@@ -223,7 +223,9 @@ export async function planSubmoduleCommits(input: {
       else if (e.writable) diverged.push(e.path);
       // a changed read-only duplicate keeps its worktree (reported above)
     }
-    if (diverged.length > 0) throw new SubmoduleDivergedError([...changed.map(([p]) => p), ...diverged].sort());
+    if (diverged.length > 0) {
+      throw new SubmoduleDivergedError([...new Set([...changed.map(([p]) => p), ...diverged])].sort());
+    }
     groups.push({
       key,
       store,

@@ -727,11 +727,15 @@ async function runDaemon(
   let gitTools: GitToolService;
   let finalizePublisher: GitPublisher;
   try {
+    // ADR-0079 item 4: submodule stores live under project_sources.clone_root; without it attach records refuse.
+    const submoduleCloneRoot =
+      config.projectSources !== undefined ? { submoduleCloneRoot: config.projectSources.cloneRoot } : {};
     const publisher = new GitPublisher({
       db,
       scratchDir: path.join(config.dataDir, "git-scratch"),
       sanitizePatterns: config.sanitizePatterns,
       secretScanAllow: config.secretScanAllow,
+      ...submoduleCloneRoot,
       ids,
       ...(now ? { now } : {}),
     });
@@ -744,6 +748,7 @@ async function runDaemon(
       sanitizePatterns: config.sanitizePatterns,
       secretScanAllow: config.secretScanAllow,
       allowedStates: ["FINALIZING"],
+      ...submoduleCloneRoot,
       ids,
       ...(now ? { now } : {}),
     });

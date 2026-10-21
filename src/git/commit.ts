@@ -530,7 +530,10 @@ export class GitPublisher {
   private async attachRecord(ctx: RunContext): Promise<AttachRecord | undefined> {
     const file = attachRecordFile(ctx.worktreePath);
     const invalid = () =>
-      new CommitError("GIT_FAILED", `the submodule attach record of run ${ctx.runId} is not valid; nothing was committed`);
+      new CommitError(
+        "GIT_FAILED",
+        `the submodule attach record of run ${ctx.runId} is not valid; nothing was committed`,
+      );
     const root = this.options.submoduleCloneRoot;
     if (root === undefined) {
       const exists = await lstat(file).then(
@@ -1279,7 +1282,11 @@ export class GitPublisher {
         if (sub?.finalizeAll === true) skipped.push({ path: subPath, reason: why ?? "link_invalid" });
         else {
           const reason: PathRefusalReason =
-            why === "read_only" ? "submodule_read_only" : why === "commit_missing" ? "missing" : "submodule_link_invalid";
+            why === "read_only"
+              ? "submodule_read_only"
+              : why === "commit_missing"
+                ? "missing"
+                : "submodule_link_invalid";
           for (const s of subs) refused.push({ path: s === "" ? subPath : `${subPath}/${s}`, reason });
         }
         continue;

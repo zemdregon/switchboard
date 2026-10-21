@@ -26,6 +26,7 @@ import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { forward, shimConfig } from "../cli/tool-shim.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
+import { attachRecordFile } from "../submodules/worktree.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import {
   type ChannelLimits,
@@ -280,6 +281,18 @@ describe("per-call checks (FR-GIT-02; stale, foreign, malformed calls refused wi
     expect(await raw(ch.socketPath, req(tokenOf(ch), { message: "Again", paths: ["b.txt"] }))).toMatchObject({
       ok: false,
       error: { code: "NOTHING_TO_COMMIT" },
+    });
+  });
+
+  it("ADR-0079 item 4: a run with an attach record gets submodules and submodules_skipped in the result", async () => {
+    const r = await running();
+    writeFileSync(path.join(r.wt, "b.txt"), "b\n");
+    writeFileSync(attachRecordFile(r.wt), JSON.stringify({ version: 1, worktree: realpathSync(r.wt), entries: [] }));
+    const ch = await openFor(service({ publisher: { submoduleCloneRoot: root } }), r);
+    const ans = await raw(ch.socketPath, req(tokenOf(ch), { message: "Add b", paths: ["b.txt"] }));
+    expect(ans).toEqual({
+      ok: true,
+      result: { sha: expect.any(String), files_changed: 1, submodules: [], submodules_skipped: [] },
     });
   });
 
