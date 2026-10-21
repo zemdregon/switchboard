@@ -195,6 +195,11 @@ export class AntigravityAdapter implements ProviderAdapter {
   readonly gitWriteControl = ANTIGRAVITY_GIT_WRITE_CONTROL;
   /** TDD §4.10 ([RS]): "Histories are scoped to the working directory", so `bound` (registry entry agrees). */
   readonly resumeCwd = "bound" as const;
+  /** ADR-0077: a requested model reaches the CLI only in the approved bypass cell. */
+  readonly requestedModelFlag = {
+    cells: "bypass",
+    detail: "--model <id> in the approved bypass cell, the only compiled cell (ADR-0077; agy --help: --model)",
+  } as const;
   readonly gitCapabilities = ANTIGRAVITY_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];

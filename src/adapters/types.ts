@@ -541,6 +541,17 @@ export function acceptsReportedModel(adapter: { readonly reportedModelFlag?: unk
   return typeof d === "object" && d !== null && (d as { kind?: unknown }).kind === "accepted";
 }
 
+/**
+ * ADR-0077: which compiled cells pass a *requested* model (`CompileRequest.model`, for example a model-group member) to
+ * the CLI's model flag; separate from {@link ReportedModelFlag}, which is about pinning a model the session reported.
+ * - `all`: every compiled cell; `bypass`: only the approved privileged bypass cell (the other cells refuse a model).
+ * Absent: doctor falls back to the {@link ReportedModelFlag} check (its pre-ADR-0077 behaviour).
+ */
+export interface RequestedModelFlag {
+  cells: "all" | "bypass";
+  detail: string;
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly transports: readonly Transport[];
@@ -552,6 +563,8 @@ export interface ProviderAdapter {
   readonly gitCapabilities: GitCapabilities;
   /** T7.12 declaration ({@link ReportedModelFlag}); absent means `not_accepted`. */
   readonly reportedModelFlag?: ReportedModelFlag;
+  /** ADR-0077 declaration ({@link RequestedModelFlag}); used by doctor's model-group check. */
+  readonly requestedModelFlag?: RequestedModelFlag;
   /** T16.5/T16.6 declaration ({@link SkillDelivery}), pure, per compiled cell; absent means `prompt_prefix` for every cell. */
   skillDelivery?(request: CompileRequest, profile: ResolvedProfile): SkillDelivery;
 

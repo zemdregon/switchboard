@@ -183,6 +183,11 @@ export class CodexAdapter implements ProviderAdapter {
   readonly resumeCwd = "independent" as const;
   /** T7.12 (FR-RTE-08, Q-90): no documented model flag (R2, TDD §4.2), so a remembered model is never pinned. */
   readonly reportedModelFlag = { kind: "not_accepted", detail: "no documented Codex model flag" } as const;
+  /** ADR-0077: a requested model reaches the CLI only in the approved bypass cell. */
+  readonly requestedModelFlag = {
+    cells: "bypass",
+    detail: "--model <id> in the approved bypass cell only (ADR-0077; codex exec --help: -m, --model)",
+  } as const;
   readonly gitCapabilities = CODEX_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];
