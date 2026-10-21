@@ -47,6 +47,7 @@ export {
   ResumeDirectoryUnavailableError,
   type ResumeDirectoryVerdict,
   type RollbackResult,
+  SubmodulePreparationError,
   WorkspaceError,
   type WorkspaceErrorCode,
   WorkspaceManager,
@@ -88,3 +89,15 @@ export {
   setupReport,
   WORKSPACE_SETUP_EVENT,
 } from "./setup.js";
+export {
+  attachRunSubmodules,
+  detachRunSubmodules,
+  planManifest,
+  presenceOf,
+  readyStores,
+  resetRunSubmodules,
+  type SubmoduleDeps,
+  type SubmodulePlan,
+  type SubmodulePresence,
+  umbrellaSource,
+} from "./submodules.js";
