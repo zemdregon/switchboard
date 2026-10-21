@@ -1976,6 +1976,7 @@ describe("opencode parser residuals, eighth pass: late binding, vendor parity, r
         "--format",
         "json",
         "--standalone",
+        "--auto",
         "--session",
         SID,
         "--",
@@ -1987,7 +1988,7 @@ describe("opencode parser residuals, eighth pass: late binding, vendor parity, r
         inv.argv.slice(run, -2).filter((w) => w === "--session"),
         JSON.stringify(objective),
       ).toHaveLength(1);
-      expect(inv.policyFlags).toEqual(["--standalone"]);
+      expect(inv.policyFlags).toEqual(["--standalone", "--auto"]);
     }
   });
 
@@ -2207,6 +2208,7 @@ describe("opencode parser residuals, ninth pass: untyped binding, pre-seeded sta
         "--format",
         "json",
         "--standalone",
+        "--auto",
         "--session",
         id,
         "--",
@@ -2228,7 +2230,10 @@ describe("opencode parser residuals, ninth pass: untyped binding, pre-seeded sta
     } as unknown as NativeBinding;
     const resumed = adapter().resumeArgs(extra, req, PRIVILEGED_BYPASS_PROFILE);
     expect(resumed).toEqual(plain);
-    expect(JSON.stringify(resumed)).not.toMatch(/elsewhere|vendor-x|model-y|--auto/);
+    expect(JSON.stringify(resumed)).not.toMatch(/elsewhere|vendor-x|model-y/);
+    // The extra `args: ["--auto"]` adds nothing: `--auto` appears once, from the cell itself (ADR-0077).
+    if ("ineligible" in resumed) throw new Error(resumed.detail);
+    expect(resumed.argv.filter((w) => w === "--auto")).toHaveLength(1);
   });
 
   it("pins the gap: the trailing-tool detail masks a protocol error raised on the same trailing tool line", () => {
@@ -2678,9 +2683,10 @@ describe("opencode parser residuals, tenth pass: late binding after stop, traili
     expect(other.argv.filter((w) => w === "--session")).toHaveLength(1);
     expect(other.argv).not.toContain("-s");
     expect(other.argv.some((w) => w.startsWith("--session="))).toBe(false);
-    for (const flag of ["--continue", "--fork", "--auto", "--model"]) {
+    for (const flag of ["--continue", "--fork", "--model"]) {
       expect(other.argv, flag).not.toContain(flag);
     }
+    expect(other.argv.filter((w) => w === "--auto")).toHaveLength(1);
     other.envAllowlist.push("OPENCODE_CONFIG_CONTENT");
     expect(OPENCODE_ENV_ALLOWLIST).toEqual(["PATH", "HOME"]);
     expect(a.resumeArgs({ provider: "opencode", nativeSessionId: SID }, req, PRIVILEGED_BYPASS_PROFILE)).toEqual(

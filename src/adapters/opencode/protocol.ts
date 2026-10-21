@@ -29,6 +29,14 @@ export const FORMAT_JSON = "json";
  */
 export const STANDALONE_FLAG = "--standalone";
 
+/**
+ * Auto-approve flag (`opencode run --help` of v2.0.23, verbatim: "--auto  Auto-approve permissions that are not
+ * explicitly denied"). Bypass-class (declared in the registry): emitted in the approved privileged bypass cell only,
+ * the one compiled cell. Without it OpenCode refused an out-of-tree read in a non-interactive run ("This non-interactive
+ * run cannot ask the user for permission", 2026-10-21 production smoke), which ADR-0077 allows in a bypass run.
+ */
+export const AUTO_FLAG = "--auto";
+
 /** Resume by explicit id ([D-cli] `--session`/`-s`; [LIVE] 13a, 15a). `--continue` is never used ([LIVE] 13b). */
 export const SESSION_FLAG = "--session";
 

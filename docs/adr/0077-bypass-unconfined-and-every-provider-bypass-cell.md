@@ -109,3 +109,28 @@ The decision is unchanged. Two gaps found while enabling the providers in produc
   Antigravity 1.4.3 and Grok Build 1.0.50 (one smoke call each in the approved bypass cell, model pinned by the
   operator's live-models configuration); the commands wrote the manifest fields recorded here. Grok Build's range
   admits a version for the first time.
+
+## Status note (2026-10-21, production smoke fixes; Delegated)
+
+The decision is unchanged. The live bypass smoke on production found two defects, both closed in code:
+
+- **OpenCode still confined out-of-tree access.** In the approved bypass cell OpenCode v2.0.23 refused to read
+  `/etc/hostname` through its own permission system ("This non-interactive run cannot ask the user for permission"),
+  because the adapter omitted `--auto` (Q-83: it only widens what is refused by default, which is what a bypass run may
+  do under this ADR). The approved privileged bypass cell now emits `--auto` (`opencode run --help` of v2.0.23:
+  "Auto-approve permissions that are not explicitly denied") and the registry keeps it bypass-class, so the argv audit
+  still refuses it in every other run. Evidence: `src/adapters/opencode/opencode.test.ts` ("privileged compiles only an
+  approved bypass scope", "--auto is refused outside the approved bypass case and admitted inside it") and
+  `src/cli/adapters-validate.test.ts` (OpenCode's cell declares `--auto`). Whether `--auto` also lets v2.0.23 read
+  `/etc/hostname` is an **Assumption** until the operator repeats the live smoke.
+- **Cursor usage limit classified `TOOL_FAILURE`.** A run that exited 1 with stderr "ActionRequiredError: Increase
+  limits for faster responses You're out of usage. ..." ended `TOOL_FAILURE` ("exit code 1"): the T6.15 mapping lived
+  in `classifyFailure`, which nothing called with the stderr tail, and `extractResult` receives none. `startAdapterRun`
+  now asks `classifyFailure` again with the captured tail when the folded result is `TOOL_FAILURE`, and adopts only a
+  `QUOTA_EXHAUSTED` verdict. Evidence: `src/adapters/cursor/limit-signals.test.ts` ("startAdapterRun: a run that exits
+  1 with the 2026-10-21 stderr ends QUOTA_EXHAUSTED").
+
+The same smoke found Kimi Code (auto-updated to 2.2.0) and Grok Build (1.0.62) outside their recorded versions; both
+fail closed with `ADAPTER_VERSION_UNVERIFIED` as designed. `switchboard adapters validate` passed on the operator host
+for both (2026-10-21, one smoke call each); the manifests record the new ranges (`src/adapters/manifests/kimi.json`,
+`src/adapters/manifests/grok.json`; gate tests in `src/adapters/{kimi,grok}/*.test.ts`).

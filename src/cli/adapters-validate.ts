@@ -19,8 +19,8 @@
  * no config change; nothing is persisted). Cursor, Kimi Code, OpenCode and Antigravity refuse a read-only workspace
  * in that cell, so the throwaway repository (a fresh temp repository with one commit and nothing else) is passed
  * writable for them. Before the spawn the bypass-class flags in the argv must be exactly the one flag the cell
- * declares — or, for OpenCode, which declares none (Q-83), no bypass-class flag at all; anything else fails the
- * smoke step. Every other adapter is unchanged: Claude Code and Codex still compile under `inspect-untrusted`, and
+ * declares (OpenCode: `--auto`, ADR-0077, 2026-10-21; it declared none before, Q-83); anything else fails the smoke
+ * step. Every other adapter is unchanged: Claude Code and Codex still compile under `inspect-untrusted`, and
  * an adapter outside the list never falls back even if a `privileged` cell would compile.
  *
  * Only on full success does it write the provider's manifest file in the SOURCE tree (the file a contributor changes in
@@ -82,8 +82,8 @@ export interface CompiledCell {
   /** Whether the throwaway repository is passed writable (the cell refuses a read-only workspace). */
   readonly writable: boolean;
   /**
-   * The one bypass-class flag the cell declares (ADR-0035 registry), or null when the cell declares none: OpenCode's
-   * privileged cell adds no bypass flag (Q-83), so its argv must carry no bypass-class flag at all.
+   * The one bypass-class flag the cell declares (ADR-0035 registry), or null when the cell declares none (no cell does
+   * since OpenCode's gained `--auto`, ADR-0077): then the argv must carry no bypass-class flag at all.
    */
   readonly bypassFlag: string | null;
   /** The owner decision allowing this cell's fallback: 59 (grok, cursor, kimi) or 60 (opencode, antigravity). */
@@ -98,8 +98,8 @@ export interface CompiledCell {
  * - cursor: worktree files, shell `broad`, network `on`, repository config `enabled` (read-only is refused, Q-65, Q-79);
  * - kimi: the `--prompt` bypass cell, the same scope as Cursor (read-only is refused, ADR-0049 item 1);
  * - opencode: `privileged` + `bypass`, worktree files, shell `broad`, network `on`, repository config `enabled`
- *   (read-only is refused, Q-83); it emits no bypass flag, so `bypassFlag` is null and the argv must carry no
- *   bypass-class flag at all;
+ *   (read-only is refused, Q-83) with `--auto` (ADR-0077, 2026-10-21: out-of-tree access is allowed in a
+ *   bypass run; before that the adapter emitted no bypass flag);
  * - antigravity: the same scope as OpenCode (read-only is refused, Q-84) with `--dangerously-skip-permissions`.
  */
 export const COMPILED_CELL_FALLBACK: Readonly<Partial<Record<ProviderId, CompiledCell>>> = Object.freeze({
@@ -148,7 +148,7 @@ export const COMPILED_CELL_FALLBACK: Readonly<Partial<Record<ProviderId, Compile
       bypass: true,
     },
     writable: true,
-    bypassFlag: null,
+    bypassFlag: "--auto",
     decision: 60,
   },
   antigravity: {
@@ -486,7 +486,7 @@ export async function runAdaptersValidate(
     if (fallback) {
       // The approved context admits every bypass flag in the audit, so the cell's argv is narrowed here: exactly the
       // one flag the cell declares, nothing else bypass-class (provider-scoped flags included); a cell that declares
-      // no flag (OpenCode, Q-83) admits none at all.
+      // no flag admits none at all.
       const found = findBypassFlags(inv, provider);
       const ruling = `owner decision ${fallback.decision}`;
       if (fallback.bypassFlag === null) {

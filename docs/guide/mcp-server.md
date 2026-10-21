@@ -484,7 +484,7 @@ bypass flag under `inspect-untrusted`. Grok Build, Cursor, Kimi Code, OpenCode a
 `inspect-untrusted`, so for those five only (owner decisions 59 and 60) the same smoke task runs in the adapter's only
 compiled cell instead: an approved `privileged` bypass scope, approved in memory for that one call and never recorded,
 with exactly the one bypass flag that cell declares (`--always-approve`, `--force`, `--prompt` or
-`--dangerously-skip-permissions`; OpenCode declares none, so its smoke argv carries no bypass-class flag at all); the
+`--dangerously-skip-permissions`; `--auto` for OpenCode, ADR-0077); the
 step output and the evidence line name that cell and its ruling, and `--json` reports it as `smoke_profile`. If the
 smoke step fails, the step reports the run's classified failure code and its classifier detail (`CODE (exit code N):
 detail`), redacted with the ledger's secret patterns with e-mail addresses and URL query strings stripped, clipped to
