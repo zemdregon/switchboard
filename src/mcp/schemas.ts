@@ -2262,7 +2262,8 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "subscriptions are configured, pacing lists one entry per subscription with each window's figures, " +
     "deferred_until and the gate verdict; that hold is not applied here. provider_usage, where present, is the " +
     "provider's own report read live through its CLI with no model call (Codex: account/rateLimits/read; Cursor: " +
-    "the CLI's /usage command; Antigravity: agy -p /usage and /credits): each " +
+    "the CLI's /usage command; Antigravity: agy -p /usage and /credits) or, for Claude Code, the newest figures " +
+    "its runs printed (rate_limit_event, as of observed_at): each " +
     "quota window's used_fraction, remaining_fraction and resets_at, the plan, credits and whether a limit is " +
     "reached, all source provider_reported (Cursor adds reset_label, reset_precision day, on_demand dollars and " +
     "spend); source unknown carries the reason the read failed.",
