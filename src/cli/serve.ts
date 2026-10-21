@@ -1561,6 +1561,11 @@ async function runDaemon(
         providers: config.providers,
         // ADR-0068: `create_project` may clone a `clone_url` only where the operator configured project_sources.
         ...(config.projectSources !== undefined ? { projectSources: config.projectSources } : {}),
+        // ADR-0091 (FR-POL-12): the request defaults; absent keeps trust_profile required and V13 unchanged.
+        ...(config.defaultTrustProfile !== undefined ? { defaultTrustProfile: config.defaultTrustProfile } : {}),
+        ...(config.defaultPrivilegedScope !== undefined
+          ? { defaultPrivilegedScope: config.defaultPrivilegedScope }
+          : {}),
         // T5.6: handoff bundle bounds (`continuity.*`, LLD §15.4).
         continuity: config.continuity,
         // T6.3: `get_capacity` settings and slot limits (LLD §16.1, §16.3).

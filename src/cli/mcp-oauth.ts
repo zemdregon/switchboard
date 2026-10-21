@@ -6,7 +6,8 @@
  * - `issue-code --client-profile <id> [--ttl <n>s|m|h]` creates a one-time code bound to an `mcp_clients` entry, valid
  *   1 to 60 minutes (default 10). The entry must exist and pass the ledger-binding rule (`httpProfileProblem`
  *   `bound`, the same as a config mapping, ADR-0086: a `privileged` ceiling is allowed and its privileged runs still
- *   wait for the operator; `privileged_approval: not_required` is refused). Like `consent pair` it ends every older unused code. The code is printed to this terminal only
+ *   wait for the operator; `privileged_approval: not_required` is refused unless
+ *   `transport.http.allow_unattended_privileged` is true, ADR-0091). Like `consent pair` it ends every older unused code. The code is printed to this terminal only
  *   (it is the point of the command); the ledger keeps its hash and the audit records the issue without it.
  * - `clients`, `client <client_id>`: registered clients with status, the profile each acts as and its source (config
  *   map, ledger binding or default), token counts and the newest issue time.
@@ -112,12 +113,14 @@ export function mcpOAuthIssueCode(
         ? undefined
         : { maxTrustProfile: entry.maxTrustProfile, privilegedApproval: entry.privilegedApproval },
       "bound",
+      // ADR-0091: the same opt-in the MCP endpoint's per-request re-check reads (`bindableMcpClients`).
+      { allowUnattendedPrivileged: config.httpTransport?.allowUnattendedPrivileged === true },
     );
     if (problem === "unknown") throw new UsageError(`unknown mcp_clients id ${JSON.stringify(profile.slice(0, 128))}`);
     if (problem === "approval_not_required") {
       throw new UsageError(
         `${JSON.stringify(profile)} has privileged_approval not_required; an HTTP client's privileged runs must wait ` +
-          "for the operator (FR-MCP-14)",
+          "for the operator (FR-MCP-14) unless transport.http.allow_unattended_privileged is true (ADR-0091)",
       );
     }
     const now = io.now ? { now: io.now } : {};

@@ -122,6 +122,8 @@ export interface ResolvedProject {
   };
   /** Shape only in T9.1; enforced from T9.2 (FR-PRJ-06). */
   readonly maxTrustProfile?: TrustProfile;
+  /** ADR-0091 (FR-POL-12): present only when a configured project sets `default_trust_profile`; never on a dynamic one. */
+  readonly defaultTrustProfile?: TrustProfile;
   readonly allowedProviders?: readonly ProviderId[];
   /** T11.3 (LLD §13.1): present only when the project sets `inner_agent`; absent reads as `inherit`. */
   readonly innerAgent?: ProjectInnerSetting;
@@ -401,6 +403,7 @@ export function resolveProjects(
           : {}),
       },
       ...(p.max_trust_profile !== undefined ? { maxTrustProfile: p.max_trust_profile } : {}),
+      ...(p.default_trust_profile !== undefined ? { defaultTrustProfile: p.default_trust_profile } : {}),
       ...(p.allowed_providers !== undefined ? { allowedProviders: [...p.allowed_providers] } : {}),
       ...(p.inner_agent !== undefined ? { innerAgent: p.inner_agent } : {}),
       ...(p.rag !== undefined ? { rag: structuredClone(p.rag) } : {}),
@@ -502,6 +505,20 @@ export function lowerProfile(a: TrustProfile, b: TrustProfile): TrustProfile {
  */
 export function effectiveMaxProfile(clientMax: TrustProfile, project: ResolvedProject): TrustProfile {
   return project.maxTrustProfile === undefined ? clientMax : lowerProfile(clientMax, project.maxTrustProfile);
+}
+
+/**
+ * ADR-0091 (FR-POL-12, FR-MCP-26): the profile a request without `trust_profile` resolves to: the project's own
+ * default, else the configured top-level one, lowered to `ceiling` (the effective maximum of the request). Undefined
+ * when neither is configured (`trust_profile` is then required).
+ */
+export function defaultedProfile(
+  configured: TrustProfile | undefined,
+  project: Pick<ResolvedProject, "defaultTrustProfile"> | undefined,
+  ceiling: TrustProfile,
+): TrustProfile | undefined {
+  const wanted = project?.defaultTrustProfile ?? configured;
+  return wanted === undefined ? undefined : lowerProfile(wanted, ceiling);
 }
 
 /** The projects a client may use, in configuration order. A client with no list may use none (fail closed). */

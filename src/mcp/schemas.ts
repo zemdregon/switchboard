@@ -850,7 +850,8 @@ const INPUTS = {
   delegate_task: {
     type: "object",
     additionalProperties: false,
-    required: ["objective", "trust_profile"],
+    // ADR-0091 (FR-MCP-26): trust_profile is optional; absent, the operator's configured default applies.
+    required: ["objective"],
     // FRD V12 / FR-PRJ-03: exactly one of `workspace_path` and `project`; the server turns this into one clear message.
     oneOf: [
       { properties: { workspace_path: true }, required: ["workspace_path"] },
@@ -873,7 +874,8 @@ const INPUTS = {
       priority: { type: "string", enum: ["interactive", "normal", "batch"], default: "normal" },
       wait_seconds: WAIT_SECONDS,
       idempotency_key: { type: "string", minLength: 8, maxLength: 128 },
-      // Required exactly when trust_profile is privileged (FRD V13, checked after the ceiling, V5); LLD §3.1.
+      // Required exactly when trust_profile is privileged (FRD V13, checked after the ceiling, V5); LLD §3.1. ADR-0091:
+      // absent with privileged, the operator's configured default_privileged_scope applies when there is one.
       privileged_scope: PRIVILEGED_SCOPE_SCHEMA,
       ...SKILL_FIELDS,
       // T3.24 (FR-CAP-12, LLD §20.2): exempt from a host load hold; honoured only for a client with `allow_light`.
@@ -998,7 +1000,7 @@ const WORK_INPUTS = {
       request: {
         type: "object",
         additionalProperties: false,
-        required: ["objective", "trust_profile"],
+        required: ["objective"],
         properties: {
           objective: DELEGATE.objective,
           trust_profile: DELEGATE.trust_profile,
@@ -1747,6 +1749,8 @@ const PROJECTS = {
           max_trust_profile: TRUST_PROFILE,
           // Proposed: the ceiling this client gets here, the lower of its own and the project's.
           effective_max_profile: TRUST_PROFILE,
+          // ADR-0091: what an absent trust_profile resolves to here (the default, lowered to the ceiling).
+          default_trust_profile: TRUST_PROFILE,
           allowed_providers: { type: "array", items: PROVIDER },
           // ADR-0070: the merge policy in force, present only when the project sets one (absent means off).
           merge_policy: {
@@ -1936,7 +1940,9 @@ const WORK_OUTPUTS = {
 const WORK_DESCRIPTIONS: Readonly<Record<WorkQueueToolName, string>> = {
   enqueue_work:
     "Queue a delegate_task request (request: the delegate_task fields without workspace_path, project, wait_seconds " +
-    "and idempotency_key) on one project this client may use (see list_projects). The controller admits it later as " +
+    "and idempotency_key) on one project this client may use (see list_projects); an omitted trust_profile and a " +
+    "privileged request's omitted privileged_scope are filled from the operator's defaults now, as in delegate_task, " +
+    "and stored. The controller admits it later as " +
     "this client, under this client's and the project's trust ceiling at that time; a refusal there ends the item " +
     "FAILED_ADMISSION. priority (-1000 to 1000, larger first) orders this project's ready items; depends_on names " +
     "this client's items that must be DONE first. Returns the item; reusing idempotency_key with the same arguments " +
@@ -2560,9 +2566,12 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
   delegate_task:
     "Start a coding task in a new meta-session. Asynchronous: returns run_id and meta_session_id at once (status " +
     "QUEUED or later); poll get_run, or pass wait_seconds (0-60) for a bounded wait that never cancels the run. " +
-    "trust_profile above this client's maximum fails PERMISSION_BLOCKED. Routing hints only narrow provider choice. " +
-    "trust_profile privileged needs privileged_scope (files, shell, network, repository_config, optional bypass) and " +
-    "returns AWAITING_APPROVAL until the operator approves on the CLI; no tool can approve. Give exactly one of " +
+    "trust_profile above this client's maximum fails PERMISSION_BLOCKED; omitted, it is the operator's configured " +
+    "default lowered to the ceiling (see list_projects default_trust_profile), and it is required when none is " +
+    "configured. Routing hints only narrow provider choice. " +
+    "trust_profile privileged needs privileged_scope (files, shell, network, repository_config, optional bypass), or " +
+    "the operator's default scope when one is configured, and returns AWAITING_APPROVAL until the operator approves " +
+    "on the CLI unless the operator configured this client not to need it; no tool can approve. Give exactly one of " +
     "workspace_path and project (see list_projects); a project fixes the repository and caps trust_profile and " +
     "providers at the project's limits.",
   continue_task:

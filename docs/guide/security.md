@@ -101,6 +101,13 @@ run's isolated worktree still apply. Anything that can launch that client's `ser
 privileged work, including bypass scopes, without you reviewing it (ROADMAP R-39), so use it only for an orchestrator
 you control. `approve` and `deny` keep working for clients left at `"required"`.
 
+**Always bypass on your own deployment (ADR-0091, all opt-in).** `default_trust_profile: "privileged"` with a
+`default_privileged_scope` that sets `bypass` makes every request that names no `trust_profile` a bypass run, lowered
+to the client's and project's ceilings; a client asks for a lower profile explicitly. Over HTTP a client mapped to an
+entry with `privileged_approval: "not_required"` is refused unless you also set
+`transport.http.allow_unattended_privileged: true`; `default_mcp_client` is never relaxed. `doctor` warns for both.
+Leave these keys out on any deployment where other people's clients connect.
+
 ## Security model
 
 - **No credential handling.** Switchboard never reads, copies, logs or exports provider credentials, and does not start

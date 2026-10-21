@@ -200,6 +200,13 @@ export interface SwitchboardConfig {
   /** Projects (FR-PRJ-01, LLD §11.1; T9.1). Absent means no projects, and every other command behaves as before. */
   projects?: ProjectConfig[];
   /**
+   * ADR-0091 (FR-POL-12): the profile of a request that names no `trust_profile`, clamped to the effective ceiling.
+   * Absent: `trust_profile` is required, as before. `privileged` needs `default_privileged_scope`.
+   */
+  default_trust_profile?: TrustProfile;
+  /** ADR-0091 (FR-POL-12): the `privileged_scope` (LLD §3.1) of a privileged request that names none. Absent: V13. */
+  default_privileged_scope?: unknown;
+  /**
    * Commit-message sanitiser additions (FR-GIT-04, LLD §12.4, TDD §3.1; T9.3). Each pattern is a JavaScript regular
    * expression source in the restricted subset of `src/git/safe-pattern.ts` (at most 16, 200 characters each); a line
    * that matches is removed from the message.
@@ -479,6 +486,8 @@ export interface ProjectConfig {
   environment?: EnvironmentConfig;
   /** Shape only until T9.2 (FR-PRJ-06 enforcement). */
   max_trust_profile?: TrustProfile;
+  /** ADR-0091 (FR-POL-12): overrides the top-level `default_trust_profile` here. Configuration file only. */
+  default_trust_profile?: TrustProfile;
   allowed_providers?: ProviderId[];
   /** T11.3 (LLD §13.1, FR-INN-16): `off` or `local_only` restrict the inner agent for this project; default `inherit`. */
   inner_agent?: ProjectInnerSetting;
@@ -1006,6 +1015,8 @@ const configProjectSchema = {
     critic: projectCriticSchema,
     // T5.14: a path; the file rules (outside the roots, at most 4 KiB, UTF-8) are `loadConfig`'s.
     brief_file: { type: "string", minLength: 1, maxLength: 4096 },
+    // ADR-0091: configuration file only (a dynamic project uses the top-level default, clamped to its ceiling).
+    default_trust_profile: { enum: [...TRUST_PROFILES] },
   },
 } as const;
 
@@ -1066,6 +1077,9 @@ export const configSchema = {
     schema_version: { const: CONFIG_SCHEMA_VERSION },
     data_dir: { type: "string", minLength: 1 },
     allowed_roots: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1 } },
+    // ADR-0091: request defaults; the scope's closed schema and list rules are checked by `loadConfig`.
+    default_trust_profile: { enum: [...TRUST_PROFILES] },
+    default_privileged_scope: { type: "object" },
     mcp_clients: {
       type: "array",
       items: {

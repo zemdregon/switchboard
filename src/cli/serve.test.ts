@@ -517,6 +517,28 @@ registerHooks({ resolve(specifier, context, next) {
     expect(runs()).toEqual(["inspect-untrusted"]);
   }, 30_000);
 
+  it("ADR-0091: serve passes default_trust_profile to the MCP server, so an absent trust_profile resolves to it", async () => {
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    writeFileSync(configPath, JSON.stringify({ ...cfg, default_trust_profile: "inspect-untrusted" }));
+    const c = await connect();
+    const d = await call(c.client, "delegate_task", {
+      objective: "look around",
+      workspace_path: repo,
+      routing: { provider_preference: "fake", require_provider: true },
+    });
+    expect(d.isError, JSON.stringify(d.body)).toBe(false);
+    expect((await pollStatus(c.client, d.body.run_id, TERMINAL)).status, c.stderr()).toBe("SUCCEEDED");
+    recordedGroup(d.body.run_id);
+    const db = new Database(path.join(dataDir, LEDGER_FILE_NAME), { readonly: true, fileMustExist: true });
+    try {
+      expect(db.prepare("SELECT trust_profile FROM run WHERE id = ?").get(d.body.run_id)).toEqual({
+        trust_profile: "inspect-untrusted",
+      });
+    } finally {
+      db.close();
+    }
+  }, 30_000);
+
   it("T11.11: serve admission and continuation store inner route features from the configured backend", async () => {
     const inner = await listenInnerHttp((res) => res.end(innerCompletion(JSON.stringify(INNER_ROUTE_VALUES))));
     writeInnerServeConfig({

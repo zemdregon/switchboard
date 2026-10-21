@@ -127,6 +127,15 @@
  *   PERMISSION_BLOCKED as in `delegate_task`; a project this client may not use is reported like an unknown one (as
  *   `search_project_context`); every `get_skill` miss (unknown, retired, invisible, version not injectable) is the same
  *   INVALID_REQUEST, which never names the skill; a stored file that fails its hash is TOOL_FAILURE.
+ * - Request defaults (ADR-0091; FR-POL-12, FR-MCP-26; owner ruling 2026-10-21, mechanism Delegated): `trust_profile` is
+ *   optional in `delegate_task`, in the `enqueue_work` request and in each decision enqueue entry. Absent, it is the
+ *   configured project's `default_trust_profile`, else the top-level `default_trust_profile`, lowered to the effective
+ *   ceiling (the client's maximum, and in a project the lower of it and the project's), so a default never fails V5; with
+ *   neither configured it is INVALID_REQUEST `trust_profile is required` (`details.field = "trust_profile"`), as before.
+ *   When the resolved profile (defaulted or requested) is `privileged` and the request names no `privileged_scope`,
+ *   the configured `default_privileged_scope` is the request's scope; an explicit scope always wins, and V13 is
+ *   otherwise unchanged. The idempotency hash, the eligibility question, admission and the stored `enqueue_work` request
+ *   all carry the resolved profile and scope, so a defaulted request and the same explicit one are one request.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -158,8 +167,10 @@ import {
   CONTAINER_NOT_IMPLEMENTED,
   DEFAULT_CAPACITY_CONFIDENCE_RUNS,
   DEFAULT_CAPACITY_WINDOW_SECONDS,
+  defaultedProfile,
   effectiveMaxProfile,
   groupMembersFor,
+  lowerProfile,
   type ModelGroupsConfigInput,
   modelGroupsOf,
   primaryContext,
@@ -371,6 +382,10 @@ export interface McpServerDeps {
   readonly config: Pick<ResolvedConfig, "allowedRoots" | "mcpClients"> & {
     /** Configured projects (FR-PRJ-01, T9.2). Absent is read as none. */
     readonly projects?: readonly ResolvedProject[];
+    /** ADR-0091 (FR-POL-12): the profile of a request without `trust_profile`. Absent: `trust_profile` is required. */
+    readonly defaultTrustProfile?: ResolvedConfig["defaultTrustProfile"];
+    /** ADR-0091 (FR-POL-12): the scope of a `privileged` request without one. Absent: V13 as before. */
+    readonly defaultPrivilegedScope?: ResolvedConfig["defaultPrivilegedScope"];
     /** T9.9: no dynamic project may lie inside the data directory. */
     readonly dataDir?: string;
     /** ADR-0068: where `create_project` may clone a `clone_url`. Absent: every `clone_url` is refused. */
@@ -741,6 +756,23 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       );
     }
   };
+
+  /**
+   * ADR-0091 (FR-MCP-26): the profile a request asks for, before the project's ceiling is known: the given one, else
+   * the configured project's default or the top-level one, lowered to this client's maximum. With no default anywhere,
+   * INVALID_REQUEST naming `field`. The caller lowers a defaulted profile again to the project's effective maximum.
+   */
+  const wantedProfile = (given: unknown, projectId: unknown, field: string): TrustProfile => {
+    if (given !== undefined) return given as TrustProfile;
+    const configured =
+      typeof projectId === "string" ? (deps.config.projects ?? []).find((p) => p.id === projectId) : undefined;
+    const wanted = defaultedProfile(deps.config.defaultTrustProfile, configured, maxTrustProfile);
+    if (wanted === undefined) throw invalid("trust_profile is required", { field });
+    return wanted;
+  };
+  /** ADR-0091 (FR-MCP-26): the request's scope, else the operator's default scope for a `privileged` profile. */
+  const scopeOrDefault = (given: unknown, profile: TrustProfile): unknown =>
+    given ?? (profile === "privileged" ? deps.config.defaultPrivilegedScope : undefined);
 
   /**
    * FRD V12 / BR-23 / LLD §11.2 steps 1-3, 5: the project, if this client may use it, with its primary context's
@@ -1129,13 +1161,16 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
   const delegateTask = async (a: Args): Promise<Envelope> => {
     const routing = a.routing as Routing | undefined;
-    const profile = a.trust_profile as TrustProfile;
+    // ADR-0091: an absent trust_profile is the configured default, lowered to the client's maximum here and to the
+    // project's effective maximum once the project is resolved.
+    let profile = wantedProfile(a.trust_profile, a.project, "trust_profile");
     // V12 / V3 / V4: exactly one of `project` and `workspace_path` (the schema's oneOf has already refused anything else).
     const resolved = a.project !== undefined ? await resolveProject(a.project as string, profile) : undefined;
+    if (a.trust_profile === undefined && resolved !== undefined) profile = lowerProfile(profile, resolved.effectiveMax);
     const workspace = resolved?.workspace ?? (await lifecycle.canonicalWorkspace(a.workspace_path as string, profile));
     checkCeiling(profile, resolved); // V5 / BR-23
-    // V13 (after V5): privileged_scope present exactly when the profile is privileged.
-    const scopeArg = a.privileged_scope;
+    // V13 (after V5): privileged_scope present exactly when the profile is privileged; ADR-0091 default scope.
+    const scopeArg = scopeOrDefault(a.privileged_scope, profile);
     if (profile === "privileged" && scopeArg === undefined) {
       throw invalid("trust_profile privileged requires privileged_scope", { field: "privileged_scope" });
     }
@@ -1661,11 +1696,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     };
   };
 
+  /** The project `checkListProject` accepted: this client's dynamic project or a configured one. */
+  const listProject = (projectId: string): ResolvedProject | undefined =>
+    projectTools?.listForClient().find((e) => e.project.id === projectId)?.project ??
+    (deps.config.projects ?? []).find((p) => p.id === projectId);
   /** The lower of this client's and the project's maximum profile, for a project `checkListProject` accepted. */
   const listProjectCeiling = (projectId: string): TrustProfile => {
-    const project =
-      projectTools?.listForClient().find((e) => e.project.id === projectId)?.project ??
-      (deps.config.projects ?? []).find((p) => p.id === projectId);
+    const project = listProject(projectId);
     return project === undefined ? maxTrustProfile : effectiveMaxProfile(maxTrustProfile, project);
   };
 
@@ -1673,10 +1710,16 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
    * The `enqueue_work` request checks that need no workspace (V5 against the lower of the client's and the project's
    * maximum now, V13, V7, V8, V15); `prefix` names the request in `details.field`. Also run on each entry of a
    * decision's enqueue list (T14.15), so a decision can never queue what this client could not queue itself.
+   * Returns the request to store: ADR-0091 fills an absent `trust_profile` (the default, lowered to the ceiling) and,
+   * for `privileged`, an absent `privileged_scope` (the operator's default), so admission reads them as if given.
    */
-  const checkQueuedRequest = (projectId: string, request: Args, prefix = "request."): void => {
-    const profile = request.trust_profile as TrustProfile;
+  const checkQueuedRequest = (projectId: string, request: Args, prefix = "request."): Args => {
     const effectiveMax = listProjectCeiling(projectId);
+    let profile = request.trust_profile as TrustProfile | undefined;
+    if (profile === undefined) {
+      profile = defaultedProfile(deps.config.defaultTrustProfile, listProject(projectId), effectiveMax);
+      if (profile === undefined) throw invalid("trust_profile is required", { field: `${prefix}trust_profile` });
+    }
     if (profileRank(profile) > profileRank(effectiveMax)) {
       // V5 / BR-23 at enqueue; admission checks the ceiling again under the configuration of that time (LLD §18.4).
       throw new ToolError(
@@ -1690,7 +1733,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         },
       );
     }
-    const scopeArg = request.privileged_scope;
+    const scopeArg = scopeOrDefault(request.privileged_scope, profile);
     if (profile === "privileged" && scopeArg === undefined) {
       throw invalid("trust_profile privileged requires privileged_scope", { field: `${prefix}privileged_scope` });
     }
@@ -1717,13 +1760,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     }
     checkRouting(request.routing as Routing | undefined);
     skillFieldsOf(request, prefix); // V15 at enqueue; the fields are stored and resolve at the item's admission
+    return { ...request, trust_profile: profile, ...(scopeArg !== undefined ? { privileged_scope: scopeArg } : {}) };
   };
 
   const enqueueWork = async (a: Args) => {
     const projectId = a.project_id as string;
     checkListProject(projectId);
-    const request = a.request as Args;
-    checkQueuedRequest(projectId, request);
+    const request = checkQueuedRequest(projectId, a.request as Args); // ADR-0091: the resolved profile and scope
 
     const predecessors = [...((a.depends_on as string[] | undefined) ?? [])].sort();
     for (const id of predecessors) ownWorkItem(id);
@@ -1896,10 +1939,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const projectId = a.project_id as string;
     const onboardingUrl = a.onboarding !== undefined ? checkOnboarding(projectId, a) : undefined;
     if (onboardingUrl === undefined) checkListProject(projectId);
-    const enqueue = (a.enqueue as { request: Args; priority: number }[] | undefined) ?? [];
-    enqueue.forEach((e, i) => {
-      checkQueuedRequest(projectId, e.request, `enqueue[${i}].request.`);
-    });
+    // ADR-0091: each entry is stored with its resolved profile and scope, as enqueue_work stores its request.
+    const enqueue = ((a.enqueue as { request: Args; priority: number }[] | undefined) ?? []).map((e, i) => ({
+      ...e,
+      request: checkQueuedRequest(projectId, e.request, `enqueue[${i}].request.`),
+    }));
     const limit = deps.config.queue?.maxItemsPerProject ?? DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT;
     if (enqueue.length > 0 && ledger.countWorkItemsForProject(projectId) + enqueue.length > limit) {
       throw invalid(`the work queue of project ${projectId} cannot take ${enqueue.length} more items`, {
@@ -2108,6 +2152,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return explainRoute(run.id, ledger.getRouteDecision(run.id), scrub);
   };
 
+  /** ADR-0091: the profile a request here without `trust_profile` resolves to; absent when no default is configured. */
+  const defaultProfileItem = (p: ResolvedProject) => {
+    const d = defaultedProfile(deps.config.defaultTrustProfile, p, effectiveMaxProfile(maxTrustProfile, p));
+    return d === undefined ? {} : { default_trust_profile: d };
+  };
   /** LLD §3 `list_projects`: the projects this client may use, without paths, remotes, identities or image data. */
   const listProjects = async () => ({
     projects: [
@@ -2118,12 +2167,16 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         contexts: p.contexts.map(contextListItem),
         ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
         effective_max_profile: effectiveMaxProfile(maxTrustProfile, p),
+        ...defaultProfileItem(p),
         ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
         ...mergePolicyItem(p),
         ...setupItem(p),
       })),
       // T9.9: this client's dynamic projects (creator-only), marked `source: "dynamic"`.
-      ...(projectTools?.listForClient().map((e) => dynamicListItem(e, maxTrustProfile)) ?? []),
+      ...(projectTools?.listForClient().map((e) => ({
+        ...dynamicListItem(e, maxTrustProfile),
+        ...defaultProfileItem(e.project),
+      })) ?? []),
     ],
   });
 

@@ -177,6 +177,51 @@ function checkPrivilegedApproval(cfg: ResolvedConfig): DoctorCheck | undefined {
 }
 
 /**
+ * ADR-0091 (FR-POL-12): a warning when a configured default trust profile is `privileged` (top level or in a project):
+ * every request that names no `trust_profile` then runs privileged under the operator's default scope, where the
+ * client's and the project's ceilings allow it. Absent otherwise, so the check list is unchanged by default.
+ */
+function checkPrivilegedDefault(cfg: ResolvedConfig): DoctorCheck | undefined {
+  const where = [
+    ...(cfg.defaultTrustProfile === "privileged" ? ["default_trust_profile"] : []),
+    ...cfg.projects.filter((p) => p.defaultTrustProfile === "privileged").map((p) => `project ${p.id}`),
+  ];
+  if (where.length === 0) return undefined;
+  const bypass = cfg.defaultPrivilegedScope?.bypass === true ? " with bypass" : "";
+  return check(
+    "privileged_default",
+    "Privileged default",
+    "warn",
+    `${where.join(", ")}: requests without trust_profile run privileged${bypass} under default_privileged_scope ` +
+      "wherever the client's and project's ceilings allow (Git-write denial and worktrees still apply)",
+  );
+}
+
+/**
+ * ADR-0091 (FR-MCP-27): a warning when `transport.http.allow_unattended_privileged` is on, naming the HTTP-mapped and
+ * bindable clients with `privileged_approval: not_required` (their privileged runs over HTTP need no `approve`).
+ * Absent when the switch is off or the HTTP transport is disabled.
+ */
+function checkUnattendedHttp(cfg: ResolvedConfig): DoctorCheck | undefined {
+  const http = cfg.httpTransport;
+  if (http?.allowUnattendedPrivileged !== true) return undefined;
+  const reachable = new Set([...http.clientMap.values(), ...(http.bindableMcpClients ?? [])]);
+  const loose = [...cfg.mcpClients.values()]
+    .filter((c) => reachable.has(c.id) && c.privilegedApproval === "not_required")
+    .map((c) => c.id);
+  return check(
+    "unattended_http_privileged",
+    "Unattended HTTP privileged",
+    "warn",
+    loose.length === 0
+      ? "transport.http.allow_unattended_privileged is on; no HTTP-mapped client has privileged_approval not_required"
+      : `transport.http.allow_unattended_privileged is on: privileged runs of HTTP client${
+          loose.length > 1 ? "s" : ""
+        } ${loose.join(", ")} need no switchboard approve (default_mcp_client stays strict)`,
+  );
+}
+
+/**
  * FR-INN-15: a warning when the inner agent's backend is declared to draw on a routed provider's subscription, so its
  * calls consume that provider's capacity (each call records one `inner_agent` usage observation). Absent otherwise.
  */
@@ -645,6 +690,10 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     if (overrides) checks.push(overrides);
     const approval = checkPrivilegedApproval(cfg);
     if (approval) checks.push(approval);
+    const privilegedDefault = checkPrivilegedDefault(cfg);
+    if (privilegedDefault) checks.push(privilegedDefault);
+    const unattended = checkUnattendedHttp(cfg);
+    if (unattended) checks.push(unattended);
     const innerShared = checkInnerSharedSubscription(cfg);
     if (innerShared) checks.push(innerShared);
     const sinks = checkNotificationSinksDoctor(cfg);

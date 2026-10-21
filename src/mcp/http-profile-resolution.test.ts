@@ -200,6 +200,36 @@ describe("profile resolution at the MCP endpoint", () => {
     expect(served).toEqual([]);
   });
 
+  it("ADR-0091: allow_unattended_privileged serves a not_required binding; off, it stays refused", async () => {
+    // The pure rule: mapped and bound accept not_required only with the opt-in; default never does.
+    const loose = { maxTrustProfile: "privileged", privilegedApproval: "not_required" };
+    expect(httpProfileProblem(loose, "mapped")).toBe("approval_not_required");
+    expect(httpProfileProblem(loose, "bound", { allowUnattendedPrivileged: false })).toBe("approval_not_required");
+    expect(httpProfileProblem(loose, "mapped", { allowUnattendedPrivileged: true })).toBeUndefined();
+    expect(httpProfileProblem(loose, "bound", { allowUnattendedPrivileged: true })).toBeUndefined();
+    expect(httpProfileProblem(loose, "default", { allowUnattendedPrivileged: true })).toBe("privileged_ceiling");
+    expect(
+      httpProfileProblem({ maxTrustProfile: "edit-untrusted", privilegedApproval: "not_required" }, "default", {
+        allowUnattendedPrivileged: true,
+      }),
+    ).toBe("approval_not_required");
+
+    const bound = approvedClient("unattended");
+    expect(settings().bindableMcpClients?.has("unattended")).toBe(false);
+    expect(settings().allowUnattendedPrivileged).toBeUndefined();
+    const on = settings({ allow_unattended_privileged: true });
+    expect(on.allowUnattendedPrivileged).toBe(true);
+    expect(on.bindableMcpClients?.has("unattended")).toBe(true);
+    await start(on);
+    expect((await post(bound.token)).status).toBe(500); // reached the (stub) server as the not_required entry
+    expect(served).toEqual(["unattended"]);
+    await listener?.close();
+    // The same binding with the switch off is refused on the next request (the per-request re-check).
+    await start(settings({ allow_unattended_privileged: false }));
+    expect((await post(bound.token)).status).toBe(403);
+    expect(refused).toEqual(["ineligible_binding"]);
+  });
+
   it("refuses a revoked client's unexpired token", async () => {
     const bound = approvedClient("grok-bot");
     await start(settings());

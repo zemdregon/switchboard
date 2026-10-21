@@ -1045,6 +1045,17 @@ artifacts are operator-CLI only.
   "output": "envelope (status is current state; terminal only if the run finished within wait_seconds)" }
 ```
 
+*Amended 2026-10-21 ([ADR-0091](../adr/0091-configured-default-trust-profile-and-unattended-http-privileged.md), FR-MCP-26, owner ruling 2026-10-21, mechanism Delegated):*
+`trust_profile` is optional in the published schema (`required` is `["objective"]` plus the `workspace_path` /
+`project` alternative), as it is in the `enqueue_work` request (§18.2) and each `request_decision` enqueue entry. An
+absent profile resolves to the configured project's `default_trust_profile`, else the top-level
+`default_trust_profile` ([TDD §3.1](TDD.md#31-configuration)), lowered to the effective ceiling (the client's
+maximum, and in a project the lower of it and the project's); with neither configured the request is
+`INVALID_REQUEST` `trust_profile is required`, `details.field = "trust_profile"`. When the resolved profile is
+`privileged` and `privileged_scope` is absent, the configured `default_privileged_scope` is the request's scope (§3.1);
+an explicit scope wins. The request hash, eligibility, admission and a queued item's `request_json` use the resolved
+profile and scope. `list_projects` items add `default_trust_profile` (the clamped default) when one is configured.
+
 Behaviour: validation, path and profile checks, then in one transaction insert `meta_session` (new), `run` (`QUEUED`, or
 `AWAITING_APPROVAL` for `privileged`, with its `PENDING` approval row, §3.1) and the first `run_event`; only then return
 or wait (§10). A repeated `(client, idempotency_key)` with identical `request_hash` returns the original run; the same
@@ -1376,6 +1387,14 @@ event (`approval_id`, `status`, `reason: "client_policy"`). No other check is re
 **Bypass** treat the row like an operator approval; the FR-GIT-01 deny rules and the run's worktree (FR-WS-05) apply.
 `approve` and `deny` refuse such a run (it is never AWAITING_APPROVAL) and name the client policy. The envelope shows
 `approval.status` `APPROVED` and never `decided_by`.
+
+**Default scope (2026-10-21, FR-POL-12,
+[ADR-0091](../adr/0091-configured-default-trust-profile-and-unattended-http-privileged.md)).** The configuration may
+set `default_privileged_scope`, checked at load by this schema and the list rules (errors name
+`$.default_privileged_scope...`) and stored parsed. A `privileged` request (requested, or defaulted from
+`default_trust_profile`) without `privileged_scope` takes it; V13 is otherwise unchanged. Config load refuses a
+`privileged` default trust profile without it. The scope then follows every rule above (canonical form, hash, client
+policy, **Bypass**) exactly as a scope the request carried.
 
 **Bypass.** Before compiling any `privileged` run, COMP-POL loads the approval named by the snapshot's `approvalId` and
 sets `bypassApproved = true` only if: the row is `APPROVED`; its `scope_hash` equals the snapshot's `scopeHash` and the
@@ -1712,7 +1731,10 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
   to an `mcp_client` id (at most 64 entries, each OAuth client once);
   `transport.http.default_mcp_client` optionally names the entry for an approved OAuth client with
   no mapping. Config load refuses a target that is not in `mcp_clients` or that has `privileged_approval: not_required`,
-  so a remote client's `privileged` runs always wait for the operator CLI (FR-MCP-14, ADR-0019), and a
+  so a remote client's `privileged` runs always wait for the operator CLI (FR-MCP-14, ADR-0019), unless the operator
+  sets `transport.http.allow_unattended_privileged: true` (default false; FR-MCP-27,
+  [ADR-0091](../adr/0091-configured-default-trust-profile-and-unattended-http-privileged.md)), which admits
+  `not_required` for a `clients` mapping and a profile-bound code, never for `default_mcp_client`; and a
   `default_mcp_client` with a `privileged` ceiling (only an explicit mapping may reach one). The token's OAuth client
   must still be `approved` on every request (401 otherwise, also when no client store is wired). At the MCP endpoint a
   valid token without the `mcp` scope, or whose client has no mapping, gets 403 `{"error":"insufficient_scope"}` with
@@ -1774,7 +1796,8 @@ confirmed against the tests when T13.12 is Done.*
   `--json`). `--ttl` takes an integer and one unit; the default is `10m`, the lower bound `1m` and the upper bound
   `60m` (`3600s`, `1h`); a value outside it, or any other unit, is a usage error before anything is written. The
   profile must be an `mcp_clients` entry that config load would accept as an HTTP target: a `privileged` maximum
-  trust profile or `privileged_approval: not_required` is refused with a usage error naming the reason (FR-MCP-14). The
+  trust profile or `privileged_approval: not_required` (unless `allow_unattended_privileged`, ADR-0091) is refused
+  with a usage error naming the reason (FR-MCP-14). The
   code is 128 random bits from the CSPRNG behind a fixed prefix; only its SHA-256 (64 hex characters) is stored, and the
   plaintext is printed once. In one transaction the new row is inserted and every older unused, unexpired code is marked
   superseded. Audit event `code_issued` in `oauth_event` (profile, actor, never the code).
@@ -1810,8 +1833,8 @@ CREATE TABLE oauth_event (                                  -- append-only audit
   entry for that client id (a CIMD URL maps to its derived id, as for T13.11); (2) else the `oauth_client_binding` row;
   (3) else `default_mcp_client`; (4) else the request is refused. Whichever entry is chosen is re-checked on every
   request: the profile must still exist in the loaded configuration and pass the rule a `clients` mapping follows
-  (`privileged_approval` not `not_required`; a `privileged` ceiling is allowed,
-  [ADR-0086](../adr/0086-bound-codes-follow-the-mapped-rule.md)), and the
+  (`privileged_approval` not `not_required` unless `allow_unattended_privileged`, ADR-0091; a `privileged` ceiling is
+  allowed, [ADR-0086](../adr/0086-bound-codes-follow-the-mapped-rule.md)), and the
   client must still be `approved`; any failure is the same 401/403 refusal as today, never a retry against the next
   step. The frozen maximum trust profile is that of the resolved entry, so a binding cannot raise it, and a privileged
   run over HTTP still waits for the operator's approval, exactly as with a mapped client.
@@ -7751,6 +7774,9 @@ is unknown, `INVALID_REQUEST`). Only the creator may cancel over MCP; the operat
   `verification_commands`, `routing`, `priority`, `privileged_scope`. At enqueue the server applies the `delegate_task`
   checks that need no workspace: the ceiling against the lower of the client's and the project's maximum (V5,
   `PERMISSION_BLOCKED`), V13, V7 and V8. Admission re-checks under the configuration of that time (§18.4 step 2).
+  *Amended 2026-10-21 (ADR-0091, FR-MCP-26):* `trust_profile` may be omitted; the server fills it, and for
+  `privileged` an omitted `privileged_scope`, from the configured defaults (§3 `delegate_task`) and stores the
+  resolved values in `request_json`, so admission reads them as if given.
   `depends_on` (at most 32) names the caller's own items. A project already holding `queue.max_items_per_project` rows
   is `INVALID_REQUEST`. The key is stored as `mcp:<key>` so it cannot collide with schedule or CI keys, and is replayed
   (`replayed: true`) only for the same project, request, priority and `depends_on`. `dedupe_key` (T15.7, 1 to 200

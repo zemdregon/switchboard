@@ -127,6 +127,15 @@ describe("mcp oauth issue-code", () => {
     expect(JSON.parse(priv.out)).toMatchObject({ mcp_client: "root" });
   });
 
+  it("issues a code for a not_required entry only with transport.http.allow_unattended_privileged (ADR-0091)", async () => {
+    writeConfig({ enabled: true, public_url: RESOURCE, port: 0, allow_unattended_privileged: true }, [
+      { id: "auto", max_trust_profile: "privileged", privileged_approval: "not_required" },
+    ]);
+    const r = await run(["mcp", "oauth", "issue-code", "--client-profile", "auto", "--json"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ mcp_client: "auto" });
+  });
+
   it("parses --ttl as <n>s|m|h between 1 and 60 minutes", async () => {
     expect(parseCodeTtl(undefined)).toBeUndefined();
     expect(parseCodeTtl("60s")).toBe(60_000);

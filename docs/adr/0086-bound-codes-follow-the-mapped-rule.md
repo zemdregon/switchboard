@@ -1,7 +1,9 @@
 # ADR-0086: Profile-bound one-time codes follow the same HTTP eligibility rule as a configuration mapping
 
 - Status: Accepted (2026-10-21). Supersedes [ADR-0085](0085-cli-issued-one-time-codes-for-mcp-oauth.md) in part (its
-  refusal of a `privileged` ceiling for a profile-bound code); the rest of ADR-0085 stands.
+  refusal of a `privileged` ceiling for a profile-bound code); the rest of ADR-0085 stands. Amended in part by
+  [ADR-0091](0091-configured-default-trust-profile-and-unattended-http-privileged.md): with
+  `transport.http.allow_unattended_privileged` a mapped or bound entry may carry `privileged_approval: not_required`.
 - Date: 2026-10-21
 - Decided by: zemdregon for the outcome (request of 2026-10-21: the example profile is `grok-bot`, and "privileged runs
   must stay unavailable over HTTP, exactly as with bearer tokens today"); the realisation below is **Delegated** (agent,

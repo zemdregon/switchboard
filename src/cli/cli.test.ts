@@ -1147,6 +1147,67 @@ describe("doctor privileged approval (owner decision 22, ADR-0019)", () => {
   });
 });
 
+describe("doctor privileged default and unattended HTTP privileged (ADR-0091)", () => {
+  const fakeOnly = () => new AdapterRegistry().register(new FakeAdapter());
+  const SCOPE = {
+    files: { access: "worktree" },
+    shell: { mode: "broad" },
+    network: { mode: "on" },
+    repository_config: { mode: "enabled" },
+    bypass: true,
+  };
+  const A = `sbc_${"a".repeat(22)}`;
+  const writeCfg = (extra: Record<string, unknown>) =>
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(tmp, "repos")],
+        mcp_clients: [
+          { id: "grok-bot", max_trust_profile: "privileged", privileged_approval: "not_required" },
+          { id: "ops", max_trust_profile: "edit-untrusted" },
+        ],
+        ...extra,
+      }),
+    );
+  const doctor = async () => JSON.parse((await run(["doctor", "--json", ...cfg()], { adapters: fakeOnly() })).out);
+
+  it("warns when the default trust profile is privileged and when HTTP not_required clients run unattended", async () => {
+    writeCfg({
+      default_trust_profile: "privileged",
+      default_privileged_scope: SCOPE,
+      transport: {
+        http: {
+          enabled: true,
+          public_url: "https://sb.example.test/mcp",
+          port: 8443,
+          allow_unattended_privileged: true,
+          clients: [{ oauth_client_id: A, mcp_client: "grok-bot" }],
+        },
+      },
+    });
+    const j = await doctor();
+    const d = j.checks.find((x: { id: string }) => x.id === "privileged_default");
+    expect(d.status).toBe("warn");
+    expect(d.detail).toMatch(/^default_trust_profile: requests without trust_profile run privileged with bypass/);
+    const u = j.checks.find((x: { id: string }) => x.id === "unattended_http_privileged");
+    expect(u.status).toBe("warn");
+    expect(u.detail).toMatch(/privileged runs of HTTP client grok-bot need no switchboard approve/);
+    expect(u.detail).not.toContain("ops");
+    const text = (await run(["doctor", ...cfg()], { adapters: fakeOnly() })).out;
+    expect(text).toMatch(/\[warn\] Privileged default: /);
+    expect(text).toMatch(/\[warn\] Unattended HTTP privileged: /);
+  });
+
+  it("adds no line when neither is configured", async () => {
+    writeCfg({ default_trust_profile: "edit-untrusted" });
+    const ids = (await doctor()).checks.map((x: { id: string }) => x.id);
+    expect(ids).not.toContain("privileged_default");
+    expect(ids).not.toContain("unattended_http_privileged");
+  });
+});
+
 describe("doctor inner-agent shared subscription (T11.5, FR-INN-15)", () => {
   const fakeOnly = () => new AdapterRegistry().register(new FakeAdapter());
   const writeInner = (backend: Record<string, unknown>) =>
