@@ -108,7 +108,8 @@ export function usageReadTargets(
 
 /**
  * Text lines for one report (shared by `switchboard capacity` and `doctor`). FR-CAP-03 wording: "remaining" appears
- * only here, on provider-reported figures, and shares are fractions (the provider's percentage divided by 100).
+ * only here, on provider-reported figures, and shares are fractions (the provider's percentage divided by 100). Spend
+ * (ADR-0089) is printed as spent, with limit, remaining and reset said to be not reported.
  */
 export function providerUsageLines(u: ProviderUsageResult, indent: string): string[] {
   if (u.source === "unknown") return [`${indent}provider-reported usage: unknown (${u.error}; ${u.method})`];
@@ -157,5 +158,14 @@ export function providerUsageLines(u: ProviderUsageResult, indent: string): stri
       `${indent}  spend: current cycle ${usd(u.spend.current_cycle_usd)}, previous period ${usd(u.spend.previous_period_usd)}`,
     );
   }
+  // ADR-0089 (FR-CAP-16, BR-63): reported spend, never a remaining figure; what was not reported is said so.
+  for (const s of u.spend_windows ?? []) {
+    lines.push(
+      `${indent}  ${s.id} (${s.window_seconds} s, provider_reported): spent ${s.amount.toFixed(2)} ${s.unit}; ` +
+        "limit not reported, remaining not reported, reset not reported",
+    );
+  }
+  if (u.scope !== undefined) lines.push(`${indent}  scope: ${u.scope}`);
+  if (u.note !== undefined) lines.push(`${indent}  note: ${u.note}`);
   return lines;
 }

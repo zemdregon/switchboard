@@ -1346,6 +1346,26 @@ const PROVIDER_USAGE = {
             },
           ],
         },
+        // ADR-0089 (FR-CAP-16, LLD §16.13): reported spend per window (OpenCode); `amount` is spent, not remaining.
+        spend_windows: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "window_seconds", "from", "to", "amount", "unit"],
+            properties: {
+              id: { type: "string" },
+              window_seconds: { type: "integer", minimum: 1 },
+              from: { type: "string" },
+              to: { type: "string" },
+              amount: { type: "number", minimum: 0 },
+              unit: { const: "usd" },
+              detail: { type: "object" },
+            },
+          },
+        },
+        scope: { type: "string" },
+        note: { type: "string" },
       },
     },
     {
@@ -2581,7 +2601,9 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "its runs printed (rate_limit_event, as of observed_at): each " +
     "quota window's used_fraction, remaining_fraction and resets_at, the plan, credits and whether a limit is " +
     "reached, all source provider_reported (Cursor adds reset_label, reset_precision day, on_demand dollars and " +
-    "spend); source unknown carries the reason the read failed. " +
+    "spend); source unknown carries the reason the read failed. OpenCode reports spend, not quota: its report has " +
+    "empty windows and spend_windows (window, from, to, amount in usd as spent, never remaining) with scope and " +
+    "note; no limit, remaining share or reset is reported for it. " +
     "When the operator's Copilot quota reader is on, provider_quota carries GitHub Copilot's own reported quota " +
     "(provider copilot, usage-only, no run adapter); provider copilot returns only that.",
   explain_route:
