@@ -170,6 +170,11 @@ export class GrokAdapter implements ProviderAdapter {
   readonly gitWriteControl = GROK_GIT_WRITE_CONTROL;
   /** TDD §4.10: `-r <id>` resumed from a second directory ([LIVE] 14a), still `Unverified: T5.12`. */
   readonly resumeCwd = "unverified" as const;
+  /** ADR-0077: a requested model reaches the CLI only in the approved bypass cell. */
+  readonly requestedModelFlag = {
+    cells: "bypass",
+    detail: "--model <id> in the approved bypass cells (ADR-0077; grok --help: -m, --model)",
+  } as const;
   readonly gitCapabilities = GROK_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];

@@ -767,8 +767,10 @@ export function resolveGroupMemberForDoctor(
     };
   }
 
-  // 3. Does adapter accept models?
-  if (adapter.reportedModelFlag !== undefined && !acceptsReportedModel(adapter)) {
+  // 3. Does adapter accept models? ADR-0077: a `requestedModelFlag` declaration decides when present (the reported-model
+  // pin flag is about remembered models, not requested ones); otherwise the pre-ADR-0077 check stands.
+  const requested = adapter.requestedModelFlag;
+  if (requested === undefined && adapter.reportedModelFlag !== undefined && !acceptsReportedModel(adapter)) {
     const detail = adapter.reportedModelFlag.detail;
     return {
       provider: member.provider,
@@ -804,7 +806,7 @@ export function resolveGroupMemberForDoctor(
       resolved_id: resolved.model,
       alias: member.model,
       code: null,
-      resolution: `alias -> ${resolved.model}`,
+      resolution: `alias -> ${resolved.model}${requested?.cells === "bypass" ? " (approved bypass cell only)" : ""}`,
     };
   }
 
@@ -814,7 +816,7 @@ export function resolveGroupMemberForDoctor(
     status: "resolved",
     resolved_id: resolved.model,
     code: null,
-    resolution: resolved.model,
+    resolution: requested?.cells === "bypass" ? `${resolved.model} (approved bypass cell only)` : resolved.model,
   };
 }
 
