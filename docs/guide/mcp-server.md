@@ -124,15 +124,21 @@ Switchboard's own records when you ask:
   is shown separately as `provider_usage`, below). Nothing here is a
   percentage of your subscription. The sources are in
   [docs/research/capacity-signals-2026-10-14.md](../research/capacity-signals-2026-10-14.md).
-- **Provider-reported usage (Codex).** For an enabled provider whose CLI can report the signed-in account's quota
-  without a model call, each provider entry also carries `provider_usage`: `source: "provider_reported"` with the plan,
-  `limit_reached`, the windows (`used_fraction`, `remaining_fraction`, `window_seconds`, `resets_at`) and credits, or
-  `source: "unknown"` with a reason when the read failed, which is never headroom. Today only Codex has it, read by
-  running `codex app-server` with your own Codex login (Switchboard reads no credential and no file under `~/.codex`).
+- **Provider-reported usage (Codex, Grok Build).** For an enabled provider whose CLI can report the signed-in
+  account's quota without a model call, each provider entry also carries `provider_usage`:
+  `source: "provider_reported"` with the plan, `limit_reached`, the windows (`used_fraction`, `remaining_fraction`,
+  `window_seconds`, `resets_at`) and credits, or
+  `source: "unknown"` with a reason when the read failed, which is never headroom. Codex is read by running
+  `codex app-server` with your own Codex login (Switchboard reads no credential and no file under `~/.codex`). Grok Build
+  is read by running `grok agent --no-leader stdio` and asking its `_x.ai/billing` method, which backs Grok's `/usage`
+  screen, with your own Grok login. Its report adds `period` (kind, start, reset), `amounts` (prepaid balance and
+  on-demand cap and use; the unit is not stated, so it reads `unspecified`) and `unreported`, the figures Grok did not
+  send, which are unknown, not zero.
   It is shown beside the estimates and does not change them, routing or pacing, and it is not stored. `doctor` prints
   it in a separate "Provider-reported usage" section that never changes `ok`. Details:
-  [ADR-0079](../adr/0079-provider-reported-usage-reader.md),
-  [docs/research/codex-usage-2026-10-21.md](../research/codex-usage-2026-10-21.md).
+  [ADR-0079](../adr/0079-provider-reported-usage-reader.md), [ADR-0080](../adr/0080-grok-build-usage-reader.md),
+  [docs/research/codex-usage-2026-10-21.md](../research/codex-usage-2026-10-21.md),
+  [docs/research/grok-usage-sources-2026-10-21.md](../research/grok-usage-sources-2026-10-21.md).
 - **Circuit breaker.** After `capacity.breaker.failure_threshold` (default 3) rate-limit, overload or crash failures in
   a row, a provider is held back for `capacity.breaker.open_seconds` (default 300). New requests go to other providers;
   with `require_provider` they fail `ELIGIBILITY_NONE`. Queued runs wait. Then one run tries it, and its outcome

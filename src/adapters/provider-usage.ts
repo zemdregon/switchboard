@@ -25,6 +25,22 @@ export interface ProviderUsageCredits {
   balance: string | null;
 }
 
+/** The provider's current usage or billing period, reported even when no used share is (Grok `currentPeriod`). */
+export interface ProviderUsagePeriod {
+  kind: "weekly" | "monthly" | "daily" | "unknown";
+  starts_at: string | null;
+  resets_at: string | null;
+}
+
+/** An amount the provider reported without stating its unit; never presented as money or a share. */
+export interface ProviderUsageAmount {
+  id: string;
+  value: number;
+  unit: "unspecified";
+  /** The provider's own key the value came from (e.g. `config.prepaidBalance`). */
+  key: string;
+}
+
 /** A successful read. */
 export interface ProviderUsageReport {
   provider: string;
@@ -40,6 +56,12 @@ export interface ProviderUsageReport {
   limit_reached_type: string | null;
   windows: ProviderUsageWindow[];
   credits: ProviderUsageCredits | null;
+  /** Optional (Grok): the current period, even when `windows` is empty. Absent for readers that do not report one. */
+  period?: ProviderUsagePeriod;
+  /** Optional (Grok): reported amounts whose unit the provider does not state. */
+  amounts?: ProviderUsageAmount[];
+  /** Optional (Grok): provider keys the reader knows that the answer omitted: unreported, not zero. */
+  unreported?: string[];
 }
 
 /** A read that produced no figures. Never headroom (BR-50): the caller shows `unknown`. */

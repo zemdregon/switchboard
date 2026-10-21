@@ -120,5 +120,12 @@ export function providerUsageLines(u: ProviderUsageResult, indent: string): stri
         `${u.credits.has_credits ? "" : " (none)"}`,
     );
   }
+  if (u.period !== undefined) {
+    lines.push(`${indent}  period: ${u.period.kind}, resets ${u.period.resets_at ?? "unknown"}`);
+  }
+  for (const a of u.amounts ?? []) lines.push(`${indent}  ${a.id} ${a.value} (unit unspecified)`);
+  if (u.unreported !== undefined && u.unreported.length > 0) {
+    lines.push(`${indent}  unreported: ${u.unreported.join(", ")}`);
+  }
   return lines;
 }

@@ -35,6 +35,7 @@ import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import { renderObjective } from "../prompt.js";
+import type { ProviderUsageResult } from "../provider-usage.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -85,6 +86,14 @@ import {
   USAGE_KEYS,
   VERSION_ARGS,
 } from "./protocol.js";
+import {
+  GROK_USAGE_ARGS,
+  GROK_USAGE_METHOD,
+  GROK_USAGE_STDIN,
+  GROK_USAGE_TIMEOUT_MS,
+  grokUsageFromStdout,
+  isGrokUsageAnswer,
+} from "./usage.js";
 
 /**
  * Environment names passed through to Grok Build (FR-EXE-07, NFR-SEC-02). Proposed: `PATH` for the binary and `HOME`
@@ -258,6 +267,33 @@ export class GrokAdapter implements ProviderAdapter {
       .join("")
       .slice(0, AUTH_STATUS_LINE_MAX);
     return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (exit ${r.exitCode}${line ? `: ${line}` : ""})` };
+  }
+
+  /**
+   * Provider-reported usage (ADR-0079, ADR-0080, FR-CAP-13): `grok agent --no-leader stdio` `_x.ai/billing`
+   * (./usage.ts). No model call; the CLI uses its own login and Switchboard reads no file. A spawn failure, timeout
+   * or missing answer is `unknown`, never headroom (BR-50).
+   */
+  async readProviderUsage(runner: ProbeRunner, now: Date = new Date()): Promise<ProviderUsageResult> {
+    const at = now.toISOString();
+    const unknown = (error: string): ProviderUsageResult => ({
+      provider: "grok",
+      source: "unknown",
+      observed_at: at,
+      method: GROK_USAGE_METHOD,
+      error,
+    });
+    const exe = this.#exe;
+    if (exe === undefined) return unknown(`${GROK_BINARY} not found on PATH`);
+    const r = await runner([exe, ...this.#launcher, ...GROK_USAGE_ARGS], {
+      timeoutMs: GROK_USAGE_TIMEOUT_MS,
+      stdinText: GROK_USAGE_STDIN,
+      holdStdinUntil: isGrokUsageAnswer,
+    });
+    if (r.spawnError !== undefined) return unknown(`could not start ${GROK_BINARY} agent (${r.spawnError})`);
+    const read = grokUsageFromStdout(r.stdout, at);
+    if (read.source === "unknown" && r.timedOut) return unknown("grok agent timed out before answering");
+    return read;
   }
 
   /**
