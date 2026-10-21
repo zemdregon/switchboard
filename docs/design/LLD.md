@@ -6700,8 +6700,8 @@ run output carries one. Where a provider's CLI can report the signed-in account'
 optional adapter method reads them, and the result is shown beside the projection.
 
 **Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
-(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex and Grok Build
-implement it.
+(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex, Cursor and Grok
+Build implement it.
 
 ```jsonc
 // ProviderUsageReport
@@ -6734,12 +6734,12 @@ under `~/.codex` (ADR-0003).
 
 `accountId` and every other field are dropped.
 
-**Optional report fields** (ADR-0080). A report may also carry `period` (`kind`: `weekly`, `monthly`, `daily` or
+**Optional report fields** (ADR-0083). A report may also carry `period` (`kind`: `weekly`, `monthly`, `daily` or
 `unknown`; `starts_at`; `resets_at`), the provider's current usage period even when no used share is reported;
 `amounts[]` (`id`, `value`, `unit: "unspecified"`, `key`), reported amounts whose unit the provider does not state; and
 `unreported[]`, keys the reader knows but the answer omitted (unreported, never 0). Codex sets none of them.
 
-**Grok Build wire exchange** (`src/adapters/grok/usage.ts`, ADR-0080). The adapter runs `grok agent --no-leader stdio`
+**Grok Build wire exchange** (`src/adapters/grok/usage.ts`, ADR-0083). The adapter runs `grok agent --no-leader stdio`
 through the same `ProbeRunner` (`PATH` and `HOME`, 20 s timeout, **Proposed**). It writes two JSON-RPC lines:
 `initialize` (id 1, `protocolVersion: 1`) and `_x.ai/billing` (id 2, `{}`), and holds stdin open until the id-2 answer,
 because the agent exits at stdin end-of-file before answering. The `initialize` answer (agent id, hostname) is
@@ -6758,6 +6758,33 @@ field is dropped. An answer without `config` is `unknown` ("`_x.ai/billing` answ
 
 **Failure rules.** A spawn failure, a timeout, a missing answer or a JSON-RPC error returns `ProviderUsageUnavailable`
 with a short reason. An unknown figure is never headroom (BR-50).
+
+**Cursor `/usage` screen read** (`src/adapters/cursor/usage.ts`,
+[ADR-0080](../adr/0080-cursor-usage-from-the-cli-usage-command.md)). Cursor CLI has no non-interactive usage command
+(print mode sends `/usage` to the model). The adapter runs
+`script -qfec "stty cols 160 rows 50; exec cursor-agent --mode ask --trust" /dev/null` (BSD `script -q /dev/null sh -c`
+on macOS, **Assumption**). It uses the environment allowlist `PATH`, `HOME`, `USER`, `LOGNAME` and `TMPDIR`, plus a
+fixed `TERM` and an English UTF-8 locale. The working directory is the one owner-checked 0700 directory
+`<tmpdir>/switchboard-cursor-usage-<uid>`, kept between reads because Cursor records a project entry per directory. The
+reader types `/usage` once the prompt box is up, presses Enter only once the slash menu highlights `/usage` (so the
+text can never be sent as a prompt), parses the last panel, then sends Escape and Ctrl-C (SIGTERM after 1 s, SIGKILL
+after 3 s). The whole read times out after 30 s (**Proposed**). The CLI calls its own dashboard service with its own
+login. Switchboard reads only the screen, never stores it, and reads no Cursor file.
+
+| Panel text (CLI 2026.10.19) | Report field |
+| --- | --- |
+| `Usage • <plan>` | `plan` |
+| `Included` / `Auto` / `API` `<n>% used` | `windows[]` `included`, `included:auto`, `included:api`: `used_fraction` = n / 100, `remaining_fraction` = 1 − used, `window_seconds` null |
+| `Resets <Mon> <d>` (UTC date of the cycle end) or `Current period` | `reset_label` verbatim; `resets_at` = start of that UTC day (next on or after today), `reset_precision: "day"`; null for `Current period` |
+| `On-Demand` row and its detail line | `on_demand` {`state` `fixed` / `unlimited` / `disabled` / `unavailable`, `used_usd`, `limit_usd`, `remaining_usd`, `detail` verbatim} |
+| Enterprise `Current cycle $X`, `Previous period $Y` | `spend` {`current_cycle_usd`, `previous_period_usd`} |
+| Included at 100% and on-demand `disabled` or `fixed` with $0 remaining | `limit_reached: true`; below 100% or `unlimited` → false; otherwise null (Delegated) |
+
+The CLI's own messages (`Not logged in`, `not available for this plan`, `Failed to load usage data`), an exit before the
+panel, a menu that never shows `/usage` and the timeout all return `ProviderUsageUnavailable`. The four Cursor fields
+are optional in the shared report and in the output schema. Tests: `src/adapters/cursor/usage.test.ts` (recorded
+redacted capture `src/adapters/cursor/fixtures/usage_pro_exhausted.pty.txt` and synthetic panels built from the CLI's
+renderer strings), and the Cursor case in `src/mcp/get-capacity.test.ts`.
 
 **Reader and cache** (`src/capacity/provider-usage.ts`). `readProviderUsage` runs the readers of enabled providers that
 have one, in parallel. `ProviderUsageCache` is per process with a one-minute TTL (**Proposed**, Delegated).

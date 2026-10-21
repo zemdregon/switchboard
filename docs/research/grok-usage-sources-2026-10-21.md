@@ -1,6 +1,6 @@
 # Grok Build usage sources (2026-10-21)
 
-Research for [ADR-0080](../adr/0080-grok-build-usage-reader.md) (FR-CAP-13, on the
+Research for [ADR-0083](../adr/0083-grok-build-usage-reader.md) (FR-CAP-13, on the
 [ADR-0079](../adr/0079-provider-reported-usage-reader.md) interface). Host: Ampere operator host, grok 1.0.50.
 Delegated agent work; one tiny budgeted live turn was run through the operator's budgeted channel. No credential was
 read or recorded.
@@ -19,7 +19,7 @@ credential (ADR-0003, FR-AUTH-02)?
 | `streaming-json` `end` line `total_cost_usd_ticks` | Does not fit | Per run and already read by the adapter. |
 | 402 "usage balance exhausted" error | Does not fit | Failure-only; handled as a captured signature (ADR-0058). |
 | `x.ai/auth/check_subscription` | Rejected | Returns an email address and team id (personal data); not needed. |
-| xAI management REST API | Rejected | Would need Switchboard to hold an API key; ADR-0003 forbids. Open as ROADMAP Q-114 (default no). |
+| xAI management REST API | Rejected | Would need Switchboard to hold an API key; ADR-0003 forbids. Open as ROADMAP Q-115 (default no). |
 
 ## Exchange
 
@@ -50,4 +50,4 @@ account before and after one tiny budgeted live turn, so Switchboard reports the
 - The `val` amounts have no stated unit. Switchboard labels them `unspecified` and never claims USD.
 - `x.ai/billing` is an extension read from the binary and one live check, not a documented interface. It may change; the
   reader whitelists fields and reports `unavailable` on an unrecognised shape.
-- Whether usage figures should move from this separate surface into the pacing windows is a follow-up (T6.18 note).
+- Whether usage figures should move from this separate surface into the pacing windows is a follow-up (T6.21 note).

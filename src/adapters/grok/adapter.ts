@@ -275,7 +275,7 @@ export class GrokAdapter implements ProviderAdapter {
   }
 
   /**
-   * Provider-reported usage (ADR-0079, ADR-0080, FR-CAP-13): `grok agent --no-leader stdio` `_x.ai/billing`
+   * Provider-reported usage (ADR-0079, ADR-0083, FR-CAP-13): `grok agent --no-leader stdio` `_x.ai/billing`
    * (./usage.ts). No model call; the CLI uses its own login and Switchboard reads no file. A spawn failure, timeout
    * or missing answer is `unknown`, never headroom (BR-50).
    */

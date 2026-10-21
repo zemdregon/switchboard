@@ -1113,6 +1113,7 @@ const PROVIDER_USAGE = {
             },
           ],
         },
+        // ADR-0083 (Grok Build): optional period, amounts and unreported keys.
         period: {
           type: "object",
           additionalProperties: false,
@@ -1138,6 +1139,37 @@ const PROVIDER_USAGE = {
           },
         },
         unreported: { type: "array", items: { type: "string" } },
+        // ADR-0080 (Cursor): optional, as shown by the provider.
+        reset_label: { type: ["string", "null"] },
+        reset_precision: { enum: ["day", null] },
+        on_demand: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["state", "used_usd", "limit_usd", "remaining_usd", "detail"],
+              properties: {
+                state: { enum: ["fixed", "unlimited", "disabled", "unavailable"] },
+                used_usd: NULLABLE_NUMBER,
+                limit_usd: NULLABLE_NUMBER,
+                remaining_usd: NULLABLE_NUMBER,
+                detail: { type: ["string", "null"] },
+              },
+            },
+          ],
+        },
+        spend: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["current_cycle_usd", "previous_period_usd"],
+              properties: { current_cycle_usd: NULLABLE_NUMBER, previous_period_usd: NULLABLE_NUMBER },
+            },
+          ],
+        },
       },
     },
     {
@@ -2144,9 +2176,11 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "only when the provider itself reported them. Optional provider narrows the answer to one provider. When " +
     "subscriptions are configured, pacing lists one entry per subscription with each window's figures, " +
     "deferred_until and the gate verdict; that hold is not applied here. provider_usage, where present, is the " +
-    "provider's own report read live through its CLI with no model call (Codex: account/rateLimits/read): each " +
+    "provider's own report read live through its CLI with no model call (Codex: account/rateLimits/read; Cursor: " +
+    "the CLI's /usage command): each " +
     "quota window's used_fraction, remaining_fraction and resets_at, the plan, credits and whether a limit is " +
-    "reached, all source provider_reported; source unknown carries the reason the read failed.",
+    "reached, all source provider_reported (Cursor adds reset_label, reset_precision day, on_demand dollars and " +
+    "spend); source unknown carries the reason the read failed.",
   explain_route:
     "Why a run went to its provider, read-only, from Switchboard's stored route decision: candidates with eligibility " +
     "reasons, the recorded task features, weights and per-candidate scores, the selection rule, the project's " +

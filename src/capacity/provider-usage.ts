@@ -127,5 +127,26 @@ export function providerUsageLines(u: ProviderUsageResult, indent: string): stri
   if (u.unreported !== undefined && u.unreported.length > 0) {
     lines.push(`${indent}  unreported: ${u.unreported.join(", ")}`);
   }
+  if (u.reset_label != null) {
+    lines.push(
+      `${indent}  reset as shown: ${u.reset_label}${u.reset_precision === "day" ? " (day precision, UTC)" : ""}`,
+    );
+  }
+  if (u.on_demand != null) {
+    const d = u.on_demand;
+    const usd = (n: number | null) => (n === null ? "unknown" : `$${n}`);
+    lines.push(
+      `${indent}  on-demand: ${d.state}, used ${usd(d.used_usd)}` +
+        `${d.limit_usd === null ? "" : `, limit ${usd(d.limit_usd)}`}` +
+        `${d.remaining_usd === null ? "" : `, remaining ${usd(d.remaining_usd)}`}` +
+        `${d.detail === null ? "" : ` (${d.detail})`}`,
+    );
+  }
+  if (u.spend != null) {
+    const usd = (n: number | null) => (n === null ? "unknown" : `$${n}`);
+    lines.push(
+      `${indent}  spend: current cycle ${usd(u.spend.current_cycle_usd)}, previous period ${usd(u.spend.previous_period_usd)}`,
+    );
+  }
   return lines;
 }

@@ -56,12 +56,36 @@ export interface ProviderUsageReport {
   limit_reached_type: string | null;
   windows: ProviderUsageWindow[];
   credits: ProviderUsageCredits | null;
-  /** Optional (Grok): the current period, even when `windows` is empty. Absent for readers that do not report one. */
+  /** ADR-0083 (Grok): the current period, even when `windows` is empty. Absent for readers that do not report one. */
   period?: ProviderUsagePeriod;
-  /** Optional (Grok): reported amounts whose unit the provider does not state. */
+  /** ADR-0083 (Grok): reported amounts whose unit the provider does not state. */
   amounts?: ProviderUsageAmount[];
-  /** Optional (Grok): provider keys the reader knows that the answer omitted: unreported, not zero. */
+  /** ADR-0083 (Grok): provider keys the reader knows that the answer omitted: unreported, not zero. */
   unreported?: string[];
+  /** ADR-0080 (Cursor): the provider's reset label, verbatim (e.g. `Resets Nov 5`); absent when it shows none. */
+  reset_label?: string | null;
+  /** ADR-0080: `day` when the provider shows the reset as a date only and `resets_at` is the start of that UTC day. */
+  reset_precision?: "day" | null;
+  /** ADR-0080 (Cursor): the on-demand (usage-based) row, dollars as shown. */
+  on_demand?: ProviderUsageOnDemand | null;
+  /** ADR-0080 (Cursor Enterprise): cumulative spend this and last billing period, as shown. */
+  spend?: ProviderUsageSpend | null;
+}
+
+/** ADR-0080: an on-demand spend row; `state` is the provider's own case, dollars null when not shown. */
+export interface ProviderUsageOnDemand {
+  state: "fixed" | "unlimited" | "disabled" | "unavailable";
+  used_usd: number | null;
+  limit_usd: number | null;
+  remaining_usd: number | null;
+  /** The provider's detail line, verbatim. */
+  detail: string | null;
+}
+
+/** ADR-0080: a spend view in dollars. */
+export interface ProviderUsageSpend {
+  current_cycle_usd: number | null;
+  previous_period_usd: number | null;
 }
 
 /** A read that produced no figures. Never headroom (BR-50): the caller shows `unknown`. */

@@ -1,4 +1,4 @@
-# ADR-0080: Grok Build usage reader through the ACP `x.ai/billing` call
+# ADR-0083: Grok Build usage reader through the ACP `x.ai/billing` call
 
 - Status: Accepted (built 2026-10-21).
 - Date: 2026-10-21
@@ -9,7 +9,7 @@
   interface this builds on), [ADR-0003](0003-no-credential-handling.md) (no credential handling, holds),
   [ADR-0058](0058-captured-limit-signatures.md) (failure-only limit signatures, unchanged),
   [LLD §16.10](../design/LLD.md#1610-provider-reported-usage-reader-fr-cap-13-adr-0079),
-  [research note](../research/grok-usage-sources-2026-10-21.md), ROADMAP T6.18, Q-101, Q-114.
+  [research note](../research/grok-usage-sources-2026-10-21.md), ROADMAP T6.21, Q-101, Q-115.
 
 ## Context
 
@@ -52,7 +52,7 @@ with its own cached login and without a model turn (research note).
 ## Alternatives rejected
 
 - **xAI management or billing REST API.** Needs Switchboard to hold an xAI key or a browser session (ADR-0003). Left to
-  the owner as Q-114, default no.
+  the owner as Q-115, default no.
 - **Driving the TUI `/usage` modal.** Needs a pseudo-terminal and screen scraping; fragile and not headless.
 - **Per-run `total_cost_usd_ticks` against an operator budget.** That is the existing `controller_estimated` path, not
   a provider-reported figure.
