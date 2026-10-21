@@ -766,12 +766,26 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
    */
   const wantedProfile = (given: unknown, projectId: unknown, field: string): TrustProfile => {
     if (given !== undefined) return given as TrustProfile;
-    const configured =
-      typeof projectId === "string" ? (deps.config.projects ?? []).find((p) => p.id === projectId) : undefined;
-    const wanted = defaultedProfile(deps.config.defaultTrustProfile, configured, maxTrustProfile);
+    const wanted = defaultFor(projectId);
     if (wanted === undefined) throw invalid("trust_profile is required", { field });
     return wanted;
   };
+  /** ADR-0091: the configured default for a request in `projectId` (or none), lowered to this client's maximum. */
+  const defaultFor = (projectId: unknown): TrustProfile | undefined => {
+    const configured =
+      typeof projectId === "string" ? (deps.config.projects ?? []).find((p) => p.id === projectId) : undefined;
+    return defaultedProfile(deps.config.defaultTrustProfile, configured, maxTrustProfile);
+  };
+  /**
+   * ADR-0093 (FR-POL-13): for a client configured `promote_trust_profile: true`, whether an explicit `given` profile
+   * ranks below `fallback` (the default an omitted one resolves to, already lowered to the request's ceiling), so the
+   * request is resolved as if `trust_profile` were omitted. Never for another client, nor without a default.
+   */
+  const promotes = (given: TrustProfile | undefined, fallback: TrustProfile | undefined): boolean =>
+    client.promoteTrustProfile === true &&
+    given !== undefined &&
+    fallback !== undefined &&
+    profileRank(given) < profileRank(fallback);
   /** ADR-0091 (FR-MCP-26): the request's scope, else the operator's default scope for a `privileged` profile. */
   const scopeOrDefault = (given: unknown, profile: TrustProfile): unknown =>
     given ?? (profile === "privileged" ? deps.config.defaultPrivilegedScope : undefined);
@@ -1164,11 +1178,20 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   const delegateTask = async (a: Args): Promise<Envelope> => {
     const routing = a.routing as Routing | undefined;
     // ADR-0091: an absent trust_profile is the configured default, lowered to the client's maximum here and to the
-    // project's effective maximum once the project is resolved.
-    let profile = wantedProfile(a.trust_profile, a.project, "trust_profile");
+    // project's effective maximum once the project is resolved. ADR-0093: a promoting client's explicit profile below
+    // that default is resolved the same way; whether it stays promoted is decided against the project's ceiling below.
+    const given = a.trust_profile as TrustProfile | undefined;
+    const fallback = given === undefined ? undefined : defaultFor(a.project);
+    const early = promotes(given, fallback) ? fallback : undefined;
+    let profile = early ?? wantedProfile(given, a.project, "trust_profile");
     // V12 / V3 / V4: exactly one of `project` and `workspace_path` (the schema's oneOf has already refused anything else).
     const resolved = a.project !== undefined ? await resolveProject(a.project as string, profile) : undefined;
-    if (a.trust_profile === undefined && resolved !== undefined) profile = lowerProfile(profile, resolved.effectiveMax);
+    if ((given === undefined || early !== undefined) && resolved !== undefined) {
+      profile = lowerProfile(profile, resolved.effectiveMax);
+    }
+    // ADR-0093: never below what was asked for; at or above the clamped default the request is unchanged.
+    const promotedFrom = early !== undefined && promotes(given, profile) ? given : undefined;
+    if (early !== undefined && promotedFrom === undefined) profile = given as TrustProfile;
     const workspace = resolved?.workspace ?? (await lifecycle.canonicalWorkspace(a.workspace_path as string, profile));
     checkCeiling(profile, resolved); // V5 / BR-23
     // V13 (after V5): privileged_scope present exactly when the profile is privileged; ADR-0091 default scope.
@@ -1319,6 +1342,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(skills !== undefined ? { skills } : {}),
       // T3.24 (FR-CAP-12, LLD §20.2): `light` is honoured only for a client configured `allow_light: true`.
       ...(a.light === true && client.allowLight === true ? { light: true } : {}),
+      // ADR-0093 (FR-POL-13): the explicit tier the request named, recorded as a `trust_profile_promoted` event.
+      ...(promotedFrom !== undefined ? { trustProfilePromotedFrom: promotedFrom } : {}),
       ...(scope?.ok
         ? {
             privileged: {
@@ -1717,11 +1742,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
    */
   const checkQueuedRequest = (projectId: string, request: Args, prefix = "request."): Args => {
     const effectiveMax = listProjectCeiling(projectId);
-    let profile = request.trust_profile as TrustProfile | undefined;
-    if (profile === undefined) {
-      profile = defaultedProfile(deps.config.defaultTrustProfile, listProject(projectId), effectiveMax);
-      if (profile === undefined) throw invalid("trust_profile is required", { field: `${prefix}trust_profile` });
-    }
+    const given = request.trust_profile as TrustProfile | undefined;
+    const fallback = defaultedProfile(deps.config.defaultTrustProfile, listProject(projectId), effectiveMax);
+    // ADR-0093 (FR-POL-13): a promoting client's explicit profile below the clamped default is stored as the default.
+    const profile = given === undefined || promotes(given, fallback) ? fallback : given;
+    if (profile === undefined) throw invalid("trust_profile is required", { field: `${prefix}trust_profile` });
     if (profileRank(profile) > profileRank(effectiveMax)) {
       // V5 / BR-23 at enqueue; admission checks the ceiling again under the configuration of that time (LLD §18.4).
       throw new ToolError(

@@ -105,7 +105,10 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
 `default_privileged_scope` that sets `bypass` makes every request that names no `trust_profile` a bypass run, lowered
 to the client's and project's ceilings; a client asks for a lower profile explicitly. Over HTTP a client mapped to an
 entry with `privileged_approval: "not_required"` is refused unless you also set
-`transport.http.allow_unattended_privileged: true`; `default_mcp_client` is never relaxed. `doctor` warns for both.
+`transport.http.allow_unattended_privileged: true`; `default_mcp_client` is never relaxed. A client that still passes
+a lower `trust_profile` (such as `trusted-development`) keeps it unless you set `promote_trust_profile: true` on its
+`mcp_clients` entry (ADR-0093): its explicit lower tier is then promoted to the default, within the same ceilings, and
+the run records a `trust_profile_promoted` event. `doctor` warns for all three.
 Leave these keys out on any deployment where other people's clients connect.
 
 ## Security model

@@ -1205,6 +1205,28 @@ describe("doctor privileged default and unattended HTTP privileged (ADR-0091)", 
     const ids = (await doctor()).checks.map((x: { id: string }) => x.id);
     expect(ids).not.toContain("privileged_default");
     expect(ids).not.toContain("unattended_http_privileged");
+    expect(ids).not.toContain("trust_profile_promotion");
+  });
+
+  it("ADR-0093: warns trust_profile_promotion naming only the clients that promote", async () => {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schema_version: 1,
+        data_dir: dataDir,
+        allowed_roots: [path.join(tmp, "repos")],
+        default_trust_profile: "privileged",
+        default_privileged_scope: SCOPE,
+        mcp_clients: [
+          { id: "grok-bot", max_trust_profile: "privileged", promote_trust_profile: true },
+          { id: "ops", max_trust_profile: "edit-untrusted" },
+        ],
+      }),
+    );
+    const p = (await doctor()).checks.find((x: { id: string }) => x.id === "trust_profile_promotion");
+    expect(p.status).toBe("warn");
+    expect(p.detail).toMatch(/^client grok-bot: an explicit trust_profile below the configured default runs at/);
+    expect(p.detail).not.toContain("ops");
   });
 });
 
