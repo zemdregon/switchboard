@@ -47,7 +47,7 @@ function writeAgy(dir: string): string {
     file,
     `const a = process.argv.slice(2);
 const out = (s, code = 0) => { process.stdout.write(s); process.exitCode = code; };
-if (a[0] === "--version") out("1.4.3\\n");
+if (a[0] === "--version") out("1.4.4\\n");
 else if (a.includes("--help")) out("--prompt --output-format --dangerously-skip-permissions --conversation\\n");
 else if (a[0] === "models") {
   if (${JSON.stringify(path.join(dir, "logged-out"))} && (await import("node:fs")).existsSync(${JSON.stringify(path.join(dir, "logged-out"))})) {
