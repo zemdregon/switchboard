@@ -39,11 +39,12 @@ const OTHER_REDIRECT = "https://evil.example.test/cb";
 const PASSPHRASE = "correct horse battery staple";
 const FAKE_HASH = `scrypt$17$8$1$${"A".repeat(22)}$${"B".repeat(43)}`;
 
-/** Migration 0036 tests: `grok-bot` and `other` may be bound by a code; `root` (privileged ceiling) may not. */
+/** Migration 0036 tests: `grok-bot` and `other` may be bound by a code; `root` (privileged ceiling, approval required) may too (ADR-0086); `auto` (approval not_required) may not. */
 const MCP_CLIENTS: RawMcpClientEntry[] = [
   { id: "grok-bot", max_trust_profile: "edit-untrusted" },
   { id: "other", max_trust_profile: "inspect-untrusted" },
   { id: "root", max_trust_profile: "privileged" },
+  { id: "auto", max_trust_profile: "privileged", privileged_approval: "not_required" },
 ];
 
 const settings = (allowed_origins: string[] = [], over: Partial<HttpTransportConfig> = {}): HttpTransportSettings =>
@@ -947,9 +948,9 @@ describe("profile-bound one-time codes on the consent page (migration 0037)", ()
     expect(clients.get(mappedSame)?.mcpClient).toBeUndefined(); // the config mapping is the source
   });
 
-  it("refuses a code whose profile is not eligible for a binding (privileged ceiling) and keeps it live", async () => {
+  it("refuses a code whose profile is not eligible for a binding (approval not_required) and keeps it live", async () => {
     const clientId = register();
-    const root = liveCode("root"); // issue-code refuses this; the page checks again
+    const root = liveCode("auto"); // issue-code refuses this; the page checks again
     const r = await approveWithCode(clientId, root.code);
     expect(r.status).toBe(403);
     expect(r.text).toContain("can no longer be used over HTTP");
