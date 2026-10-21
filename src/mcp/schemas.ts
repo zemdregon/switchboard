@@ -1872,7 +1872,7 @@ const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
     "policy's verification and report conditions hold at the published head. Merges with the policy's method, pinned " +
     "to that head. A " +
     "refusal is PERMISSION_BLOCKED with details.reason (policy_off, draft, head_moved, base_mismatch, not_mergeable, " +
-    "no_required_checks, check_pending, check_failed, unverified_at_head, report_missing); a gh failure is " +
+    "no_required_checks, no_checks_reported, check_pending, check_failed, unverified_at_head, report_missing); a gh failure is " +
     "TOOL_FAILURE gh_error, retryable. Idempotent: an already merged pull request returns merged true. Every attempt " +
     "is a merge_event in get_digest.",
   update_run_branch:
