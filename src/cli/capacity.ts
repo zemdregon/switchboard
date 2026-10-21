@@ -159,7 +159,7 @@ export function renderCapacity(p: CapacityProjection): string {
       }`,
     );
     lines.push(`  provider-reported reset: ${c.reset_at === null ? "none" : c.reset_at.at}`);
-    // ADR-0079 (FR-CAP-13): the provider's own report, read live through its CLI.
+    // ADR-0079 (FR-CAP-13): the provider's own report, read live through its CLI, or (ADR-0088) from recorded run output.
     if (c.provider_usage !== undefined) lines.push(...providerUsageLines(c.provider_usage, "  "));
     if (c.cache !== undefined) {
       // FR-CAP-08: reported counts with their source; never read as cache use.

@@ -6554,6 +6554,9 @@ per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surfa
 quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
 and `confidence`, labelled "estimate".
 
+T6.18 builds the provider's `provider_usage` report (§16.12) from recorded run output for Claude Code, absent when no
+windowed figure is current.
+
 T6.14 adds an optional top-level `pacing` array, one entry per subscription (§16.9). It is omitted when no subscription
 is configured, so an unconfigured projection stays byte-identical. `doctor` prints one pacing line per subscription.
 The gate verdict is shown; the projection holds nothing. The hold is T6.8 (§16.9), applied at admission and in
@@ -6741,7 +6744,9 @@ declared reset key (below) that is still in the future, and without one its rese
 no reset: its used share is taken over the last `length_seconds`. Without a `budget`, a window has no estimate.
 
 **Declared keys** (`USAGE_KEYS` in the capacity module, empty and frozen until a task wires a sourced key, as
-`REMAINING_KEYS` in §16.2). An entry names a provider, the `usage_observation.metrics_json` key or `rate_limit` event
+`REMAINING_KEYS` in §16.2).
+*(Since 2026-10-21 it declares the `claude` keys, see below.)*
+An entry names a provider, the `usage_observation.metrics_json` key or `rate_limit` event
 field, and what it carries (`used_fraction`, `remaining_fraction` or `reset_at`), with the source document. Candidates
 named by T6.0, none wired: Antigravity's `/usage` `remaining_fraction` and `reset_time` per bucket (a separate call,
 Q-101), and Claude Code's `rate_limit_event` `resetsAt` (a synthetic fixture shape, T6.11).
@@ -6888,6 +6893,14 @@ breaker's probe): a queued run whose provider is deferred stays in `QUEUED`, one
 including `privileged` and `require_provider` runs and runs admitted to an undeferred provider whose subscription
 became deferred before dispatch. Nothing creates a run, a probe or a provider call. Tests:
 `src/lifecycle/pacing-gate.test.ts`, `src/routing/pacing-admission.test.ts`.
+
+*Update 2026-10-21 ([ADR-0088](../adr/0088-claude-code-usage-windows.md), ROADMAP T6.23, Delegated, not owner-approved):*
+`USAGE_KEYS` now declares Claude Code's `five_hour_used_fraction`, `five_hour_resets_at`, `seven_day_used_fraction` and
+`seven_day_resets_at` (the [capture](../research/claude-usage-capture-2026-10-21.md)). An entry may carry
+`window: { id, lengthSeconds }` (`five_hour` 18000 s, `seven_day` 604800 s). A windowed key feeds only a configured
+subscription window whose `length_seconds` equals its own, so a 7-day figure is never read into a 5-hour window.
+`REMAINING_KEYS` stays empty (Claude reports a used share). The figures reach `usage_observation` from the adapter's
+`usage` events (`src/adapters/claude/usage.ts`, `parse.ts`).
 
 ### 16.10 Provider-reported usage reader (FR-CAP-13, ADR-0079)
 
@@ -7048,6 +7061,46 @@ Observed on 1.4.3: a bucket at `remaining_fraction` 1 reports a `reset_time` of 
 started), so that `resets_at` moves on every read. Tests: `src/adapters/antigravity/usage.test.ts` and
 `src/mcp/get-capacity-antigravity-usage.test.ts` (the real probe runner against a stand-in `agy` that prints the
 recorded answers).
+
+### 16.12 Claude Code usage windows from run output (FR-CAP-15, ADR-0088)
+
+No migration, no new output field. The Claude figures reach the capacity surfaces as an ADR-0079 `ProviderUsageReport`
+(§16.10) built on read from `usage_observation` rows and the clock, set as the provider's `provider_usage`:
+
+```jsonc
+"provider_usage": { "source": "provider_reported", "provider": "claude", "observed_at": "<ISO time>",
+  "method": "recorded run output (declared usage keys)", "plan": null, "limit_reached": null,
+  "limit_reached_type": null, "credits": null,
+  "windows": [ { "id": "five_hour", "limit_id": null, "window_seconds": 18000, "used_fraction": 0.03,
+                 "remaining_fraction": 0.97, "resets_at": "<ISO time>" } ] }
+```
+
+- **Collector query:** the ledger's `listLatestProviderReportedUsageWithKey` returns the newest 20
+  (`REPORTED_USAGE_ROWS`, Assumption) `provider_reported` rows carrying a given metric key for a provider, observed
+  within one window length (`src/ledger/repo.ts`); `src/capacity/collect.ts` calls it for each declared windowed share
+  key.
+- **Selection rule** (`src/capacity/reported-usage.ts`, pure function with an injected clock): per declared windowed
+  `used_fraction` key, among those rows keep the one with the latest declared reset, then the largest used share, then
+  the newest. Reason: a row is written when its run ends, so a long run that read the figure earlier can be stored
+  after a newer reading, and within one window the used share only grows. `resets_at` is the kept row's declared reset
+  key (`null` when the row carried none); a window whose `resets_at` is not after `now` is dropped;
+  `remaining_fraction` is `1 - used_fraction`; `window_seconds` is the key's declared window length. The report's
+  `observed_at` is the oldest reading among its windows. `plan`, `limit_reached`, `limit_reached_type` and `credits`
+  are `null`: run output carries none. The report is absent when no window remains, so a build without such keys is
+  byte-identical, and it never feeds the §16.2 estimate.
+- **Relation to a live reader (§16.10):** a provider with a `readProviderUsage` reader (Codex) has its live report
+  overlay or replace this one; a provider without a reader (Claude) shows this one. §16.10 item "may run a provider
+  CLI" does not apply to Claude: nothing is started for it.
+- **Freshness:** as new as the newest run of that provider. Nothing creates a run, a probe or a provider call
+  (FR-CAP-10) and nothing reads a credential (ADR-0003).
+- **Surfaces:** the existing `provider_usage` of `get_capacity`, and the shared text lines of `switchboard capacity`
+  and `doctor` (`providerUsageLines`), for example
+  `five_hour (18000 s, provider_reported): used 0.03, remaining 0.97, resets <ISO time>`. The §16.3 wording rule
+  holds: "remaining" appears only on `provider_reported` lines.
+- **Relation to pacing (§16.9):** the same rows feed a configured subscription window of the same length as a
+  `provider_reported` `used_fraction` and `reset_at`; the report shows them even when no subscription is configured.
+
+Tests: `src/capacity/reported-usage.test.ts`, `src/adapters/claude/usage.test.ts`, `src/mcp/get-capacity.test.ts`.
 
 ## 17. Routing (M7)
 
