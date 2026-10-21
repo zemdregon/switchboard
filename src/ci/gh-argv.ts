@@ -36,6 +36,15 @@
  * | G11 | `pr checks {number} --repo {owner}/{repo} --required --json {G11_FIELDS}` |
  * | G12 | `pr merge {number} --repo {owner}/{repo} --{squash\|merge\|rebase} --match-head-commit {sha}` (write) |
  *
+ * ADR-0079 item 7 (submodule projects). Both are reads, for any `owner/repo` the controller resolved (a submodule's
+ * repository included). G16 reads every reported check, not only the required ones, for `merge_policy.checks:
+ * all_reported`; G17 reads a pull request's state and merge commit for the ordered-merge step machine:
+ *
+ * | ID | argv (after the binary) |
+ * | --- | --- |
+ * | G16 | `pr checks {number} --repo {owner}/{repo} --json {G16_FIELDS}` |
+ * | G17 | `pr view {number} --repo {owner}/{repo} --json {G17_FIELDS}` |
+ *
  * ADR-0069 (MCP `publish_run`, LLD §3.4.12). G14 is a read; G13 is the one pull-request write verb, spawned only by
  * `publish_run` after the controller push of the same branch was accepted. Title and body are controller-built cells
  * ({@link isPrTitle}, {@link isPrBody}); never `--fill`, `--web`, `--assignee`, `--reviewer` or `--label`:
@@ -72,6 +81,10 @@ export const PR_TITLE_MAX = 200;
 export const PR_BODY_MAX_BYTES = 20 * 1024;
 /** G11: only the result bucket of each required check (`gh pr checks` manual: `pass`, `fail`, `pending`, ...). */
 export const G11_FIELDS = "bucket";
+/** G16: only the result bucket of each reported check, required or not (ADR-0079 item 7). */
+export const G16_FIELDS = "bucket";
+/** G17: the state and merge commit of one pull request (ADR-0079 item 7). */
+export const G17_FIELDS = "state,mergeCommit";
 /** G12 merge methods; each is one `gh pr merge` flag (`--squash`, `--merge`, `--rebase`). */
 export const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
 export type MergeMethod = (typeof MERGE_METHODS)[number];
@@ -249,6 +262,18 @@ export function ghPrRequiredChecksArgv(owner: string, repo: string, prNumber: st
   return audited(["pr", "checks", prNumber, "--repo", repoArg(owner, repo), "--required", "--json", G11_FIELDS]);
 }
 
+/** G16: every reported check of one pull request's head, required or not (ADR-0079 item 7, read-only). */
+export function ghPrReportedChecksArgv(owner: string, repo: string, prNumber: string): string[] {
+  if (!isPrNumber(prNumber)) throw new GhArgvError("invalid pull request number");
+  return audited(["pr", "checks", prNumber, "--repo", repoArg(owner, repo), "--json", G16_FIELDS]);
+}
+
+/** G17: the state and merge commit of one pull request, by number (ADR-0079 item 7, read-only). */
+export function ghPrMergeStateArgv(owner: string, repo: string, prNumber: string): string[] {
+  if (!isPrNumber(prNumber)) throw new GhArgvError("invalid pull request number");
+  return audited(["pr", "view", prNumber, "--repo", repoArg(owner, repo), "--json", G17_FIELDS]);
+}
+
 /** G12: merge one pull request pinned to its head SHA (T15.8 write verb). */
 export function ghPrMergeArgv(
   owner: string,
@@ -297,7 +322,7 @@ export function ghPrUpdateBranchArgv(owner: string, repo: string, prNumber: stri
 }
 
 /**
- * The argv audit: true only for an argv that is exactly one of G1 to G15 with validated values in the value cells.
+ * The argv audit: true only for an argv that is exactly one of G1 to G17 with validated values in the value cells.
  * Builders call it before returning, so a template edit that drifts fails closed.
  */
 export function isAllowedGhArgv(argv: readonly string[]): boolean {
@@ -356,6 +381,15 @@ export function isAllowedGhArgv(argv: readonly string[]): boolean {
     return argv.length === 5 && isDatabaseId(argv[2] ?? "") && argv[3] === "--repo" && ownerRepo(argv[4]);
   }
   if (argv[0] === "pr" && argv[1] === "view") {
+    if (argv[6] === G17_FIELDS) {
+      return (
+        argv.length === 7 &&
+        isPrNumber(argv[2] ?? "") &&
+        argv[3] === "--repo" &&
+        ownerRepo(argv[4]) &&
+        argv[5] === "--json"
+      );
+    }
     return (
       argv.length === 7 &&
       isSafeBranch(argv[2] ?? "") &&
@@ -378,6 +412,15 @@ export function isAllowedGhArgv(argv: readonly string[]): boolean {
       isPrTitle(argv[9] ?? "") &&
       argv[10] === "--body" &&
       isPrBody(argv[11] ?? "")
+    );
+  }
+  if (argv[0] === "pr" && argv[1] === "checks" && argv.length === 7) {
+    return (
+      isPrNumber(argv[2] ?? "") &&
+      argv[3] === "--repo" &&
+      ownerRepo(argv[4]) &&
+      argv[5] === "--json" &&
+      argv[6] === G16_FIELDS
     );
   }
   if (argv[0] === "pr" && argv[1] === "checks") {
@@ -668,8 +711,12 @@ export const REQUIRED_CHECKS_MAX = 200;
 
 /** G11 stdout: a JSON array of `{bucket}`; every other property is dropped. Throws on anything else. */
 export function parseRequiredChecks(stdout: string): CheckBucket[] {
+  return parseCheckBuckets(stdout, REQUIRED_CHECKS_MAX);
+}
+
+function parseCheckBuckets(stdout: string, max: number): CheckBucket[] {
   const parsed: unknown = JSON.parse(stdout);
-  if (!Array.isArray(parsed) || parsed.length > REQUIRED_CHECKS_MAX) throw new Error("unexpected checks shape");
+  if (!Array.isArray(parsed) || parsed.length > max) throw new Error("unexpected checks shape");
   return parsed.map((raw) => {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("unexpected check shape");
     const b = (raw as Record<string, unknown>).bucket;
@@ -677,6 +724,34 @@ export function parseRequiredChecks(stdout: string): CheckBucket[] {
       throw new Error("unexpected bucket");
     return b as CheckBucket;
   });
+}
+
+/** At most this many reported checks are read (Assumption: more than any one head reports; over it fails closed). */
+export const REPORTED_CHECKS_MAX = 500;
+
+/** G16 stdout: a JSON array of `{bucket}`, as {@link parseRequiredChecks} with a larger bound. Throws on anything else. */
+export function parseReportedChecks(stdout: string): CheckBucket[] {
+  return parseCheckBuckets(stdout, REPORTED_CHECKS_MAX);
+}
+
+/** G17 fields after the closed allowlist: the state and, once merged, the merge commit. */
+export interface GhPrMergeStateFields {
+  state: "OPEN" | "CLOSED" | "MERGED";
+  mergeCommitSha?: string;
+}
+
+/** G17 stdout: `{state, mergeCommit: {oid} | null}`; only the state and a 40-hex oid are kept. Throws on anything else. */
+export function parsePrMergeState(stdout: string): GhPrMergeStateFields {
+  const o = JSON.parse(stdout) as unknown;
+  if (typeof o !== "object" || o === null || Array.isArray(o)) throw new Error("unexpected pull request shape");
+  const r = o as Record<string, unknown>;
+  if (r.state !== "OPEN" && r.state !== "CLOSED" && r.state !== "MERGED") throw new Error("unexpected state");
+  const mc = r.mergeCommit;
+  if (mc === null || mc === undefined) return { state: r.state };
+  if (typeof mc !== "object" || Array.isArray(mc)) throw new Error("unexpected merge commit shape");
+  const oid = (mc as Record<string, unknown>).oid;
+  if (typeof oid !== "string" || !/^[0-9a-fA-F]{40}$/u.test(oid)) throw new Error("unexpected merge commit id");
+  return { state: r.state, mergeCommitSha: oid.toLowerCase() };
 }
 
 /** G14 fields after the closed allowlist (ADR-0069). */

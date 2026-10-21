@@ -18,6 +18,8 @@
  *    `report_missing`.
  * 3. G11 `gh pr checks --required`: none → `no_required_checks` (fail closed); any `fail`, `cancel` or `skipping` →
  *    `check_failed`; any `pending` → `check_pending`. Non-required checks are never read.
+ *    ADR-0079 item 7: with `merge_policy.checks: all_reported` the read is G16 (every reported check, required or not):
+ *    none reported → `no_checks_reported`; the same `check_failed` and `check_pending` classification.
  * 4. The policy is looked up again (`policy_off` when it was turned off meanwhile), G10 is read again (step 1's checks
  *    again), then G12 `gh pr merge <n> --<method> --match-head-commit <sha>`, so a head that moves after the read
  *    refuses on GitHub's side too.
@@ -449,13 +451,21 @@ export async function applyMergeGate(
   if (policy.requiredReports.some((r) => r === "docs-alignment" && !reportAlignedAtHead(db, projectId, ref.headSha))) {
     return refuse("report_missing", view.number);
   }
+  // ADR-0079 item 7: `all_reported` reads every reported check (G16); absent or `required` is the default (G11).
+  const allReported = policy.checks === "all_reported";
+  if (allReported && deps.merge.reportedChecks === undefined) return refuse("gh_error", view.number);
   let checks: Awaited<ReturnType<CiMergePort["requiredChecks"]>>;
   try {
-    checks = await deps.merge.requiredChecks({ ...gh, prNumber: view.number });
+    checks = await (allReported
+      ? (deps.merge.reportedChecks as NonNullable<CiMergePort["reportedChecks"]>).call(deps.merge, {
+          ...gh,
+          prNumber: view.number,
+        })
+      : deps.merge.requiredChecks({ ...gh, prNumber: view.number }));
   } catch {
     return refuse("gh_error", view.number);
   }
-  if (checks.kind === "none") return refuse("no_required_checks", view.number);
+  if (checks.kind === "none") return refuse(allReported ? "no_checks_reported" : "no_required_checks", view.number);
   if (checks.buckets.some((b) => b !== "pass" && b !== "pending")) return refuse("check_failed", view.number);
   if (checks.buckets.includes("pending")) return refuse("check_pending", view.number);
   // Step 4: the policy and the pull request are read again right before the one write.
@@ -464,6 +474,8 @@ export async function applyMergeGate(
     now === undefined ||
     !now.policy.enabled ||
     now.policy.method !== policy.method ||
+    // ADR-0079 item 7: the check policy changed after this pass read the checks.
+    (now.policy.checks ?? "required") !== (policy.checks ?? "required") ||
     // ADR-0070: verification turned back on after this pass skipped it.
     (now.policy.requireVerification !== false && policy.requireVerification === false)
   ) {

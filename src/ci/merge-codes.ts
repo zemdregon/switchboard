@@ -7,12 +7,13 @@
 export const REF_EVENT_KINDS = ["ci_passed", "ci_failed", "foreign_commit", "conflicting", "merged", "closed"] as const;
 export type RefEventKind = (typeof REF_EVENT_KINDS)[number];
 
-/** `merge_event.reason` of a refusal: LLD §20.7's list plus `base_mismatch` (Delegated, T15.8). */
+/** `merge_event.reason` of a refusal: LLD §20.7's list plus `base_mismatch` (Delegated, T15.8) and `no_checks_reported` (ADR-0079 item 7). */
 export const MERGE_REFUSAL_REASONS = [
   "head_moved",
   "check_failed",
   "check_pending",
   "no_required_checks",
+  "no_checks_reported",
   "not_mergeable",
   "unverified_at_head",
   "report_missing",
