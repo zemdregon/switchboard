@@ -25,10 +25,10 @@ were not. The prod ledger and the stored Claude streams (read only, 2026-10-21) 
   adapter has no per-model permission mapping: `--model` is the only argv word that depends on the model.
 - The denied commands were ordinary shell: `for` loops, `node t.mjs; echo EXIT $?`, `${PIPESTATUS[0]}`, `$(...)`,
   pipes into unlisted programs (`cut`, `awk`, `tee`), `rm`, `timeout`, `pnpm`, `gh`, `patch`, a `python3 -` heredoc,
-  and `git log`, `git branch -a` and `git status` (no `git` prefix rule exists, by ADR-0066 item 2). Under `--permission-mode dontAsk`
-  Claude Code denies any command that its rule matcher cannot match to an allow rule, part by part. A command-prefix
-  allowlist cannot admit loops or expansions, so how often a run was denied depended on how the model wrote shell, not
-  on which model it was.
+  and `git log`, `git branch -a` and `git status` (no `git` prefix rule exists, by ADR-0066 item 2). Under
+  `--permission-mode dontAsk` Claude Code denies any command that its rule matcher cannot match to an allow rule,
+  part by part. A command-prefix allowlist cannot admit loops or expansions, so how often a run was denied depended
+  on how the model wrote shell, not on which model it was.
 - The six switchboard gap-fix runs of 2026-10-20 (04:17 to 04:41) failed on the exact `Bash(npx)` rules that
   ADR-0066 has since fixed, on a `Write` to `/tmp` (outside the worktree; `--restricted` confinement, intended), and on
   Git verbs the tool-call guard counts as writes (`git checkout`, `git fetch`).
