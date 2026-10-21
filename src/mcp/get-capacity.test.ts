@@ -10,6 +10,7 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ClaudeAdapter } from "../adapters/claude/adapter.js";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type ProviderId, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
@@ -53,7 +54,11 @@ let ledger: Ledger;
 let lifecycle: RunLifecycle | undefined;
 const servers: { mcp: SwitchboardMcpServer; client: Client }[] = [];
 
-const registry = () => new AdapterRegistry().register(new FakeAdapter({ script: "/nonexistent/fake-cli.mjs" }));
+let withClaude = false;
+const registry = () => {
+  const reg = new AdapterRegistry().register(new FakeAdapter({ script: "/nonexistent/fake-cli.mjs" }));
+  return withClaude ? reg.register(new ClaudeAdapter({ binaryPath: "/nonexistent/claude" })) : reg;
+};
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-cap-")));
@@ -74,6 +79,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  withClaude = false;
   await lifecycle?.shutdown();
   lifecycle = undefined;
   for (const s of servers.splice(0)) {
@@ -211,23 +217,27 @@ function expectHonestText(text: string): void {
   expect(text).not.toMatch(/quota left|available quota|%/i);
 }
 
-/** FR-CAP-03 over a JSON surface: the only "remaining" key is explicit_remaining, null or provider-reported. */
+/**
+ * FR-CAP-03 over a JSON surface: a "remaining" key is explicit_remaining (null or provider-reported) or sits inside a
+ * block whose source is provider_reported (ADR-0079 reported_usage).
+ */
 function expectHonestJson(value: unknown): void {
-  const walk = (v: unknown): void => {
+  const walk = (v: unknown, reported: boolean): void => {
     if (Array.isArray(v)) {
-      for (const item of v) walk(item);
+      for (const item of v) walk(item, reported);
       return;
     }
     if (v === null || typeof v !== "object") return;
+    const here = reported || (v as Json).source === "provider_reported";
     for (const [k, child] of Object.entries(v)) {
-      if (/remaining/i.test(k)) {
+      if (/remaining/i.test(k) && !here) {
         expect(k).toBe("explicit_remaining");
         if (child !== null) expect((child as Json).source).toBe("provider_reported");
       }
-      walk(child);
+      walk(child, here);
     }
   };
-  walk(value);
+  walk(value, false);
 }
 
 describe("get_capacity on the MCP server (T6.3; FR-MCP-02, LLD §16.3)", () => {
@@ -301,6 +311,67 @@ describe("get_capacity on the MCP server (T6.3; FR-MCP-02, LLD §16.3)", () => {
     expect(unknown.isError).toBe(true);
     expect(unknown.body.error.code).toBe("INVALID_REQUEST");
     expect(unknown.body.error.message).toMatch(/unknown provider/);
+  });
+});
+
+describe("reported_usage on get_capacity (ADR-0079; FR-CAP-13)", () => {
+  it("shows Claude Code's own windows from the newest run's usage row, schema-valid and honest", async () => {
+    withClaude = true;
+    openData();
+    const ms = ledger.createMetaSession({ objective: "o" });
+    const r = ledger.createRun({
+      metaSessionId: ms.id,
+      trustProfile: "inspect-untrusted",
+      policySnapshot: {},
+      request: {},
+      requestHash: "h",
+      clientId: "c1",
+      provider: "claude",
+    });
+    // The metrics the Claude parser records from the 2026-10-21 capture; observed at the ledger clock (NOW).
+    ledger.insertUsageObservation({
+      runId: r.id,
+      provider: "claude",
+      harness: "claude",
+      source: "provider_reported",
+      metrics: {
+        five_hour_used_fraction: 0.03,
+        five_hour_resets_at: "2026-10-14T14:30:00.000Z",
+        seven_day_used_fraction: 0.06,
+        seven_day_resets_at: "2026-10-16T12:00:00.000Z",
+      },
+    });
+    const client = await connect();
+    const res = await capacityTool(client, { provider: "claude" });
+    expect(res.isError).toBe(false);
+    expect(res.body.providers).toHaveLength(1);
+    expect(res.body.providers[0].explicit_remaining).toBeNull();
+    expect(res.body.providers[0].reported_usage).toEqual({
+      source: "provider_reported",
+      windows: [
+        {
+          id: "five_hour",
+          length_seconds: 18000,
+          used_fraction: 0.03,
+          remaining_fraction: 0.97,
+          resets_at: "2026-10-14T14:30:00.000Z",
+          observed_at: NOW.toISOString(),
+          key: "five_hour_used_fraction",
+        },
+        {
+          id: "seven_day",
+          length_seconds: 604800,
+          used_fraction: 0.06,
+          remaining_fraction: 0.94,
+          resets_at: "2026-10-16T12:00:00.000Z",
+          observed_at: NOW.toISOString(),
+          key: "seven_day_used_fraction",
+        },
+      ],
+    });
+    expectHonestJson(res.body);
+    const fake = await capacityTool(client, { provider: "fake" });
+    expect(fake.body.providers[0].reported_usage).toBeUndefined();
   });
 });
 
@@ -378,6 +449,37 @@ describe("one projection for get_capacity, switchboard capacity and doctor (T6.3
     expect(text.out).toContain("Capacity (controller estimates, not provider quota");
     expect(text.out).toMatch(/fake: breaker CLOSED, throttle risk high, estimate confidence 0\.25/);
     expectHonestText(text.out);
+  });
+
+  it("ADR-0079: doctor and capacity print Claude Code's provider-reported windows, labelled", async () => {
+    withClaude = true;
+    openData();
+    const ms = ledger.createMetaSession({ objective: "o" });
+    const r = ledger.createRun({
+      metaSessionId: ms.id,
+      trustProfile: "inspect-untrusted",
+      policySnapshot: {},
+      request: {},
+      requestHash: "h",
+      clientId: "c1",
+      provider: "claude",
+    });
+    ledger.insertUsageObservation({
+      runId: r.id,
+      provider: "claude",
+      harness: "claude",
+      source: "provider_reported",
+      metrics: { five_hour_used_fraction: 0.03, five_hour_resets_at: "2026-10-14T14:30:00.000Z" },
+    });
+    db?.close();
+    db = undefined;
+    const doctor = await cli(["doctor"]);
+    expect(doctor.out).toMatch(/claude: breaker CLOSED, .*; provider-reported used five_hour 0\.03\n/);
+    const capacity = await cli(["capacity", "--provider", "claude"]);
+    expect(capacity.out).toContain(
+      "provider-reported usage five_hour: used 0.03, remaining 0.97 of the window, resets 2026-10-14T14:30:00.000Z",
+    );
+    expectHonestText(capacity.out);
   });
 });
 

@@ -21,9 +21,14 @@
  * T6.11 (docs/research/limit-captures-2026-10-17.md): the only real limit captured was in text mode ("You've hit your
  * weekly limit · resets 12pm (UTC)", exit 1; a reset hour with no date). The `rejected` `rate_limit_event` shape above
  * is still an Assumption from a synthetic fixture.
+ *
+ * ADR-0079 (captured 2026-10-21, `docs/research/claude-usage-capture-2026-10-21.md`): every run emits an `allowed`
+ * `rate_limit_event` whose `unifiedWindows` carry the account's 5-hour and 7-day used share and reset; they become a
+ * `provider_reported` `usage` event (`./usage.ts`).
  */
 import { GIT_RULE_COMMAND_MAX_CHARS, gitDenyRuleSecurityReason } from "../git-write.js";
 import type { DenialClass, NormalizedEvent, ParseState } from "../types.js";
+import { claudeUsageMetrics } from "./usage.js";
 
 type Json = Record<string, unknown>;
 
@@ -200,12 +205,18 @@ function resultEvents(e: Json, state: ParseState): NormalizedEvent[] {
 
 function rateLimitEvents(e: Json): NormalizedEvent[] {
   const info = obj(e.rate_limit_info);
+  // ADR-0079: the window figures are recorded whatever the status; only `rejected` is a limit signal.
+  const metrics = claudeUsageMetrics(info);
+  const usage: NormalizedEvent[] = metrics ? [{ kind: "usage", source: "provider_reported", metrics }] : [];
   const status = str(info?.status);
-  if (status !== "rejected") return []; // allowed / warning states are informational
+  if (status !== "rejected") return usage; // allowed / warning states are informational
   const resetsAt = info?.resetsAt;
   const resetAt = typeof resetsAt === "number" ? new Date(resetsAt * 1000).toISOString() : str(resetsAt);
   const reportedCategory = str(info?.rateLimitType);
-  return [{ kind: "rate_limit", ...(resetAt ? { resetAt } : {}), ...(reportedCategory ? { reportedCategory } : {}) }];
+  return [
+    ...usage,
+    { kind: "rate_limit", ...(resetAt ? { resetAt } : {}), ...(reportedCategory ? { reportedCategory } : {}) },
+  ];
 }
 
 /** One stdout line -> zero or more normalized events. Unparseable lines yield nothing (the supervisor fails the run). */

@@ -88,7 +88,8 @@ function pacingWindowLine(w: PacingWindowView): string {
 
 /**
  * Text view. Wording rule (LLD §16.3, FR-CAP-03): "remaining" appears only on the provider-reported line, never next to
- * an estimate, and no line speaks of quota left or a percentage.
+ * an estimate, and no line speaks of quota left or a percentage. ADR-0079: a provider-reported usage window prints its
+ * used and remaining share as fractions, on a line labelled provider-reported.
  */
 export function renderCapacity(p: CapacityProjection): string {
   const lines = [`switchboard capacity (as of ${p.as_of}, window ${p.window_seconds} s)`, `Note: ${p.note}.`, ""];
@@ -107,6 +108,12 @@ export function renderCapacity(p: CapacityProjection): string {
       }`,
     );
     lines.push(`  provider-reported reset: ${c.reset_at === null ? "none" : c.reset_at.at}`);
+    for (const w of c.reported_usage?.windows ?? []) {
+      lines.push(
+        `  provider-reported usage ${w.id}: used ${w.used_fraction}, remaining ${w.remaining_fraction} of the window, ` +
+          `resets ${w.resets_at ?? "not reported"} (at ${w.observed_at})`,
+      );
+    }
     if (c.cache !== undefined) {
       // FR-CAP-08: reported counts with their source; never read as cache use.
       lines.push(

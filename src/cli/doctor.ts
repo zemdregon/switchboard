@@ -857,9 +857,12 @@ export function renderDoctor(r: DoctorReport): string {
     // FR-CAP-03: labelled as estimates; no remaining or quota wording (see `switchboard capacity` for detail).
     lines.push("", "Capacity (controller estimates, not provider quota; details: switchboard capacity):");
     for (const c of r.capacity.providers) {
+      // ADR-0079: the provider's own window shares, labelled; reset and remaining are in `switchboard capacity`.
+      const reported = c.reported_usage?.windows.map((w) => `${w.id} ${w.used_fraction}`).join(", ");
       lines.push(
         `       ${c.provider}: breaker ${c.breaker.state}, throttle risk ${c.throttle_risk}, ` +
-          `estimate confidence ${c.confidence.toFixed(2)}`,
+          `estimate confidence ${c.confidence.toFixed(2)}` +
+          (reported === undefined ? "" : `; provider-reported used ${reported}`),
       );
     }
     // T6.14 (LLD §16.9): one line per subscription from the same projection. Absent when nothing is configured.

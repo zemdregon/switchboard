@@ -1159,6 +1159,41 @@ const CAPACITY = {
               key_source: { type: "string" },
             },
           },
+          // ADR-0079 (FR-CAP-13): the provider's own usage windows, present only when a declared key reported one.
+          reported_usage: {
+            type: "object",
+            additionalProperties: false,
+            required: ["source", "windows"],
+            properties: {
+              source: { const: "provider_reported" },
+              windows: {
+                type: "array",
+                minItems: 1,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: [
+                    "id",
+                    "length_seconds",
+                    "used_fraction",
+                    "remaining_fraction",
+                    "resets_at",
+                    "observed_at",
+                    "key",
+                  ],
+                  properties: {
+                    id: { type: "string" },
+                    length_seconds: { type: "integer", minimum: 1 },
+                    used_fraction: { type: "number", minimum: 0, maximum: 1 },
+                    remaining_fraction: { type: "number", minimum: 0, maximum: 1 },
+                    resets_at: { type: ["string", "null"] },
+                    observed_at: { type: "string" },
+                    key: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
           concurrency_available: { type: "integer", minimum: 0 },
           concurrency_limit: { type: "integer", minimum: 1 },
           breaker: {
@@ -2041,7 +2076,9 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "Per-provider capacity, read-only. capacity_score, confidence and throttle_risk are controller estimates from " +
     "recent run outcomes, rate-limit signals, the circuit breaker and free slots, never provider-authoritative quota; " +
     "with no recent evidence they read unknown (score null, confidence 0). explicit_remaining and reset_at are set " +
-    "only when the provider itself reported them. Optional provider narrows the answer to one provider. When " +
+    "only when the provider itself reported them. reported_usage, when present, lists the provider's own usage " +
+    "windows (used and remaining share, reset, observed_at; source provider_reported), from the newest run output " +
+    "that reported them; it is as fresh as that run. Optional provider narrows the answer to one provider. When " +
     "subscriptions are configured, pacing lists one entry per subscription with each window's figures, " +
     "deferred_until and the gate verdict; that hold is not applied here.",
   explain_route:

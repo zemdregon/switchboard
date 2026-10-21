@@ -155,7 +155,7 @@ function parseObject(json: string): Record<string, unknown> | undefined {
  * Rows `usageWindows` reads. Terminal runs and provider-reported usage use the longest window as a lookback; the pure
  * function then keeps only what falls inside each window. Open runs are joined by id so `started_at` comes from the
  * open clock (`listStartedRunsSince` has the provider but only `created_at`, which is not a start).
- * `listRateLimitSignalsSince` returns `{ ts, reset_at }` only; `USAGE_KEYS` is empty, so that changes no figure today.
+ * `listRateLimitSignalsSince` returns `{ ts, reset_at }` only; no declared key reads a `rate_limit` payload today.
  */
 function collectUsageInputs(
   ledger: Ledger,

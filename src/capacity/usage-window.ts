@@ -5,8 +5,8 @@
  * randomness, no stored state, no migration. Nothing here names a provider's window, budget or reset: each comes from
  * a declared provider key or from the operator. Every figure carries its source (BR-50):
  *
- * - `provider_reported` only from a key declared in {@link USAGE_KEYS}, which is empty and frozen until a task wires a
- *   sourced key (T6.15), exactly as `REMAINING_KEYS` (LLD §16.2);
+ * - `provider_reported` only from a key declared in {@link USAGE_KEYS} (frozen; a key enters only with the capture that
+ *   shows it, T6.15; Claude Code's window keys since ADR-0079);
  * - `operator_declared` for a `fixed` reset (the budget is the operator's too, but the used share against it is an
  *   estimate);
  * - `controller_estimated` for a budget against Switchboard-observed usage, always `lower_bound: true`;
@@ -16,6 +16,7 @@
  * No consumer is wired here: the projection block is T6.14, the gate T6.8 and the routing term T7.15.
  */
 
+import { CLAUDE_USAGE_WINDOWS, resetsAtKey, usedFractionKey } from "../adapters/claude/usage.js";
 import type { PacingSettings, SubscriptionSettings, UsageWindowSettings } from "../config/capacity.js";
 import type { UsageBudgetUnit } from "../config/schema.js";
 import { reportedTokens } from "../control/budgets.js";
@@ -25,25 +26,40 @@ export type UsageKeyCarries = "used_fraction" | "remaining_fraction" | "reset_at
 
 /**
  * One declared key: where it is read (`usage_observation.metrics_json` or a `rate_limit` provider event's payload), the
- * key name, what it carries and the source document that shows it.
+ * key name, what it carries and the source document that shows it. ADR-0079: a key that names one of the provider's
+ * own windows carries `window`; it then feeds only a configured window of the same length, and the per-provider
+ * `reported_usage` block of the capacity projection (`./reported-usage.ts`).
  */
 export interface UsageKeyDeclaration {
   readonly origin: "usage_observation" | "rate_limit";
   readonly key: string;
   readonly carries: UsageKeyCarries;
   readonly source: string;
+  readonly window?: { readonly id: string; readonly lengthSeconds: number };
 }
 
+const CLAUDE_CAPTURE = "docs/research/claude-usage-capture-2026-10-21.md";
+
 /**
- * Declared usage keys per adapter provider id. Empty on purpose: no key is wired. T6.15 (2026-10-17) read the T6.11
- * captures (`docs/research/limit-captures-2026-10-17.md`) for a structured used or remaining fraction or reset time
- * and found none: the one structured limit signal, Antigravity's `AGY_ERROR` line, carries its reset only as free
- * text in `short_error` ("Resets in <h>h<m>m<s>s"), which Q-100's Delegated default leaves unmapped; every other
- * provider's limit was free text. The remaining candidates (LLD §16.9: Antigravity's separate `/usage` call, Q-101;
- * Claude Code's `rate_limit_event` `resetsAt`, a synthetic shape) wait for a capture. An entry is added here only
- * with the capture note that shows the key.
+ * Declared usage keys per adapter provider id. An entry is added here only with the capture note that shows the key.
+ * T6.15 (2026-10-17) found none in the T6.11 captures (`docs/research/limit-captures-2026-10-17.md`): Antigravity's
+ * `AGY_ERROR` reset is free text (Q-100), and its separate `/usage` call (Q-101) is unwired. ADR-0079 (2026-10-21)
+ * declares Claude Code's `rate_limit_event` window figures, recorded as `usage` metrics by the Claude parser.
  */
-export const USAGE_KEYS: Readonly<Record<string, readonly UsageKeyDeclaration[]>> = Object.freeze({});
+export const USAGE_KEYS: Readonly<Record<string, readonly UsageKeyDeclaration[]>> = Object.freeze({
+  claude: Object.freeze(
+    CLAUDE_USAGE_WINDOWS.flatMap((w): UsageKeyDeclaration[] => [
+      {
+        origin: "usage_observation",
+        key: usedFractionKey(w.id),
+        carries: "used_fraction",
+        source: CLAUDE_CAPTURE,
+        window: w,
+      },
+      { origin: "usage_observation", key: resetsAtKey(w.id), carries: "reset_at", source: CLAUDE_CAPTURE, window: w },
+    ]),
+  ),
+});
 
 /** Rows of the subscription's providers, as the caller read them; `provider` is the adapter id (as `run.provider`). */
 export interface UsageWindowInputs {
@@ -133,6 +149,7 @@ function declaredValues(
   keys: Readonly<Record<string, readonly UsageKeyDeclaration[]>>,
   carries: UsageKeyCarries,
   nowMs: number,
+  lengthSeconds: number,
 ): Declared[] {
   const out: Declared[] = [];
   const providers = new Set(sub.adapterIds);
@@ -146,6 +163,7 @@ function declaredValues(
     if (!Number.isFinite(at) || at > nowMs) return;
     for (const d of keys[provider] ?? []) {
       if (d.origin !== origin || d.carries !== carries) continue;
+      if (d.window !== undefined && d.window.lengthSeconds !== lengthSeconds) continue;
       const v = row[d.key];
       if (finite(v) || typeof v === "string") out.push({ at, value: v, key: d.key });
     }
@@ -183,7 +201,7 @@ function windowFigures(
     resetMs = nextFixedReset(Date.parse(w.reset.anchor), lengthMs, nowMs);
     resetSource = "operator_declared";
   } else if (w.reset.kind === "provider_reported") {
-    for (const d of declaredValues(sub, inputs, keys, "reset_at", nowMs)) {
+    for (const d of declaredValues(sub, inputs, keys, "reset_at", nowMs, w.lengthSeconds)) {
       const t = typeof d.value === "string" ? Date.parse(d.value) : Number.NaN;
       if (Number.isFinite(t) && t > nowMs && (resetMs === null || t > resetMs)) resetMs = t;
     }
@@ -206,8 +224,8 @@ function windowFigures(
     const from = startMs;
     const inWindow = (d: Declared) => d.at >= from;
     const reported = [
-      ...declaredValues(sub, inputs, keys, "used_fraction", nowMs).filter(inWindow),
-      ...declaredValues(sub, inputs, keys, "remaining_fraction", nowMs)
+      ...declaredValues(sub, inputs, keys, "used_fraction", nowMs, w.lengthSeconds).filter(inWindow),
+      ...declaredValues(sub, inputs, keys, "remaining_fraction", nowMs, w.lengthSeconds)
         .filter(inWindow)
         .map((d) => ({ ...d, value: finite(d.value) ? 1 - d.value : d.value })),
     ]
