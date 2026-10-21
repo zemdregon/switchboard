@@ -283,6 +283,17 @@ describe("commit tool: all changes (ADR-0079 item 4)", () => {
     expect(gitlink(s.umbrella, r.sha, "mods/a")).toBe(s.a.head);
   });
 
+  it("a removed .git link does not turn the submodule into plain umbrella files", async () => {
+    const s = await setup();
+    rmSync(path.join(s.wt, "mods/a/.git"));
+    write(s, "mods/a/a.txt", "A\n");
+    write(s, "README.md", "x\n");
+    const r = await publisher().commit(input(s.runId));
+    expect(r.submodulesSkipped).toContainEqual({ path: "mods/a", reason: "link_invalid" });
+    expect(gitlink(s.umbrella, r.sha, "mods/a")).toBe(s.a.head);
+    expect(g(s.umbrella, "ls-tree", "-r", "--name-only", r.sha)).not.toMatch(/mods\/a\//u);
+  });
+
   it("refuses NOTHING_TO_COMMIT when neither the umbrella nor a writable submodule changed", async () => {
     const s = await setup();
     write(s, "mods/b/b.txt", "B\n"); // read-only only

@@ -23,7 +23,7 @@ import { insertSubmoduleCommit } from "../submodules/ledger.js";
 import { type AttachRecord, attachRecordFile, readAttachRecord } from "../submodules/worktree.js";
 import { CONTROLLER_IDENTITY, GitError, git, gitText } from "../workspace/git.js";
 import { nativeExcludePathspecs, recordedNativePaths } from "../workspace/native-skills.js";
-import { findNestedRepositories, nestedPathspecArgs } from "../workspace/nested.js";
+import { excludePathspec, findNestedRepositories, nestedPathspecArgs } from "../workspace/nested.js";
 import type { CredentialReach } from "./credential-reach.js";
 import { DEFAULT_PUBLISH_PREFIX, PublishRefError, publishRefFor } from "./publish-ref.js";
 import { MAX_SECRET_SCAN_HIT_EVENTS } from "./push.js";
@@ -727,10 +727,19 @@ export class GitPublisher {
       const skillPaths = recordedNativePaths(this.options.db, ctx.runId);
       let explicit: ReadonlyMap<string, readonly string[] | "all"> = new Map();
       if (input.paths === undefined) {
-        // Attached submodules are nested repositories here too: their contents never enter the umbrella's add.
+        // Attached submodules are nested repositories here too: their contents never enter the umbrella's add. Their
+        // paths are excluded by name as well, so a removed `.git` link cannot turn one into plain umbrella files.
         const nested = await findNestedRepositories(cwd);
         await git(
-          ["add", "-A", "--", ".", ...nestedPathspecArgs(nested).slice(2), ...nativeExcludePathspecs(skillPaths)],
+          [
+            "add",
+            "-A",
+            "--",
+            ".",
+            ...nestedPathspecArgs(nested).slice(2),
+            ...nativeExcludePathspecs(skillPaths),
+            ...(record?.entries.map((e) => excludePathspec(e.path)) ?? []),
+          ],
           { cwd, env },
         );
       } else {
