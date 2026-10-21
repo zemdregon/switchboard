@@ -111,9 +111,18 @@ export const PRIVILEGED_APPROVAL_MODES = ["required", "not_required"] as const;
 export type PrivilegedApprovalMode = (typeof PRIVILEGED_APPROVAL_MODES)[number];
 export const DEFAULT_PRIVILEGED_APPROVAL: PrivilegedApprovalMode = "required";
 
-/** `mcp_clients[].approval_proxy_kinds` values (ADR-0068): LLD §3.4.1 `approval_kind`. Absent means all of them. */
-export const APPROVAL_PROXY_KINDS = ["privileged_scope", "dynamic_project", "push_revision"] as const;
+/**
+ * `mcp_clients[].approval_proxy_kinds` values (ADR-0068, ADR-0087): LLD §3.4.1 `approval_kind`. Absent means
+ * {@link APPROVAL_PROXY_DEFAULT_KINDS}; `project_source` is opt-in and only served when listed explicitly.
+ */
+export const APPROVAL_PROXY_KINDS = ["privileged_scope", "dynamic_project", "push_revision", "project_source"] as const;
 export type ApprovalProxyKind = (typeof APPROVAL_PROXY_KINDS)[number];
+/** The kinds a proxy serves without `approval_proxy_kinds` (ADR-0047, unchanged by ADR-0087). */
+export const APPROVAL_PROXY_DEFAULT_KINDS: readonly ApprovalProxyKind[] = [
+  "privileged_scope",
+  "dynamic_project",
+  "push_revision",
+];
 
 /** `project_sources.allowed_hosts` default (ADR-0068). */
 export const DEFAULT_PROJECT_SOURCE_HOSTS = ["github.com"] as const;
@@ -441,7 +450,28 @@ export interface ContextConfig {
   inner_agent?: ProjectInnerSetting;
   /** T12.1 (LLD §14.1, FR-RAG-01): narrowing-only retrieval settings for this context. */
   rag?: ContextRagConfig;
+  /**
+   * ADR-0087 item 1 (FR-PRJ-11): opt-in handling of submodules of the primary context. Absent or `off` is ADR-0022
+   * exactly. `writable_paths` (worktree-relative POSIX paths, or exactly `["*"]`) and `exclude` hold at most
+   * `MAX_SUBMODULE_PATHS` entries each.
+   */
+  submodules?: ContextSubmodulesConfig;
 }
+
+export const SUBMODULE_MODES = ["off", "recursive"] as const;
+/** ADR-0087 item 1: at most this many paths in each of `writable_paths` and `exclude`. */
+export const MAX_SUBMODULE_PATHS = 512;
+
+/** ADR-0087 item 1: `projects[].contexts[].submodules`. */
+export interface ContextSubmodulesConfig {
+  mode: (typeof SUBMODULE_MODES)[number];
+  writable_paths?: string[];
+  exclude?: string[];
+}
+
+/** ADR-0087 item 7: `projects[].merge_policy.checks`. */
+export const MERGE_POLICY_CHECKS = ["required", "all_reported"] as const;
+export type MergePolicyChecks = (typeof MERGE_POLICY_CHECKS)[number];
 
 export interface ProjectConfig {
   id: string;
@@ -499,6 +529,11 @@ export interface ProjectConfig {
      * one condition; `required_reports` still apply. Setting it false in a dynamic definition waits for approval.
      */
     require_verification?: boolean;
+    /**
+     * ADR-0087 item 7: which checks must pass. `required` (default) is today's gate; `all_reported` needs at least one
+     * check to have run and every reported check to pass. `all_reported` waits for approval (`merge_checks`).
+     */
+    checks?: MergePolicyChecks;
   };
   /**
    * ADR-0071: dependency setup commands the controller runs in each run's worktree after it is prepared and before the
@@ -677,6 +712,22 @@ const profileOverrideSchema = {
   },
 } as const;
 
+/**
+ * ADR-0087 item 1: one worktree-relative path (or `*`): no leading `/`, no control character. The segment rules
+ * (empty, `.`, `..`, `.git`, backslash) are structural: `checkProjects`.
+ */
+const submodulePathList = {
+  type: "array",
+  maxItems: MAX_SUBMODULE_PATHS,
+  uniqueItems: true,
+  items: {
+    type: "string",
+    minLength: 1,
+    maxLength: 256,
+    pattern: "^[^/\\u0000-\\u001f\\u007f][^\\u0000-\\u001f\\u007f]*$",
+  },
+} as const;
+
 const contextSchema = {
   type: "object",
   additionalProperties: false,
@@ -709,6 +760,16 @@ const contextSchema = {
     finalize_commit: { type: "boolean" },
     inner_agent: { enum: [...PROJECT_INNER_SETTINGS] },
     rag: contextRagSchema,
+    submodules: {
+      type: "object",
+      additionalProperties: false,
+      required: ["mode"],
+      properties: {
+        mode: { enum: [...SUBMODULE_MODES] },
+        writable_paths: submodulePathList,
+        exclude: submodulePathList,
+      },
+    },
   },
 } as const;
 
@@ -761,6 +822,8 @@ export const projectSchema = {
         required_reports: { type: "array", uniqueItems: true, items: { enum: [...MERGE_POLICY_REPORTS] } },
         // ADR-0070: false skips the verification_result-at-head condition; turning it off waits for approval.
         require_verification: { type: "boolean" },
+        // ADR-0087 item 7: `all_reported` waits for approval (`merge_checks`); the default is `required`.
+        checks: { enum: [...MERGE_POLICY_CHECKS] },
       },
     },
     // ADR-0071: changing it in a dynamic definition waits for approval (`project_setup`).

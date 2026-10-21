@@ -70,8 +70,16 @@
 
 import { FAILURE_CODES } from "../adapters/failure.js";
 import { acceptedProviderNames } from "../adapters/providers.js";
-import { MERGE_EVENT_TYPE, MERGE_REFUSAL_REASONS, REF_EVENT_KINDS, REF_EVENT_TYPE } from "../ci/merge-codes.js";
 import {
+  MERGE_EVENT_TYPE,
+  MERGE_REFUSAL_REASONS,
+  REF_EVENT_KINDS,
+  REF_EVENT_TYPE,
+  SUBMODULE_MERGE_PHASES,
+  SUBMODULE_MERGE_REPO_STATES,
+} from "../ci/merge-codes.js";
+import {
+  MERGE_POLICY_CHECKS,
   MERGE_POLICY_METHODS,
   MERGE_POLICY_REPORTS,
   MODEL_GROUP_NAME_PATTERN,
@@ -110,8 +118,17 @@ export const TOOL_NAMES = [
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
-/** T9.9: offered only to a client with `manage_projects` (FR-PRJ-10); absent from every other client's tool list. */
-export const PROJECT_TOOL_NAMES = ["create_project", "update_project", "delete_project"] as const;
+/**
+ * T9.9: offered only to a client with `manage_projects` (FR-PRJ-10); absent from every other client's tool list.
+ * ADR-0087: `request_project_source` is offered only when the server also has `project_sources` (`toolDescriptors`
+ * option `projectSources`).
+ */
+export const PROJECT_TOOL_NAMES = [
+  "create_project",
+  "update_project",
+  "delete_project",
+  "request_project_source",
+] as const;
 export type ProjectToolName = (typeof PROJECT_TOOL_NAMES)[number];
 
 /**
@@ -557,6 +574,43 @@ const ENVELOPE = {
           pushed_at: { type: "string" },
           pull_request_url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
           pull_request_number: { type: "integer", minimum: 1 },
+          // ADR-0087 items 6 and 7 (LLD §3.4.17): the submodule pull requests publish_run linked to this branch, with
+          // the ordered merge's state once it reached each; present only when there is one.
+          linked_pull_requests: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["repo", "paths", "number", "url", "base_ref", "head_sha"],
+              properties: {
+                repo: { type: "string", maxLength: 400 },
+                paths: { type: "array", items: { type: "string" } },
+                number: { type: "integer", minimum: 1 },
+                url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+                base_ref: { type: "string", maxLength: 255 },
+                head_sha: { type: "string", pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+                merge_state: {
+                  oneOf: [
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["state", "merged_sha"],
+                      properties: {
+                        state: { const: "merged" },
+                        merged_sha: { type: "string", pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+                      },
+                    },
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["state", "reason"],
+                      properties: { state: { const: "refused" }, reason: { type: "string", maxLength: 100 } },
+                    },
+                  ],
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -694,7 +748,7 @@ const DIGEST = {
               properties: {
                 approval_id: { type: "string" },
                 approval_digest: { type: "string", pattern: "^[0-9a-f]{64}$" },
-                kind: { enum: ["privileged_scope", "dynamic_project", "push_revision"] },
+                kind: { enum: ["privileged_scope", "dynamic_project", "push_revision", "project_source"] },
                 project_id: { type: "string" },
                 run_id: RUN_ID,
                 revision: { type: "integer" },
@@ -737,15 +791,28 @@ const DIGEST = {
                 event_id: { type: "string" },
                 run_id: RUN_ID,
                 ts: { type: "string" },
-                type: { enum: [REF_EVENT_TYPE, MERGE_EVENT_TYPE] },
+                // ADR-0087 item 7: `submodule_merge` entries are the ordered merge's steps (`code` is the step).
+                type: { enum: [REF_EVENT_TYPE, MERGE_EVENT_TYPE, "submodule_merge"] },
                 // `merged` is already a ref_event kind: list it once. A duplicate enum item makes get_digest's output
                 // schema invalid to a draft-07 meta-schema check (enum `uniqueItems`), which a strict MCP client can
                 // treat as a failed tools/list (see src/mcp/tools-list-callable.test.ts).
-                code: { enum: [...new Set<string>([...REF_EVENT_KINDS, "merged", "refused"])] },
+                code: {
+                  enum: [
+                    ...new Set<string>([
+                      ...REF_EVENT_KINDS,
+                      "merged",
+                      "refused",
+                      "submodule_merged",
+                      "gitlinks_repointed",
+                    ]),
+                  ],
+                },
                 reason: { enum: [...MERGE_REFUSAL_REASONS] },
                 publish_ref: { type: "string" },
                 head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
                 pr_number: { type: ["integer", "null"] },
+                repo: { type: "string", maxLength: 200 },
+                merged_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
               },
             },
           },
@@ -974,6 +1041,16 @@ const WORK_INPUTS = {
 } as const;
 
 const PROJECT_INPUTS = {
+  request_project_source: {
+    type: "object",
+    additionalProperties: false,
+    required: ["owner"],
+    // Syntax is checked by the controller (reason codes OWNER_INVALID, HOST_NOT_ALLOWED), not by the schema.
+    properties: {
+      owner: { type: "string", minLength: 1, maxLength: 200 },
+      host: { type: "string", minLength: 1, maxLength: 253, default: "github.com" },
+    },
+  },
   create_project: {
     type: "object",
     additionalProperties: false,
@@ -1612,12 +1689,35 @@ const PROJECTS = {
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["id", "kind", "primary", "push_policy"],
+              required: ["id", "kind", "primary", "push_policy", "base_ref", "sign", "finalize_commit"],
               properties: {
                 id: { type: "string" },
                 kind: { type: "string", enum: ["repository"] },
                 primary: { type: "boolean" },
                 push_policy: { type: "string", enum: ["none", "branch"] },
+                // ADR-0087 item 8 (G2): the effective definition, so a client can read back what it set. Never a path
+                // or a secret.
+                base_ref: { type: "string" },
+                push_remote: { type: "string" },
+                branch_prefix: { type: "string" },
+                identity: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["name", "email"],
+                  properties: { name: { type: "string" }, email: { type: "string" } },
+                },
+                sign: { type: "boolean" },
+                finalize_commit: { type: "boolean" },
+                submodules: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["mode", "writable_paths", "exclude"],
+                  properties: {
+                    mode: { type: "string", enum: ["off", "recursive"] },
+                    writable_paths: { type: "array", items: { type: "string" } },
+                    exclude: { type: "array", items: { type: "string" } },
+                  },
+                },
                 // ADR-0068: a dynamic context cloned from a URL; the normalised URL, never a path.
                 source_url: { type: "string" },
               },
@@ -1632,12 +1732,14 @@ const PROJECTS = {
           merge_policy: {
             type: "object",
             additionalProperties: false,
-            required: ["enabled", "method", "required_reports", "require_verification"],
+            required: ["enabled", "method", "required_reports", "require_verification", "checks"],
             properties: {
               enabled: { type: "boolean" },
               method: { enum: [...MERGE_POLICY_METHODS] },
               required_reports: { type: "array", items: { enum: [...MERGE_POLICY_REPORTS] } },
               require_verification: { type: "boolean" },
+              // ADR-0087 item 7.
+              checks: { enum: [...MERGE_POLICY_CHECKS] },
             },
           },
           // ADR-0071: the setup step in force (defaults filled in), present only when the project sets one.
@@ -1684,7 +1786,21 @@ const PROJECT_RESULT = {
   },
 } as const;
 
+const PROJECT_SOURCE_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["host", "owner", "status", "message"],
+  properties: {
+    request_id: { type: "string" },
+    host: { type: "string" },
+    owner: { type: "string" },
+    status: { type: "string", enum: ["PENDING_APPROVAL", "APPROVED", "REJECTED", "ALREADY_ALLOWED"] },
+    message: { type: "string" },
+  },
+} as const;
+
 const PROJECT_OUTPUTS = {
+  request_project_source: withError(PROJECT_SOURCE_RESULT),
   create_project: withError(PROJECT_RESULT),
   update_project: withError(PROJECT_RESULT),
   delete_project: withError(PROJECT_RESULT),
@@ -1987,6 +2103,50 @@ const PUBLISH_RESULT = {
       ],
     },
     pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
+    // ADR-0087 item 6 (LLD §3.4.17): one entry per changed submodule repository of an umbrella project (`repo` is
+    // `host/owner/repo`); present only for a project whose primary context sets `submodules.mode: "recursive"`.
+    submodules: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["repo", "paths", "branch", "head_sha", "default_branch", "publication", "pull_request"],
+        properties: {
+          repo: { type: "string", maxLength: 400 },
+          paths: { type: "array", minItems: 1, items: { type: "string" } },
+          branch: { type: "string", maxLength: 255 },
+          head_sha: { type: "string", pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+          default_branch: { type: ["string", "null"], maxLength: 255 },
+          publication: {
+            type: "object",
+            additionalProperties: false,
+            required: ["push_id", "pushed_at", "reused"],
+            properties: {
+              push_id: { type: "string", pattern: "^smp_[0-9A-HJKMNP-TV-Z]{26}$" },
+              pushed_at: { type: "string" },
+              reused: { type: "boolean" },
+            },
+          },
+          pull_request: {
+            oneOf: [
+              { type: "null" },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["number", "url", "draft", "reused"],
+                properties: {
+                  number: { type: "integer", minimum: 1 },
+                  url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+                  draft: { type: "boolean" },
+                  reused: { type: "boolean" },
+                },
+              },
+            ],
+          },
+          pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
+        },
+      },
+    },
   },
 } as const;
 
@@ -2010,6 +2170,33 @@ const MERGE_RUN_PR_RESULT = {
     head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
     head_kind: { enum: ["published", "base_merge"] },
     method: { enum: [...MERGE_POLICY_METHODS] },
+    // ADR-0087 item 7: only for a publication with linked submodule pull requests (the same object a refusal's
+    // details.submodule_merge carries).
+    submodule_merge: {
+      type: "object",
+      additionalProperties: false,
+      required: ["phase", "repos"],
+      properties: {
+        phase: { enum: [...SUBMODULE_MERGE_PHASES] },
+        repos: {
+          type: "array",
+          maxItems: 1024,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["repo", "paths", "pr_number", "state"],
+            properties: {
+              repo: { type: "string", maxLength: 200 },
+              paths: { type: "array", maxItems: 1024, items: { type: "string", maxLength: 4096 } },
+              pr_number: { type: "integer", minimum: 1 },
+              state: { enum: [...SUBMODULE_MERGE_REPO_STATES] },
+              merged_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+              reason: { type: "string", maxLength: 64 },
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 
@@ -2080,7 +2267,13 @@ const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
     "GitHub login (gh) or reuses the open one for that branch. Idempotent: publishing again returns the existing push " +
     "and pull request. A refused push is PERMISSION_BLOCKED with details.reason. If gh fails the push still stands: " +
     "pull_request is null and pull_request_error names why. The pull request body includes the run's agent-written " +
-    "draft, labelled untrusted.",
+    "draft, labelled untrusted. For an umbrella project (submodules.mode recursive) the controller first pushes each " +
+    "changed submodule repository's commits to the same branch name on that repository (after a secret scan of every " +
+    "repository; a finding refuses everything, with paths prefixed by the submodule path), refuses " +
+    "SUBMODULE_HISTORY_UNVERIFIED for a gitlink it did not commit and SUBMODULE_PUSH_FAILED (details.submodules) " +
+    "without pushing the umbrella unless every submodule push was accepted (a retry pushes only what is missing), " +
+    "then opens one pull request per submodule repository against its default branch and the umbrella pull " +
+    "request listing them; submodules[] reports each repository.",
   merge_run_pr:
     "Merge the pull request of one of this client's runs that publish_run published, with the operator's GitHub " +
     "login (gh), only when the project's merge_policy is in force and enabled (see list_projects; update_project " +
@@ -2091,9 +2284,19 @@ const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
     "policy's verification and report conditions hold at the published head. Merges with the policy's method, pinned " +
     "to that head. A " +
     "refusal is PERMISSION_BLOCKED with details.reason (policy_off, draft, head_moved, base_mismatch, not_mergeable, " +
-    "no_required_checks, check_pending, check_failed, unverified_at_head, report_missing); a gh failure is " +
+    "no_required_checks, no_checks_reported, check_pending, check_failed, unverified_at_head, report_missing); a gh failure is " +
     "TOOL_FAILURE gh_error, retryable. Idempotent: an already merged pull request returns merged true. Every attempt " +
-    "is a merge_event in get_digest.",
+    "is a merge_event in get_digest. For a publication with linked submodule pull requests (an umbrella project), " +
+    "each call advances an ordered merge as far as it can: each submodule pull request in path order through the same " +
+    "checks (and merge_policy.checks) at its pushed head and merged pinned to it (one merged by a person at that head " +
+    "is accepted); then one controller commit on the published tip that only re-points the gitlinks to the merge " +
+    "commits, pushed fast-forward to the pull request branch; then the umbrella gate at that new head, with " +
+    "verification and reports read at the published tip. Progress is in submodule_merge { phase (submodules, " +
+    "repoint, umbrella, merged), repos [{ repo, paths, pr_number, state (waiting, refused, merged), merged_sha, " +
+    "reason }] }, on the result and on every refusal's details; call again (check_pending is never waited for). " +
+    "Step refusals add merge_failed, store_unavailable, merge_commit_missing, merge_commit_off_default_branch, " +
+    "gitlink_mismatch, repoint_not_fast_forward, repoint_push_failed, secret_scan_blocked; the fetch, push and gh " +
+    "failures among them are TOOL_FAILURE, retryable.",
   update_run_branch:
     "Bring the pull request of one of this client's published runs up to date with its base branch (GitHub's Update " +
     "branch, with the operator's GitHub login, gh), only when the project's merge_policy is in force and enabled, the " +
@@ -2161,6 +2364,18 @@ const BASE_OUTPUTS = {
       previous_commit: { oneOf: [{ type: "null" }, SHA] },
       remote_commit: SHA,
       reason: { enum: [...BASE_REFRESH_REASONS] },
+      // ADR-0087 item 3: only for a context with submodules.mode recursive.
+      submodules: {
+        type: "object",
+        additionalProperties: false,
+        required: ["total", "present", "fetched", "missing"],
+        properties: {
+          total: { type: "integer", minimum: 0 },
+          present: { type: "integer", minimum: 0 },
+          fetched: { type: "integer", minimum: 0 },
+          missing: { type: "integer", minimum: 0 },
+        },
+      },
     },
   }),
   rebase_session: withError({
@@ -2266,7 +2481,10 @@ const BASE_DESCRIPTIONS: Readonly<Record<BaseToolName, string>> = {
     "ref only. Returns base_commit (where a new meta-session of the project starts now), previous_commit (the " +
     "tracking ref before the fetch, or null) and remote_commit. New meta-sessions already fetch before their first " +
     "worktree; this is for checking or forcing it. A project that is not remote-backed is INVALID_REQUEST " +
-    "NOT_REMOTE_BACKED; a failed fetch is TOOL_FAILURE BASE_REFRESH_FAILED with details.fetch_reason.",
+    "NOT_REMOTE_BACKED; a failed fetch is TOOL_FAILURE BASE_REFRESH_FAILED with details.fetch_reason. For a " +
+    "context with submodules.mode recursive, every gitlink commit of base_commit is then made present in its " +
+    "submodule store and counted in submodules {total, present, fetched, missing}; a missing commit does not undo " +
+    "the refresh, a refused submodule manifest is reported with its details.reason and details.path.",
   rebase_session:
     "Rebase one of this client's meta-sessions onto a freshly fetched base, so its next continue_task starts from " +
     "the current remote base plus the session's own commits. Only with no run in progress. The controller fetches " +
@@ -2275,7 +2493,10 @@ const BASE_DESCRIPTIONS: Readonly<Record<BaseToolName, string>> = {
     "with details.reason: CONFLICT (details.conflicting_paths), HEAD_MOVED (expected_head_sha differs), ACTIVE_RUN, " +
     "NOT_REMOTE_BACKED, NOTHING_TO_REBASE, MERGE_COMMIT; or PERMISSION_BLOCKED SIGNING_UNAVAILABLE, " +
     "IDENTITY_REQUIRED, REPO_CONFIG_UNSAFE; or TOOL_FAILURE BASE_REFRESH_FAILED, REPO_BUSY (retryable). A branch " +
-    "publish_run pushed before is not a fast-forward afterwards, and publishing it again is refused NON_FAST_FORWARD.",
+    "publish_run pushed before is not a fast-forward afterwards, and publishing it again is refused NON_FAST_FORWARD. " +
+    "For a context with submodules.mode recursive, a submodule gitlink both the session and the base moved to " +
+    "different commits is a CONFLICT naming that path; after a rebase the new base's submodule commits are fetched " +
+    "into their stores.",
 };
 
 const SKILL_DESCRIPTIONS: Readonly<Record<SkillToolName, string>> = {
@@ -2344,8 +2565,10 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "Providers with adapter status, version, validated range, auth state, supported trust profiles, transports and " +
     "how Git writes are denied (FR-GIT-01).",
   list_projects:
-    "Projects this client may use with delegate_task: id, name, environment kind, contexts (id, kind, push policy), " +
-    "the project's trust ceiling, the ceiling this client gets there and allowed providers. Read-only; no paths.",
+    "Projects this client may use with delegate_task: id, name, environment kind, contexts (id, kind, push policy, " +
+    "base_ref, push remote name and branch prefix, commit identity, sign, finalize_commit and submodules, as in " +
+    "force), the project's trust ceiling, the ceiling this client gets there, allowed providers and merge policy. " +
+    "Read-only; no paths or secrets.",
   get_capacity:
     "Per-provider capacity, read-only. capacity_score, confidence and throttle_risk are controller estimates from " +
     "recent run outcomes, rate-limit signals, the circuit breaker and free slots, never provider-authoritative quota; " +
@@ -2402,12 +2625,20 @@ const SEARCH_DESCRIPTIONS: Readonly<Record<SearchToolName, string>> = {
 };
 
 const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
+  request_project_source:
+    "Ask for a repository owner to be allowed for clone_url (and submodule URLs) on a host the operator already " +
+    "allows in project_sources (host defaults to github.com; a host is never added). Returns a request_id and " +
+    "PENDING_APPROVAL: an approver client whose operator lists the project_source kind decides it with " +
+    "decide_approval (list_pending_approvals), or the operator runs `switchboard projects sources approve`. Once " +
+    "approved the owner takes effect at once, without a restart. ALREADY_ALLOWED means the operator configured the " +
+    "owner; asking again for a pending or approved owner returns the same request.",
   create_project:
     "Create a dynamic project for this client (shape as list_projects describes, plus repository contexts with base_ref " +
     "and exactly one of path and clone_url). path must be a Git repository under an allowed root. clone_url " +
     "(https://<host>/<owner>/<repo>, an owner the operator allows in project_sources) makes the server clone it with " +
     "its own git credentials, or reuse its earlier clone. Trust ceiling, providers and push policy may not exceed this " +
-    "client's. A container environment, a push policy other than none, a commit identity, signing or a widening " +
+    "client's. A container environment, a push policy other than none, a commit identity, signing, writable submodules, " +
+    "merge_policy.checks all_reported or a widening " +
     "returns PENDING_APPROVAL: approve it with decide_approval from an approver client (list_pending_approvals), or " +
     "the operator runs `switchboard projects approve`, before it can start runs.",
   update_project:
@@ -2440,6 +2671,8 @@ export interface ToolDescriptor {
 export function toolDescriptors(
   opts: {
     manageProjects?: boolean;
+    /** ADR-0087: the server has `project_sources` and a grant store, so `request_project_source` exists. */
+    projectSources?: boolean;
     searchContext?: boolean;
     workQueue?: boolean;
     skills?: boolean;
@@ -2518,12 +2751,14 @@ export function toolDescriptors(
   }
   if (opts.manageProjects === true) {
     base.push(
-      ...PROJECT_TOOL_NAMES.map((name) => ({
-        name,
-        description: PROJECT_DESCRIPTIONS[name],
-        inputSchema: structuredClone(PROJECT_INPUTS[name]) as Record<string, unknown>,
-        outputSchema: structuredClone(PROJECT_OUTPUTS[name]) as Record<string, unknown>,
-      })),
+      ...PROJECT_TOOL_NAMES.filter((name) => name !== "request_project_source" || opts.projectSources === true).map(
+        (name) => ({
+          name,
+          description: PROJECT_DESCRIPTIONS[name],
+          inputSchema: structuredClone(PROJECT_INPUTS[name]) as Record<string, unknown>,
+          outputSchema: structuredClone(PROJECT_OUTPUTS[name]) as Record<string, unknown>,
+        }),
+      ),
     );
   }
   if (opts.oauthClients === true) {

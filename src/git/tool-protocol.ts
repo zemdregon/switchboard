@@ -11,6 +11,8 @@
  *
  *   request:  {"v":1,"token":"<token>","tool":"commit","arguments":{...}}
  *   response: {"ok":true,"result":{"sha":"...","files_changed":1}}
+ *             {"ok":true,"result":{"sha":"...","files_changed":2,"submodules":[{"paths":["libs/a"],"repo":"...",
+ *               "commit_sha":"..."}],"submodules_skipped":[{"path":"wiki","reason":"read_only"}]}}  (ADR-0087 item 4)
  *             {"ok":true,"result":{"pushed":true,"ref":"refs/heads/...","head_sha":"..."}}   (push, T9.6)
  *             {"ok":true,"result":{"status":"ok","index_revision":3,"results":[...]}}      (search, T12.9)
  *             {"ok":false,"error":{"code":"NOT_RUNNING","message":"..."}}

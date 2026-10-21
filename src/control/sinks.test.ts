@@ -180,7 +180,12 @@ describe("closed payload (ADR-0048 item 3)", () => {
     ]);
     // The sink filter and the T14.2 derivation agree as a set (FR-CTL-03); a reason added to one must reach the other.
     expect([...SINK_REASON_CODES.needs_attention].sort()).toEqual([...NEEDS_ATTENTION_PRIORITY].sort());
-    expect(SINK_REASON_CODES.approval_decided).toEqual(["privileged_scope", "dynamic_project", "push_revision"]);
+    expect(SINK_REASON_CODES.approval_decided).toEqual([
+      "privileged_scope",
+      "dynamic_project",
+      "push_revision",
+      "project_source",
+    ]);
     expect(SINK_REASON_CODES.queue_low).toEqual(["queue_low"]);
   });
 

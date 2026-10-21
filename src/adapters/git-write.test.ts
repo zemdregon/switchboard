@@ -269,3 +269,44 @@ describe("gitDenyRuleSecurityReason: which Git deny-rule hits are security-class
     expect(gitDenyRuleSecurityReason(cmd)).toMatch(reason);
   });
 });
+
+describe("ADR-0087 item 4: submodule commands stay agent-blocked (only the controller commits in submodules)", () => {
+  it.each([
+    "git submodule",
+    "git submodule status",
+    "git submodule update --init --recursive",
+    "git submodule add https://github.test/acme/lib libs/lib",
+    "git submodule foreach git commit -am x",
+    "git submodule sync",
+    "git -C libs/lib submodule update",
+    "sh -c 'git submodule update --init'",
+    "env X=1 git submodule update",
+  ])("%j is a Git write", (cmd) => {
+    expect(gitWriteInCommand(cmd)?.level).toBe("write");
+    expect(gitWriteRisk(cmd)).toBeDefined();
+  });
+
+  it.each([
+    "git checkout --recurse-submodules main",
+    "git switch --recurse-submodules feat",
+    "git reset --hard --recurse-submodules HEAD",
+    "git pull --recurse-submodules",
+    "git fetch --recurse-submodules=yes",
+    "git push --recurse-submodules=on-demand origin main",
+    "git -c submodule.recurse=true checkout main",
+  ])("%j (a write that recurses into submodules) is a Git write", (cmd) => {
+    expect(gitWriteInCommand(cmd)?.level).toBe("write");
+    expect(gitWriteRisk(cmd)).toBeDefined();
+  });
+
+  it("git clone --recurse-submodules is never accepted as read-only", () => {
+    const cmd = "git clone --recurse-submodules https://github.test/acme/umbrella";
+    expect(gitWriteInCommand(cmd)).toBeDefined();
+    expect(gitWriteRisk(cmd)).toBeDefined();
+  });
+
+  it("a denied `git submodule` is security-class, not a local verb", () => {
+    expect(gitDenyRuleSecurityReason("git submodule update --init")).toMatch(/not a local git verb/u);
+    expect(gitDenyRuleSecurityReason("git submodule status")).toMatch(/not a local git verb/u);
+  });
+});

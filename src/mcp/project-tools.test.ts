@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, auditInvocation, type Invocation, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
-import type { ResolvedProject } from "../config/index.js";
+import type { ProjectSourcesSettings, ResolvedProject } from "../config/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
@@ -94,6 +94,8 @@ let ledger: Ledger;
 let store: DynamicProjectStore;
 let lifecycle: RunLifecycle;
 let compiled: Invocation[];
+/** ADR-0068/0079: the server's `project_sources` for the next `setup` (reset per test). */
+let projectSources: ProjectSourcesSettings | undefined;
 const servers: { mcp: SwitchboardMcpServer; client: Client }[] = [];
 
 interface ClientSpec {
@@ -169,6 +171,7 @@ async function connect(
   const config = {
     allowedRoots: [root],
     dataDir,
+    ...(projectSources !== undefined ? { projectSources } : {}),
     projects: opts.projects ?? [],
     providers: new Map((opts.disabled ?? []).map((id) => [id, { enabled: false, weight: undefined }])),
     mcpClients: new Map(
@@ -292,7 +295,27 @@ beforeEach(() => {
   store = new DynamicProjectStore(db, { ids: createIdGenerator() });
   writeFileSync(path.join(root, "writer-cli.mjs"), WRITER_CLI);
   compiled = [];
+  projectSources = undefined;
 });
+
+/**
+ * ADR-0087: give `repo` gitlinks (path → repository name under github.test/acme, `.wiki` for a wiki) declared in its
+ * `.gitmodules` on `main`, and allow that source. The commits need not exist: only the manifest is read.
+ */
+function umbrellaRepo(links: Record<string, string>, url = (name: string) => `https://github.test/Acme/${name}.git`) {
+  projectSources = { cloneRoot: path.join(root, "clones"), allowedHosts: ["github.test"], allowedOwners: ["acme"] };
+  writeFileSync(
+    path.join(repo, ".gitmodules"),
+    Object.entries(links)
+      .map(([p, name]) => `[submodule "${p}"]\n\tpath = ${p}\n\turl = ${url(name)}\n`)
+      .join(""),
+  );
+  g(repo, "add", ".gitmodules");
+  for (const [i, p] of Object.keys(links).entries()) {
+    g(repo, "update-index", "--add", "--cacheinfo", `160000,${String(i + 1).padStart(40, "a")},${p}`);
+  }
+  g(repo, "commit", "-q", "-m", "submodules");
+}
 
 afterEach(async () => {
   await lifecycle.shutdown();
@@ -315,7 +338,12 @@ describe("tool surface (FR-PRJ-10: only with manage_projects)", () => {
     const plain = await servers[0]?.client.listTools();
     expect(plain?.tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
     const mgr = await servers[1]?.client.listTools();
-    expect(mgr?.tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES, ...PROJECT_TOOL_NAMES]);
+    // ADR-0087: no project_sources here, so request_project_source is not offered.
+    expect(mgr?.tools.map((t) => t.name)).toEqual([
+      ...TOOL_NAMES,
+      ...WORK_QUEUE_TOOL_NAMES,
+      ...PROJECT_TOOL_NAMES.filter((n) => n !== "request_project_source"),
+    ]);
     for (const t of mgr?.tools ?? []) expect((t.inputSchema as Json).additionalProperties).toBe(false);
 
     const r = await call("create_project", { project: definition() }, 0);
@@ -369,7 +397,17 @@ describe("create, use, list (creator-only)", () => {
         id: "dyn-app",
         name: "Dynamic app",
         environment_kind: "host",
-        contexts: [{ id: "main", kind: "repository", primary: true, push_policy: "none" }],
+        contexts: [
+          {
+            id: "main",
+            kind: "repository",
+            primary: true,
+            push_policy: "none",
+            base_ref: "main",
+            sign: false,
+            finalize_commit: false,
+          },
+        ],
         effective_max_profile: "edit-untrusted",
         source: "dynamic",
         revision: 1,
@@ -670,6 +708,226 @@ describe("approval (BR-32): container, push and widening wait for the operator",
     const bad = await call("update_project", {
       id: "dyn-app",
       project: definition({ merge_policy: { enabled: true, required_reports: ["anything"] } }),
+    });
+    expect(bad.body.error.code).toBe("INVALID_REQUEST");
+  });
+
+  it("submodules: recursive alone is ACTIVE, writable_paths wait as submodule_write; list_projects reads them back (ADR-0087)", async () => {
+    umbrellaRepo({ "libs/a": "lib-a" });
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
+    const rec = await call("create_project", {
+      project: definition({}, { submodules: { mode: "recursive", exclude: ["vendor/x"] } }),
+    });
+    expect(rec.body).toMatchObject({ revision: 1, status: "ACTIVE" });
+    const listed = await call("list_projects");
+    expect(listed.body.projects[0].contexts[0]).toEqual({
+      id: "main",
+      kind: "repository",
+      primary: true,
+      push_policy: "none",
+      base_ref: "main",
+      sign: false,
+      finalize_commit: false,
+      submodules: { mode: "recursive", writable_paths: [], exclude: ["vendor/x"] },
+    });
+    expect(JSON.stringify(listed.body)).not.toContain(repo);
+    const write = await call("update_project", {
+      id: "dyn-app",
+      project: definition({}, { submodules: { mode: "recursive", writable_paths: ["libs/a"] } }),
+    });
+    expect(write.body).toMatchObject({
+      revision: 2,
+      status: "PENDING_APPROVAL",
+      approval_needed: ["submodule_write"],
+      in_force_revision: 1,
+    });
+    const all = await call("update_project", {
+      id: "dyn-app",
+      project: definition({}, { submodules: { mode: "recursive", writable_paths: ["*"] } }),
+    });
+    expect(all.body).toMatchObject({ status: "PENDING_APPROVAL", approval_needed: ["submodule_write"] });
+    const pending = await call("list_projects");
+    expect(pending.body.projects[0]).toMatchObject({ status: "ACTIVE", pending_revision: 3 });
+    store.decide({ projectId: "dyn-app", decision: "APPROVED", decidedBy: "op" });
+    expect(store.state("dyn-app")?.inForce?.definition.contexts[0]?.submodules?.writable_paths).toEqual(["*"]);
+    const after = await call("list_projects");
+    expect(after.body.projects[0].contexts[0].submodules).toEqual({
+      mode: "recursive",
+      writable_paths: ["*"],
+      exclude: [],
+    });
+  });
+
+  it("submodules: writable_paths are checked against the manifest at base_ref (ADR-0087 item 1, Delegated)", async () => {
+    umbrellaRepo({ "libs/a": "lib-a", "docs/core": "core.wiki" });
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
+    const refusals: [string, string, string, string, Json][] = [
+      [
+        "INVALID_REQUEST",
+        "SUBMODULE_PATH_UNKNOWN",
+        "$.project.contexts[0].submodules.writable_paths[1]",
+        "libs/nope",
+        { submodules: { mode: "recursive", writable_paths: ["libs/a", "libs/nope"] } },
+      ],
+      [
+        "INVALID_REQUEST",
+        "SUBMODULE_WIKI_READ_ONLY",
+        "$.project.contexts[0].submodules.writable_paths[0]",
+        "docs/core",
+        { submodules: { mode: "recursive", writable_paths: ["docs/core"] } },
+      ],
+      [
+        // An excluded path is not declared for the controller, so it cannot be writable either.
+        "INVALID_REQUEST",
+        "SUBMODULE_PATH_UNKNOWN",
+        "$.project.contexts[0].submodules.writable_paths[0]",
+        "libs/a",
+        { submodules: { mode: "recursive", writable_paths: ["libs/a"], exclude: ["libs"] } },
+      ],
+    ];
+    for (const [code, reason, field, p, ctx] of refusals) {
+      const r = await call("create_project", { project: definition({}, ctx) });
+      expect(r.isError, reason).toBe(true);
+      expect(r.body.error.code, reason).toBe(code);
+      expect(r.body.error.details, reason).toMatchObject({ reason, field, path: p });
+    }
+    expect(store.state("dyn-app")).toBeUndefined();
+
+    // ["*"] reads nothing; a valid path is accepted (and waits for approval as before); update_project checks too.
+    const ok = await call("create_project", {
+      project: definition({}, { submodules: { mode: "recursive", writable_paths: ["libs/a"] } }),
+    });
+    expect(ok.body).toMatchObject({ revision: 1, status: "PENDING_APPROVAL", approval_needed: ["submodule_write"] });
+    const upd = await call("update_project", {
+      id: "dyn-app",
+      project: definition({}, { submodules: { mode: "recursive", writable_paths: ["docs/core"] } }),
+    });
+    expect(upd.body.error.details).toMatchObject({ reason: "SUBMODULE_WIKI_READ_ONLY" });
+    const refused = db
+      .prepare("SELECT action, reason FROM project_event WHERE outcome = 'REFUSED' ORDER BY ts, id")
+      .all() as { action: string; reason: string }[];
+    expect(refused.map((e) => e.reason)).toEqual([
+      "SUBMODULE_PATH_UNKNOWN",
+      "SUBMODULE_WIKI_READ_ONLY",
+      "SUBMODULE_PATH_UNKNOWN",
+      "SUBMODULE_WIKI_READ_ONLY",
+    ]);
+  });
+
+  it("submodules: a manifest URL that is invalid or outside project_sources refuses writable_paths with its reason", async () => {
+    umbrellaRepo({ "libs/a": "lib-a", "libs/b": "lib-b" }, (name) =>
+      name === "lib-a" ? "https://github.test/Acme/lib-a.git" : "https://github.test/Elsewhere/lib-b.git",
+    );
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
+    const r = await call("create_project", {
+      project: definition({}, { submodules: { mode: "recursive", writable_paths: ["libs/a"] } }),
+    });
+    expect(r.body.error).toMatchObject({
+      code: "PERMISSION_BLOCKED",
+      details: { reason: "SUBMODULE_SOURCE_NOT_ALLOWED", path: "libs/b", field: "$.project.contexts[0].submodules" },
+    });
+    expect(JSON.stringify(r.body)).not.toContain("Elsewhere");
+    // The same manifest is not read at all for recursive mode without explicit paths.
+    const plain = await call("create_project", { project: definition({}, { submodules: { mode: "recursive" } }) });
+    expect(plain.body).toMatchObject({ status: "ACTIVE" });
+    const bad = await call("update_project", {
+      id: "dyn-app",
+      project: definition({}, { submodules: { mode: "recursive", writable_paths: ["libs/a"], exclude: ["libs/b"] } }),
+    });
+    expect(bad.body).toMatchObject({ status: "PENDING_APPROVAL" });
+    g(repo, "config", "-f", ".gitmodules", "submodule.libs/a.url", "git@github.test:Acme/lib-a.git");
+    g(repo, "add", ".gitmodules"); // not `commit -a`: the gitlink directories are not checked out here
+    g(repo, "commit", "-q", "-m", "ssh url");
+    const ssh = await call("update_project", {
+      id: "dyn-app",
+      project: definition({}, { submodules: { mode: "recursive", writable_paths: ["libs/a"], exclude: ["libs/b"] } }),
+    });
+    expect(ssh.body.error).toMatchObject({
+      code: "INVALID_REQUEST",
+      details: { reason: "SUBMODULE_URL_INVALID", path: "libs/a" },
+    });
+  });
+
+  it("submodules: structural refusals carry their reason code and write no revision (ADR-0087 item 1)", async () => {
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
+    const second = { id: "docs", kind: "repository", path: repo, base_ref: "main" };
+    const cases: [string, string, Json][] = [
+      [
+        "SUBMODULES_PRIMARY_ONLY",
+        "$.project.contexts[1].submodules.mode",
+        definition({
+          contexts: [
+            { ...(definition().contexts as Json[])[0], primary: true },
+            { ...second, submodules: { mode: "recursive" } },
+          ],
+        }),
+      ],
+      [
+        "SUBMODULE_PATH_UNSAFE",
+        "$.project.contexts[0].submodules.exclude[0]",
+        definition({}, { submodules: { mode: "recursive", exclude: ["a/../b"] } }),
+      ],
+      [
+        "SUBMODULE_PATH_UNSAFE",
+        "$.project.contexts[0].submodules.writable_paths[1]",
+        definition({}, { submodules: { mode: "recursive", writable_paths: ["a", "a/.git/x"] } }),
+      ],
+      [
+        "SUBMODULE_PATH_UNSAFE",
+        "$.project.contexts[0].submodules.writable_paths",
+        definition({}, { submodules: { mode: "recursive", writable_paths: ["*", "a"] } }),
+      ],
+      [
+        "SUBMODULES_NOT_WRITABLE",
+        "$.project.contexts[0].submodules.writable_paths",
+        definition({}, { submodules: { mode: "off", writable_paths: ["a"] } }),
+      ],
+      [
+        "SUBMODULES_NOT_WRITABLE",
+        "$.project.contexts[0].submodules.writable_paths",
+        definition({}, { writable: false, submodules: { mode: "recursive", writable_paths: ["a"] } }),
+      ],
+      [
+        "SUBMODULE_PATH_CONFLICT",
+        "$.project.contexts[0].submodules",
+        definition({}, { submodules: { mode: "recursive", writable_paths: ["a"], exclude: ["a"] } }),
+      ],
+    ];
+    for (const [reason, field, project] of cases) {
+      const r = await call("create_project", { project });
+      expect(r.isError, reason).toBe(true);
+      expect(r.body.error.code, reason).toBe("INVALID_REQUEST");
+      expect(r.body.error.details, reason).toMatchObject({ reason, field });
+    }
+    // Schema-level refusals (bad mode, unknown key, leading slash, duplicates, too many) are INVALID_REQUEST too.
+    for (const submodules of [
+      { mode: "all" },
+      { mode: "recursive", extra: true },
+      { mode: "recursive", exclude: ["/abs"] },
+      { mode: "recursive", exclude: ["a", "a"] },
+      { mode: "recursive", exclude: Array.from({ length: 513 }, (_, i) => `s/${i}`) },
+    ]) {
+      const r = await call("create_project", { project: definition({}, { submodules }) });
+      expect(r.body.error.code).toBe("INVALID_REQUEST");
+    }
+    expect(count("project_revision")).toBe(0);
+  });
+
+  it("merge_policy.checks all_reported waits for the operator as merge_checks; list_projects shows checks (ADR-0087 item 7)", async () => {
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
+    const required = await call("create_project", { project: definition({ merge_policy: { enabled: false } }) });
+    expect(required.body).toMatchObject({ status: "ACTIVE" });
+    expect((await call("list_projects")).body.projects[0].merge_policy.checks).toBe("required");
+    const all = await call("update_project", {
+      id: "dyn-app",
+      project: definition({ merge_policy: { enabled: false, checks: "all_reported" } }),
+    });
+    expect(all.body).toMatchObject({ status: "PENDING_APPROVAL", approval_needed: ["merge_checks"] });
+    store.decide({ projectId: "dyn-app", decision: "APPROVED", decidedBy: "op" });
+    expect((await call("list_projects")).body.projects[0].merge_policy.checks).toBe("all_reported");
+    const bad = await call("update_project", {
+      id: "dyn-app",
+      project: definition({ merge_policy: { checks: "some" } }),
     });
     expect(bad.body.error.code).toBe("INVALID_REQUEST");
   });

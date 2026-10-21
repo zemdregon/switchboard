@@ -37,6 +37,7 @@ import { sql as sql0034 } from "./0034_setup_log_artifact.js";
 import { sql as sql0035 } from "./0035_merge_head_kind.js";
 import { sql as sql0036 } from "./0036_pr_close_audit.js";
 import { sql as sql0037 } from "./0037_oauth_profile_binding.js";
+import { sql as sql0038 } from "./0038_submodule_projects.js";
 
 export interface Migration {
   readonly version: number;
@@ -92,4 +93,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 35, name: "merge_head_kind", sql: sql0035 },
   { version: 36, name: "pull_request_close", sql: sql0036 },
   { version: 37, name: "oauth_profile_binding", sql: sql0037 },
+  { version: 38, name: "submodule_projects", sql: sql0038, foreignKeysOff: true },
 ];

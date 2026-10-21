@@ -15,11 +15,17 @@
  * published tip (GitHub's "Update branch"), verified by the controller with local Git, and merges pinned to that head
  * (`head_kind: base_merge`). MCP `update_run_branch` ({@link updateRunBranch}) asks GitHub for that update, under the
  * same scope and only for a project whose merge policy is in force and on.
+ *
+ * ADR-0087 item 7 (LLD §3.4.17): for a publication with linked submodule pull requests, the same request runs the
+ * ordered merge (`src/ci/submodule-merge.ts`, wired as `linkedMerge`): the submodule pull requests, the gitlink repoint
+ * commit and its push, then the umbrella's gate. Each call advances as far as it can; the result and every refusal carry
+ * `submodule_merge: { phase, repos }`. `expected_head_sha` may name the published tip or, after the repoint, the new
+ * tip.
  */
 
 import type { HeadKind } from "../ci/base-merge.js";
 import { updateBranchOnRequest } from "../ci/branch-update.js";
-import type { MergePolicyDeps } from "../ci/merge-policy.js";
+import type { MergePolicyDeps, SubmoduleMergeView } from "../ci/merge-policy.js";
 import { mergeOnRequest } from "../ci/merge-policy.js";
 import type { CiBranchUpdatePort } from "../ci/port.js";
 import type { Ledger, RunRecord } from "../ledger/index.js";
@@ -48,6 +54,8 @@ export interface MergeRunResult {
   /** ADR-0073: `published` (the published tip) or `base_merge` (pure base merges on it). */
   head_kind: HeadKind;
   method: "squash" | "merge" | "rebase";
+  /** ADR-0087 item 7: present only for a publication with linked submodule pull requests (phase `merged`). */
+  submodule_merge?: SubmoduleMergeView;
 }
 
 export interface UpdateRunBranchResult {
@@ -88,6 +96,7 @@ export async function mergeRunPr(
       remote: pub.remote,
       publishRef: pub.ref,
       ...(expectedHeadSha !== undefined ? { expectedHeadSha } : {}),
+      requestedBy: `mcp_client:${ctx.clientId}`,
     },
   );
   if (out.kind === "not_published") throw notPublished();
@@ -105,18 +114,36 @@ export async function mergeRunPr(
     head_sha: out.headSha,
     head_kind: out.headKind,
     method: out.method,
+    ...(out.submoduleMerge !== undefined ? { submodule_merge: out.submoduleMerge } : {}),
   };
 }
 
+/**
+ * ADR-0087 item 7: refusals of the ordered merge that a retry may clear (a `gh`, fetch, Git or push failure): like
+ * `gh_error`, `TOOL_FAILURE` and retryable.
+ */
+const RETRYABLE_SUBMODULE_REASONS: ReadonlySet<string> = new Set([
+  "merge_failed",
+  "store_unavailable",
+  "merge_commit_missing",
+  "repoint_push_failed",
+]);
+
 function refusal(
   verb: "merge" | "update",
-  out: { reason: string; headSha: string; prNumber: number | null },
+  out: { reason: string; headSha: string; prNumber: number | null; submoduleMerge?: SubmoduleMergeView },
 ): ToolError {
   const details = {
     reason: out.reason,
     head_sha: out.headSha,
     ...(out.prNumber !== null ? { pull_request_number: out.prNumber } : {}),
+    ...(out.submoduleMerge !== undefined ? { submodule_merge: out.submoduleMerge } : {}),
   };
+  if (RETRYABLE_SUBMODULE_REASONS.has(out.reason)) {
+    const err = new ToolError("TOOL_FAILURE", `merge refused (${out.reason}); retry later`, details);
+    err.retryable = true;
+    return err;
+  }
   if (out.reason === "gh_error") {
     const what = verb === "merge" ? "merging" : "updating";
     const err = new ToolError("TOOL_FAILURE", `gh or git failed while reading or ${what} the pull request`, details);

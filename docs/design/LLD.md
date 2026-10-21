@@ -1182,8 +1182,8 @@ in_force_revision?, message? }` (`in_force_revision` and `message` Proposed). `a
 `container_environment`, `push_policy`, `commit_identity`, `commit_signing`, `widened_trust_ceiling`,
 `widened_providers` (widening is measured against the revision in force), `merge_policy` (T15.8: the definition sets
 `merge_policy.enabled: true`, on every revision that keeps it on, §20.7), `project_setup` (ADR-0071: a `setup` that is
-new or differs from the revision in force, §5.3). Errors, in check order: schema
-`INVALID_REQUEST`; a control, separator or bidirectional character in any string `INVALID_REQUEST`
+new or differs from the revision in force, §5.3), `submodule_write` and `merge_checks` (ADR-0087, §3.4.17). Errors,
+in check order: schema `INVALID_REQUEST`; a control, separator or bidirectional character in any string `INVALID_REQUEST`
 (`CONTROL_CHARACTER`); a configured id or another client's project `PERMISSION_BLOCKED` with one message for both
 (`NOT_MANAGEABLE`); unknown id for update/delete, deleted id, or an existing id for create `INVALID_REQUEST` (ids are
 never reused); the loader's structural rules `INVALID_REQUEST`; ceiling, provider or push above the client's
@@ -1873,7 +1873,7 @@ Extend `$defs` in §3.0:
   "untrusted_text": { "type": "object", "required": ["text","label"], "properties": {
       "text": { "type": "string", "maxLength": 500 },
       "label": { "const": "untrusted_agent_text" } } },
-  "approval_kind": { "enum": ["privileged_scope","dynamic_project","push_revision"] },
+  "approval_kind": { "enum": ["privileged_scope","dynamic_project","push_revision","project_source"] },
   "approval_proxy_item": { "type": "object", "required": [
       "approval_id","approval_digest","kind","requested_at","target_client_id" ], "properties": {
       "approval_id": { "type": "string" },
@@ -2291,8 +2291,9 @@ Delegated, not owner-approved):**
   configured client ids and is refused at load without `approval_proxy: true` or when it names an unknown client.
   Without it a proxy targets only itself. `tool_profile` is not consulted.
 - `approval_proxy_kinds` ([ADR-0068](../adr/0068-mcp-only-project-onboarding.md), Delegated detail): a non-empty list
-  of unique values from `privileged_scope | dynamic_project | push_revision`, default all three, refused at load
-  without `approval_proxy: true`. `list_pending_approvals` lists and `decide_approval` decides only those kinds; any
+  of unique values from `privileged_scope | dynamic_project | push_revision | project_source`, default the
+  first three (`project_source` only when listed, [ADR-0087](../adr/0087-submodule-projects.md), §3.4.17), refused at
+  load without `approval_proxy: true`. `list_pending_approvals` lists and `decide_approval` decides only those kinds; any
   other kind gets the same single refusal as an unknown id (no oracle). Implementation: `proxyKinds` in
   `src/control/approval-proxy.ts`. The orchestrator profile offers both tools whenever `approval_proxy` is true.
 - Top-level `project_sources` (`{ clone_root, allowed_hosts?, allowed_owners }`, strict; ADR-0068): `clone_root` is
@@ -2681,6 +2682,118 @@ port's closed code, retryable except `GH_MISSING` and `AUTH_REQUIRED`. Not gated
 too: `TOOL_NOT_OFFERED` (not offered to this client, or outside its tool profile) and `SCHEMA_INVALID`. A row with a run
 also appends a `pull_request_close` run event on that run with the same facts. Never a comment, title or body. Tests:
 `src/mcp/publish-run.test.ts` ("close_pr (ADR-0078)"), `src/ci/gh-pr.test.ts`, `src/mcp/tools-list-callable.test.ts`.
+
+#### 3.4.17 Submodule projects (ADR-0087)
+
+*Added 2026-10-21 (Delegated agent work for an operator task for zemdregon, owner decision 25; not owner-approved).*
+Realizes FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15 and FR-SUB-03. Decision record and rationale:
+[ADR-0087](../adr/0087-submodule-projects.md); this section holds only the contracts. Code: `src/submodules/`
+(manifest, store, worktree, errors), `src/ci/submodule-merge.ts`, `src/projects/source-grants.ts`, `src/mcp/project-tools.ts`,
+`src/mcp/schemas.ts`, `src/config/schema.ts`, `src/control/approval-proxy.ts`, `src/cli/projects-sources.ts`;
+migration `src/ledger/migrations/0038_submodule_projects.ts`.
+
+**Setting** (`projects[].contexts[].submodules`, strict): `{ mode: "off" | "recursive", writable_paths?: string[],
+exclude?: string[] }`. `writable_paths` and `exclude` hold at most 512 worktree-relative POSIX paths each (no leading
+`/`, no empty, `.`, `..` or `.git` segment, no control character, no backslash), or `writable_paths` is exactly
+`["*"]`. Structure refusals are `INVALID_REQUEST` with `details.reason` `SUBMODULES_PRIMARY_ONLY`,
+`SUBMODULE_PATH_CONFLICT`, `SUBMODULE_PATH_UNKNOWN` and `SUBMODULE_WIKI_READ_ONLY` (the last two are read from the
+umbrella's `.gitmodules` at `base_ref` by `create_project` and `update_project`). `list_projects` contexts return
+`submodules: { mode, writable_paths, exclude }`.
+
+**Closed manifest and store reasons** (`SubmoduleError`, fixed message per reason; the offending umbrella-relative path
+in `details.path`, never a URL): `INVALID_REQUEST` for `SUBMODULE_URL_INVALID`, `SUBMODULE_UNDECLARED`,
+`SUBMODULE_PATH_UNSAFE`, `SUBMODULE_MANIFEST_TOO_LARGE` (more than 1024); `PERMISSION_BLOCKED` for
+`SUBMODULE_SOURCE_NOT_ALLOWED` and `SUBMODULE_LINK_INVALID`; `TOOL_FAILURE` for `SUBMODULE_MANIFEST_UNREADABLE`,
+`SUBMODULE_COMMIT_MISSING`, `SUBMODULE_ATTACH_FAILED`, `SUBMODULE_RECORD_INVALID`. Publication and merge add
+`SUBMODULE_HISTORY_UNVERIFIED`, `SUBMODULE_PUSH_FAILED` (with `details.submodules`, one outcome per repository) and
+`PATH_REFUSED` with `submodule_duplicate_diverged` or `submodule_read_only`. Run warnings: `submodule_link_invalid`,
+`submodule_changes_skipped`, `submodules_skipped`.
+
+**Submodule worktrees** (`src/submodules/worktree.ts`). The attach record (`<run worktree>.submodules.json`, mode 0600,
+`version: 1`) lists per entry `path`, `key`, `store`, `sha`, `writable`, `wiki` and `admin`, the name of its admin
+directory under the store's `.git/worktrees/` found at attach (a single path segment; records written before it was
+kept have none). Nothing resolves a path through the run worktree: the link check and detach compare the admin
+directory's `gitdir` with `<worktree>/<path>/.git` lexically, and detach removes only the recorded admin directory (or,
+for an older record, the lexical match), so a path replaced by a link into another run's worktree never selects that
+run's admin directory. After the link check, the controller's Git calls in a submodule worktree pass
+`--git-dir=<admin directory>` and `--work-tree=<path>`.
+
+**Approvals** (extends §3.4.1 and §3.4.8). `approval_needed` gains `submodule_write` (a revision whose `writable_paths`
+is non-empty; listed to the approval proxy as `push_revision`, like `push_policy`) and `merge_checks`
+(`merge_policy.checks: "all_reported"`). `approval_kind` gains `project_source`; it is in
+`APPROVAL_PROXY_KINDS` but not in the default kinds (`APPROVAL_PROXY_DEFAULT_KINDS`), so an approver serves it only
+when `mcp_clients[].approval_proxy_kinds` lists it. `approval_pending` / `project_source` is announced once per
+request.
+
+**`request_project_source`.** Offered only to a client with `manage_projects` when the server has `project_sources`.
+Input (closed): `{ owner: string 1..200, host?: string 1..253 (default "github.com") }`; the controller checks the
+syntax (`OWNER_INVALID`) and that the host is already in `allowed_hosts` (`HOST_NOT_ALLOWED`; a grant never adds a
+host). Output (closed): `{ request_id?, host, owner, status: "PENDING_APPROVAL" | "APPROVED" | "REJECTED" |
+"ALREADY_ALLOWED", message }`; asking again for a pending or approved owner returns the same request. An approved
+owner joins the effective `allowed_owners` at once. CLI: `switchboard projects sources list|approve <id>|reject <id>`.
+
+**`list_projects`** contexts add `base_ref`, `push_remote`, `branch_prefix`, `identity: { name, email }`, `sign`,
+`finalize_commit` (`base_ref`, `sign` and `finalize_commit` always present) and `submodules`; the project's
+`merge_policy` adds `checks`. Never a path or a secret.
+
+**`refresh_project_base`** result adds `submodules: { total, present, fetched, missing }` for a project with
+`mode: "recursive"`. **`publish_run`** result keeps every existing field and, for such a project, adds `submodules:
+[{ repo, paths, branch, head_sha, default_branch, publication: { push_id, pushed_at, reused }, pull_request,
+pull_request_error? }]` (`repo` is `host/owner/repo`, `default_branch` may be null, `pull_request` is null when none
+was opened). Before any push it refuses `PERMISSION_BLOCKED` `SUBMODULE_HISTORY_UNVERIFIED` (`details.path`),
+the umbrella pusher's own refusal when the umbrella is still to be pushed (`GitPusher.preflight`: the push's policy and
+repository checks without the scan or the remote write, a refusal recorded as the `git_push` row the push would write;
+for example `REPO_CONFIG_UNSAFE`, `REMOTE_UNKNOWN`, `REMOTE_URL_CREDENTIALS`, `REMOTE_TRANSPORT_NOT_ALLOWED`,
+`TARGET_PROTECTED`, `PUBLISH_HISTORY_UNVERIFIED`), or `SECRET_SCAN_BLOCKED` (the ADR-0075 shape plus `details.repos`:
+`host/owner/repo` keys, `umbrella` for the umbrella; submodule finding paths prefixed with the submodule path); a
+submodule push that is not accepted refuses
+`SUBMODULE_PUSH_FAILED` with `details.submodules: [{ repo, paths, branch, head_sha, outcome, reason, push_id, reused
+}]` and no umbrella push. The publications of `get_run`, `list_runs` and `get_digest` add `linked_pull_requests: [{
+repo, paths, number, url, base_ref, head_sha, merge_state? }]` (`merge_state` is `{ state: "merged", merged_sha }` or
+`{ state: "refused", reason }`, from the `submodule_merge` steps), and each linked pull request is a
+`pull_request_opened` run event with its `repo` (`owner/repo`). `get_digest` `ref_events` add entries of type
+`submodule_merge` with `code` `submodule_merged` or `gitlinks_repointed`, `repo` and `merged_sha`.
+
+**`merge_run_pr` and the policy poller.** For an umbrella publish ref with `submodule_pull_request` rows both run
+the ordered merge (`src/ci/submodule-merge.ts`, the `linkedMerge` hook of `mergeOnRequest` and `pollMergePolicies`;
+without the hook, or when any of the ref's newest-per-repository rows does not parse or is of another project, such a
+ref is never merged: `submodule_merge_unavailable`). Before any submodule pull request is merged, step 0
+(`umbrellaPreCheck` in `src/ci/merge-policy.ts`) checks the umbrella's conditions that do not depend on the repoint,
+at the published (pre-repoint) tip, with the gate's own reasons and `merge_event` rows: not superseded (`head_moved`);
+the umbrella pull request open (in `poll` mode none or not open ends the pass without a decision; in `request` mode it
+is `not_mergeable`, or `head_moved` when merged), not a draft, its head the published tip on the published branch, its
+base the base branch (`draft`, `head_moved`, `base_mismatch`); then `unverified_at_head` and `report_missing`; the
+refusal's `submodule_merge.phase` is `submodules`. The result adds, and every refusal's details add, `submodule_merge: {
+phase: "submodules" | "repoint" | "umbrella" | "merged", repos: [{ repo, paths, pr_number, state: "waiting" |
+"refused" | "merged", merged_sha?, reason? }] }`; `expected_head_sha` may name the published or the repointed tip.
+`merge_event.reason` gains `no_checks_reported`. The step machine is persisted in `submodule_merge` (steps
+`submodule_merged`, `submodule_refused`, `gitlinks_repointed`) and recomputed from it on every call; the umbrella's own
+decisions stay `merge_event` rows. Step refusals beyond the gate's reasons (**Delegated**): `merge_failed` (a failed
+G12; the poller does not retry that head), `store_unavailable`, `merge_commit_missing`,
+`merge_commit_off_default_branch`, `gitlink_mismatch`, `repoint_not_fast_forward`, `repoint_push_failed`,
+`secret_scan_blocked`, `submodule_merge_unavailable`; the fetch, push and G12 failures among them are `TOOL_FAILURE`,
+retryable. The repoint commit has one parent (the published tip), changes the linked gitlinks only (checked before
+the push and again before the umbrella gate), carries the context identity and the newest `submodule_merged` time (a
+retry writes the same commit), and has a `git_commit` row (`origin: finalize_only`, event `via: submodule_repoint`);
+the meta-session's publish ref moves to it (compare-and-swap) and the controller pusher pushes it. New
+`submodule_merged` and `gitlinks_repointed` steps are also `ref_event` run events of those kinds on the publishing
+run.
+
+**Audited `gh` argv** (ADR-0050 amendment 1 item 10 continues after G17, §20.7): G18 `pr checks <n> --repo <o>/<r>
+--json bucket` (every reported check, no `--required`; used only for `merge_policy.checks: all_reported`; the §20.7
+parsing assumptions for exit codes 1 and 8 apply) and G19 `pr view <n> --repo <o>/<r> --json state,mergeCommit` (the
+merge commit of a merged submodule pull request). **Assumption:** both flags and fields are taken from the `gh` manual
+pages, not checked against the installed `gh` (Q-109).
+
+**Persistence** (migration 0038; append-only, `STRICT`; ids `smc_`, `smp_`, `spr_`, `smm_`, `psr_`, `psd_`):
+`submodule_commit` (`run_id`, `meta_session_id`, `kind = 'publish'`, `repo` as `host/owner/repo`, `paths_json`,
+`parent_sha`, `commit_sha`, `umbrella_commit_sha`); `submodule_push` (`outcome` `ACCEPTED | REFUSED_POLICY |
+REJECTED_REMOTE | ERROR`, `ref`, `head_sha`, `umbrella_head_sha`, `requested_by`); `submodule_pull_request` (`repo` as
+`owner/repo`, `number`, `url`, `branch`, `base_ref`, `head_sha`, `umbrella_ref`, `draft`, `action` `created | reused`);
+`submodule_merge` (`step`, `repo`, `pr_number`, `head_sha`, `merged_sha`, `reason`; one refusal per ref, repo, head and
+reason); `project_source_request` (`client_id`, `host`, `owner`) and `project_source_decision` (`decision` `APPROVED |
+REJECTED`, `decided_by`, one per request). The same migration rebuilds `merge_event` to admit `no_checks_reported`.
+Never a URL with credentials, a title, a body or `gh` text.
 
 ## 4. Failure taxonomy
 
@@ -8561,10 +8674,12 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
    `--delete-branch`. G15 (ADR-0073, §3.4.14) `api --method PUT repos/{owner}/{repo}/pulls/{n}/update-branch -f
    expected_head_sha=<sha> --silent` is the only write besides G12 and the publish templates, used by
    `update_run_branch` only. G16 `pr close <n> --repo <o>/<r> --comment <comment> [--delete-branch]` and G17 `pr view
-   <n> --repo <o>/<r> --json number,state,url,headRefName` (ADR-0078, §3.4.16) are used by `close_pr` only. The flags
-   and fields were checked against the `gh` manual pages (`gh_pr_merge`, `gh_pr_checks`, `gh_pr_view` on cli.github.com,
-   2026-10-20); `gh --help` could not be run on the build host, so the check against the installed `gh` that ADR-0050
-   asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from the manual's exit code 8 for pending checks): with
+   <n> --repo <o>/<r> --json number,state,url,headRefName` (ADR-0078, §3.4.16) are used by `close_pr` only. G18 `pr
+   checks <n> --json bucket` and G19 `pr view <n> --json state,mergeCommit` (ADR-0087, §3.4.17) are reads of the ordered
+   submodule merge. The flags and fields were checked against the `gh` manual pages (`gh_pr_merge`, `gh_pr_checks`,
+   `gh_pr_view` on cli.github.com, 2026-10-20); `gh --help` could not be run on the build host, so the check against
+   the installed `gh` that ADR-0050 asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from the manual's
+   exit code 8 for pending checks): with
    `--json`, `gh pr checks` prints the array also when it exits 1 (a failed check) or 8 (a pending one), and exits 1
    with no output when the base reports no required check. Every reading fails closed: exit 1 with no output is `none`
    (refused), anything unparseable is `gh_error` (refused).

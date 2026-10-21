@@ -199,6 +199,8 @@ Pre-release. The package is private and is not published to any registry; you bu
   Since ADR-0070 a client that may `publish_run` can also ask for that merge at once with MCP `merge_run_pr` (the same
   gate, not waiting for the poller, also when `ci_trigger` is off), and `merge_policy.require_verification: false`
   (default `true`; turning it off waits for approval like turning the policy on) skips the verification condition only.
+  `merge_policy.checks: "all_reported"` (ADR-0087, default `required`) merges only when a check ran and all reported
+  checks passed, for repositories without branch protection.
   A pull request head that is only GitHub's "Update branch" merge commit
   (a pure base merge the controller verifies with local Git) is accepted too, and `update_run_branch` asks GitHub for
   that update (ADR-0073).

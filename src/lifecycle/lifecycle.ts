@@ -243,6 +243,7 @@ import {
   type PreparedWorkspace,
   type ProjectSetupRunner,
   ResumeDirectoryUnavailableError,
+  SubmodulePreparationError,
   setupReport,
   WORKSPACE_SETUP_EVENT,
   type WorkspaceManager,
@@ -2032,6 +2033,13 @@ export class RunLifecycle {
     } catch (err) {
       if (err instanceof ResumeDirectoryUnavailableError)
         return this.failResumeDirectory(runId, err.problem, err.message);
+      // ADR-0087 item 3: the submodule library's closed reason and path (never a URL), with its taxonomy code.
+      if (err instanceof SubmodulePreparationError) {
+        return this.fail(runId, err.failureCode, `workspace preparation failed: ${err.message}`, {
+          reason: err.reason,
+          ...(err.path !== undefined ? { path: err.path } : {}),
+        });
+      }
       return this.fail(runId, "TOOL_FAILURE", `workspace preparation failed: ${errorText(err)}`);
     }
     if (exec.cancelRequested) return this.cancelEarly(runId);

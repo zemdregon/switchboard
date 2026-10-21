@@ -54,6 +54,9 @@ export type FinalizeCommitOutcome =
       readonly commitSha: string;
       readonly provenanceId: string;
       readonly filesChanged: number;
+      /** ADR-0087 item 4: submodule commits made with it and submodule paths not committed (present when attached). */
+      readonly submoduleCommits?: number;
+      readonly submodulesSkipped?: number;
     }
   | { readonly outcome: "skipped"; readonly reason: FinalizeSkipReason }
   | {
@@ -131,7 +134,9 @@ export async function makeFinalizeCommit(
   if (req.gitPolicyViolation) return skip("git_policy_violation");
   if (publisher === undefined) return skip("service_unavailable");
   const paths = [...new Set(req.changedPaths)];
-  if (paths.length === 0) return skip("no_changes");
+  // ADR-0087 item 4: the run's changed paths cannot see inside an attached submodule, so a run whose only changes are
+  // in submodules still commits (the publisher takes every writable submodule and reports the read-only ones).
+  if (paths.length === 0 && !(await publisher.hasAttachedSubmodules(req.runId))) return skip("no_changes");
   const bypass = req.approvedBypass === true;
   if (paths.length > MAX_PATHS && !bypass) return skip("too_many_paths");
   const message = req.summary ?? "";
@@ -146,6 +151,7 @@ export async function makeFinalizeCommit(
       projectId: p.id,
       contextId: p.context_id,
       origin: "finalize_only",
+      allSubmodules: true,
       // The publisher sanitises the whole text, then truncates to FINALIZE_MESSAGE_MAX with a note (bypass only).
       ...(bypass ? { looseLimits: true } : {}),
       nativeSessionIds: req.nativeSessionIds,
@@ -154,7 +160,15 @@ export async function makeFinalizeCommit(
         ? { sign: { reach: req.signReach ?? { ok: false, reason: "snapshot_unreadable" as const } } }
         : {}),
     });
-    return { outcome: "committed", commitSha: r.sha, provenanceId: r.provenanceId, filesChanged: r.filesChanged };
+    return {
+      outcome: "committed",
+      commitSha: r.sha,
+      provenanceId: r.provenanceId,
+      filesChanged: r.filesChanged,
+      ...(r.submodules !== undefined
+        ? { submoduleCommits: r.submodules.length, submodulesSkipped: r.submodulesSkipped?.length ?? 0 }
+        : {}),
+    };
   } catch (err) {
     if (!(err instanceof CommitError)) return { outcome: "failed", reason: "INTERNAL_ERROR" };
     if (err.code === "MESSAGE_EMPTY_AFTER_SANITISING") return skip("no_message");
@@ -179,6 +193,9 @@ export function finalizeCommitEventPayload(o: FinalizeCommitOutcome): Record<str
         commit_sha: o.commitSha,
         provenance_id: o.provenanceId,
         files_changed: o.filesChanged,
+        ...(o.submoduleCommits !== undefined
+          ? { submodule_commits: o.submoduleCommits, submodules_skipped: o.submodulesSkipped ?? 0 }
+          : {}),
       };
     case "skipped":
       return { outcome: o.outcome, reason: o.reason };

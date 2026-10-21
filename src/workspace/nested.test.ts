@@ -18,7 +18,7 @@ import { ArtifactStore } from "../artifacts/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
 import { WorkspaceManager } from "./index.js";
-import { excludePathspec, findNestedRepositories } from "./nested.js";
+import { excludePathspec, findNestedRepositories, partitionNested } from "./nested.js";
 
 /**
  * Nested-repository guard (Q-31, R-35, TDD §3.4, ADR-0022). Fixtures are harmless: the "driver" only touches a marker
@@ -253,5 +253,18 @@ describe("nested repository guard (Q-31, R-35)", () => {
   it("excludePathspec uses literal matching for ordinary names and escapes glob characters otherwise", () => {
     expect(excludePathspec("a b/ü")).toBe(":(exclude,top,literal)a b/ü");
     expect(excludePathspec("x*[y]�z")).toBe(":(exclude,top,glob)x\\*\\[y]*z");
+  });
+
+  it("ADR-0087: partitionNested separates attached declared submodules from other nested repositories", () => {
+    const nested = {
+      paths: ["libs/a", "libs/a-copy", "tmp/agent-repo", "vendor/b"],
+      excludes: ["libs/a", "libs/a-copy", "tmp/agent-repo", "vendor/b"].map(excludePathspec),
+    };
+    const split = partitionNested(nested, ["vendor/b", "libs/a", "not/found"]);
+    expect(split.submodules).toEqual(["libs/a", "vendor/b"]);
+    expect(split.others.paths).toEqual(["libs/a-copy", "tmp/agent-repo"]);
+    expect(split.others.excludes).toEqual([excludePathspec("libs/a-copy"), excludePathspec("tmp/agent-repo")]);
+    // Without attached submodules (a context without mode recursive) every nested repository stays excluded.
+    expect(partitionNested(nested, []).others).toEqual(nested);
   });
 });

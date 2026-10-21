@@ -337,6 +337,26 @@ export function pushArgs(remote: string, sha: string, ref: string): string[] {
   ];
 }
 
+/**
+ * ADR-0087 item 6: command-scope configuration of a submodule repository push. {@link PUSH_CONFIG} with the `https`
+ * transport only: a store's `origin` is its ADR-0068 https source, so `ssh` and `file` are never needed there.
+ */
+export const SUBMODULE_PUSH_CONFIG: readonly string[] = [
+  ...PUSH_CONFIG.slice(0, PUSH_CONFIG.indexOf("protocol.allow=never") - 1),
+  "-c",
+  "protocol.allow=never",
+  "-c",
+  "protocol.https.allow=always",
+];
+
+/**
+ * ADR-0087 item 6: argv (after `git`) of one submodule repository push from its store: `<sha>:<ref>` to the store's
+ * `origin`, never forced, with the {@link pushArgs} flags. Throws on anything that is not a plain branch update.
+ */
+export function submodulePushArgs(sha: string, ref: string): string[] {
+  return [...SUBMODULE_PUSH_CONFIG, ...pushArgs("origin", sha, ref).slice(PUSH_CONFIG.length)];
+}
+
 /** Remote target ref of a meta-session: `refs/heads/<branchPrefix><sess>`. */
 export function remoteTargetRef(branchPrefix: string, metaSessionId: string): string {
   return `refs/heads/${branchPrefix}${metaSessionId}`;
@@ -413,9 +433,22 @@ export class GitPusher {
 
   /** Push a meta-session's publish ref (LLD §12.6). Pushes of one meta-session run one at a time in this process. */
   async push(req: PushRequest): Promise<PushResult> {
-    const key = req.metaSessionId;
+    return (await this.serialised(req.metaSessionId, () => this.pushOnce(req, false))) as PushResult;
+  }
+
+  /**
+   * ADR-0087 item 6: the push's policy and repository checks (step 1 and 2: everything before the secret scan and the
+   * remote write) without pushing, so a caller can refuse before writing anything elsewhere (the linked submodule
+   * pushes). A refusal is recorded and returned exactly as {@link push} would record and return it; undefined when the
+   * push would go on to its scan. Serialised with the meta-session's pushes.
+   */
+  async preflight(req: PushRequest): Promise<PushResult | undefined> {
+    return this.serialised(req.metaSessionId, () => this.pushOnce(req, true));
+  }
+
+  private async serialised<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.locks.get(key) ?? Promise.resolve();
-    const p = prev.catch(() => {}).then(() => this.pushOnce(req));
+    const p = prev.catch(() => {}).then(fn);
     this.locks.set(key, p);
     try {
       return await p;
@@ -424,7 +457,7 @@ export class GitPusher {
     }
   }
 
-  private async pushOnce(req: PushRequest): Promise<PushResult> {
+  private async pushOnce(req: PushRequest, checkOnly: boolean): Promise<PushResult | undefined> {
     const session = this.options.db
       .prepare("SELECT id, project_id, repo_root, base_commit FROM meta_session WHERE id = ?")
       .get(req.metaSessionId) as SessionRow | undefined;
@@ -440,7 +473,8 @@ export class GitPusher {
       commits: [],
     };
     try {
-      const outcome = await this.checkAndPush(req, session, att);
+      const outcome = await this.checkAndPush(req, session, att, checkOnly);
+      if (outcome === undefined) return undefined;
       return this.record(req, att, eventRunId, outcome.outcome, outcome.reason);
     } catch (err) {
       if (err instanceof Refusal) return this.record(req, att, eventRunId, "REFUSED_POLICY", err.reason);
@@ -453,7 +487,8 @@ export class GitPusher {
     req: PushRequest,
     session: SessionRow,
     att: Attempt,
-  ): Promise<{ outcome: GitPushRow["outcome"]; reason: PushReason }> {
+    checkOnly = false,
+  ): Promise<{ outcome: GitPushRow["outcome"]; reason: PushReason } | undefined> {
     // 1. Policy and BR-31 (no Git call yet).
     if (session.project_id === null) throw new Refusal("NO_PROJECT");
     const ctx = this.options.resolveContext(session.project_id);
@@ -505,6 +540,7 @@ export class GitPusher {
       if (cls === "credentials") throw new Refusal("REMOTE_URL_CREDENTIALS");
       if (cls === "transport") throw new Refusal("REMOTE_TRANSPORT_NOT_ALLOWED");
     }
+    if (checkOnly) return undefined;
 
     // 2b. T9.14 (FR-GIT-11, ADR-0061, LLD §20.9): the outgoing diff is scanned last, in every profile, before any
     // remote write. A Git failure here (including an oversized diff) propagates as GIT_FAILED: never a clean scan.

@@ -132,6 +132,15 @@ export type CiRequiredChecks =
   | { readonly kind: "none" }
   | { readonly kind: "checks"; readonly buckets: readonly string[] };
 
+/** ADR-0087 item 7: every reported check of a head (G18); same shape, `none` meaning nothing was reported. */
+export type CiReportedChecks = CiRequiredChecks;
+
+/** ADR-0087 item 7: a pull request's state and, once merged, its merge commit (G19). */
+export interface CiPullRequestMergeState {
+  readonly state: "OPEN" | "CLOSED" | "MERGED";
+  readonly mergeCommitSha?: string;
+}
+
 /**
  * The T15.8 side (FR-SUB-02, ADR-0050 amendment 1 item 10, ADR-0060): the merge gate's reads and the one head-pinned
  * merge. Used only for a project whose `merge_policy.enabled` is on. Every method throws {@link CiStatusError}.
@@ -141,6 +150,11 @@ export interface CiMergePort {
   pullRequestGateView(q: { owner: string; repo: string; publishRef: string }): Promise<CiPullRequestGateView | null>;
   /** G11. */
   requiredChecks(q: { owner: string; repo: string; prNumber: number }): Promise<CiRequiredChecks>;
+  /**
+   * G18 (ADR-0087 item 7), read only for `merge_policy.checks: all_reported`. Optional so existing ports stay valid; the
+   * gate refuses `gh_error` for an `all_reported` policy when a port lacks it (fail closed).
+   */
+  reportedChecks?(q: { owner: string; repo: string; prNumber: number }): Promise<CiReportedChecks>;
   /** G12: `gh pr merge <number> --<method> --match-head-commit <sha>`. Resolves only when `gh` exits 0. */
   mergePullRequest(q: {
     owner: string;
@@ -149,6 +163,11 @@ export interface CiMergePort {
     method: "squash" | "merge" | "rebase";
     headSha: string;
   }): Promise<void>;
+}
+
+/** ADR-0087 item 7: G19, any repository `owner/repo`. Throws {@link CiStatusError}. */
+export interface CiPullRequestMergeStatePort {
+  pullRequestMergeState(q: { owner: string; repo: string; prNumber: number }): Promise<CiPullRequestMergeState>;
 }
 
 /**

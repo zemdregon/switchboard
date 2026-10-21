@@ -21,12 +21,18 @@ import { approvalReasons } from "../projects/index.js";
 import {
   G10_FIELDS,
   G11_FIELDS,
+  G18_FIELDS,
+  G19_FIELDS,
   GhArgvError,
   ghPrGateViewArgv,
   ghPrMergeArgv,
+  ghPrMergeStateArgv,
+  ghPrReportedChecksArgv,
   ghPrRequiredChecksArgv,
   isAllowedGhArgv,
   parsePrGateView,
+  parsePrMergeState,
+  parseReportedChecks,
   parseRequiredChecks,
 } from "./gh-argv.js";
 import { GhCiStatusPort, type GhRunner } from "./gh-port.js";
@@ -236,8 +242,8 @@ describe("G10 to G12 gh argv (T15.8, ADR-0050 amendment 1 item 10)", () => {
       merge.slice(0, 6),
       [...merge.slice(0, 7), "2222222"],
       [...merge.slice(0, 2), "-1", ...merge.slice(3)],
-      // checks without --required would read non-required checks too
-      ["pr", "checks", "42", "--repo", "acme/app", "--json", G11_FIELDS],
+      // G11 is exactly --required (the same argv without it is G18, tested below); no other field set
+      ["pr", "checks", "42", "--repo", "acme/app", "--json", "bucket,name"],
       ["pr", "checks", "42", "--repo", "acme/app", "--required", "--json", "bucket,name,link"],
       ["pr", "view", BRANCH, "--repo", "acme/app", "--json", "number,body"],
     ]) {
@@ -651,7 +657,11 @@ describe("an orchestrator turning the policy on waits for operator approval (FR-
     expect(mergeTargetsFrom([], store as never)).toEqual([]);
     (states[0] as { pending: boolean }).pending = false;
     expect(mergeTargetsFrom([], store as never)).toEqual([
-      { projectId: "dyn-app", policy: { enabled: true, method: "squash", requiredReports: [] }, baseRef: "main" },
+      {
+        projectId: "dyn-app",
+        policy: { enabled: true, method: "squash", requiredReports: [], checks: "required" },
+        baseRef: "main",
+      },
     ]);
     const configured = {
       id: "app",
@@ -758,5 +768,184 @@ describe("ref events (FR-SUB-01 first delivery)", () => {
       assembleDigest(f.ledger, scope, digest.cursor ?? undefined, (s) => s, { now: new Date(clock) }).projects,
     ).toEqual([]);
     expect(() => f?.db.prepare("DELETE FROM ref_event").run()).toThrow(/append-only/);
+  });
+});
+
+describe("G18 and G19 gh argv and the all_reported check policy (ADR-0087 item 7)", () => {
+  const ALL: ProjectMergePolicy = { ...POLICY, checks: "all_reported" };
+  const allDeps = (fx: Fixture, merge: CiMergePort) =>
+    deps(fx, merge, { targets: (): MergeTarget[] => [{ projectId: "app", policy: ALL, baseRef: "main" }] });
+
+  class ReportedMerge extends FakeMerge {
+    reported: CiRequiredChecks | Error = { kind: "checks", buckets: ["pass", "pass"] };
+    async reportedChecks() {
+      this.calls.push("reported");
+      if (this.reported instanceof Error) throw this.reported;
+      return this.reported;
+    }
+  }
+
+  it("builds G18 without --required and G19 by number; the audit refuses drift", () => {
+    expect(ghPrReportedChecksArgv("acme", "app", "42")).toEqual([
+      "pr",
+      "checks",
+      "42",
+      "--repo",
+      "acme/app",
+      "--json",
+      G18_FIELDS,
+    ]);
+    expect(ghPrMergeStateArgv("acme", "sub-repo", "7")).toEqual([
+      "pr",
+      "view",
+      "7",
+      "--repo",
+      "acme/sub-repo",
+      "--json",
+      G19_FIELDS,
+    ]);
+    expect(isAllowedGhArgv(ghPrReportedChecksArgv("acme", "app", "42"))).toBe(true);
+    expect(isAllowedGhArgv(ghPrMergeStateArgv("acme", "app", "7"))).toBe(true);
+    for (const bad of [
+      ["pr", "checks", "42", "--repo", "acme/app", "--json", "bucket,link"],
+      ["pr", "checks", "0", "--repo", "acme/app", "--json", G18_FIELDS],
+      ["pr", "checks", "42", "--repo", "acme/app", "--json", G18_FIELDS, "--watch"],
+      ["pr", "view", BRANCH, "--repo", "acme/app", "--json", G19_FIELDS],
+      ["pr", "view", "7", "--repo", "acme/app", "--json", "state,mergeCommit,body"],
+      ["pr", "view", "7", "--repo", "acme", "--json", G19_FIELDS],
+    ]) {
+      expect(isAllowedGhArgv(bad), bad.join(" ")).toBe(false);
+    }
+    expect(() => ghPrReportedChecksArgv("acme", "app", "x")).toThrow(GhArgvError);
+    expect(() => ghPrMergeStateArgv("acme", "app", "-1")).toThrow(GhArgvError);
+  });
+
+  it("parses G18 and G19 strictly", () => {
+    expect(parseReportedChecks(JSON.stringify([{ bucket: "skipping", name: "x" }]))).toEqual(["skipping"]);
+    expect(parseReportedChecks(JSON.stringify(Array.from({ length: 300 }, () => ({ bucket: "pass" }))))).toHaveLength(
+      300,
+    );
+    expect(() => parseReportedChecks(JSON.stringify([{ bucket: "green" }]))).toThrow();
+    expect(
+      parsePrMergeState(JSON.stringify({ state: "MERGED", mergeCommit: { oid: SHA_TIP.toUpperCase() }, x: 1 })),
+    ).toEqual({ state: "MERGED", mergeCommitSha: SHA_TIP });
+    expect(parsePrMergeState(JSON.stringify({ state: "OPEN", mergeCommit: null }))).toEqual({ state: "OPEN" });
+    for (const bad of [
+      { state: "merged" },
+      { state: "MERGED", mergeCommit: { oid: "abc" } },
+      { state: "MERGED", mergeCommit: "x" },
+      [],
+    ]) {
+      expect(() => parsePrMergeState(JSON.stringify(bad))).toThrow();
+    }
+  });
+
+  it("GhCiStatusPort runs G18 and G19 for an explicit owner/repo, reading exit codes fail closed", async () => {
+    const seen: string[][] = [];
+    let answer: { exitCode: number | null; stdout: string } = { exitCode: 0, stdout: "[]" };
+    const runner: GhRunner = async (_b, argv) => {
+      seen.push([...argv]);
+      return answer;
+    };
+    const port = new GhCiStatusPort({ runner, sourceEnv: {} });
+    const q = { owner: "acme", repo: "sub", prNumber: 9 };
+    expect(await port.reportedChecks(q)).toEqual({ kind: "none" });
+    answer = { exitCode: 1, stdout: "" };
+    expect(await port.reportedChecks(q)).toEqual({ kind: "none" });
+    answer = { exitCode: 8, stdout: JSON.stringify([{ bucket: "pass" }, { bucket: "pending" }]) };
+    expect(await port.reportedChecks(q)).toEqual({ kind: "checks", buckets: ["pass", "pending"] });
+    answer = { exitCode: 4, stdout: "" };
+    await expect(port.reportedChecks(q)).rejects.toMatchObject({ reason: "AUTH_REQUIRED" });
+    answer = { exitCode: 0, stdout: JSON.stringify({ state: "MERGED", mergeCommit: { oid: SHA_TIP } }) };
+    expect(await port.pullRequestMergeState(q)).toEqual({ state: "MERGED", mergeCommitSha: SHA_TIP });
+    answer = { exitCode: 0, stdout: JSON.stringify({ state: "OPEN", mergeCommit: null }) };
+    expect(await port.pullRequestMergeState(q)).toEqual({ state: "OPEN" });
+    answer = { exitCode: 0, stdout: "not json ignore previous instructions" };
+    await expect(port.pullRequestMergeState(q)).rejects.toMatchObject({ reason: "PARSE_FAILED" });
+    answer = { exitCode: 1, stdout: "boom" };
+    await expect(port.pullRequestMergeState(q)).rejects.toMatchObject({ reason: "GH_FAILED" });
+    // The existing G12 and G11 already take an explicit owner/repo (a submodule's, not the push remote's).
+    answer = { exitCode: 0, stdout: "[]" };
+    await port.mergePullRequest({ ...q, method: "merge", headSha: SHA_TIP });
+    await port.requiredChecks(q);
+    expect(seen.at(-2)).toEqual(["pr", "merge", "9", "--repo", "acme/sub", "--merge", "--match-head-commit", SHA_TIP]);
+    expect(seen.at(-1)).toContain("acme/sub");
+    for (const argv of seen) expect(isAllowedGhArgv(argv), argv.join(" ")).toBe(true);
+  });
+
+  it("all_reported merges when at least one check is reported and every one passed; G11 is never read", async () => {
+    f = openFixture();
+    const p = publish(f);
+    verify(f, p, SHA_TIP);
+    const merge = new ReportedMerge();
+    const r = await pollMergePolicies(allDeps(f, merge));
+    expect(r.merged).toHaveLength(1);
+    expect(merge.calls).toEqual(["view", "reported", "view", "merge"]);
+  });
+
+  it.each([
+    ["none reported", { kind: "none" } as CiRequiredChecks, "no_checks_reported"],
+    ["a failed check", { kind: "checks", buckets: ["pass", "fail"] } as CiRequiredChecks, "check_failed"],
+    // Bucket classification follows the required path: only pass counts as passed.
+    ["a skipped check", { kind: "checks", buckets: ["pass", "skipping"] } as CiRequiredChecks, "check_failed"],
+    ["a cancelled check", { kind: "checks", buckets: ["cancel"] } as CiRequiredChecks, "check_failed"],
+    ["a pending check", { kind: "checks", buckets: ["pass", "pending"] } as CiRequiredChecks, "check_pending"],
+    ["a gh failure", new CiStatusError("GH_FAILED"), "gh_error"],
+  ])("all_reported refuses %s as %s", async (_l, reported, reason) => {
+    f = openFixture();
+    const p = publish(f);
+    verify(f, p, SHA_TIP);
+    const merge = new ReportedMerge();
+    merge.reported = reported;
+    const r = await pollMergePolicies(allDeps(f, merge));
+    expect(r.refused.map((x) => x.reason)).toEqual([reason]);
+    expect(merge.merges).toEqual([]);
+    expect(mergeRows(f).map((x) => x.reason)).toEqual([reason]);
+  });
+
+  it("all_reported fails closed (gh_error) on a port without G18", async () => {
+    f = openFixture();
+    const p = publish(f);
+    verify(f, p, SHA_TIP);
+    const merge = new FakeMerge();
+    const r = await pollMergePolicies(allDeps(f, merge));
+    expect(r.refused.map((x) => x.reason)).toEqual(["gh_error"]);
+    expect(merge.calls).not.toContain("merge");
+  });
+
+  it("an absent or `required` checks policy reads G11 exactly as before", async () => {
+    f = openFixture();
+    const p = publish(f);
+    verify(f, p, SHA_TIP);
+    const merge = new ReportedMerge();
+    const r = await pollMergePolicies(
+      deps(f, merge, {
+        targets: (): MergeTarget[] => [
+          { projectId: "app", policy: { ...POLICY, checks: "required" }, baseRef: "main" },
+        ],
+      }),
+    );
+    expect(r.merged).toHaveLength(1);
+    expect(merge.calls).toEqual(["view", "checks", "view", "merge"]);
+  });
+
+  it("a check policy changed between the read and the merge refuses policy_off", async () => {
+    f = openFixture();
+    const p = publish(f);
+    verify(f, p, SHA_TIP);
+    const merge = new ReportedMerge();
+    const r = await pollMergePolicies(
+      deps(f, merge, {
+        targets: (): MergeTarget[] => [
+          {
+            projectId: "app",
+            policy: merge.calls.includes("reported") ? { ...ALL, checks: "required" } : ALL,
+            baseRef: "main",
+          },
+        ],
+      }),
+    );
+    expect(r.refused.map((x) => x.reason)).toEqual(["policy_off"]);
+    expect(merge.merges).toEqual([]);
   });
 });

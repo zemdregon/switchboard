@@ -19,6 +19,15 @@
  * {@link DRAFT_BODY_MAX_BYTES}, mentions neutralised) first, then a `---` line, a label saying it is agent-written and
  * from which source, and the controller footer (run, meta-session, provider, project, head); with no proposal, the
  * footer alone. A reused open pull request is never edited.
+ *
+ * ADR-0087 items 5 and 6 (LLD §3.4.17): for a project whose primary context sets `submodules.mode: "recursive"`
+ * ({@link PublishDeps.submodules}), the umbrella push is preceded by the linked publication of
+ * `src/mcp/publish-submodules.ts` (verified history, the multi-repository secret scan, one push per changed submodule
+ * repository; any refusal stops before the umbrella push), and the pull request step opens or reuses one pull request
+ * per changed repository against its own default branch before the umbrella's, whose newly created body lists every
+ * linked pull request (Delegated wording). A `gh` failure for one repository is reported on that repository's
+ * `submodules[]` entry and never undoes a push. Each linked pull request is a `submodule_pull_request` row and a
+ * `pull_request_opened` run event with its `repo`.
  */
 import type { ArtifactStore } from "../artifacts/index.js";
 import { branchOfPublishRef, isSafeBranch, PR_BODY_MAX_BYTES } from "../ci/gh-argv.js";
@@ -28,9 +37,22 @@ import type { PushContextConfig, PushResult } from "../git/push.js";
 import { isBranchPrefix, isRemoteName, remoteTargetRef } from "../git/push.js";
 import { describeSecretScanFindings, SECRET_SCAN_FIX_HINT, secretScanFindings } from "../git/secret-scan.js";
 import type { GitPushRequester, Ledger, PullRequestRow, RunRecord } from "../ledger/index.js";
+import { insertSubmodulePullRequest } from "../submodules/ledger.js";
 import { gitText } from "../workspace/git.js";
 import { buildEnvelope } from "./envelope.js";
 import { invalid, ToolError } from "./errors.js";
+import {
+  checkLinkedGates,
+  type LinkedPushOutcome,
+  type LinkedRepo,
+  linkedRepos,
+  originUrlOf,
+  type PublishSubmoduleDeps,
+  pushLinked,
+  scanLinked,
+  umbrellaOf,
+  withPublishLock,
+} from "./publish-submodules.js";
 
 /** Most characters of the run's own text in the title (ADR-0069). */
 export const TITLE_TEXT_MAX = 120;
@@ -46,12 +68,23 @@ export interface PublishDeps {
   /** The controller pusher (`serve` shares the agent `push` tool's instance, so pushes of one meta-session serialise). */
   readonly pusher: {
     push(req: { metaSessionId: string; requestedBy: GitPushRequester; runId?: string }): Promise<PushResult>;
+    /**
+     * ADR-0087 item 6: the push's own policy and repository checks without pushing (a refusal recorded as the push
+     * would record it; undefined when it would go on). Run before any linked submodule push.
+     */
+    preflight?(req: {
+      metaSessionId: string;
+      requestedBy: GitPushRequester;
+      runId?: string;
+    }): Promise<PushResult | undefined>;
   };
   /** Configuration first, then approved dynamic projects ({@link projectPushContextResolver}). */
   readonly resolveContext: (projectId: string) => PushContextConfig | undefined;
   readonly pulls: PullRequestPort;
   /** The push URL of `remote` in `repo` (default: `git remote get-url --push` through the hardened helper). */
   readonly pushUrl?: (repo: string, remote: string) => Promise<string | undefined>;
+  /** ADR-0087 item 6: linked publication of umbrella projects; absent, every project publishes as before. */
+  readonly submodules?: PublishSubmoduleDeps;
 }
 
 export interface PublishContext {
@@ -76,6 +109,26 @@ export interface PublishResult {
     /** True when an earlier accepted push of the same head was returned and nothing was pushed now. */
     reused: boolean;
   };
+  pull_request: { number: number; url: string; draft: boolean; reused: boolean } | null;
+  pull_request_error?: PublishPullRequestError;
+  /**
+   * ADR-0087 item 6: one entry per changed submodule repository, in path order; present (possibly empty) only for a
+   * project whose primary context sets `submodules.mode: "recursive"`.
+   */
+  submodules?: LinkedPublication[];
+}
+
+/** ADR-0087 item 6: one changed submodule repository of a publication. */
+export interface LinkedPublication {
+  /** `host/owner/repo`. */
+  repo: string;
+  /** Changed umbrella-relative paths referencing it (duplicate-URL paths together), sorted. */
+  paths: string[];
+  branch: string;
+  head_sha: string;
+  /** The repository's default branch (the pull request base); null when it is not known. */
+  default_branch: string | null;
+  publication: { push_id: string; pushed_at: string; reused: boolean };
   pull_request: { number: number; url: string; draft: boolean; reused: boolean } | null;
   pull_request_error?: PublishPullRequestError;
 }
@@ -142,8 +195,9 @@ export async function publishRun(
     throw invalid(`run ${run.id} has no published commit to push`, { reason: "NOTHING_TO_PUBLISH" });
   }
   const head = ledger.latestPublishedHead(newest.publish_ref);
-
   const existing = head === undefined ? undefined : acceptedPushOf(ledger, run.meta_session_id, context, head);
+  const linked = await publishLinked(ctx, deps, run, context, head, existing === undefined);
+
   let publication: PublishResult["publication"];
   if (existing !== undefined) {
     publication = { ...existing, reused: true };
@@ -173,10 +227,198 @@ export async function publishRun(
     publication,
     pull_request: null,
   };
+  const subs: LinkedPublication[] | undefined = linked?.outcomes.map((o) => ({
+    repo: o.repo,
+    paths: [...o.paths],
+    branch: o.branch,
+    head_sha: o.head_sha,
+    default_branch: o.default_branch ?? null,
+    publication: { push_id: o.push_id, pushed_at: o.pushed_at, reused: o.reused },
+    pull_request: null,
+  }));
+  if (subs !== undefined) result.submodules = subs;
   if (!opts.openPullRequest) return result;
-  const pr = await openPullRequest(ctx, deps, run, context, publication, opts.draft);
+  const proposal = await proposalOf(ctx, run);
+  if (linked !== undefined && subs !== undefined && deps.submodules !== undefined) {
+    for (const [i, o] of linked.outcomes.entries()) {
+      const entry = subs[i] as LinkedPublication;
+      const repo = linked.repos.find((r) => r.key === o.repo) as LinkedRepo;
+      const pr = await openLinkedPullRequest(
+        ctx,
+        deps,
+        run,
+        { repo, outcome: o, umbrella: publication },
+        opts.draft,
+        proposal,
+      );
+      if ("error" in pr) entry.pull_request_error = pr.error;
+      else entry.pull_request = pr;
+    }
+  }
+  const pr = await openPullRequest(ctx, deps, run, context, publication, opts.draft, proposal, subs ?? []);
   if ("error" in pr) return { ...result, pull_request_error: pr.error };
   return { ...result, pull_request: pr };
+}
+
+/**
+ * ADR-0087 items 5 and 6: before the umbrella push, the linked publication of every changed submodule repository.
+ * Undefined when the project has no submodule plan (or the head is unknown: the pusher then refuses as before). When
+ * the umbrella still has to be pushed (`umbrellaPending`), the umbrella pusher's own checks run first
+ * ({@link PublishDeps.pusher}'s `preflight`): a refusal there (repository configuration, remote, target, history)
+ * refuses before any submodule repository is written to.
+ */
+async function publishLinked(
+  ctx: PublishContext,
+  deps: PublishDeps,
+  run: RunRecord,
+  context: PushContextConfig,
+  head: string | undefined,
+  umbrellaPending: boolean,
+): Promise<{ repos: LinkedRepo[]; outcomes: LinkedPushOutcome[] } | undefined> {
+  const sub = deps.submodules;
+  if (sub === undefined || run.project_id === null || sub.plan(run.project_id) === undefined) return undefined;
+  const umbrella = umbrellaOf(sub.db, run.meta_session_id);
+  if (umbrella === undefined || head === undefined) return undefined;
+  return withPublishLock(run.meta_session_id, async () => {
+    const repos = await linkedRepos(sub, run, { ...umbrella, head });
+    if (repos.length === 0) return { repos, outcomes: [] };
+    await checkLinkedGates(sub.db, run.meta_session_id, context.path, umbrella.repo);
+    if (!isRemoteName(context.remote)) throw notPublishable("REMOTE_INVALID", "push refused (REMOTE_INVALID)");
+    if (!isBranchPrefix(context.branchPrefix)) throw notPublishable("PREFIX_INVALID", "push refused (PREFIX_INVALID)");
+    const ref = remoteTargetRef(context.branchPrefix, run.meta_session_id);
+    if (umbrellaPending && deps.pusher.preflight !== undefined) {
+      const refused = await deps.pusher.preflight({
+        metaSessionId: run.meta_session_id,
+        requestedBy: `mcp_client:${ctx.clientId}`,
+        runId: run.id,
+      });
+      if (refused !== undefined && !refused.pushed) throw pushRefusal(refused);
+    }
+    await scanLinked(ctx.ledger, sub, run, { ...umbrella, head, ref }, repos, ref);
+    const outcomes = await pushLinked(sub, run, {
+      repos,
+      ref,
+      umbrellaHead: head,
+      requestedBy: `mcp_client:${ctx.clientId}`,
+    });
+    return { repos, outcomes };
+  });
+}
+
+/** A path or branch as a Markdown code span: no control character, no backtick (so it cannot close the span). */
+const codeSpan = (s: string): string => `\`${s.replace(CONTROL, " ").replace(/`/gu, "'")}\``;
+
+/**
+ * ADR-0087 item 6.5: open or reuse the pull request of one pushed submodule repository against its default branch,
+ * recorded as a `submodule_pull_request` row and a `pull_request_opened` event (a reuse once per number and head).
+ */
+async function openLinkedPullRequest(
+  ctx: PublishContext,
+  deps: PublishDeps,
+  run: RunRecord,
+  linked: { repo: LinkedRepo; outcome: LinkedPushOutcome; umbrella: PublishResult["publication"] },
+  draft: boolean,
+  proposal: ProposedText | undefined,
+): Promise<NonNullable<LinkedPublication["pull_request"]> | { error: PublishPullRequestError }> {
+  const sub = deps.submodules as PublishSubmoduleDeps;
+  const { outcome: o, umbrella } = linked;
+  const url = await originUrlOf(linked.repo.store);
+  const gh = url === undefined ? undefined : (sub.githubRepo ?? parseGithubRemote)(url);
+  if (gh === undefined) return { error: "REMOTE_NOT_GITHUB" };
+  const base = o.default_branch;
+  if (base === undefined || !isSafeBranch(base)) return { error: "BASE_INVALID" };
+  const ghRepo = `${gh.owner}/${gh.repo}`;
+  const umbrellaRef = `refs/heads/${umbrella.branch}`;
+  const prior = (number: number) =>
+    sub.db
+      .prepare(
+        `SELECT draft, head_sha FROM submodule_pull_request WHERE meta_session_id = ? AND repo = ? AND number = ?
+         ORDER BY created_at DESC, id DESC`,
+      )
+      .all(run.meta_session_id, ghRepo, number) as { draft: number; head_sha: string }[];
+  const record = (number: number, prUrl: string, action: "created" | "reused") => {
+    if (action === "reused" && prior(number).some((r) => r.head_sha === o.head_sha)) return;
+    ctx.ledger.immediate(() => {
+      const row = insertSubmodulePullRequest(sub.db, {
+        runId: run.id,
+        metaSessionId: run.meta_session_id,
+        pushId: o.push_id,
+        clientId: ctx.clientId,
+        repo: ghRepo,
+        number,
+        url: prUrl,
+        branch: o.branch,
+        baseRef: base,
+        headSha: o.head_sha,
+        umbrellaRef,
+        draft,
+        action,
+      });
+      // As `recordPullRequest` announces the umbrella's: the row's facts, never a title or body.
+      ctx.ledger.appendRunEvent({
+        runId: run.id,
+        type: "pull_request_opened",
+        payload: {
+          pull_request_id: row.id,
+          push_id: o.push_id,
+          repo: ghRepo,
+          number,
+          url: prUrl,
+          branch: o.branch,
+          base_ref: base,
+          head_sha: o.head_sha,
+          draft,
+          action,
+          requested_by: `mcp_client:${ctx.clientId}`,
+          submodule: { source: o.repo, paths: [...o.paths], umbrella_ref: umbrellaRef },
+        },
+      });
+    });
+  };
+  try {
+    const found = await deps.pulls.findForBranch({ owner: gh.owner, repo: gh.repo, branch: o.branch });
+    if (found !== null && found.state === "OPEN") {
+      const wasDraft = prior(found.number)[0]?.draft === 1;
+      record(found.number, found.url, "reused");
+      return { number: found.number, url: found.url, draft: wasDraft, reused: true };
+    }
+    const created = await deps.pulls.create({
+      owner: gh.owner,
+      repo: gh.repo,
+      branch: o.branch,
+      base,
+      title: pullRequestTitle(proposal?.title, run.id),
+      body: pullRequestBody(run, { head_sha: o.head_sha }, proposal, [
+        `- Submodule paths: ${o.paths.map(codeSpan).join(", ")}`,
+        `- Umbrella branch: ${codeSpan(umbrella.branch)} at \`${umbrella.head_sha}\``,
+      ]),
+      draft,
+    });
+    record(created.number, created.url, "created");
+    return { number: created.number, url: created.url, draft, reused: false };
+  } catch (err) {
+    if (err instanceof PullRequestPortError) return { error: err.code };
+    return { error: "GH_FAILED" };
+  }
+}
+
+/** Most linked pull requests listed in an umbrella pull request body (the rest are counted). */
+const LINKED_LIST_MAX = 200;
+
+/** The umbrella body's linked list (Delegated wording): one line per submodule repository, with its pull request. */
+function linkedLines(subs: readonly LinkedPublication[]): string[] {
+  if (subs.length === 0) return [];
+  const lines = ["", "Linked submodule pull requests (merge these before this one):", ""];
+  for (const s of subs.slice(0, LINKED_LIST_MAX)) {
+    const where = `${s.paths.map(codeSpan).join(", ")} (${codeSpan(s.repo)})`;
+    lines.push(
+      s.pull_request !== null
+        ? `- ${where}: ${s.pull_request.url}`
+        : `- ${where}: no pull request${s.pull_request_error !== undefined ? ` (${s.pull_request_error})` : ""}`,
+    );
+  }
+  if (subs.length > LINKED_LIST_MAX) lines.push(`- and ${subs.length - LINKED_LIST_MAX} more`);
+  return lines;
 }
 
 /** The newest ACCEPTED `git_push` of the meta-session that put `head` on the context's current target. */
@@ -258,6 +500,8 @@ async function openPullRequest(
   context: PushContextConfig,
   publication: PublishResult["publication"],
   draft: boolean,
+  proposed: ProposedText | undefined,
+  linked: readonly LinkedPublication[],
 ): Promise<NonNullable<PublishResult["pull_request"]> | { error: PublishPullRequestError }> {
   const url = await (deps.pushUrl ?? defaultPushUrl)(context.path, publication.remote);
   const gh = url === undefined ? undefined : parseGithubRemote(url);
@@ -293,14 +537,13 @@ async function openPullRequest(
         .find((r) => r.number === found.number);
       return { number: found.number, url: found.url, draft: prior?.draft === 1, reused: true };
     }
-    const proposal = await proposalOf(ctx, run);
     const created = await deps.pulls.create({
       owner: gh.owner,
       repo: gh.repo,
       branch: publication.branch,
       base,
-      title: pullRequestTitle(proposal?.title, run.id),
-      body: pullRequestBody(run, publication, proposal),
+      title: pullRequestTitle(proposed?.title, run.id),
+      body: pullRequestBody(run, publication, proposed, linkedLines(linked)),
       draft,
     });
     record(created.number, created.url, "created");
@@ -485,6 +728,8 @@ export function pullRequestBody(
   run: Pick<RunRecord, "id" | "meta_session_id" | "provider" | "model" | "project_id">,
   publication: Pick<PublishResult["publication"], "head_sha">,
   proposal: Pick<ProposedText, "body" | "source"> | undefined,
+  /** ADR-0087 item 6: controller-built lines appended to the footer (already sanitised by the caller). */
+  extra: readonly string[] = [],
 ): string {
   const provider =
     run.provider === null ? "unknown" : run.model === null ? run.provider : `${run.provider} (${run.model})`;
@@ -496,6 +741,7 @@ export function pullRequestBody(
     `- Provider: ${provider.replace(CONTROL, " ")}`,
     `- Project: \`${run.project_id ?? "-"}\``,
     `- Head: \`${publication.head_sha}\``,
+    ...extra,
   ].join("\n");
   const text = neutraliseMentions((proposal?.body ?? "").replace(BODY_CONTROL, "")).trim();
   if (proposal === undefined || text === "") return capBytes(footer, PR_BODY_MAX_BYTES);

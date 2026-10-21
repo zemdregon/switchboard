@@ -181,6 +181,16 @@ export interface EnsureCloneDeps {
   readonly settings: ProjectSourcesSettings;
   readonly git?: GitRunner;
   readonly timeoutMs?: number;
+  /** ADR-0087 object stores: clone with `--no-checkout` (default false). */
+  readonly noCheckout?: boolean;
+  /**
+   * Extra command-scope `-c` pairs placed after the fixed hooks/fsmonitor settings on the clone and on the reuse fetch
+   * (ADR-0087 stores: `protocol.allow=never`, `protocol.https.allow=always`, `submodule.recurse=false`,
+   * `fetch.recurseSubmodules=false`). Default none.
+   */
+  readonly extraConfig?: readonly string[];
+  /** Whether a reused clone is fetched (best effort) before it is returned. Default true (ADR-0068). */
+  readonly fetchOnReuse?: boolean;
 }
 
 /**
@@ -195,7 +205,8 @@ export async function ensureClone(
   const git = deps.git ?? defaultGitRunner;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_CLONE_TIMEOUT_MS;
   const target = cloneTarget(src, deps.settings);
-  const existing = await reuse(src, target, deps.settings, git, timeoutMs, field);
+  const reuseOpts = { extra: deps.extraConfig ?? [], fetch: deps.fetchOnReuse ?? true };
+  const existing = await reuse(src, target, deps.settings, git, timeoutMs, field, reuseOpts);
   if (existing !== undefined) return { path: existing, outcome: "reused" };
 
   const parent = path.dirname(target);
@@ -212,7 +223,13 @@ export async function ensureClone(
     throw new CloneError("CLONE_FAILED", field);
   }
   const url = `${normalizedUrl(src)}.git`;
-  const cloned = await git([...SAFE, "clone", "--no-recurse-submodules", "--", url, tmp], { timeoutMs });
+  const checkout = deps.noCheckout === true ? ["--no-checkout"] : [];
+  const cloned = await git(
+    [...SAFE, ...reuseOpts.extra, "clone", "--no-recurse-submodules", ...checkout, "--", url, tmp],
+    {
+      timeoutMs,
+    },
+  );
   if (!cloned.ok) {
     await rm(tmp, { recursive: true, force: true });
     throw new CloneError("CLONE_FAILED", field);
@@ -226,7 +243,7 @@ export async function ensureClone(
     // Lost a race with a concurrent clone (or the target appeared): fall through to the reuse rules.
   }
   await rm(tmp, { recursive: true, force: true });
-  const raced = await reuse(src, target, deps.settings, git, timeoutMs, field);
+  const raced = await reuse(src, target, deps.settings, git, timeoutMs, field, reuseOpts);
   if (raced === undefined) throw new CloneError("CLONE_TARGET_CONFLICT", field);
   return { path: raced, outcome: "reused" };
 }
@@ -248,6 +265,7 @@ async function reuse(
   git: GitRunner,
   timeoutMs: number,
   field: string | undefined,
+  opts: { readonly extra: readonly string[]; readonly fetch: boolean },
 ): Promise<string | undefined> {
   let st: Awaited<ReturnType<typeof lstat>>;
   try {
@@ -272,6 +290,8 @@ async function reuse(
   const remote = origin.ok ? parseRepositoryUrl(origin.stdout.trim()) : undefined;
   if (remote === undefined || sourceKey(remote) !== sourceKey(src)) throw conflict();
   // Best effort: a failed fetch leaves the clone as it was; base_ref is checked against it afterwards.
-  await git([...SAFE, "fetch", "--no-recurse-submodules", "origin"], { cwd: canonical, timeoutMs });
+  if (opts.fetch) {
+    await git([...SAFE, ...opts.extra, "fetch", "--no-recurse-submodules", "origin"], { cwd: canonical, timeoutMs });
+  }
   return canonical;
 }

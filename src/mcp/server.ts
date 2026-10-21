@@ -230,8 +230,11 @@ import {
 } from "../policy/index.js";
 import {
   type DynamicProjectStore,
+  effectiveProjectSources,
   type GitRunner,
   normalizedUrl,
+  type ProjectSourceGrantStore,
+  type ProjectSourcesGetter,
   parseRepositoryUrl,
   sourceAllowed,
 } from "../projects/index.js";
@@ -297,10 +300,12 @@ import { type MergeRunDeps, mergeRunPr, updateRunBranch, updateRunOffered } from
 import { type OAuthAdmin, UnknownOAuthClientError } from "./oauth-admin.js";
 import {
   admitBrief,
+  contextListItem,
   createProjectTools,
   dynamicListItem,
   mergePolicyItem,
   type PendingRevisionAnnouncement,
+  type PendingSourceAnnouncement,
   type ProjectTools,
   setupItem,
   snapshotSetup,
@@ -444,6 +449,14 @@ export interface McpServerDeps {
    */
   readonly announcePendingRevision?: (a: PendingRevisionAnnouncement) => void;
   /**
+   * ADR-0087 item 8: runtime owner grants for `project_sources.allowed_owners`. With `config.projectSources` it offers
+   * `request_project_source` to a `manage_projects` client, serves the `project_source` approval kind to an approver
+   * that lists it, and makes an approval effective at the next check. Absent: configured owners only.
+   */
+  readonly projectSourceGrants?: ProjectSourceGrantStore;
+  /** ADR-0087: announces a new owner request to the sinks (`approval_pending`, kind `project_source`). */
+  readonly announcePendingSource?: (a: PendingSourceAnnouncement) => void;
+  /**
    * T14.15 (FR-CTL-13, LLD §20.3): the decision service. Absent means `request_decision`, `list_decisions` and `decide`
    * do not exist for this server; `announce` tells the sinks a decision is waiting (`decision_requested`, no text).
    */
@@ -574,6 +587,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   }
   /** Project ids with a delegate_task/continue_task between resolution and admission (delete_project waits for them). */
   const admittingCount = new Map<string, number>();
+  // ADR-0087 item 8: configured owners plus approved grants, re-read at each check (no restart).
+  const liveProjectSources: ProjectSourcesGetter | undefined =
+    deps.config.projectSources === undefined
+      ? undefined
+      : effectiveProjectSources(deps.config.projectSources, deps.projectSourceGrants);
+  const sourceRequestsOffered = deps.config.projectSources !== undefined && deps.projectSourceGrants !== undefined;
   const projectTools: ProjectTools | undefined =
     deps.projectStore === undefined
       ? undefined
@@ -583,7 +602,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           client,
           allowedRoots: deps.config.allowedRoots,
           ...(deps.config.dataDir !== undefined ? { dataDir: deps.config.dataDir } : {}),
-          ...(deps.config.projectSources !== undefined ? { projectSources: deps.config.projectSources } : {}),
+          ...(liveProjectSources !== undefined ? { projectSources: liveProjectSources } : {}),
+          ...(sourceRequestsOffered && deps.projectSourceGrants !== undefined
+            ? { sourceGrants: deps.projectSourceGrants }
+            : {}),
+          ...(deps.announcePendingSource !== undefined ? { onPendingSource: deps.announcePendingSource } : {}),
           ...(deps.projectGit !== undefined ? { git: deps.projectGit } : {}),
           configuredIds: () => new Set((deps.config.projects ?? []).map((p) => p.id)),
           disabledProviders: new Set(
@@ -608,6 +631,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           clientId: deps.clientId,
           client,
           ...(deps.projectStore !== undefined ? { projectStore: deps.projectStore } : {}),
+          ...(sourceRequestsOffered && deps.projectSourceGrants !== undefined
+            ? { sourceGrants: deps.projectSourceGrants }
+            : {}),
           applyDecision: (req) => lifecycle.applyApprovalDecision(req),
           ...(deps.announceApproval !== undefined ? { announce: deps.announceApproval } : {}),
         })
@@ -1855,7 +1881,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         { field: "onboarding.repository_url", reason: "CLONE_URL_INVALID" },
       );
     }
-    const sources = deps.config.projectSources;
+    const sources = liveProjectSources?.();
     if (sources !== undefined && !sourceAllowed(src, sources)) {
       throw new ToolError(
         "PERMISSION_BLOCKED",
@@ -2089,7 +2115,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         id: p.id,
         name: p.name,
         environment_kind: p.environment.kind,
-        contexts: p.contexts.map((c) => ({ id: c.id, kind: c.kind, primary: c.primary, push_policy: c.push.policy })),
+        contexts: p.contexts.map(contextListItem),
         ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
         effective_max_profile: effectiveMaxProfile(maxTrustProfile, p),
         ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
@@ -2423,6 +2449,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     applyToolProfile(client.toolProfile, [
       ...toolDescriptors({
         manageProjects: client.manageProjects === true && projectTools !== undefined,
+        projectSources: sourceRequestsOffered,
         searchContext: searchOffered(),
         workQueue: workQueueOffered,
         skills: skillsOffered,
@@ -2484,7 +2511,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       }
       if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
         // T9.9 (FR-PRJ-10): offered only with manage_projects; otherwise answered exactly like an unknown tool, but recorded.
-        if (client.manageProjects === true && projectTools !== undefined) {
+        // ADR-0087: `request_project_source` also needs project_sources and the grant store.
+        if (
+          client.manageProjects === true &&
+          projectTools !== undefined &&
+          (name !== "request_project_source" || sourceRequestsOffered)
+        ) {
           return ok(await projectTools.call(name as ProjectToolName, rawArgs));
         }
         projectTools?.recordNotOffered(name as ProjectToolName, rawArgs);

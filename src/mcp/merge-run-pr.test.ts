@@ -85,6 +85,12 @@ class FakeMerge implements CiMergePort {
     if (this.checks instanceof Error) throw this.checks;
     return this.checks;
   }
+  reported: CiRequiredChecks | Error = { kind: "checks", buckets: ["pass"] };
+  async reportedChecks(): Promise<CiRequiredChecks> {
+    this.calls.push("reported");
+    if (this.reported instanceof Error) throw this.reported;
+    return this.reported;
+  }
   async mergePullRequest(q: { owner: string; repo: string; prNumber: number; method: string; headSha: string }) {
     this.calls.push("merge");
     if (this.mergeError) throw this.mergeError;
@@ -118,7 +124,7 @@ const CLIENTS: ResolvedMcpClient[] = [
     maxTrustProfile: "edit-untrusted",
     manageProjects: true,
     maxPushPolicy: "branch",
-    projects: ["web", "plain", "noverify"],
+    projects: ["web", "plain", "noverify", "allrep"],
     approvalProxy: true,
     approvalProxyTargets: ["steward"],
     approvalProxyKinds: ["dynamic_project", "push_revision"],
@@ -212,6 +218,13 @@ async function start(): Promise<Fixture> {
       environment: { kind: "host" },
       contexts: [ctx],
       mergePolicy: { enabled: true, method: "rebase", requiredReports: [], requireVerification: false },
+    },
+    {
+      id: "allrep",
+      name: "All reported",
+      environment: { kind: "host" },
+      contexts: [ctx],
+      mergePolicy: { enabled: true, method: "squash", requiredReports: [], checks: "all_reported" },
     },
   ];
   const mcpClients = new Map(CLIENTS.map((c) => [c.id, c]));
@@ -470,6 +483,24 @@ describe("merge_run_pr (ADR-0070)", () => {
     expect(f.merge.merges).toEqual([expect.objectContaining({ method: "rebase", headSha: TIP })]);
   });
 
+  it("merge_policy.checks all_reported reads G18 (not G11): merges on all-pass, refuses none reported", async () => {
+    f = await start();
+    const { call } = await f.connect("steward");
+    const p = f.published({ projectId: "allrep" });
+    f.verify(p);
+    f.merge.reported = { kind: "none" };
+    const none = await call("merge_run_pr", { run_id: p.runId });
+    expect(none.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "no_checks_reported" } });
+    expect(f.merge.merges).toEqual([]);
+    expect(mergeRows(f.db)).toEqual([expect.objectContaining({ outcome: "refused", reason: "no_checks_reported" })]);
+    f.merge.reported = { kind: "checks", buckets: ["pass", "pass", "pass"] };
+    const ok = await call("merge_run_pr", { run_id: p.runId });
+    expect(ok.isError, JSON.stringify(ok.body)).toBe(false);
+    expect(ok.body).toMatchObject({ merged: true });
+    expect(f.merge.calls).not.toContain("checks");
+    expect(f.merge.calls).toContain("reported");
+  });
+
   it("a gh failure is TOOL_FAILURE gh_error, retryable; a retry after the failed G12 merges", async () => {
     f = await start();
     const { call } = await f.connect("steward");
@@ -580,6 +611,7 @@ describe("merge_run_pr (ADR-0070)", () => {
       method: "squash",
       required_reports: [],
       require_verification: true,
+      checks: "required",
     });
     const merged = await call("merge_run_pr", { run_id: p.runId });
     expect(merged.isError, JSON.stringify(merged.body)).toBe(false);

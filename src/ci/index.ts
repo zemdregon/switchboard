@@ -7,5 +7,6 @@ export * from "./merge-codes.js";
 export * from "./merge-policy.js";
 export * from "./port.js";
 export * from "./published-refs.js";
+export * from "./submodule-merge.js";
 export * from "./trigger.js";
 export * from "./untrusted.js";

@@ -13,6 +13,7 @@ import {
   MIN_CONTINUITY_MAX_BUNDLE_BYTES,
   projectsForClient,
   resolveConfigPath,
+  submodulesEnabled,
   TRUST_PROFILES,
 } from "./index.js";
 
@@ -782,6 +783,88 @@ describe("projects[] (T9.1, FR-PRJ-01, 02, 04)", () => {
         { ...repoCtx, id: "docs", identity, finalize_commit: true },
       ]),
     ).toThrow(/\$\.projects\[0\]\.contexts\[1\]\.finalize_commit: only the primary, writable context/);
+  });
+
+  it("contexts[].submodules (ADR-0087 item 1): resolved, primary-only recursive, safe paths, writable needs recursive", () => {
+    const load = (contexts: unknown[]) => () =>
+      loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts }) });
+    const absent = loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx] }) });
+    expect(absent.projects[0]?.contexts[0]?.submodules).toBeUndefined();
+    expect(submodulesEnabled(absent.projects[0]?.contexts[0])).toBe(false);
+    const on = loadConfig({
+      configPath: withProjects({
+        id: "web-app",
+        name: "W",
+        contexts: [
+          {
+            ...repoCtx,
+            submodules: { mode: "recursive", writable_paths: ["libs/a", "libs/b"], exclude: ["vendor/x"] },
+          },
+        ],
+      }),
+    });
+    expect(on.projects[0]?.contexts[0]?.submodules).toEqual({
+      mode: "recursive",
+      writablePaths: ["libs/a", "libs/b"],
+      exclude: ["vendor/x"],
+    });
+    expect(submodulesEnabled(on.projects[0]?.contexts[0])).toBe(true);
+    const star = loadConfig({
+      configPath: withProjects({
+        id: "web-app",
+        name: "W",
+        contexts: [{ ...repoCtx, submodules: { mode: "recursive", writable_paths: ["*"] } }],
+      }),
+    });
+    expect(star.projects[0]?.contexts[0]?.submodules?.writablePaths).toEqual(["*"]);
+    const off = loadConfig({
+      configPath: withProjects({ id: "web-app", name: "W", contexts: [{ ...repoCtx, submodules: { mode: "off" } }] }),
+    });
+    expect(off.projects[0]?.contexts[0]?.submodules).toEqual({ mode: "off", writablePaths: [], exclude: [] });
+    expect(submodulesEnabled(off.projects[0]?.contexts[0])).toBe(false);
+
+    expect(
+      load([
+        { ...repoCtx, primary: true },
+        { ...repoCtx, id: "docs", submodules: { mode: "recursive" } },
+      ]),
+    ).toThrow(/contexts\[1\]\.submodules\.mode: SUBMODULES_PRIMARY_ONLY/);
+    for (const bad of ["/abs", "a//b", "./a", "a/../b", "a/.git/b", ".GIT", "a\\b", ""]) {
+      expect(load([{ ...repoCtx, submodules: { mode: "recursive", exclude: [bad] } }]), bad).toThrow();
+    }
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", exclude: ["a/../b"] } }])).toThrow(
+      /submodules\.exclude\[0\]: SUBMODULE_PATH_UNSAFE/,
+    );
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", writable_paths: ["*", "a"] } }])).toThrow(
+      /SUBMODULE_PATH_UNSAFE: "\*" is only valid as the sole entry/,
+    );
+    expect(load([{ ...repoCtx, submodules: { mode: "off", writable_paths: ["a"] } }])).toThrow(
+      /submodules\.writable_paths: SUBMODULES_NOT_WRITABLE/,
+    );
+    expect(load([{ ...repoCtx, writable: false, submodules: { mode: "recursive", writable_paths: ["a"] } }])).toThrow(
+      /SUBMODULES_NOT_WRITABLE/,
+    );
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", writable_paths: ["a"], exclude: ["a"] } }])).toThrow(
+      /SUBMODULE_PATH_CONFLICT/,
+    );
+    // The JSON schema: unknown keys, bad mode, duplicates, too many and over-long paths.
+    expect(load([{ ...repoCtx, submodules: { mode: "all" } }])).toThrow(/submodules/);
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", extra: 1 } }])).toThrow(/submodules/);
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", exclude: ["a", "a"] } }])).toThrow(/submodules/);
+    expect(
+      load([
+        { ...repoCtx, submodules: { mode: "recursive", exclude: Array.from({ length: 513 }, (_, i) => `s/${i}`) } },
+      ]),
+    ).toThrow(/submodules/);
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", exclude: ["a".repeat(257)] } }])).toThrow(/submodules/);
+  });
+
+  it("merge_policy.checks (ADR-0087 item 7): default required, all_reported accepted, anything else refused", () => {
+    const cfg = (mp: unknown) =>
+      loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx], merge_policy: mp }) });
+    expect(cfg({ enabled: true }).projects[0]?.mergePolicy?.checks).toBe("required");
+    expect(cfg({ enabled: true, checks: "all_reported" }).projects[0]?.mergePolicy?.checks).toBe("all_reported");
+    expect(() => cfg({ enabled: true, checks: "some" })).toThrow(/checks/);
   });
 
   it("projects[].queue.low_water (T15.4, FR-QUE-04): off by default, accepts integer >= 1, rejects invalid", () => {

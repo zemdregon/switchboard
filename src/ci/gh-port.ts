@@ -11,6 +11,8 @@ import {
   ghEnv,
   ghPrGateViewArgv,
   ghPrMergeArgv,
+  ghPrMergeStateArgv,
+  ghPrReportedChecksArgv,
   ghPrRequiredChecksArgv,
   ghPrUpdateBranchArgv,
   ghPrViewArgv,
@@ -24,8 +26,10 @@ import {
   isFullLowerSha,
   parseCheckRuns,
   parsePrGateView,
+  parsePrMergeState,
   parsePrView,
   parseQueuedRuns,
+  parseReportedChecks,
   parseRequiredChecks,
   parseRunHead,
   parseRunJobs,
@@ -38,9 +42,12 @@ import {
   type CiConclusion,
   type CiMergePort,
   type CiPullRequestGateView,
+  type CiPullRequestMergeState,
+  type CiPullRequestMergeStatePort,
   type CiPullRequestPort,
   type CiPullRequestState,
   type CiQueuedRun,
+  type CiReportedChecks,
   type CiRequiredChecks,
   type CiRunJob,
   type CiRunQuery,
@@ -116,7 +123,15 @@ export interface GhCiStatusPortOptions {
   readonly useCheckRunsFallback?: boolean;
 }
 
-export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullRequestPort, CiMergePort, CiBranchUpdatePort {
+export class GhCiStatusPort
+  implements
+    CiStatusPort,
+    CiActionsPort,
+    CiPullRequestPort,
+    CiMergePort,
+    CiBranchUpdatePort,
+    CiPullRequestMergeStatePort
+{
   private readonly binary: string;
   private readonly runner: GhRunner;
   private readonly sourceEnv: Readonly<Record<string, string | undefined>>;
@@ -246,12 +261,28 @@ export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullReques
    * error both refuse the merge.
    */
   async requiredChecks(q: { owner: string; repo: string; prNumber: number }): Promise<CiRequiredChecks> {
-    const argv = ghPrRequiredChecksArgv(q.owner, q.repo, String(q.prNumber));
+    return this.readChecks(ghPrRequiredChecksArgv(q.owner, q.repo, String(q.prNumber)), parseRequiredChecks);
+  }
+
+  /** G18 (ADR-0087 item 7): as {@link requiredChecks} without `--required`; none reported reads as `none`. */
+  async reportedChecks(q: { owner: string; repo: string; prNumber: number }): Promise<CiReportedChecks> {
+    return this.readChecks(ghPrReportedChecksArgv(q.owner, q.repo, String(q.prNumber)), parseReportedChecks);
+  }
+
+  /** G19 (ADR-0087 item 7): the state and merge commit of one pull request of any `owner/repo`; no `gh` text is kept. */
+  async pullRequestMergeState(q: { owner: string; repo: string; prNumber: number }): Promise<CiPullRequestMergeState> {
+    const out = this.parse(await this.run(ghPrMergeStateArgv(q.owner, q.repo, String(q.prNumber))), parsePrMergeState);
+    return out.mergeCommitSha === undefined
+      ? { state: out.state }
+      : { state: out.state, mergeCommitSha: out.mergeCommitSha };
+  }
+
+  private async readChecks(argv: string[], parseFn: (s: string) => string[]): Promise<CiRequiredChecks> {
     const r = await this.runner(this.binary, argv, { env: ghEnv(this.sourceEnv), timeoutMs: this.timeoutMs });
     const soft =
       r.notFound !== true && r.timedOut !== true && (r.exitCode === 1 || r.exitCode === GH_EXIT_CHECKS_PENDING);
     if (soft && r.exitCode === 1 && r.stdout.trim() === "") return { kind: "none" };
-    const buckets = this.parse(soft ? r.stdout : this.check(r), parseRequiredChecks);
+    const buckets = this.parse(soft ? r.stdout : this.check(r), parseFn);
     return buckets.length === 0 ? { kind: "none" } : { kind: "checks", buckets };
   }
 
