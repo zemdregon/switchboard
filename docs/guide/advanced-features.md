@@ -224,6 +224,7 @@ See [TDD §3.1](../design/TDD.md#31-configuration) and [LLD §3.4](../design/LLD
 | `pause_project`, `resume_project`, `steer_run` | yes | yes | no |
 | `publish_run` (push a SUCCEEDED run's branch, open a pull request with the operator's `gh` login; ADR-0069) | only with `max_push_policy: "branch"` | no | no extra |
 | `merge_run_pr` (merge a published run's pull request through the project's merge policy gate; ADR-0070; also accepts a pure base-merge head, ADR-0073) | only with `max_push_policy: "branch"` | no | no extra |
+| `request_project_source` (ask for a repository owner to be allowed in `project_sources`; ADR-0079) | only with `manage_projects: true` and `project_sources` | no | no extra |
 | `update_run_branch` (merge the base branch into a published run's pull request branch through the operator's `gh`; ADR-0073) | only with `max_push_policy: "branch"`, the merge policy on, and the merge port | no | no extra |
 
 Tool outputs use closed controller fields only (no transcripts). Pending approvals expose an `approval_digest`, not

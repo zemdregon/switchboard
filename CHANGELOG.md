@@ -23,6 +23,9 @@ by milestone (one line per `Done` milestone; evidence in roadmap §6):
   schedules, and published-branch CI triggers.
 - M16 Switchboard-controlled skills (`Done`, on fakes): skill store, admission, prompt-prefix delivery,
   and native-delivery leak guards.
+- M9 umbrella projects with Git submodules over MCP (ADR-0079, ROADMAP T9.22, in progress): opt-in
+  `submodules` per project, `request_project_source`, the effective definition in `list_projects`,
+  controller-made submodule commits, linked publication, ordered merge and `merge_policy.checks: all_reported`.
 
 Several milestones are `Partial`, not `Done`: M2, M3, M4, M5, M8, M9, M10, M11, M12 and M14.
 Their fake and synthetic suites pass, but the remaining legs are live provider checks that are
