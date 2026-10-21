@@ -12,7 +12,7 @@
   merged commits and the opt-in `all_reported` check policy. Every detail below is the coder's, not owner-approved.
   Nothing here changes bypass runs, the Git-write denial (the agent still cannot run `git submodule`) or worktree
   isolation.
-- Related: FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-SUB-03, FRD BR-59,
+- Related: FR-PRJ-11, FR-PRJ-12, FR-GIT-13, FR-GIT-14, FR-SUB-03, FRD BR-58, BR-59,
   [LLD §3.4.16](../design/LLD.md#3416-submodule-projects-adr-0079), [ROADMAP T9.22](../ROADMAP.md#63-m9-projects-and-controlled-commits-tasks),
   Q-114, Q-115, Q-116.
 

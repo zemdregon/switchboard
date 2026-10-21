@@ -38,13 +38,15 @@ Only one `serve` can hold a data directory at a time.
 | `pause_project` | control | Pause one of the client's projects: no new run is admitted (running runs finish) until resume. | Always; `console` sees it |
 | `resume_project` | control | Lift a pause this client set on one of its projects. | Always; `console` sees it |
 | `steer_run` | control | Append a note to a run; on a fake adapter it continues the same native session. | Always; `console` sees it |
-| `list_projects` | project | Lists the configured projects this client may use (id, name, environment kind, contexts, trust ceiling, allowed providers), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. | Always (orchestrator only) |
+| `list_projects` | project | Lists the configured projects this client may use (id, name, environment kind, contexts with their effective definition (`base_ref`, push remote name and branch prefix, commit identity, `sign`, `finalize_commit`, `submodules`), trust ceiling, allowed providers, merge policy), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. | Always (orchestrator only) |
 | `enqueue_work` | queue | Queue a `delegate_task` request on one project this client may use; the controller admits it later under the creating client's ceiling. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `list_work` | queue | Work items this client queued, highest priority first, then oldest, with optional project and state filters. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `cancel_work` | queue | Cancel a `PENDING` or `READY` item this client queued; an admitted item stops with `cancel_run` on its run. | Orchestrator profile only (stdio and network transport); `console` sees none |
-| `publish_run` | publication | Push one of this client's SUCCEEDED runs' branch with the operator-push rules and the pre-push secret scan, then open (or reuse) a pull request with the operator's `gh` login. Idempotent. See [ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md). | Only with `max_push_policy: "branch"` (orchestrator profile) |
-| `merge_run_pr` | publication | Merge the pull request of one of this client's published runs with the operator's `gh` login, only through the project's merge policy gate (T15.8: policy in force and on, not paused, open, not draft, published head, base branch, mergeable, every required check passed, verification and reports as the policy says), pinned to the head (`--match-head-commit`). The head may also be a chain of pure base merges on the published tip (GitHub's Update branch commit, verified by the controller; ADR-0073); the result carries `head_kind` (`published` or `base_merge`). Refusals are `PERMISSION_BLOCKED` with a closed `details.reason`; every decision is a `merge_event` in `get_digest`. Idempotent. See [ADR-0070](../adr/0070-mcp-merge-run-pr.md). | With `publish_run` (the server's `gh` merge port on `ci_trigger.gh_binary`, also when `ci_trigger` is off) |
+| `publish_run` | publication | Push one of this client's SUCCEEDED runs' branch with the operator-push rules and the pre-push secret scan, then open (or reuse) a pull request with the operator's `gh` login. Idempotent. For a project with writable submodules (ADR-0079) it first scans every changed repository, pushes each submodule branch to its own repository, then the umbrella, and opens one pull request per repository (the umbrella's lists the others); the result adds `submodules[]` and the run envelopes list `linked_pull_requests`. See [ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md). | Only with `max_push_policy: "branch"` (orchestrator profile) |
+| `merge_run_pr` | publication | Merge the pull request of one of this client's published runs with the operator's `gh` login, only through the project's merge policy gate (T15.8: policy in force and on, not paused, open, not draft, published head, base branch, mergeable, every required check passed, verification and reports as the policy says), pinned to the head (`--match-head-commit`). The head may also be a chain of pure base merges on the published tip (GitHub's Update branch commit, verified by the controller; ADR-0073); the result carries `head_kind` (`published` or `base_merge`). Refusals are `PERMISSION_BLOCKED` with a closed `details.reason`; every decision is a `merge_event` in `get_digest`. Idempotent. With linked submodule pull requests (ADR-0079) it merges them first, in path order, re-points the umbrella to the merged commits, then merges the umbrella, resuming where an earlier call stopped; `details.submodule_merge` shows the progress. See [ADR-0070](../adr/0070-mcp-merge-run-pr.md). | With `publish_run` (the server's `gh` merge port on `ci_trigger.gh_binary`, also when `ci_trigger` is off) |
 | `update_run_branch` | publication | Ask GitHub, through the operator's `gh` login (`gh api` PUT `update-branch`, pinned to the head), to merge the base branch into the pull request branch of one of this client's published runs; refused unless the head is the published tip or a pure base-merge chain on it, the merge would not conflict and the project's merge policy is on. Returns `{ run_id, pull_request, updated, previous_head_sha }`; `updated: false` when the base is already contained. See [ADR-0073](../adr/0073-merge-gate-accepts-pure-base-merges.md). | With `merge_run_pr` |
+| `refresh_project_base` | publication | Fetch a remote-backed project's base now (ADR-0074); for a project with `submodules.mode: "recursive"` it also makes the base's submodule commits present and returns `submodules: { total, present, fetched, missing }` (ADR-0079). | Offered with the base port, above `inspect-untrusted` |
+| `rebase_session` | publication | Replay a meta-session's controller commits onto the fresh base without a worktree, never pushing (ADR-0074). A submodule path that both the session and the base changed is a `CONFLICT` naming the path (ADR-0079). | As `refresh_project_base` |
 | `search_project_context` | retrieval | Read-only semantic search over a project's indexed contexts. See [Retrieval index](advanced-features.md#retrieval-index-milestone-12). | Only when retrieval is on for at least one of the client's projects |
 | `list_skills` | skills | Operator-approved skill names this client may inject, with the newest usable version's metadata (no bodies). | Only when `skills.enabled` |
 | `get_skill` | skills | The text of one visible skill version. | Only when `skills.enabled` |
@@ -311,6 +313,7 @@ subsections below give the full behaviour; `switchboard --help` prints the same 
 | `index status`, `index rebuild`, `index clear` | Retrieval index state per store; request a rebuild; delete a store's vectors | project/global argument, `--json` | [Retrieval index](advanced-features.md#retrieval-index-milestone-12) |
 | `eval run <suite> --provider <id> [--live-budget <file>]`, `eval results <suite>` | Own-repository evaluation: replay a suite as runs, grade network-off with hidden tests, record `eval_result` (skipped in CI; real providers need a live budget) | `--provider`, `--live-budget` (`run` only), `--json` | [docs/operations/evaluation.md](../operations/evaluation.md) |
 | `gc [--apply] [--dry-run]` | Retention clean-up: dry run by default; `--apply` collects (refused while `serve` runs or without `retention.days`) | `--apply`, `--dry-run`, `--json` | [Operator commands](advanced-features.md#operator-commands) |
+| `projects sources list`, `projects sources approve <id>`, `projects sources reject <id>` | List, approve or reject the repository-owner requests of `request_project_source` (ADR-0079); an approved owner joins `project_sources.allowed_owners` at once, without a restart | none | [Submodules](#umbrella-projects-with-git-submodules) |
 | `projects list`, `projects show <id>`, `projects validate [<id>]`, `projects approve <id>` | List and inspect configured and dynamic projects, check them, approve or reject a pending dynamic revision | `--revision`, `--reject`, `--json` | [Dynamic projects](#dynamic-projects) |
 | `git push <id>` | Push a meta-session's published commits to the context's configured remote branch (never forced; refused while `serve` runs) | `--json` | [How commits reach Git](#how-commits-reach-git) |
 | `git ack-secret-scan <gps_id>` | Acknowledge a push the secret scan refused: clears `secret_scan_blocked` until the next refusal; never allows the push (works while `serve` runs) | `--json` | [LLD §20.9](../design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061) |
@@ -360,6 +363,9 @@ switchboard projects list
 switchboard projects show <id>
 switchboard projects validate [<id>]
 switchboard projects approve <id> [--revision <n>] [--reject]
+switchboard projects sources list
+switchboard projects sources approve <id>
+switchboard projects sources reject <id>
 switchboard adapters validate <provider>
 switchboard adapters version-canary
 switchboard inner status
@@ -470,7 +476,8 @@ projects, or another client's: only the creator sees and uses a dynamic project,
 is refused. Every call, accepted or refused, is recorded in the ledger.
 
 A revision with a `container` environment, a push policy other than `none`, a commit `identity`, `sign: true`, a new or
-changed `setup` step (`project_setup`, ADR-0071), or a wider trust ceiling or provider set than the revision in force is
+changed `setup` step (`project_setup`, ADR-0071), writable submodules (`submodule_write`), `merge_policy.checks:
+"all_reported"` (`merge_checks`, ADR-0079), or a wider trust ceiling or provider set than the revision in force is
 stored as `PENDING_APPROVAL` and cannot start runs
 until you approve it; until then the previous revision stays in force. Review it with `switchboard projects show <id>`,
 then run `switchboard projects approve <id>` (add `--revision <n>` once the project has more than one revision, and
@@ -483,6 +490,17 @@ is refused (`CONTEXT_UNKNOWN`) even after approval (owner decision 62; Q-46 answ
 dynamic projects can run when `serve` composes placement (milestone 10,
 [PR #554](https://github.com/zemdregon/switchboard/pull/554)); operator in-volume login (T10.0) is Done since
 2026-10-18; the container backend does not mount a login volume yet.
+
+### Umbrella projects with Git submodules
+
+An umbrella repository whose submodules you want agents to edit can be onboarded, run, published and merged over MCP
+only (ADR-0079, [LLD §3.4.16](../design/LLD.md#3416-submodule-projects-adr-0079)). Set `submodules` on the primary
+context (see [Configuration](getting-started.md)); read the result back with `list_projects`. If a submodule belongs
+to an owner that `project_sources` does not list, the orchestrator calls `request_project_source`; you (or an approver
+client whose `approval_proxy_kinds` includes `project_source`) decide it, and the owner is allowed at once on hosts
+you already allow (a grant never adds a host). Then `publish_run` pushes each changed submodule to its own repository,
+never forced and never to its default branch, and opens linked pull requests; `merge_run_pr` merges them in order and
+re-points the umbrella. Repositories without branch protection need `merge_policy.checks: "all_reported"`.
 
 `gc` is the retention clean-up. By default it is a dry run: it lists the idle meta-sessions older than
 `retention.days` (all their runs finished, no lease) and any orphans, and changes nothing. `gc --apply` removes each
