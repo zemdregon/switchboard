@@ -44,6 +44,8 @@ interface Setup {
   wt: string;
   a: { dir: string; head: string };
   b: { dir: string; head: string };
+  /** Another run worktree of the same umbrella commit (a second, concurrent run). */
+  addRun(name: string): string;
 }
 
 async function setup(remoteFiles: Record<string, string> = { "a.txt": "a\n" }): Promise<Setup> {
@@ -70,7 +72,12 @@ async function setup(remoteFiles: Record<string, string> = { "a.txt": "a\n" }): 
   mkdirSync(path.dirname(wt), { recursive: true });
   g(u.dir, "worktree", "add", "-q", "--detach", wt, u.head);
   expect(readFileSync(path.join(wt, "README.md"), "utf8")).toBe("umbrella\n");
-  return { manifest, stores, wt, a, b };
+  const addRun = (name: string) => {
+    const other = path.join(fx.root, "data", name);
+    g(u.dir, "worktree", "add", "-q", "--detach", other, u.head);
+    return other;
+  };
+  return { manifest, stores, wt, a, b, addRun };
 }
 
 const storeFor = (s: Setup) => (key: string) => s.stores.get(key) as string;
@@ -293,6 +300,37 @@ describe("verifySubmoduleLink", () => {
     expect(readFileSync(path.join(outside, "keep.txt"), "utf8")).toBe("keep\n");
     expect(worktreeCount(s.stores.get("github.test/acme/lib-b") as string)).toBe(1);
   });
+
+  it("detach of run A whose path is a symlink into run B's submodule never removes B's admin directory", async () => {
+    for (const legacy of [false, true]) {
+      const s = await setup();
+      const storeA = s.stores.get("github.test/acme/lib-a") as string;
+      const wtB = s.addRun(`run-b-${legacy}`);
+      const recA = await attachSubmodules(s.wt, s.manifest, { storeFor: storeFor(s) });
+      const recB = await attachSubmodules(wtB, s.manifest, { storeFor: storeFor(s) });
+      expect(recA.entries.every((e) => typeof e.admin === "string")).toBe(true);
+      const entryB = recB.entries.find((e) => e.path === "mods/a") as AttachRecord["entries"][number];
+      const adminB = path.join(storeA, ".git", "worktrees", entryB.admin as string);
+      expect(existsSync(adminB)).toBe(true);
+      // The agent of run A deletes its submodule path; any later prune of the shared store (another run's detach) drops
+      // A's admin directory; then the agent points the path at run B's.
+      rmSync(path.join(s.wt, "mods/a"), { recursive: true });
+      g(storeA, "worktree", "prune");
+      symlinkSync(path.join(wtB, "mods/a"), path.join(s.wt, "mods/a"));
+      // A record written before the admin name was kept is matched lexically only.
+      const rec: AttachRecord = legacy ? { ...recA, entries: recA.entries.map(({ admin: _admin, ...e }) => e) } : recA;
+      const res = await detachSubmodules(rec);
+      expect(res).toEqual({ removed: 2, unlinked: 0, missing: 1, pruneFailed: 0 });
+      // Run B is intact: its admin directory, its link and its files.
+      expect(existsSync(adminB)).toBe(true);
+      expect(await verifySubmoduleLink(wtB, entryB)).toBe(true);
+      expect(readFileSync(path.join(wtB, "mods/a", "a.txt"), "utf8")).toBe("a\n");
+      expect(worktreeCount(storeA)).toBe(3); // the store plus run B's two lib-a paths
+      expect(await detachSubmodules(recB)).toEqual({ removed: 3, unlinked: 0, missing: 0, pruneFailed: 0 });
+      rmSync(fx.root, { recursive: true, force: true });
+      fx = makeFixture("sb-sub-wt-");
+    }
+  });
 });
 
 describe("readAttachRecord", () => {
@@ -310,7 +348,14 @@ describe("readAttachRecord", () => {
     const ok = { version: 1, worktree: path.join(fx.root, "wt"), entries: [entry] };
     writeFileSync(file, JSON.stringify(ok));
     expect(await readAttachRecord(file, fx.settings.cloneRoot)).toEqual(ok);
+    const withAdmin = { ...ok, entries: [{ ...entry, admin: "a1" }] };
+    writeFileSync(file, JSON.stringify(withAdmin));
+    expect(await readAttachRecord(file, fx.settings.cloneRoot)).toEqual(withAdmin);
     const bad: unknown[] = [
+      { ...ok, entries: [{ ...entry, admin: "../x" }] },
+      { ...ok, entries: [{ ...entry, admin: "a/b" }] },
+      { ...ok, entries: [{ ...entry, admin: ".." }] },
+      { ...ok, entries: [{ ...entry, admin: 5 }] },
       "not json",
       { ...ok, version: 2 },
       { ...ok, worktree: "relative/wt" },

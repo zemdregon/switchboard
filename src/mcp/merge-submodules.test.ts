@@ -12,7 +12,7 @@ import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import { type FakePr, IDENTITY, makeWorld, PROJECT, UMBRELLA_GH, type World } from "../ci/fixtures/submodule-merge.js";
-import { submoduleMergeHook } from "../ci/submodule-merge.js";
+import { type SubmoduleMergeDeps, submoduleMergeHook } from "../ci/submodule-merge.js";
 import type { ResolvedMcpClient, ResolvedProject } from "../config/index.js";
 import type { TrustProfile } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
@@ -53,6 +53,7 @@ afterEach(async () => {
 /** One server instance over the world's current ledger handle (a "restart" builds another after `reopen`). */
 async function connect(
   world: World,
+  subOver: Partial<SubmoduleMergeDeps> = {},
 ): Promise<(name: string, args?: Json) => Promise<{ isError: boolean; body: Json }>> {
   const artifacts = new ArtifactStore(path.join(world.dataDir, "artifacts"));
   const workspace = new WorkspaceManager({
@@ -103,7 +104,7 @@ async function connect(
   const mergeRun: MergeRunDeps = {
     ...gate,
     resolveRemote: async () => UMBRELLA_GH,
-    linkedMerge: submoduleMergeHook(gate, world.sub()),
+    linkedMerge: submoduleMergeHook(gate, world.sub(subOver)),
   };
   const mcp = createSwitchboardServer({
     lifecycle,
@@ -246,31 +247,55 @@ describe("merge_run_pr with linked submodule pull requests (ADR-0080 item 7)", (
     expect(w.gh.merges.filter((m) => m.repo !== "acme/umbrella")).toHaveLength(2);
   });
 
-  it("verification is read at the pre-repoint tip: without it the umbrella is unverified_at_head", async () => {
+  it("verification is read at the pre-repoint tip: without it nothing is merged, not even a submodule PR", async () => {
     w = await makeWorld();
     const call = await connect(w);
     const r = await call("merge_run_pr", { run_id: w.runId });
     expect(r.body.error).toMatchObject({
       code: "PERMISSION_BLOCKED",
-      details: { reason: "unverified_at_head", submodule_merge: { phase: "umbrella" } },
+      details: {
+        reason: "unverified_at_head",
+        submodule_merge: {
+          phase: "submodules",
+          repos: [
+            { repo: "acme/liba", state: "waiting" },
+            { repo: "acme/libb", state: "waiting" },
+          ],
+        },
+      },
     });
+    expect(w.gh.merges).toEqual([]);
+    expect(w.steps()).toEqual([]);
+    expect(w.remoteTip()).toBe(w.preTip);
+    // Verified at the published tip only: the umbrella merges at the repoint commit, which is never verified itself.
     w.verify(w.preTip);
     const again = await call("merge_run_pr", { run_id: w.runId });
     expect(again.isError, JSON.stringify(again.body)).toBe(false);
+    expect(again.body.head_sha).not.toBe(w.preTip);
   });
 
   it("a repoint push that would not fast-forward is refused with its reason; the remote keeps the foreign commit", async () => {
     w = await makeWorld();
     w.verify();
-    const foreign = g(w.umbrella, "commit-tree", `${w.preTip}^{tree}`, "-p", w.preTip, "-m", "foreign");
-    g(w.umbrella, "push", "-q", "origin", `${foreign}:${w.publishRef}`);
-    const call = await connect(w);
+    // A foreign commit lands on the umbrella branch after the pre-check and the submodule merges (the repoint scan runs
+    // right before the push); one already there before the call is head_moved before any submodule merge.
+    const world = w;
+    let foreign = "";
+    const call = await connect(w, {
+      scan: async () => {
+        foreign = g(world.umbrella, "commit-tree", `${world.preTip}^{tree}`, "-p", world.preTip, "-m", "foreign");
+        g(world.umbrella, "push", "-q", "origin", `${foreign}:${world.publishRef}`);
+        return { hits: [], hitCount: 0, allowedCount: 0, binaryPaths: [], binaryCount: 0 };
+      },
+    });
     const r = await call("merge_run_pr", { run_id: w.runId });
     expect(r.body.error).toMatchObject({
       code: "PERMISSION_BLOCKED",
       details: { reason: "repoint_not_fast_forward", submodule_merge: { phase: "repoint" } },
     });
     expect(w.remoteTip()).toBe(foreign);
+    const moved = await call("merge_run_pr", { run_id: w.runId });
+    expect(moved.body.error).toMatchObject({ details: { reason: "head_moved" } });
   });
 
   it("an expected_head_sha that is neither the published nor the repointed tip is head_moved", async () => {

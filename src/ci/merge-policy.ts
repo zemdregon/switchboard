@@ -315,12 +315,26 @@ function viewRefusal(
   ref: PublishedRef,
   baseBranch: string | undefined,
   acceptedHead: string,
+  checkMergeable = true,
 ) {
   if (view.isDraft) return "draft" as const;
   if (view.headSha !== acceptedHead || view.headBranch !== branchOfPublishRef(ref.publishRef))
     return "head_moved" as const;
   if (baseBranch === undefined || view.baseBranch !== baseBranch) return "base_mismatch" as const;
-  if (view.mergeable !== "MERGEABLE") return "not_mergeable" as const;
+  if (checkMergeable && view.mergeable !== "MERGEABLE") return "not_mergeable" as const;
+  return undefined;
+}
+
+/**
+ * Step 2 (ledger) at `sha`: `unverified_at_head` unless `require_verification: false` (ADR-0070), then
+ * `report_missing` for a required report; undefined when both hold.
+ */
+function ledgerRefusal(db: Database.Database, target: MergeTarget, sha: string): MergeRefusalReason | undefined {
+  const { projectId, policy } = target;
+  if (policy.requireVerification !== false && !verifiedAtHead(db, projectId, sha)) return "unverified_at_head";
+  if (policy.requiredReports.some((r) => r === "docs-alignment" && !reportAlignedAtHead(db, projectId, sha))) {
+    return "report_missing";
+  }
   return undefined;
 }
 
@@ -350,8 +364,9 @@ export async function pollMergePolicies(deps: MergePolicyDeps): Promise<MergePol
       }
       // ADR-0080 item 7: a ref with linked submodule pull requests takes the ordered merge instead.
       const linked = await deps.linkedMerge?.(target, ref, gh, { mode: "poll" });
-      // Fail closed: without the ordered merge, an umbrella with linked pull requests is never merged.
-      if (linked === undefined && deps.linkedMerge === undefined && hasLinkedRows(deps.db, ref.publishRef)) continue;
+      // Fail closed: without the ordered merge (no hook, or a hook that did not take the ref), an umbrella with linked
+      // pull requests is never merged.
+      if (linked === undefined && hasLinkedRows(deps.db, ref.publishRef)) continue;
       const out = linked ?? (await applyMergeGate(deps, target, ref, gh, { mode: "poll" }));
       for (const ev of out.refEvents) result.refEvents.push({ projectId, publishRef: ref.publishRef, ...ev });
       if (out.kind === "merged") {
@@ -519,13 +534,8 @@ export async function applyMergeGate(
   const headKind = accepted.kind;
   // Step 2 stays keyed to the published tip: a pure base merge adds base content only (ADR-0073). ADR-0080 item 7:
   // or to the pre-repoint tip the caller names.
-  const verifiedSha = opts.verifiedSha ?? ref.headSha;
-  if (policy.requireVerification !== false && !verifiedAtHead(db, projectId, verifiedSha)) {
-    return refuse("unverified_at_head", view.number);
-  }
-  if (policy.requiredReports.some((r) => r === "docs-alignment" && !reportAlignedAtHead(db, projectId, verifiedSha))) {
-    return refuse("report_missing", view.number);
-  }
+  const ledgerReason = ledgerRefusal(db, target, opts.verifiedSha ?? ref.headSha);
+  if (ledgerReason !== undefined) return refuse(ledgerReason, view.number);
   // ADR-0080 item 7: `all_reported` reads every reported check (G18); absent or `required` is the default (G11).
   const allReported = policy.checks === "all_reported";
   if (allReported && deps.merge.reportedChecks === undefined) return refuse("gh_error", view.number);
@@ -571,6 +581,56 @@ export async function applyMergeGate(
   }
   record("merged", view.number);
   return { kind: "merged", prNumber: view.number, alreadyMerged: false, headSha: acceptedSha, headKind, refEvents };
+}
+
+/**
+ * ADR-0080 item 7 step 0: the umbrella's own conditions that do not depend on the repoint, checked before any linked
+ * submodule pull request is merged (a submodule merge cannot be undone). `ref.headSha` is the published (pre-repoint)
+ * tip. In order: not superseded (`head_moved`); the umbrella pull request read with G10 is open (`poll`: no pull
+ * request or not open is `skipped`; `request`: no pull request or a closed one is `not_mergeable`, a merged one
+ * `head_moved`), not a draft, its head the published tip on the published branch (a base merge chain is not accepted
+ * here: the repoint push must fast-forward it), its base the primary context's base branch; then step 2 at that tip
+ * (`unverified_at_head`, `report_missing`). Mergeability and checks are not read (the repoint commit changes the
+ * head). A refusal
+ * is a `merge_event` row keyed to the published tip, as the gate's; undefined when every condition holds.
+ */
+export async function umbrellaPreCheck(
+  deps: Pick<MergePolicyDeps, "db" | "ledger" | "merge" | "nowMs" | "onEvent">,
+  target: MergeTarget,
+  ref: PublishedRef,
+  gh: { owner: string; repo: string },
+  opts: { mode: "poll" | "request" },
+): Promise<MergeGateOutcome | undefined> {
+  const { db, ledger } = deps;
+  const refuse = (reason: MergeRefusalReason, prNumber: number | null): MergeGateOutcome => ({
+    kind: "refused",
+    reason,
+    prNumber,
+    recorded: recordMergeEvent(
+      { db, ledger, onEvent: deps.onEvent, nowIso: new Date((deps.nowMs ?? Date.now)()).toISOString() },
+      { projectId: target.projectId, ref, prNumber, method: target.policy.method, outcome: "refused", reason },
+    ),
+    refEvents: [],
+  });
+  const request = opts.mode === "request";
+  if (isSuperseded(db, target.projectId, ref.publishRef)) return refuse("head_moved", null);
+  let view: CiPullRequestGateView | null;
+  try {
+    view = await deps.merge.pullRequestGateView({ ...gh, publishRef: ref.publishRef });
+  } catch {
+    return refuse("gh_error", null);
+  }
+  if (view === null) return request ? refuse("not_mergeable", null) : { kind: "skipped", refEvents: [] };
+  if (view.state !== "OPEN") {
+    if (!request) return { kind: "skipped", refEvents: [] };
+    return refuse(view.state === "MERGED" ? "head_moved" : "not_mergeable", view.number);
+  }
+  // The gate's order: step 1's checks of the pull request, then step 2's ledger conditions.
+  const viewReason = viewRefusal(view, ref, baseBranchOf(target.baseRef, ref.remote), ref.headSha, false);
+  if (viewReason !== undefined) return refuse(viewReason, view.number);
+  const ledgerReason = ledgerRefusal(db, target, ref.headSha);
+  if (ledgerReason !== undefined) return refuse(ledgerReason, view.number);
+  return undefined;
 }
 
 /** What {@link mergeOnRequest} decided; `not_published` and `unresolved` are decided before any `gh` call. */
@@ -643,7 +703,7 @@ export async function mergeOnRequest(
     ...(req.expectedHeadSha !== undefined ? { expectedHeadSha: req.expectedHeadSha } : {}),
     ...(req.requestedBy !== undefined ? { requestedBy: req.requestedBy } : {}),
   });
-  if (linked === undefined && deps.linkedMerge === undefined && hasLinkedRows(db, ref.publishRef)) {
+  if (linked === undefined && hasLinkedRows(db, ref.publishRef)) {
     // Fail closed: without the ordered merge, an umbrella with linked pull requests is never merged.
     return { kind: "refused", reason: "submodule_merge_unavailable", prNumber: null, headSha: ref.headSha };
   }

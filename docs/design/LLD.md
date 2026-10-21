@@ -2625,6 +2625,15 @@ in `details.path`, never a URL): `INVALID_REQUEST` for `SUBMODULE_URL_INVALID`, 
 `PATH_REFUSED` with `submodule_duplicate_diverged` or `submodule_read_only`. Run warnings: `submodule_link_invalid`,
 `submodule_changes_skipped`, `submodules_skipped`.
 
+**Submodule worktrees** (`src/submodules/worktree.ts`). The attach record (`<run worktree>.submodules.json`, mode 0600,
+`version: 1`) lists per entry `path`, `key`, `store`, `sha`, `writable`, `wiki` and `admin`, the name of its admin
+directory under the store's `.git/worktrees/` found at attach (a single path segment; records written before it was
+kept have none). Nothing resolves a path through the run worktree: the link check and detach compare the admin
+directory's `gitdir` with `<worktree>/<path>/.git` lexically, and detach removes only the recorded admin directory (or,
+for an older record, the lexical match), so a path replaced by a link into another run's worktree never selects that
+run's admin directory. After the link check, the controller's Git calls in a submodule worktree pass
+`--git-dir=<admin directory>` and `--work-tree=<path>`.
+
 **Approvals** (extends §3.4.1 and §3.4.8). `approval_needed` gains `submodule_write` (a revision whose `writable_paths`
 is non-empty; listed to the approval proxy as `push_revision`, like `push_policy`) and `merge_checks`
 (`merge_policy.checks: "all_reported"`). `approval_kind` gains `project_source`; it is in
@@ -2647,9 +2656,13 @@ owner joins the effective `allowed_owners` at once. CLI: `switchboard projects s
 `mode: "recursive"`. **`publish_run`** result keeps every existing field and, for such a project, adds `submodules:
 [{ repo, paths, branch, head_sha, default_branch, publication: { push_id, pushed_at, reused }, pull_request,
 pull_request_error? }]` (`repo` is `host/owner/repo`, `default_branch` may be null, `pull_request` is null when none
-was opened). Before any push it refuses `PERMISSION_BLOCKED` `SUBMODULE_HISTORY_UNVERIFIED` (`details.path`) or
-`SECRET_SCAN_BLOCKED` (the ADR-0075 shape plus `details.repos`: `host/owner/repo` keys, `umbrella` for the umbrella;
-submodule finding paths prefixed with the submodule path); a submodule push that is not accepted refuses
+was opened). Before any push it refuses `PERMISSION_BLOCKED` `SUBMODULE_HISTORY_UNVERIFIED` (`details.path`),
+the umbrella pusher's own refusal when the umbrella is still to be pushed (`GitPusher.preflight`: the push's policy and
+repository checks without the scan or the remote write, a refusal recorded as the `git_push` row the push would write;
+for example `REPO_CONFIG_UNSAFE`, `REMOTE_UNKNOWN`, `REMOTE_URL_CREDENTIALS`, `REMOTE_TRANSPORT_NOT_ALLOWED`,
+`TARGET_PROTECTED`, `PUBLISH_HISTORY_UNVERIFIED`), or `SECRET_SCAN_BLOCKED` (the ADR-0075 shape plus `details.repos`:
+`host/owner/repo` keys, `umbrella` for the umbrella; submodule finding paths prefixed with the submodule path); a
+submodule push that is not accepted refuses
 `SUBMODULE_PUSH_FAILED` with `details.submodules: [{ repo, paths, branch, head_sha, outcome, reason, push_id, reused
 }]` and no umbrella push. The publications of `get_run`, `list_runs` and `get_digest` add `linked_pull_requests: [{
 repo, paths, number, url, base_ref, head_sha, merge_state? }]` (`merge_state` is `{ state: "merged", merged_sha }` or
@@ -2659,7 +2672,14 @@ repo, paths, number, url, base_ref, head_sha, merge_state? }]` (`merge_state` is
 
 **`merge_run_pr` and the policy poller.** For an umbrella publish ref with `submodule_pull_request` rows both run
 the ordered merge (`src/ci/submodule-merge.ts`, the `linkedMerge` hook of `mergeOnRequest` and `pollMergePolicies`;
-without the hook such a ref is never merged). The result adds, and every refusal's details add, `submodule_merge: {
+without the hook, or when any of the ref's newest-per-repository rows does not parse or is of another project, such a
+ref is never merged: `submodule_merge_unavailable`). Before any submodule pull request is merged, step 0
+(`umbrellaPreCheck` in `src/ci/merge-policy.ts`) checks the umbrella's conditions that do not depend on the repoint,
+at the published (pre-repoint) tip, with the gate's own reasons and `merge_event` rows: not superseded (`head_moved`);
+the umbrella pull request open (in `poll` mode none or not open ends the pass without a decision; in `request` mode it
+is `not_mergeable`, or `head_moved` when merged), not a draft, its head the published tip on the published branch, its
+base the base branch (`draft`, `head_moved`, `base_mismatch`); then `unverified_at_head` and `report_missing`; the
+refusal's `submodule_merge.phase` is `submodules`. The result adds, and every refusal's details add, `submodule_merge: {
 phase: "submodules" | "repoint" | "umbrella" | "merged", repos: [{ repo, paths, pr_number, state: "waiting" |
 "refused" | "merged", merged_sha?, reason? }] }`; `expected_head_sha` may name the published or the repointed tip.
 `merge_event.reason` gains `no_checks_reported`. The step machine is persisted in `submodule_merge` (steps

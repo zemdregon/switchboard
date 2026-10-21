@@ -89,11 +89,15 @@ the offending path (never the URL text). Bound: 1024 submodules (**Delegated**).
 - **Run worktree.** After `git worktree add` of the umbrella (unchanged), each declared, non-excluded submodule path is
   checked out at the umbrella base commit's gitlink SHA as a detached linked worktree of its store
   (`git -C <store> worktree add --detach <run worktree>/<path> <sha>`), through the hardened helper with a scrubbed
-  environment, so no global or system filter, hook or fsmonitor runs. A manifest of the attached paths is kept beside
-  the run worktree under the data directory; removal (`gc`, rollback, partial-worktree repair) detaches them and prunes
-  the stores. Before every controller Git call inside a submodule worktree its `.git` link is verified against the
-  store's worktree record (as `src/workspace/git-link.ts` does for the run worktree); a tampered link is not used
-  (`submodule_link_invalid` warning, nothing committed from that path; fail closed).
+  environment, so no global or system filter, hook or fsmonitor runs. A manifest of the attached paths, with each
+  path's admin directory name in its store, is kept beside the run worktree under the data directory; removal (`gc`,
+  rollback, partial-worktree repair) detaches them, removing only each recorded admin directory, and prunes the
+  stores. Nothing resolves a path through the agent-writable run worktree (admin directories are matched lexically),
+  so a path replaced by a link into another run's worktree never selects that run's admin directory. Before every
+  controller Git call inside a submodule worktree its `.git` link is verified against the store's worktree record (as
+  `src/workspace/git-link.ts` does for the run worktree), and the call then names the verified admin directory and
+  worktree explicitly (`--git-dir`, `--work-tree`); a tampered link is not used (`submodule_link_invalid` warning,
+  nothing committed from that path; fail closed).
 - **Checkpoints.** A run's checkpoint also checkpoints each changed writable submodule worktree in its store (controller
   identity, detached commit kept by a `refs/switchboard/checkpoints/...` ref) and records the new gitlink in the
   umbrella checkpoint, so a continued meta-session starts with its submodule edits. Changes in a read-only submodule
@@ -147,9 +151,11 @@ path, and `details.repos` names the repositories with findings. The umbrella pus
    own `https` URL (the store's `origin`), never forced, never to its default branch, with the ADR-0028 push hardening
    and an argv that names no credential; one append-only `submodule_push` row per attempt. An accepted push of the
    same head to the same branch is reused (idempotent);
-4. pushes the umbrella exactly as before, only when every submodule push was accepted. Otherwise the call is refused
-   `TOOL_FAILURE` (or `PERMISSION_BLOCKED` for a policy refusal) `SUBMODULE_PUSH_FAILED` with `details.submodules`
-   naming each repository's outcome; a retry pushes only what is missing;
+4. pushes the umbrella exactly as before, only when every submodule push was accepted. The umbrella pusher's own
+   policy and repository checks (repository configuration, remote URL and transport, protected target, unknown remote,
+   verified history) run without pushing before step 3, so such a refusal comes before any submodule push. Otherwise
+   the call is refused `TOOL_FAILURE` (or `PERMISSION_BLOCKED` for a policy refusal) `SUBMODULE_PUSH_FAILED` with
+   `details.submodules` naming each repository's outcome; a retry pushes only what is missing;
 5. opens or reuses one pull request per changed repository against that repository's default branch (read from the
    store's `origin/HEAD`), then the umbrella pull request, whose body lists every linked pull request. A `gh` failure for
    one repository is reported on that repository and never undoes a push. Rows: `submodule_pull_request`.
@@ -166,6 +172,10 @@ publication, pull_request, pull_request_error? }]`. `get_run`, `list_runs` and `
   waits for approval with the new reason `merge_checks`. The default is not weakened.
 - For a run with linked submodule pull requests, `merge_run_pr` and the policy poller run one resumable step machine,
   persisted in the append-only `submodule_merge` table (so it survives restarts):
+  0. umbrella pre-check, before any submodule merge (a submodule merge cannot be undone): the umbrella's conditions
+     that do not depend on the repoint, at the published (pre-repoint) tip, with the gate's own reasons: the ref is not
+     superseded; the umbrella pull request is open, not a draft, its head the published tip and its base the base
+     branch; the run is verified at that tip and every required report is there;
   1. each linked submodule pull request, in path order, through the gate's checks (open, not draft, head equal to the
      pushed head, base equal to the repository's default branch, mergeable, checks per `merge_policy.checks`), merged
      with G12 pinned to its head; its merge commit is read with the new audited argv **G19** (`gh pr view <n> --repo

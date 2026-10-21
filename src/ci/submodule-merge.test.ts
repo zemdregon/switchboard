@@ -7,6 +7,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { g } from "../submodules/fixtures/repos.js";
+import { insertSubmodulePullRequest, insertSubmodulePush } from "../submodules/ledger.js";
 import { type FakePr, makeWorld, PROJECT, UMBRELLA_GH, type World } from "./fixtures/submodule-merge.js";
 import { type LinkedMergeHook, type MergePolicyDeps, mergeOnRequest, pollMergePolicies } from "./merge-policy.js";
 import {
@@ -144,6 +145,7 @@ describe("ordered merge (ADR-0080 item 7)", () => {
 
   it("a refusal is recorded once per repository, head and reason, with its submodule_merge view", async () => {
     w = await makeWorld();
+    w.verify();
     pr(w, "acme/liba").isDraft = true;
     const d = deps(w);
     const hook = d.linkedMerge as LinkedMergeHook;
@@ -177,6 +179,7 @@ describe("ordered merge (ADR-0080 item 7)", () => {
 
   it("a merged PR whose head is not the pushed head is head_moved", async () => {
     w = await makeWorld();
+    w.verify();
     g(w.libs.a.dir, "checkout", "-q", `sb/${w.sessionId}`);
     g(w.libs.a.dir, "commit", "-q", "--allow-empty", "-m", "foreign");
     g(w.libs.a.dir, "checkout", "-q", "main");
@@ -215,10 +218,18 @@ describe("ordered merge (ADR-0080 item 7)", () => {
   it("refuses a repoint push that would not fast-forward; nothing is forced", async () => {
     w = await makeWorld();
     w.verify();
-    // Someone pushed onto the umbrella pull request branch.
-    const foreign = g(w.umbrella, "commit-tree", `${w.preTip}^{tree}`, "-p", w.preTip, "-m", "foreign");
-    g(w.umbrella, "push", "-q", "origin", `${foreign}:${w.publishRef}`);
-    const res = await pollMergePolicies(deps(w));
+    // Someone pushes onto the umbrella pull request branch after the umbrella pre-check and the submodule merges (the
+    // repoint scan runs right before the push).
+    const world = w;
+    let foreign = "";
+    const racing = w.sub({
+      scan: async () => {
+        foreign = g(world.umbrella, "commit-tree", `${world.preTip}^{tree}`, "-p", world.preTip, "-m", "foreign");
+        g(world.umbrella, "push", "-q", "origin", `${foreign}:${world.publishRef}`);
+        return { hits: [], hitCount: 0, allowedCount: 0, binaryPaths: [], binaryCount: 0 };
+      },
+    });
+    const res = await pollMergePolicies(deps(w, racing));
     expect(res.refused[0]).toMatchObject({ reason: "repoint_not_fast_forward", recorded: false });
     expect(w.remoteTip()).toBe(foreign);
     expect(w.steps().map((s) => s.step)).toEqual(["submodule_merged", "submodule_merged"]);
@@ -300,6 +311,68 @@ describe("ordered merge (ADR-0080 item 7)", () => {
     expect(out.kind).toBe("merged");
   });
 
+  it("fails closed when linked rows exist but one or all of them do not parse", async () => {
+    w = await makeWorld();
+    w.verify();
+    const d = deps(w);
+    const hook = d.linkedMerge as LinkedMergeHook;
+    const target = w.targets()[0] as ReturnType<World["targets"]>[number];
+    const badRow = (umbrellaRef: string, repo: string) => {
+      const world = w as World;
+      const push = insertSubmodulePush(world.db, {
+        runId: world.runId,
+        metaSessionId: world.sessionId,
+        projectId: PROJECT,
+        repo: "github.test/acme/libc",
+        paths: ["libs/c"],
+        ref: umbrellaRef,
+        headSha: world.libs.a.head1,
+        umbrellaHeadSha: world.preTip,
+        outcome: "ACCEPTED",
+        reason: "ok",
+        requestedBy: "mcp_client:steward",
+      });
+      insertSubmodulePullRequest(world.db, {
+        runId: world.runId,
+        metaSessionId: world.sessionId,
+        pushId: push.id,
+        clientId: "steward",
+        repo,
+        number: 13,
+        url: "https://github.com/acme/libc/pull/13",
+        branch: `sb/${world.sessionId}`,
+        baseRef: "main",
+        headSha: world.libs.a.head1,
+        umbrellaRef,
+        draft: false,
+        action: "created",
+      });
+    };
+    // A ref whose only linked row does not parse: never the plain gate (that would merge without a repoint).
+    const other = "refs/heads/sb/other";
+    badRow(other, "acme/libc/extra");
+    const ref = { remote: "origin", publishRef: other, headSha: w.preTip };
+    expect(await hook(target, ref, UMBRELLA_GH, { mode: "request" })).toMatchObject({
+      kind: "refused",
+      reason: "submodule_merge_unavailable",
+    });
+    // One unparsable row beside valid ones refuses the whole ordered merge.
+    badRow(w.publishRef, "not a repo");
+    const res = await pollMergePolicies(d);
+    expect(res.refused).toEqual([
+      {
+        projectId: PROJECT,
+        publishRef: w.publishRef,
+        headSha: w.preTip,
+        reason: "submodule_merge_unavailable",
+        recorded: false,
+      },
+    ]);
+    expect(w.gh.calls).toEqual([]);
+    expect(w.gh.merges).toEqual([]);
+    expect(w.remoteTip()).toBe(w.preTip);
+  });
+
   it("fails closed without the submodule merge inputs or without the hook", async () => {
     w = await makeWorld();
     w.verify();
@@ -319,5 +392,133 @@ describe("ordered merge (ADR-0080 item 7)", () => {
     expect(request).toMatchObject({ kind: "refused", reason: "submodule_merge_unavailable" });
     expect(w.gh.calls).toEqual([]);
     expect(w.remoteTip()).toBe(w.preTip);
+  });
+});
+
+describe("umbrella pre-check before any submodule merge (ADR-0080 item 7 step 0)", () => {
+  const request = (world: World, sub?: SubmoduleMergeDeps) =>
+    mergeOnRequest(
+      { ...deps(world, sub), ledger: world.ledger },
+      { projectId: PROJECT, remote: "origin", publishRef: world.publishRef, requestedBy: "mcp_client:steward" },
+    );
+  const noSubmoduleWrite = (world: World) => {
+    expect(world.gh.merges).toEqual([]);
+    expect(world.gh.calls.filter((c) => c !== "view acme/umbrella")).toEqual([]);
+    expect(world.steps()).toEqual([]);
+    expect(world.remoteTip()).toBe(world.preTip);
+  };
+  const umbrellaRefusals = (world: World) =>
+    world.db
+      .prepare("SELECT head_sha, reason FROM merge_event WHERE publish_ref = ? AND outcome = 'refused'")
+      .all(world.publishRef);
+
+  it("an unverified run is refused unverified_at_head before any submodule G12 (poll and request)", async () => {
+    w = await makeWorld();
+    const polled = await pollMergePolicies(deps(w));
+    expect(polled.merged).toEqual([]);
+    expect(polled.refused).toEqual([
+      { projectId: PROJECT, publishRef: w.publishRef, headSha: w.preTip, reason: "unverified_at_head", recorded: true },
+    ]);
+    const out = await request(w);
+    expect(out).toMatchObject({
+      kind: "refused",
+      reason: "unverified_at_head",
+      prNumber: 42,
+      submoduleMerge: {
+        phase: "submodules",
+        repos: [
+          { repo: "acme/liba", state: "waiting" },
+          { repo: "acme/libb", state: "waiting" },
+        ],
+      },
+    });
+    noSubmoduleWrite(w);
+    expect(umbrellaRefusals(w)).toEqual([{ head_sha: w.preTip, reason: "unverified_at_head" }]);
+    // A verification at another commit (the repoint commit is never verified) does not count.
+    w.verify("b".repeat(40));
+    expect(await request(w)).toMatchObject({ kind: "refused", reason: "unverified_at_head" });
+    noSubmoduleWrite(w);
+  });
+
+  it("a missing required report is refused report_missing before any submodule G12", async () => {
+    w = await makeWorld({ policy: { requiredReports: ["docs-alignment"] } });
+    w.verify();
+    expect(await request(w)).toMatchObject({ kind: "refused", reason: "report_missing" });
+    noSubmoduleWrite(w);
+    w.ledger.appendRunEvent({
+      runId: w.runId,
+      type: "docs_alignment",
+      payload: { present: true, valid: true, verdict: "aligned", head_sha: w.preTip },
+    });
+    expect(await request(w)).toMatchObject({ kind: "merged" });
+  });
+
+  it("a draft, closed or moved umbrella pull request is refused with the gate's reason before any submodule G12", async () => {
+    for (const c of ["draft", "closed", "moved", "missing"] as const) {
+      const world = await makeWorld();
+      try {
+        world.verify();
+        const umb = world.gh.prs.get("acme/umbrella") as FakePr;
+        if (c === "draft") umb.isDraft = true;
+        if (c === "closed") umb.state = "CLOSED";
+        if (c === "moved") {
+          const foreign = g(world.umbrella, "commit-tree", `${world.preTip}^{tree}`, "-p", world.preTip, "-m", "x");
+          g(world.umbrella, "push", "-q", "origin", `${foreign}:${world.publishRef}`);
+        }
+        if (c === "missing") world.gh.prs.delete("acme/umbrella");
+        const want = { draft: "draft", closed: "not_mergeable", moved: "head_moved", missing: "not_mergeable" }[c];
+        expect(await request(world)).toMatchObject({ kind: "refused", reason: want });
+        // The poller: a draft or moved head is refused; no pull request or a closed one is nothing to decide.
+        const polled = await pollMergePolicies(deps(world));
+        expect(polled.merged).toEqual([]);
+        expect(polled.refused.map((r) => r.reason)).toEqual(c === "draft" || c === "moved" ? [want] : []);
+        expect(world.gh.merges).toEqual([]);
+        expect(world.steps()).toEqual([]);
+      } finally {
+        world.close();
+      }
+    }
+  });
+
+  it("a superseded umbrella ref is refused head_moved by the hook itself", async () => {
+    w = await makeWorld();
+    w.verify();
+    w.db
+      .prepare(
+        `INSERT INTO ci_trigger_ref_state (project_id, publish_ref, consecutive_fixes, stuck, updated_at, superseded_by)
+         VALUES (?, ?, 0, 0, ?, 'pwi_newer')`,
+      )
+      .run(PROJECT, w.publishRef, new Date().toISOString());
+    const hook = deps(w).linkedMerge as LinkedMergeHook;
+    const target = w.targets()[0] as ReturnType<World["targets"]>[number];
+    const ref = { remote: "origin", publishRef: w.publishRef, headSha: w.preTip };
+    expect(await hook(target, ref, UMBRELLA_GH, { mode: "request" })).toMatchObject({
+      kind: "refused",
+      reason: "head_moved",
+    });
+    expect(w.gh.calls).toEqual([]);
+    expect(w.steps()).toEqual([]);
+  });
+
+  it("an umbrella refused after some submodules merged stops the walk before the next submodule G12", async () => {
+    w = await makeWorld();
+    w.verify();
+    pr(w, "acme/libb").checks = { kind: "checks", buckets: ["pending"] };
+    expect(await request(w)).toMatchObject({ kind: "refused", reason: "check_pending" });
+    expect(w.gh.merges.map((m) => m.repo)).toEqual(["acme/liba"]);
+    pr(w, "acme/libb").checks = { kind: "checks", buckets: ["pass"] };
+    (w.gh.prs.get("acme/umbrella") as FakePr).isDraft = true;
+    expect(await request(w)).toMatchObject({
+      kind: "refused",
+      reason: "draft",
+      submoduleMerge: {
+        phase: "submodules",
+        repos: [
+          { repo: "acme/liba", state: "merged" },
+          { repo: "acme/libb", state: "waiting" },
+        ],
+      },
+    });
+    expect(w.gh.merges.map((m) => m.repo)).toEqual(["acme/liba"]);
   });
 });

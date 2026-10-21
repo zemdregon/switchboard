@@ -68,6 +68,15 @@ export interface PublishDeps {
   /** The controller pusher (`serve` shares the agent `push` tool's instance, so pushes of one meta-session serialise). */
   readonly pusher: {
     push(req: { metaSessionId: string; requestedBy: GitPushRequester; runId?: string }): Promise<PushResult>;
+    /**
+     * ADR-0080 item 6: the push's own policy and repository checks without pushing (a refusal recorded as the push
+     * would record it; undefined when it would go on). Run before any linked submodule push.
+     */
+    preflight?(req: {
+      metaSessionId: string;
+      requestedBy: GitPushRequester;
+      runId?: string;
+    }): Promise<PushResult | undefined>;
   };
   /** Configuration first, then approved dynamic projects ({@link projectPushContextResolver}). */
   readonly resolveContext: (projectId: string) => PushContextConfig | undefined;
@@ -186,9 +195,9 @@ export async function publishRun(
     throw invalid(`run ${run.id} has no published commit to push`, { reason: "NOTHING_TO_PUBLISH" });
   }
   const head = ledger.latestPublishedHead(newest.publish_ref);
-  const linked = await publishLinked(ctx, deps, run, context, head);
-
   const existing = head === undefined ? undefined : acceptedPushOf(ledger, run.meta_session_id, context, head);
+  const linked = await publishLinked(ctx, deps, run, context, head, existing === undefined);
+
   let publication: PublishResult["publication"];
   if (existing !== undefined) {
     publication = { ...existing, reused: true };
@@ -253,7 +262,10 @@ export async function publishRun(
 
 /**
  * ADR-0080 items 5 and 6: before the umbrella push, the linked publication of every changed submodule repository.
- * Undefined when the project has no submodule plan (or the head is unknown: the pusher then refuses as before).
+ * Undefined when the project has no submodule plan (or the head is unknown: the pusher then refuses as before). When
+ * the umbrella still has to be pushed (`umbrellaPending`), the umbrella pusher's own checks run first
+ * ({@link PublishDeps.pusher}'s `preflight`): a refusal there (repository configuration, remote, target, history)
+ * refuses before any submodule repository is written to.
  */
 async function publishLinked(
   ctx: PublishContext,
@@ -261,6 +273,7 @@ async function publishLinked(
   run: RunRecord,
   context: PushContextConfig,
   head: string | undefined,
+  umbrellaPending: boolean,
 ): Promise<{ repos: LinkedRepo[]; outcomes: LinkedPushOutcome[] } | undefined> {
   const sub = deps.submodules;
   if (sub === undefined || run.project_id === null || sub.plan(run.project_id) === undefined) return undefined;
@@ -273,6 +286,14 @@ async function publishLinked(
     if (!isRemoteName(context.remote)) throw notPublishable("REMOTE_INVALID", "push refused (REMOTE_INVALID)");
     if (!isBranchPrefix(context.branchPrefix)) throw notPublishable("PREFIX_INVALID", "push refused (PREFIX_INVALID)");
     const ref = remoteTargetRef(context.branchPrefix, run.meta_session_id);
+    if (umbrellaPending && deps.pusher.preflight !== undefined) {
+      const refused = await deps.pusher.preflight({
+        metaSessionId: run.meta_session_id,
+        requestedBy: `mcp_client:${ctx.clientId}`,
+        runId: run.id,
+      });
+      if (refused !== undefined && !refused.pushed) throw pushRefusal(refused);
+    }
     await scanLinked(ctx.ledger, sub, run, { ...umbrella, head, ref }, repos, ref);
     const outcomes = await pushLinked(sub, run, {
       repos,

@@ -517,6 +517,28 @@ describe("publish_run with linked submodule publication (ADR-0080 items 5 and 6)
     expect(gitPushRows(f.db)).toEqual([{ outcome: "ACCEPTED", detail: "ACCEPTED" }]);
   });
 
+  it("an umbrella push refusal (repository config, unknown remote) refuses before any submodule push", async () => {
+    for (const plant of ["config", "remote"] as const) {
+      f = await start();
+      const { runId, sessionId } = await f.seedRun(CHANGES);
+      if (plant === "config") g(f.umbrella, "config", "credential.helper", "store");
+      else g(f.umbrella, "remote", "rename", "origin", "upstream");
+      const reason = plant === "config" ? "REPO_CONFIG_UNSAFE" : "REMOTE_UNKNOWN";
+      const r = await f.call("publish_run", { run_id: runId });
+      expect(r.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason } });
+      // Nothing was pushed anywhere: the umbrella pusher's own refusal came first, recorded as the push would be.
+      expect(f.pushCalls).toEqual([]);
+      expect(subPushRows(f.db)).toEqual([]);
+      expect(refsOf(f.remotes.a)).not.toContain(`refs/heads/sb/${sessionId}`);
+      expect(refsOf(f.remotes.b)).not.toContain(`refs/heads/sb/${sessionId}`);
+      expect(refsOf(f.umbrellaBare)).toEqual(["refs/heads/main"]);
+      expect(gitPushRows(f.db)).toEqual([{ outcome: "REFUSED_POLICY", detail: reason }]);
+      expect(f.pulls.calls).toEqual([]);
+      await f.close();
+      f = undefined;
+    }
+  });
+
   it("a gh failure for one repository is reported on that repository; every push and the other pull requests stand", async () => {
     f = await start();
     const { runId, sessionId } = await f.seedRun(CHANGES);

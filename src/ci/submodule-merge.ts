@@ -6,6 +6,10 @@
  * (plus `git_push` and `merge_event`), recomputed on every call, so it survives restarts. Each call advances as far as
  * it can:
  *
+ * 0. **umbrella pre-check** (until the repoint is pushed): {@link umbrellaPreCheck} at the published tip, before any
+ *    submodule G12 (which cannot be undone): not superseded, the umbrella pull request open, not a draft, its head the
+ *    published tip on the published branch and its base the base branch, the run verified there and every required
+ *    report present. A refusal carries the gate's reason and `merge_event` row; nothing in a submodule is touched.
  * 1. **submodules**: each linked pull request (the newest row per repository), in path order, through the gate's own
  *    checks read from `gh` JSON for that repository: G10 open, not a draft, its head the pushed head on the pushed
  *    branch, its base the repository's default branch (the store's `origin/HEAD`), mergeable; the checks per
@@ -65,6 +69,7 @@ import {
   type MergePolicyDeps,
   type MergeTarget,
   type SubmoduleMergeRepoView,
+  umbrellaPreCheck,
 } from "./merge-policy.js";
 import type { CiPullRequestGateView, CiPullRequestMergeStatePort, CiRequiredChecks } from "./port.js";
 import type { PublishedRef } from "./published-refs.js";
@@ -107,22 +112,48 @@ export interface LinkedRepository {
  * parse, is left out.
  */
 export function linkedRepositories(db: Database.Database, projectId: string, umbrellaRef: string): LinkedRepository[] {
+  return readLinked(db, projectId, umbrellaRef).repos;
+}
+
+/**
+ * {@link linkedRepositories} with what it left out: `rows` is whether the ref has any `submodule_pull_request` row,
+ * `rejected` how many newest-per-repository rows were left out.
+ */
+function readLinked(
+  db: Database.Database,
+  projectId: string,
+  umbrellaRef: string,
+): { rows: boolean; repos: LinkedRepository[]; rejected: number } {
   const newest = new Map<string, SubmodulePullRequestRow>();
-  for (const row of listSubmodulePullRequestsForUmbrellaRef(db, umbrellaRef)) newest.set(row.repo, row);
+  const rows = listSubmodulePullRequestsForUmbrellaRef(db, umbrellaRef);
+  for (const row of rows) newest.set(row.repo, row);
   const out: LinkedRepository[] = [];
+  let rejected = 0;
   for (const pr of newest.values()) {
     const push = db.prepare("SELECT project_id, repo, paths_json FROM submodule_push WHERE id = ?").get(pr.push_id) as
       | { project_id: string; repo: string; paths_json: string }
       | undefined;
-    if (push === undefined || push.project_id !== projectId) continue;
-    const paths = parsePaths(push.paths_json);
-    if (paths.length === 0 || !isFullSha(pr.head_sha) || !isSafeBranch(pr.branch)) continue;
+    const paths = push !== undefined ? parsePaths(push.paths_json) : [];
     const [owner, name, extra] = pr.repo.split("/");
-    if (extra !== undefined || owner === undefined || name === undefined || !isGhOwner(owner) || !isGhRepo(name))
+    if (
+      push === undefined ||
+      push.project_id !== projectId ||
+      paths.length === 0 ||
+      !isFullSha(pr.head_sha) ||
+      !isSafeBranch(pr.branch) ||
+      extra !== undefined ||
+      owner === undefined ||
+      name === undefined ||
+      !isGhOwner(owner) ||
+      !isGhRepo(name)
+    ) {
+      rejected++;
       continue;
+    }
     out.push({ repo: pr.repo, key: push.repo, paths: [...paths].sort(), pr });
   }
-  return out.sort((a, b) => cmp(a.paths[0] as string, b.paths[0] as string));
+  out.sort((a, b) => cmp(a.paths[0] as string, b.paths[0] as string));
+  return { rows: rows.length > 0, repos: out, rejected };
 }
 
 /** Whether `umbrellaRef` of `projectId` has linked submodule pull requests (the ordered merge applies). */
@@ -134,15 +165,16 @@ type GateDeps = Pick<MergePolicyDeps, "db" | "ledger" | "merge" | "targets" | "n
 type Refusal = MergeRefusalReason | SubmoduleMergeRefusalReason;
 
 /**
- * The {@link LinkedMergeHook} of `serve`: undefined for a ref without linked pull requests, else one call of the step
- * machine. Without `sub` (the server lacks the stores, pusher or G19 port) a linked ref is refused
- * `submodule_merge_unavailable` (fail closed: the umbrella is never merged with unrepointed gitlinks).
+ * The {@link LinkedMergeHook} of `serve`: undefined for a ref without any `submodule_pull_request` row, else one call
+ * of the step machine. Fail closed (the umbrella is never merged with unrepointed gitlinks): a linked ref is refused
+ * `submodule_merge_unavailable` without `sub` (the server lacks the stores, pusher or G19 port), and when any of its
+ * newest-per-repository rows does not parse or belongs to another project (so none, or only some, are left).
  */
 export function submoduleMergeHook(deps: GateDeps, sub: SubmoduleMergeDeps | undefined): LinkedMergeHook {
   return async (target, ref, gh, opts) => {
-    const repos = linkedRepositories(deps.db, target.projectId, ref.publishRef);
-    if (repos.length === 0) return undefined;
-    if (sub === undefined) {
+    const { rows, repos, rejected } = readLinked(deps.db, target.projectId, ref.publishRef);
+    if (!rows) return undefined;
+    if (sub === undefined || rejected > 0 || repos.length === 0) {
       return {
         kind: "refused",
         reason: "submodule_merge_unavailable",
@@ -188,6 +220,10 @@ class StepMachine {
     const expected = this.opts.mode === "request" ? this.opts.expectedHeadSha : undefined;
     if (repointed !== undefined) return this.umbrella(preTip, expected);
     if (expected !== undefined && expected !== tip) return this.refuse("submodules", "head_moved", this.mergedViews());
+
+    // Step 0: the umbrella's conditions that do not depend on the repoint, before any submodule merge (irreversible).
+    const pre = await umbrellaPreCheck(this.deps, this.target, this.ref, this.gh, { mode: this.opts.mode });
+    if (pre !== undefined) return { ...pre, submoduleMerge: { phase: "submodules", repos: this.mergedViews() } };
 
     // Step 1: each linked pull request in path order.
     const merged = new Map<string, string>();

@@ -12,7 +12,11 @@
  *   directory ({@link writeAttachRecord}, mode 0600) so removal ({@link detachSubmodules}) works after a restart.
  * - Before every controller Git call inside a submodule worktree, {@link verifySubmoduleLink} checks its `.git` link
  *   against the store's worktree record (as `src/workspace/git-link.ts` does for the run worktree). A link that does
- *   not verify is never used (`SUBMODULE_LINK_INVALID`; fail closed).
+ *   not verify is never used (`SUBMODULE_LINK_INVALID`; fail closed); a verified one is then used through explicit
+ *   `--git-dir=<admin directory>` and `--work-tree`, so Git does not read the `.git` file again.
+ * - Nothing here resolves a path through the run worktree (`realpath` of an agent-writable directory follows links the
+ *   agent planted): the run worktree is canonicalised once at attach, and admin directories are matched lexically
+ *   against `<worktree>/<path>/.git`.
  */
 import { randomBytes } from "node:crypto";
 import { lstat, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -38,6 +42,11 @@ export interface AttachedSubmodule {
   readonly sha: string;
   readonly writable: boolean;
   readonly wiki: boolean;
+  /**
+   * The name of its admin directory under the store's `.git/worktrees/`, found at attach time. Detach removes only
+   * that directory; records written before it was kept have none and are matched lexically.
+   */
+  readonly admin?: string;
 }
 
 export interface AttachRecord {
@@ -86,15 +95,22 @@ export async function attachSubmodules(
       }
       if (!(await hasCommit(store, e.sha))) throw new SubmoduleError("SUBMODULE_COMMIT_MISSING", { path: e.path });
       const target = path.join(worktree, e.path);
+      let admin: string | undefined;
       try {
         // Duplicate-URL paths share a store: their worktree additions are serialised with its fetches.
-        await withStoreLock(store, () =>
-          git([...WORKTREE_CONFIG, "worktree", "add", "--quiet", "--detach", target, e.sha], { cwd: store }),
-        );
+        admin = await withStoreLock(store, async () => {
+          await git([...WORKTREE_CONFIG, "worktree", "add", "--quiet", "--detach", target, e.sha], { cwd: store });
+          return findAdminDir(store, path.join(target, ".git"));
+        });
       } catch {
         throw new SubmoduleError("SUBMODULE_ATTACH_FAILED", { path: e.path });
       }
-      attached.push({ path: e.path, key: e.key, store, sha: e.sha, writable: e.writable, wiki: e.wiki });
+      const entry = { path: e.path, key: e.key, store, sha: e.sha, writable: e.writable, wiki: e.wiki };
+      if (admin === undefined) {
+        attached.push(entry); // detached lexically on rollback
+        throw new SubmoduleError("SUBMODULE_ATTACH_FAILED", { path: e.path });
+      }
+      attached.push({ ...entry, admin: path.basename(admin) });
     });
   } catch (err) {
     await detachSubmodules({ version: 1, worktree, entries: attached });
@@ -149,15 +165,21 @@ function parseRecord(raw: unknown, allowedRoot: string): AttachRecord | undefine
   const entries: AttachedSubmodule[] = [];
   for (const e of raw.entries as unknown[]) {
     if (!isObj(e)) return undefined;
-    const { path: p, key, store, sha, writable, wiki } = e;
+    const { path: p, key, store, sha, writable, wiki, admin } = e;
     if (typeof p !== "string" || !isSafeSubmodulePath(p)) return undefined;
     if (typeof key !== "string" || !isSourceKey(key)) return undefined;
     if (!absNormal(store) || !isUnderAllowedRoot(store, [allowedRoot])) return undefined;
     if (typeof sha !== "string" || !isFullSha(sha)) return undefined;
     if (typeof writable !== "boolean" || typeof wiki !== "boolean" || (wiki && writable)) return undefined;
-    entries.push({ path: p, key, store, sha, writable, wiki });
+    if (admin !== undefined && (typeof admin !== "string" || !isAdminName(admin))) return undefined;
+    entries.push({ path: p, key, store, sha, writable, wiki, ...(admin !== undefined ? { admin } : {}) });
   }
   return { version: 1, worktree: raw.worktree, entries };
+}
+
+/** A worktree admin directory name as Git makes it: one path segment. */
+function isAdminName(name: string): boolean {
+  return /^[A-Za-z0-9._-]{1,255}$/u.test(name) && name !== "." && name !== "..";
 }
 
 function isSourceKey(key: string): boolean {
@@ -181,10 +203,12 @@ export interface DetachResult {
 }
 
 /**
- * Detach every entry of `rec` (best effort; never throws). A target that is still a real directory with no symbolic
- * link on its way is removed with `git worktree remove --force --force`; otherwise (tampered, gone, or refused by Git)
- * only the store's worktree record for it is dropped, so Git never follows a link the agent planted. Then each store
- * is pruned.
+ * Detach every entry of `rec` (best effort; never throws). Its admin directory is the one recorded at attach (or, for
+ * an older record, the one whose `gitdir` names `<worktree>/<path>/.git` lexically) and must still name that file
+ * lexically: nothing is resolved through the run worktree, so a path the agent replaced with a link into another run's
+ * worktree never selects that run's admin directory. A target that is still a real directory with no symbolic link on
+ * its way is removed with `git worktree remove --force --force`; otherwise (tampered, gone, or refused by Git) only
+ * this entry's admin directory is dropped, so Git never follows a link the agent planted. Then each store is pruned.
  */
 export async function detachSubmodules(rec: AttachRecord): Promise<DetachResult> {
   let removed = 0;
@@ -196,7 +220,7 @@ export async function detachSubmodules(rec: AttachRecord): Promise<DetachResult>
     stores.add(e.store);
     try {
       const target = path.join(rec.worktree, e.path);
-      const admin = await findAdminDir(e.store, path.join(target, ".git"));
+      const admin = await adminDirOf(e.store, path.join(target, ".git"), e.admin);
       if (admin === undefined) {
         missing++;
         continue;
@@ -233,24 +257,33 @@ export async function detachSubmodules(rec: AttachRecord): Promise<DetachResult>
  * symbolic link on the way inside the run worktree. False on any mismatch or error.
  */
 export async function verifySubmoduleLink(runWorktree: string, entry: SubmoduleLocation): Promise<boolean> {
+  return (await verifiedLink(runWorktree, entry)) !== undefined;
+}
+
+/** {@link verifySubmoduleLink}'s check; the canonical worktree path and admin directory when it holds. */
+async function verifiedLink(
+  runWorktree: string,
+  entry: SubmoduleLocation,
+): Promise<{ readonly workTree: string; readonly gitDir: string } | undefined> {
   try {
-    if (!isSafeSubmodulePath(entry.path)) return false;
+    if (!isSafeSubmodulePath(entry.path)) return undefined;
     const worktree = await realpath(runWorktree);
-    if (!(await safeTarget(worktree, entry.path, "existing"))) return false;
+    if (!(await safeTarget(worktree, entry.path, "existing"))) return undefined;
     const link = path.join(worktree, entry.path, ".git");
     const st = await lstat(link);
-    if (st.isSymbolicLink() || !st.isFile() || st.size > 4096) return false;
+    if (st.isSymbolicLink() || !st.isFile() || st.size > 4096) return undefined;
     const m = /^gitdir: (.+?)\r?\n?$/u.exec(await readFile(link, "utf8"));
-    if (m?.[1] === undefined) return false;
+    if (m?.[1] === undefined) return undefined;
     const admin = await realpath(path.resolve(path.dirname(link), m[1]));
     const base = await realpath(path.join(entry.store, ".git", "worktrees"));
-    if (path.dirname(admin) !== base) return false;
+    if (path.dirname(admin) !== base) return undefined;
     const adminSt = await lstat(admin);
-    if (!adminSt.isDirectory()) return false;
-    const recorded = (await readFile(path.join(admin, "gitdir"), "utf8")).trim();
-    return (await canonicalFile(path.resolve(admin, recorded))) === link;
+    if (!adminSt.isDirectory()) return undefined;
+    // Lexical: the store's record must name this very `.git` file, never one reached through a link.
+    if (!(await recordsLink(admin, link))) return undefined;
+    return { workTree: path.join(worktree, entry.path), gitDir: admin };
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -260,9 +293,9 @@ export async function verifySubmoduleLink(runWorktree: string, entry: SubmoduleL
  */
 export async function resetSubmodule(runWorktree: string, entry: SubmoduleLocation, sha: string): Promise<void> {
   if (!isFullSha(sha)) throw new SubmoduleError("SUBMODULE_COMMIT_MISSING", { path: entry.path });
-  const cwd = await verifiedCwd(runWorktree, entry);
-  await git([...WORKTREE_CONFIG, "reset", "-q", "--hard", sha], { cwd });
-  await git([...WORKTREE_CONFIG, "clean", "-fdq"], { cwd });
+  const { cwd, pin } = await verifiedCwd(runWorktree, entry);
+  await git([...WORKTREE_CONFIG, ...pin, "reset", "-q", "--hard", sha], { cwd });
+  await git([...WORKTREE_CONFIG, ...pin, "clean", "-fdq"], { cwd });
 }
 
 /**
@@ -271,11 +304,12 @@ export async function resetSubmodule(runWorktree: string, entry: SubmoduleLocati
  * Throws `SUBMODULE_LINK_INVALID` when the link does not verify.
  */
 export async function submoduleStatus(runWorktree: string, entry: SubmoduleLocation): Promise<string[]> {
-  const cwd = await verifiedCwd(runWorktree, entry);
+  const { cwd, pin } = await verifiedCwd(runWorktree, entry);
   const nested = await findNestedRepositories(cwd);
   const out = await git(
     [
       ...WORKTREE_CONFIG,
+      ...pin,
       "status",
       "--porcelain=v2",
       "-z",
@@ -343,41 +377,53 @@ export async function writeWorktreeTree(
   opts: WriteTreeOptions = {},
 ): Promise<string> {
   if (!isFullSha(parentSha)) throw new SubmoduleError("SUBMODULE_COMMIT_MISSING", { path: entry.path });
-  const cwd = await verifiedCwd(runWorktree, entry);
+  const { cwd, pin } = await verifiedCwd(runWorktree, entry);
   const nested = await findNestedRepositories(cwd);
   const tmp = await mkdtemp(path.join(opts.scratchDir ?? tmpdir(), "sb-subidx-"));
   try {
     const env = { GIT_INDEX_FILE: path.join(tmp, "index") };
-    await git([...WORKTREE_CONFIG, "read-tree", parentSha], { cwd, env });
+    await git([...WORKTREE_CONFIG, ...pin, "read-tree", parentSha], { cwd, env });
     if (opts.paths === undefined) {
-      await git([...WORKTREE_CONFIG, "add", "-A", "--", ".", ...nested.excludes, ...(opts.excludes ?? [])], {
+      await git([...WORKTREE_CONFIG, ...pin, "add", "-A", "--", ".", ...nested.excludes, ...(opts.excludes ?? [])], {
         cwd,
         env,
       });
     } else if (opts.paths.length > 0) {
-      await git([...WORKTREE_CONFIG, "--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"], {
-        cwd,
-        env,
-        input: `${opts.paths.join("\0")}\0`,
-      });
+      await git(
+        [...WORKTREE_CONFIG, ...pin, "--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        {
+          cwd,
+          env,
+          input: `${opts.paths.join("\0")}\0`,
+        },
+      );
     }
     if (opts.restorePaths !== undefined && opts.restorePaths.length > 0) {
-      await git([...WORKTREE_CONFIG, "--literal-pathspecs", "reset", "-q", parentSha, "--", ...opts.restorePaths], {
-        cwd,
-        env,
-      });
+      await git(
+        [...WORKTREE_CONFIG, ...pin, "--literal-pathspecs", "reset", "-q", parentSha, "--", ...opts.restorePaths],
+        {
+          cwd,
+          env,
+        },
+      );
     }
-    return await gitText([...WORKTREE_CONFIG, "write-tree"], { cwd, env });
+    return await gitText([...WORKTREE_CONFIG, ...pin, "write-tree"], { cwd, env });
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
 }
 
-async function verifiedCwd(runWorktree: string, entry: SubmoduleLocation): Promise<string> {
-  if (!(await verifySubmoduleLink(runWorktree, entry))) {
-    throw new SubmoduleError("SUBMODULE_LINK_INVALID", { path: entry.path });
-  }
-  return path.join(await realpath(runWorktree), entry.path);
+/**
+ * The verified submodule worktree and the Git options that pin it: `--git-dir=<verified admin directory>` and
+ * `--work-tree=<path>`, so the `.git` file is not read again after the check.
+ */
+async function verifiedCwd(
+  runWorktree: string,
+  entry: SubmoduleLocation,
+): Promise<{ readonly cwd: string; readonly pin: readonly string[] }> {
+  const v = await verifiedLink(runWorktree, entry);
+  if (v === undefined) throw new SubmoduleError("SUBMODULE_LINK_INVALID", { path: entry.path });
+  return { cwd: v.workTree, pin: [`--git-dir=${v.gitDir}`, `--work-tree=${v.workTree}`] };
 }
 
 /**
@@ -397,23 +443,32 @@ async function safeTarget(worktree: string, rel: string, mode: "attach" | "exist
   return true;
 }
 
-/** The store's worktree admin directory whose `gitdir` file names `linkPath` (lexically or canonically). */
+/** Whether the admin directory's `gitdir` file names `linkPath` exactly (lexically; nothing is resolved). */
+async function recordsLink(admin: string, linkPath: string): Promise<boolean> {
+  const recorded = await readFile(path.join(admin, "gitdir"), "utf8").catch(() => undefined);
+  return recorded !== undefined && path.resolve(admin, recorded.trim()) === linkPath;
+}
+
+/** The store's worktree admin directory whose `gitdir` file names `linkPath` lexically. */
 async function findAdminDir(store: string, linkPath: string): Promise<string | undefined> {
   const base = path.join(store, ".git", "worktrees");
-  const want = await canonicalFile(linkPath);
   for (const name of await readdir(base).catch(() => [] as string[])) {
-    const recorded = await readFile(path.join(base, name, "gitdir"), "utf8").catch(() => undefined);
-    if (recorded === undefined) continue;
-    const p = path.resolve(base, name, recorded.trim());
-    if (p === linkPath || (await canonicalFile(p)) === want) return path.join(base, name);
+    if (await recordsLink(path.join(base, name), linkPath)) return path.join(base, name);
   }
   return undefined;
 }
 
-/** `realpath` of the parent directory plus the base name (the file itself need not exist). */
-async function canonicalFile(p: string): Promise<string> {
-  const dir = await realpath(path.dirname(p)).catch(() => path.dirname(p));
-  return path.join(dir, path.basename(p));
+/**
+ * The admin directory of an attached entry: the recorded one when it still names `linkPath` (a name Git reused for
+ * another worktree does not), else for a record without a name the lexical match; undefined when there is none.
+ */
+async function adminDirOf(store: string, linkPath: string, recorded: string | undefined): Promise<string | undefined> {
+  if (recorded === undefined) return findAdminDir(store, linkPath);
+  if (!isAdminName(recorded)) return undefined;
+  const admin = path.join(store, ".git", "worktrees", recorded);
+  const st = await lstat(admin).catch(() => undefined);
+  if (st === undefined || st.isSymbolicLink() || !st.isDirectory()) return undefined;
+  return (await recordsLink(admin, linkPath)) ? admin : undefined;
 }
 
 /**
