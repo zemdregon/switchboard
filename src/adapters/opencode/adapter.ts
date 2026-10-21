@@ -37,6 +37,7 @@ import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import { renderObjective } from "../prompt.js";
+import type { ProviderUsageResult } from "../provider-usage.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -84,6 +85,7 @@ import {
   TOOL_KINDS,
   VERSION_ARGS,
 } from "./protocol.js";
+import { readOpenCodeUsage } from "./usage.js";
 
 /**
  * Environment names passed through to OpenCode (FR-EXE-07, NFR-SEC-02). Proposed: `PATH` for the binary and `HOME` so
@@ -241,6 +243,15 @@ export class OpenCodeAdapter implements ProviderAdapter {
       },
     );
     return { binaryPath: exe, binaryVersion: version, steps };
+  }
+
+  /**
+   * ADR-0089 (FR-CAP-16, LLD §16.13): OpenCode's own spend for three rolling windows, through
+   * `opencode api --standalone experimental.session.stats` (see ./usage.ts). No model call; OpenCode reads its own
+   * local history and Switchboard reads no file. Any failure is `unknown`, never headroom (BR-50).
+   */
+  readProviderUsage(runner: ProbeRunner, now: Date = new Date()): Promise<ProviderUsageResult> {
+    return readOpenCodeUsage(runner, this.#exe, this.#launcher, now);
   }
 
   /**

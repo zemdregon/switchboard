@@ -21,6 +21,7 @@ import {
   type ProviderUsageResult,
   type ResolvedProfile,
 } from "../adapters/index.js";
+import { readOpenCodeUsage } from "../adapters/opencode/usage.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import {
   CAPACITY_NOTE,
@@ -1046,5 +1047,90 @@ describe("provider_usage on get_capacity, capacity and doctor (ADR-0079, FR-CAP-
     expect(usageReadTargets([fake], { providers: [{ ...entry, enabled: true }] } as CapacityProjection)).toEqual([
       fake,
     ]);
+  });
+});
+
+/**
+ * ADR-0089 (FR-CAP-16, BR-63, LLD §16.13): OpenCode's spend report through the surfaces. The fake adapter's reader is
+ * OpenCode's own (`readOpenCodeUsage`), fed by the surface's runner, which answers each window with synthetic
+ * session stats that echo the requested range (no OpenCode CLI runs).
+ */
+describe("OpenCode spend on get_capacity and capacity (ADR-0089, FR-CAP-16)", () => {
+  const COST: Record<string, number> = { "18000000": 0, "604800000": 12.454677, "2592000000": 14.401604 };
+  const calls: string[][] = [];
+  const statsRunner: ProbeRunner = async (argv) => {
+    calls.push([...argv]);
+    const num = (k: string) => Number(argv.find((a) => a.startsWith(`${k}=`))?.slice(k.length + 1));
+    const from = num("from");
+    const to = num("to");
+    const data = {
+      range: { from, to },
+      cost: COST[String(to - from)] ?? 0,
+      sessions: 3,
+      steps: 9,
+      tokens: { input: 1, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
+      models: [{ model: { id: "m", providerID: "opencode-go" }, steps: 9, cost: COST[String(to - from)] ?? 0 }],
+    };
+    return { exitCode: 0, stdout: JSON.stringify({ data }), stderr: "", timedOut: false };
+  };
+
+  class OpenCodeReadingFake extends FakeAdapter {
+    constructor() {
+      super({ script: "/nonexistent/fake-cli.mjs" });
+    }
+    async readProviderUsage(runner: ProbeRunner, now?: Date): Promise<ProviderUsageResult> {
+      return { ...(await readOpenCodeUsage(runner, "/opt/opencode/bin/opencode", [], now ?? NOW)), provider: "fake" };
+    }
+  }
+
+  it("get_capacity carries spend_windows, scope and note, valid against the output schema", async () => {
+    calls.length = 0;
+    const client = await connect(undefined, {
+      registry: new AdapterRegistry().register(new OpenCodeReadingFake()),
+      providerUsage: { runner: statsRunner },
+    });
+    const r = await capacityTool(client);
+    expect(r.isError).toBe(false);
+    const u = r.body.providers[0].provider_usage as Json;
+    expect(u).toMatchObject({
+      source: "provider_reported",
+      method: "opencode api --standalone experimental.session.stats",
+      windows: [],
+      plan: null,
+      limit_reached: null,
+      credits: null,
+    });
+    expect((u.spend_windows as Json[]).map((s) => [s.id, s.window_seconds, s.amount, s.unit])).toEqual([
+      ["five_hour", 18_000, 0, "usd"],
+      ["weekly", 604_800, 12.454677, "usd"],
+      ["monthly", 2_592_000, 14.401604, "usd"],
+    ]);
+    expect(u.scope).toMatch(/every OpenCode session here/);
+    expect(u.note).toMatch(/does not report a plan limit/);
+    expect(calls).toHaveLength(3);
+    expect(r.body.providers[0]).toMatchObject({ capacity_score: null, explicit_remaining: null, reset_at: null });
+    expectHonestJson(r.body);
+    const success = (outputSchema("get_capacity") as { anyOf: Json[] }).anyOf[0] as Json;
+    const validate = new Ajv2020({ allErrors: true, strict: true }).compile(success);
+    expect(validate(r.body), JSON.stringify(validate.errors)).toBe(true);
+    // A spend entry with a negative amount or another unit is refused by the schema.
+    const bad = structuredClone(r.body);
+    (bad.providers[0].provider_usage.spend_windows[0] as Json).unit = "eur";
+    expect(validate(bad)).toBe(false);
+  });
+
+  it("`switchboard capacity` prints spent, says limit, remaining and reset are not reported, and the scope", async () => {
+    const reg = new AdapterRegistry().register(new OpenCodeReadingFake());
+    const text = await cli(["capacity"], { adapters: reg, providerUsageRunner: statsRunner });
+    expect(text.code).toBe(0);
+    expect(text.out).toContain(
+      "  five_hour (18000 s, provider_reported): spent 0.00 usd; limit not reported, remaining not reported, " +
+        "reset not reported",
+    );
+    expect(text.out).toContain("weekly (604800 s, provider_reported): spent 12.45 usd;");
+    expect(text.out).toContain("monthly (2592000 s, provider_reported): spent 14.40 usd;");
+    expect(text.out).toMatch(/scope: OpenCode's local session history on this host/);
+    expect(text.out).toMatch(/note: OpenCode does not report a plan limit/);
+    expectHonestText(text.out);
   });
 });

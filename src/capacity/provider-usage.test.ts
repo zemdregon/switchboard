@@ -88,4 +88,40 @@ describe("readProviderUsage", () => {
     ]);
     expect(lines.join("\n")).not.toContain("%");
   });
+
+  it("spend lines say spent, never remaining, and print scope and note (ADR-0089)", () => {
+    const lines = providerUsageLines(
+      {
+        provider: "opencode",
+        source: "provider_reported",
+        observed_at: T0.toISOString(),
+        method: "m",
+        plan: null,
+        limit_reached: null,
+        limit_reached_type: null,
+        windows: [],
+        credits: null,
+        spend_windows: [
+          {
+            id: "five_hour",
+            window_seconds: 18_000,
+            from: "2026-10-20T19:00:00.000Z",
+            to: T0.toISOString(),
+            amount: 1.234,
+            unit: "usd",
+          },
+        ],
+        scope: "s",
+        note: "n",
+      },
+      "",
+    );
+    expect(lines).toEqual([
+      "provider-reported usage (m, at 2026-10-21T00:00:00.000Z): plan unknown, limit reached unknown",
+      "  five_hour (18000 s, provider_reported): spent 1.23 usd; limit not reported, remaining not reported, " +
+        "reset not reported",
+      "  scope: s",
+      "  note: n",
+    ]);
+  });
 });

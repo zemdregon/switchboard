@@ -41,6 +41,24 @@ export interface ProviderUsageAmount {
   key: string;
 }
 
+/**
+ * ADR-0089 (FR-CAP-16, BR-63, LLD §16.13): money spent in one window as the provider reported it, for a provider that
+ * reports spend rather than quota fractions (OpenCode). `amount` is the reported spend, never a remaining figure
+ * (FR-CAP-03); no limit, remaining share or reset is implied.
+ */
+export interface ProviderUsageSpendWindow {
+  /** Window name (OpenCode: `five_hour`, `weekly`, `monthly`). */
+  id: string;
+  window_seconds: number;
+  /** The window asked for, as ISO instants. */
+  from: string;
+  to: string;
+  amount: number;
+  unit: "usd";
+  /** Provider-specific breakdown (OpenCode: sessions, steps, tokens and the top models by spend). */
+  detail?: Record<string, unknown>;
+}
+
 /** A successful read. */
 export interface ProviderUsageReport {
   provider: string;
@@ -70,6 +88,12 @@ export interface ProviderUsageReport {
   on_demand?: ProviderUsageOnDemand | null;
   /** ADR-0080 (Cursor Enterprise): cumulative spend this and last billing period, as shown. */
   spend?: ProviderUsageSpend | null;
+  /** ADR-0089 (FR-CAP-16): reported spend per window; absent for a provider that reports quota windows only. */
+  spend_windows?: ProviderUsageSpendWindow[];
+  /** ADR-0089: what the figures cover (e.g. every OpenCode session on this host); absent when not stated. */
+  scope?: string;
+  /** ADR-0089: what the provider does not report, for the operator; absent when not stated. */
+  note?: string;
 }
 
 /** ADR-0080: an on-demand spend row; `state` is the provider's own case, dollars null when not shown. */

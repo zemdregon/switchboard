@@ -6913,7 +6913,7 @@ optional adapter method reads them, and the result is shown beside the projectio
 
 **Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
 (`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex, Cursor, Grok
-Build, Kimi Code and Antigravity (T6.20, below) implement it.
+Build, Kimi Code and Antigravity (T6.20, below) implement it, and OpenCode in [§16.13](#1613-provider-reported-spend-and-the-opencode-reader-fr-cap-16-adr-0089).
 
 ```jsonc
 // ProviderUsageReport
@@ -7161,6 +7161,62 @@ No migration, no new output field. The Claude figures reach the capacity surface
   `provider_reported` `used_fraction` and `reset_at`; the report shows them even when no subscription is configured.
 
 Tests: `src/capacity/reported-usage.test.ts`, `src/adapters/claude/usage.test.ts`, `src/mcp/get-capacity.test.ts`.
+
+### 16.13 Provider-reported spend and the OpenCode reader (FR-CAP-16, ADR-0089)
+
+*Added 2026-10-21 (Delegated, not owner-approved).* For a provider that reports spend, not quota windows, the §16.10
+report gains three optional fields, `spend_windows`, `scope` and `note` (distinct from Cursor's `spend` of
+[ADR-0080](../adr/0080-cursor-usage-from-the-cli-usage-command.md)); a report without them is unchanged.
+
+```jsonc
+// ProviderUsageReport, additions (all optional)
+{ "spend_windows": [ { "id": "five_hour", "window_seconds": 18000, "from": "<ISO>", "to": "<ISO>",
+               "amount": 0, "unit": "usd",
+               "detail": { "sessions": 0, "steps": 0,
+                           "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0 },
+                           "models": [ { "provider_id": "<id>", "model_id": "<id>", "cost_usd": 0, "steps": 0 } ],
+                           "models_omitted": 3 } } ],
+  "scope": "<what the figures cover>", "note": "<what is not reported>" }
+```
+
+`amount` is the reported spend, never a remaining figure (FR-CAP-03, BR-63). `detail.models_omitted` is present only
+when more than 20 models (**Proposed**) were reported. The `get_capacity` output schema types `spend_windows` entries closed
+(`unit` is the constant `usd`, `amount` ≥ 0, `window_seconds` an integer ≥ 1; `detail` an object).
+
+**OpenCode command** (`src/adapters/opencode/usage.ts`, constants in `src/adapters/opencode/protocol.ts`).
+`OpenCodeAdapter.readProviderUsage` runs, through the probe runner with the allowlist `PATH` and `HOME` and the
+adapter's executable and launcher arguments, once per window and one after another (**Delegated**):
+
+```text
+opencode api --standalone experimental.session.stats --param from=<epoch ms> --param to=<epoch ms> --param tools=none
+```
+
+| Window id | `window_seconds` | Note |
+| --- | --- | --- |
+| `five_hour` | 18 000 | Go plan 5-hour limit (documented) |
+| `weekly` | 604 800 | Go plan weekly limit (documented) |
+| `monthly` | 2 592 000 | **Assumption**: 30 days rolling; the Go monthly anchor is not reported |
+
+`to` is the read's `now`; `from` is `to` minus the window. Each call has a 20 s timeout (**Proposed**; about 3.7 s was
+measured). Mapping of `data` (own properties only): `cost` → `amount`; `sessions`, `steps`, `tokens.input`, `output`,
+`reasoning`, `cache.read`, `cache.write` → `detail`; each `models[]` entry's `model.providerID`, `model.id`, `cost`,
+`steps` → `detail.models[]`, sorted by cost descending then `provider_id/model_id`. The report sets `windows: []`,
+`plan`, `limit_reached`, `limit_reached_type` and `credits` to `null`, `method` to
+`opencode api --standalone experimental.session.stats`, and fixed `scope` and `note` texts.
+
+**Failure rules.** The first failing window ends the read with `ProviderUsageUnavailable`, reason
+`session stats (<window>): <why>` written by the controller: `opencode` not on PATH (nothing runs), could not start,
+timed out, exited non-zero, output not JSON (this includes the `HTTP 500 Internal Server Error` text OpenCode prints
+with exit 0), a missing or negative or non-finite figure, or a `data.range` whose `from` and `to` differ from the
+request. Raw stdout, stderr and the spawn error are never copied. Switchboard never opens `opencode.db` or `auth.json`
+(ADR-0003).
+
+**Text** (`providerUsageLines`). One line per `spend_windows` entry, after the §16.10 head line:
+`<id> (<window_seconds> s, provider_reported): spent <amount to 2 places> usd; limit not reported, remaining not
+reported, reset not reported`, then `scope: …` and `note: …`. Tests: `src/adapters/opencode/usage.test.ts` (recorded
+fixtures `src/adapters/opencode/fixtures/usage/stats-{5h,7d,30d}.stdout.txt` and two synthetic ones),
+`src/capacity/provider-usage.test.ts`, and "OpenCode spend on get_capacity and capacity (ADR-0089, FR-CAP-16)" in
+`src/mcp/get-capacity.test.ts`.
 
 ## 17. Routing (M7)
 
