@@ -31,7 +31,7 @@ Only one `serve` can hold a data directory at a time.
 | `cancel_run` | run | Requests cancellation of a run (asynchronous; poll `get_run`). | Always (orchestrator only) |
 | `get_artifacts` | run | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. | Always (orchestrator only) |
 | `list_capabilities` | capability | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. | Always (orchestrator only) |
-| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription; and, for Codex and Cursor, `provider_usage` (the signed-in account's quota windows, plan and credits, `provider_reported`, read through `codex app-server` or Cursor's own `/usage` command, cached for a minute, `unknown` when the read fails). Read-only; it makes no model call and reads no credential. | Always (orchestrator only) |
+| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription; and, for Codex, Cursor and Antigravity, `provider_usage` (the signed-in account's quota windows, plan and credits, `provider_reported`, read through `codex app-server` or Cursor's own `/usage` command, cached for a minute, `unknown` when the read fails). Read-only; it makes no model call and reads no credential. | Always (orchestrator only) |
 | `explain_route` | capability | Why a run went to its provider, from Switchboard's stored route decision: candidates with eligibility reasons, the recorded task features, weights and per-candidate scores, the selection rule and short deciding factors. Price, model quality and sandbox strength are not sourced, so those terms are equal for every provider. Read-only; no model is asked. | Always (orchestrator only) |
 | `list_runs` | control | Runs visible to this client, newest first, with optional project, status and time filters. | Always; `console` sees it |
 | `get_digest` | control | A per-project digest since a cursor: paused state, budgets, needs-attention runs, finished and failed runs, pending approvals and untrusted summaries. | Always; `console` sees it |
@@ -156,6 +156,15 @@ Switchboard's own records when you ask:
   failed read is `unknown`. Details:
   [ADR-0080](../adr/0080-cursor-usage-from-the-cli-usage-command.md),
   [docs/research/cursor-usage-2026-10-21.md](../research/cursor-usage-2026-10-21.md).
+- **Provider-reported usage (Antigravity).** Antigravity's entry carries the CLI's own `/usage` answer: one window per
+  quota bucket (`id` such as `gemini-5h` or `3p-weekly`, `limit_id` the group of models sharing it, such as `Gemini
+  Models`, 5-hour or weekly `window_seconds`, `remaining_fraction`, `used_fraction`, `resets_at`) and the AI-credit
+  balance from `/credits` as `credits`. Switchboard runs `agy models` and, only if that shows you signed in,
+  `agy -p "/usage" --output-format json` and `agy -p "/credits" --output-format json`; neither starts an agent turn or
+  spends quota, and Switchboard reads nothing under `~/.gemini`. Signed out, the entry says `unknown` with "agy is not
+  signed in" rather than starting a sign-in. Details:
+  [ADR-0082](../adr/0082-antigravity-usage-from-the-cli-usage-command.md),
+  [docs/research/usage-sources-antigravity-2026-10-21.md](../research/usage-sources-antigravity-2026-10-21.md).
 - **Circuit breaker.** After `capacity.breaker.failure_threshold` (default 3) rate-limit, overload or crash failures in
   a row, a provider is held back for `capacity.breaker.open_seconds` (default 300). New requests go to other providers;
   with `require_provider` they fail `ELIGIBILITY_NONE`. Queued runs wait. Then one run tries it, and its outcome
