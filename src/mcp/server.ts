@@ -32,7 +32,9 @@
  * - `list_capabilities` (T3.7): `supported_profiles` is each provider's compile matrix on this host: the
  *   profile-platform rule (`profilePlatformSupported`), then the adapter's own compile of each resolved profile
  *   (`compileCheck`, the same call the eligibility filter makes). `privileged` is listed only if the adapter compiles
- *   any scope of a small representative set (`REPRESENTATIVE_PRIVILEGED_SCOPES`, Proposed, LLD §3.1 "Listing").
+ *   any scope of a small representative set (`REPRESENTATIVE_PRIVILEGED_SCOPES`, Proposed, LLD §3.1 "Listing") or,
+ *   ADR-0092 (Delegated), any approved bypass cell (`REPRESENTATIVE_BYPASS_SCOPES`, compiled with a listing-only
+ *   `bypassApproved`; listing never dispatches). `privileged_bypass_only` says which of the two listed it.
  * - `verification_commands` (T3.10, FR-EXE-08): argv arrays run by the lifecycle after the agent (VERIFYING). V7
  *   refuses a non-empty list under `inspect-untrusted` (INVALID_REQUEST, `details.field`), and re-checks the shape
  *   (non-empty executable, no NUL). `minimum_capability` evaluates against operator-declared model capability in the
@@ -2222,22 +2224,38 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const probed = facts?.probe?.steps.every((s) => s.ok) === true;
     // T3.7: supported_profiles is the provider's compile matrix on this host: the host-platform rule, then the
     // adapter's own compile of each resolved profile (overrides included), exactly as the eligibility filter asks it.
+    // ADR-0092: `privileged` is listed when a non-bypass representative scope compiles or, failing that, an approved
+    // bypass cell does; `bypassOnly` records the second case (undefined while `privileged` is not listed).
     const supported: TrustProfile[] = [];
+    let bypassOnly: boolean | undefined;
     if (adapter && probed) {
       for (const p of TRUST_PROFILE_ORDER) {
         if (!profilePlatformSupported(p, answer.input.platform)) continue;
-        let profiles: ResolvedProfile[];
+        const compiles = (profile: ResolvedProfile) =>
+          !("ineligible" in compileCheck(adapter, profile, requirementsFor(p, profile), cwd));
+        if (p === "privileged") {
+          if (REPRESENTATIVE_PRIVILEGED_SCOPES.some((sc) => compiles(privilegedEligibilityProfile(sc)))) {
+            supported.push(p);
+            bypassOnly = false;
+          } else if (
+            // Listing-only approval: nothing is dispatched from here; a run's bypass is still decided by its approval
+            // at dispatch (`evaluateBypass`) and audited in its argv.
+            REPRESENTATIVE_BYPASS_SCOPES.some((sc) =>
+              compiles({ ...privilegedEligibilityProfile(sc), bypassApproved: true }),
+            )
+          ) {
+            supported.push(p);
+            bypassOnly = true;
+          }
+          continue;
+        }
+        let profile: ResolvedProfile;
         try {
-          profiles =
-            p === "privileged"
-              ? REPRESENTATIVE_PRIVILEGED_SCOPES.map((sc) => privilegedEligibilityProfile(sc))
-              : [lifecycle.resolveProfile(p)];
+          profile = lifecycle.resolveProfile(p);
         } catch {
           continue; // COMP-POL does not resolve this profile: unsupported, fail closed
         }
-        const compiles = (profile: ResolvedProfile) =>
-          !("ineligible" in compileCheck(adapter, profile, requirementsFor(p, profile), cwd));
-        if (profiles.some(compiles)) supported.push(p);
+        if (compiles(profile)) supported.push(p);
       }
     }
     return {
@@ -2248,6 +2266,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       validated_range: facts?.gate?.evidence.validatedRange ?? null,
       auth_state: facts?.auth?.state ?? "NOT_CHECKED",
       supported_profiles: supported,
+      ...(bypassOnly !== undefined ? { privileged_bypass_only: bypassOnly } : {}),
       transports: [...(adapter?.transports ?? [])],
       models: [],
       sandbox_features: [],
@@ -2751,8 +2770,8 @@ const PER_PROFILE_REASONS: ReadonlySet<EligibilityReasonCode> = new Set([
  * provider compiles at least one privileged scope here"; each request's own scope is still compiled at dispatch, where
  * an `Ineligible` ends the run with its BR-3 code. No single scope compiles for both adapters (T3.5: Claude has no
  * network control, so it needs network `on`; T3.6: Codex cannot disable commands, so it needs shell `broad` with
- * network `off`), hence a small set rather than the narrowest scope alone. All have `bypass: false`: listing never
- * compiles with `bypassApproved`, which only an approval grants.
+ * network `off`), hence a small set rather than the narrowest scope alone. All have `bypass: false` and are compiled
+ * without `bypassApproved`; the approved bypass cells are tried separately ({@link REPRESENTATIVE_BYPASS_SCOPES}).
  */
 const REPRESENTATIVE_PRIVILEGED_SCOPES: readonly PrivilegedScope[] = [
   // The narrowest scope LLD §3.1 allows.
@@ -2778,6 +2797,32 @@ const REPRESENTATIVE_PRIVILEGED_SCOPES: readonly PrivilegedScope[] = [
     network: { mode: "off" },
     repository_config: { mode: "disabled" },
     bypass: false,
+  },
+];
+
+/**
+ * ADR-0092 (Delegated, 2026-10-21; amends LLD §3.1 "Listing"): the approved bypass cells `list_capabilities` compiles
+ * when no {@link REPRESENTATIVE_PRIVILEGED_SCOPES} scope compiles. Grok Build, Cursor, OpenCode, Kimi Code and
+ * Antigravity compile only an approved bypass scope (their lower tiers are Ineligible by design, ADR-0077) and only
+ * with repository_config `enabled`; Claude and Codex also compile `disabled`. These are compiled with
+ * `bypassApproved: true` spread over {@link privilegedEligibilityProfile}: a listing-only simulation, since listing
+ * never dispatches. A run's bypass is still decided at dispatch by its approval (`evaluateBypass`) and audited in its
+ * argv; a request's own scope is still compiled there.
+ */
+const REPRESENTATIVE_BYPASS_SCOPES: readonly PrivilegedScope[] = [
+  {
+    files: { access: "worktree" },
+    shell: { mode: "broad" },
+    network: { mode: "on" },
+    repository_config: { mode: "enabled" },
+    bypass: true,
+  },
+  {
+    files: { access: "worktree" },
+    shell: { mode: "broad" },
+    network: { mode: "on" },
+    repository_config: { mode: "disabled" },
+    bypass: true,
   },
 ];
 

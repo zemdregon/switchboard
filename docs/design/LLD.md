@@ -1132,16 +1132,18 @@ draft (M11, [§13.6](#136-task-contracts)); Switchboard never opens a pull reque
 exists only when the handoff-condensation task stored one beside the raw `handoff_view` (M11, T11.10, [§13.6](#136-task-contracts));
 it does not replace the view.
 **`list_capabilities`** `{}` returns `{ schema_version, providers: [{provider, adapter_status, binary_version,
-validated_range, auth_state, supported_profiles[], transports[], models[], sandbox_features[], git_write_control?}] }`;
+validated_range, auth_state, supported_profiles[], privileged_bypass_only?, transports[], models[], sandbox_features[],
+git_write_control?}] }`;
 reads cached preflight (NFR-PERF-02). `git_write_control` is `{ kind: "provider-deny-rules" | "none-documented", detail,
 remaining_controls[] }`, the adapter's FR-GIT-01 declaration (Proposed, added in T2.2).
 `supported_profiles` (T3.7, Proposed) is the provider's compile matrix on this host: a profile is listed only if the
 host platform is verified for it (Linux only until M4; every profile counts as sandbox-dependent, NFR-PORT-02) and the
 adapter's own `compile` of the resolved profile, with configured overrides, returns no `Ineligible` (the same check
-the eligibility filter makes). `privileged` is listed only if the adapter compiles the narrowest scope (read-only
-files, no shell, network off, repository configuration disabled, no bypass); each request's scope is still compiled
-at admission and dispatch. An off-host profile is excluded from routing with the machine-readable reason
-`PROFILE_PLATFORM_UNVERIFIED`, which maps to `ELIGIBILITY_NONE` (FRD BR-3).
+the eligibility filter makes). `privileged` is listed by the [§3.1](#31-privileged-scope-m3) "Listing" rule (any
+representative scope, or an approved bypass cell, [ADR-0092](../adr/0092-list-capabilities-lists-approved-bypass-cells.md));
+`privileged_bypass_only` is present exactly when `privileged` is listed and is true when only a bypass cell compiled.
+Each request's scope is still compiled at admission and dispatch. An off-host profile is excluded from routing with
+the machine-readable reason `PROFILE_PLATFORM_UNVERIFIED`, which maps to `ELIGIBILITY_NONE` (FRD BR-3).
 **`get_capacity`** (M6) `{ provider? }` returns the FR-CAP-02 fields per provider with `source`; `explicit_remaining` is
 null unless provider-reported. Detailed in [§16.3](#163-get_capacity-and-switchboard-capacity) (T6.1). `provider`
 takes either spelling and the answer names the canonical provider ([ADR-0076](../adr/0076-provider-name-aliases.md)).
@@ -1425,6 +1427,15 @@ disable commands, so it needs shell `broad` with network `off`), so the narrowes
 nobody. A listed `privileged` means "this provider compiles at least one privileged scope here"; each request's own
 scope is still compiled at dispatch, where an `Ineligible` ends the run with its BR-3 code. Code:
 `REPRESENTATIVE_PRIVILEGED_SCOPES` in `src/mcp/server.ts`.
+
+*Amended 2026-10-21 ([ADR-0092](../adr/0092-list-capabilities-lists-approved-bypass-cells.md), Delegated):* when none
+of those scopes compiles, the listing also compiles the approved bypass cells `REPRESENTATIVE_BYPASS_SCOPES`
+(`worktree` files, shell `broad`, network `on`, `bypass: true`, repository configuration `enabled` and `disabled`)
+with a listing-only `bypassApproved: true` over the eligibility profile, so a provider whose only privileged cell is
+the approved bypass cell (Grok Build, Cursor, OpenCode, Kimi Code, Antigravity, ADR-0077) lists `privileged`, with
+`privileged_bypass_only: true`; otherwise the flag is `false`. A listed `privileged` therefore means "compiles at least
+one privileged scope here, possibly only the approved bypass cell". Listing never dispatches: a run's `bypassApproved`
+still comes only from its approval at dispatch (above) and the argv audit is unchanged.
 
 **What is shown where.** The envelope (`get_run`, `delegate_task`, `continue_task`, `cancel_run`) carries only
 `approval.status` and `approval.requested_at` for a `privileged` run; it never contains the scope content, the hash or

@@ -12,9 +12,12 @@ import path from "node:path";
 import { Client, InMemoryTransport, StreamableHTTPClientTransport, type Transport } from "@modelcontextprotocol/client";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { replayAdapter as antigravityReplay } from "../adapters/antigravity/fixtures/cases.js";
 import { replayAdapter as claudeReplay, DEFAULT_SESSION_ID, REPLAY_SCRIPT } from "../adapters/claude/fixtures/cases.js";
 import { replayAdapter as codexReplay } from "../adapters/codex/fixtures/cases.js";
+import { replayAdapter as cursorReplay } from "../adapters/cursor/fixtures/cases.js";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
+import { replayAdapter as grokReplay } from "../adapters/grok/fixtures/cases.js";
 import {
   AdapterRegistry,
   type AuthResult,
@@ -28,6 +31,8 @@ import {
   type ResolvedProfile,
   type VersionGateResult,
 } from "../adapters/index.js";
+import { replayAdapter as kimiReplay } from "../adapters/kimi/fixtures/cases.js";
+import { replayAdapter as opencodeReplay } from "../adapters/opencode/fixtures/cases.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import { type HttpTransportSettings, type ResolvedProject, resolveHttpTransport } from "../config/index.js";
 import { buildAndPutHandoffView, DEFAULT_BUNDLE_BOUNDS, INSTRUCTION_MARKER, takeAsOf } from "../continuity/index.js";
@@ -857,6 +862,68 @@ describe("list_capabilities supported_profiles (T3.7: the compile matrix on this
     const by = await supportedBy();
     expect(by.claude).toMatchObject({ adapter_status: "READY", supported_profiles: [] });
     expect(by.fake).toMatchObject({ adapter_status: "READY", supported_profiles: [] });
+    // privileged is not listed, so the flag is omitted.
+    expect(by.claude).not.toHaveProperty("privileged_bypass_only");
+  });
+
+  describe("approved bypass cells (ADR-0092, Delegated)", () => {
+    const bypassOnlyAdapters = (): ProviderAdapter[] => [
+      grokReplay("success_edit"),
+      cursorReplay("success_edit"),
+      opencodeReplay("success_edit"),
+      kimiReplay("success_edit"),
+      antigravityReplay("success_edit"),
+    ];
+    /** Every provider passes the version gate here (test double): the listing, not the gate, is under test. */
+    const passGate = (id: ProviderId, version: string | null): VersionGateResult => ({
+      eligible: true,
+      evidence: { provider: id, observedVersion: version, validatedRange: "test", validatedCliVersion: "test" },
+    });
+
+    it("a bypass-only adapter lists privileged with privileged_bypass_only true and no lower tier", async () => {
+      await setup({
+        adapters: bypassOnlyAdapters(),
+        lifecycle: { resolveProfile: createProfileResolver(), eligibility: { platform: "linux", gate: passGate } },
+        start: false,
+      });
+      const by = await supportedBy();
+      for (const id of ["grok", "cursor", "opencode", "kimi", "antigravity"]) {
+        expect(by[id], id).toMatchObject({ supported_profiles: ["privileged"], privileged_bypass_only: true });
+      }
+    });
+
+    it("Claude and Codex keep their full lists with privileged_bypass_only false", async () => {
+      await setup({
+        adapters: [recorded(claudeReplay("success-edit.jsonl")).adapter, codexReplay("success_edit")],
+        passCodex: true,
+        lifecycle: { resolveProfile: createProfileResolver() },
+        start: false,
+      });
+      const by = await supportedBy();
+      expect(by.claude).toMatchObject({
+        supported_profiles: ["inspect-untrusted", "edit-untrusted", "trusted-development", "privileged"],
+        privileged_bypass_only: false,
+      });
+      expect(by.codex).toMatchObject({
+        supported_profiles: ["inspect-untrusted", "edit-untrusted", "privileged"],
+        privileged_bypass_only: false,
+      });
+    });
+
+    it("a disabled provider lists nothing, even with an approved bypass cell", async () => {
+      await setup({
+        adapters: bypassOnlyAdapters(),
+        lifecycle: {
+          resolveProfile: createProfileResolver(),
+          eligibility: { platform: "linux", gate: passGate, isEnabled: (id) => id !== "grok" },
+        },
+        start: false,
+      });
+      const by = await supportedBy();
+      expect(by.grok).toMatchObject({ adapter_status: "DISABLED", supported_profiles: [] });
+      expect(by.grok).not.toHaveProperty("privileged_bypass_only");
+      expect(by.cursor).toMatchObject({ supported_profiles: ["privileged"], privileged_bypass_only: true });
+    });
   });
 
   it("a delegate_task for a profile no provider compiles fails ELIGIBILITY_NONE with machine-readable reasons", async () => {
