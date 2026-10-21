@@ -1,7 +1,8 @@
 /**
  * Production {@link CiStatusPort} (T15.3; ADR-0050): runs the operator's logged-in `gh` as an external subprocess with
  * an argv from the closed allowlist (`gh-argv.ts`), no shell, an allowlisted environment and a wall-clock bound. Only
- * allowlisted JSON fields are read; stderr is discarded and no `gh` output reaches an error message, log or the ledger.
+ * allowlisted JSON fields are read; this port discards stderr and no `gh` output reaches an error message, log or the
+ * ledger. {@link execGh} keeps a bounded stderr tail only for the pull-request port's failure detail (ADR-0095).
  * Tests inject {@link GhRunner}; CI never runs a real `gh`.
  */
 import { execFile } from "node:child_process";
@@ -63,6 +64,8 @@ export const GH_EXIT_AUTH_REQUIRED = 4;
 export const GH_EXIT_CHECKS_PENDING = 8;
 export const DEFAULT_GH_TIMEOUT_MS = 30_000;
 const MAX_GH_STDOUT_BYTES = 1024 * 1024;
+/** ADR-0095: most characters of a failed run's stderr kept on {@link GhRunResult.stderr} (its tail). */
+export const MAX_GH_STDERR_CHARS = 4096;
 
 export interface GhRunResult {
   /** Exit code, or null when the process was killed. */
@@ -71,6 +74,11 @@ export interface GhRunResult {
   readonly timedOut?: boolean;
   /** The binary was not found. */
   readonly notFound?: boolean;
+  /**
+   * ADR-0095: the tail (at most {@link MAX_GH_STDERR_CHARS}) of stderr when `gh` exited non-zero; raw and unsanitised,
+   * so only the pull-request port reads it, through `ghFailureDetail`.
+   */
+  readonly stderr?: string;
 }
 
 export type GhRunner = (
@@ -79,7 +87,7 @@ export type GhRunner = (
   options: { env: Record<string, string>; timeoutMs: number },
 ) => Promise<GhRunResult>;
 
-/** Default runner: `execFile` (never a shell), stdout capped, stderr dropped. */
+/** Default runner: `execFile` (never a shell), stdout capped, stderr kept (tail) only for a non-zero exit. */
 export const execGh: GhRunner = (binary, argv, { env, timeoutMs }) =>
   new Promise((resolve) => {
     execFile(
@@ -93,12 +101,16 @@ export const execGh: GhRunner = (binary, argv, { env, timeoutMs }) =>
         maxBuffer: MAX_GH_STDOUT_BYTES,
         windowsHide: true,
       },
-      (err, stdout) => {
+      (err, stdout, stderr) => {
         if (err === null) return resolve({ exitCode: 0, stdout: String(stdout) });
         const e = err as NodeJS.ErrnoException & { code?: unknown; killed?: boolean; signal?: string | null };
         if (e.code === "ENOENT") return resolve({ exitCode: null, stdout: "", notFound: true });
         if (e.killed === true || e.signal === "SIGKILL") return resolve({ exitCode: null, stdout: "", timedOut: true });
-        resolve({ exitCode: typeof e.code === "number" ? e.code : 1, stdout: String(stdout ?? "") });
+        resolve({
+          exitCode: typeof e.code === "number" ? e.code : 1,
+          stdout: String(stdout ?? ""),
+          stderr: String(stderr ?? "").slice(-MAX_GH_STDERR_CHARS),
+        });
       },
     );
   });

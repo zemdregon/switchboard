@@ -3,6 +3,9 @@
 - Status: Accepted (built 2026-10-20).
 - Amended by [ADR-0078](0078-mcp-close-pr.md) (2026-10-21): MCP `close_pr` may close a pull request `publish_run`
   created, with one controller-built comment linking its replacement; "no edit, no comment" otherwise stands.
+- Amended by [ADR-0095](0095-publish-run-gh-failure-detail-and-merged-reuse.md) (2026-10-21): the pull-request port
+  reads a bounded stderr tail of a failed `gh` for a sanitised `pull_request_error_detail`, and a merged pull request
+  the controller recorded for the same head is returned (`merged: true`) instead of running `gh pr create` again.
 - Date: 2026-10-20
 - Decided by: Linus (design authority) under owner ruling 2026-10-20 ([owner decision 78](../ROADMAP.md#42-owner-decisions)).
   The ruling sets the goal ("fix MCP project onboarding and run visibility, then onboard digifender-llc/whumpo-website

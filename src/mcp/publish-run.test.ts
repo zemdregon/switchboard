@@ -27,6 +27,7 @@ import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import {
+  ghFailureDetail,
   type PullRequestByNumber,
   type PullRequestLink,
   type PullRequestPort,
@@ -533,6 +534,73 @@ describe("publish_run (ADR-0069)", () => {
     expect((await call("get_run", { run_id: runId })).body.publications).toEqual([
       expect.not.objectContaining({ pull_request_url: expect.anything() }),
     ]);
+  });
+
+  it("ADR-0095: GH_FAILED carries the exit code, the closed reason and a sanitised gh message, never a token", async () => {
+    f = await start();
+    const call = await f.connect("linus");
+    const { runId } = await f.seedRun();
+    const stderr =
+      "pull request create failed: GraphQL: Head sha can't be blank, Base sha can't be blank, No commits between " +
+      `main and sb/x, Head ref must be a branch (createPullRequest)\nauth ghp_${"a".repeat(36)}\u001b[0m`;
+    f.pulls.failWith = new PullRequestPortError("GH_FAILED", "gh exited 1", ghFailureDetail(1, stderr));
+    const r = await call("publish_run", { run_id: runId });
+    expect(r.isError).toBe(false);
+    expect(r.body).toMatchObject({
+      pull_request: null,
+      pull_request_error: "GH_FAILED",
+      pull_request_error_detail: {
+        exit_code: 1,
+        reason: "HEAD_BRANCH_MISSING",
+      },
+    });
+    const message = r.body.pull_request_error_detail.message as string;
+    expect(message).toContain("Head ref must be a branch");
+    expect(message).toContain("[REDACTED]");
+    expect(message).not.toContain("ghp_");
+    expect(message).toMatch(/^[ -~]*$/u);
+    expect(pushRows(f.db)).toEqual([expect.objectContaining({ outcome: "ACCEPTED" })]);
+  });
+
+  it("ADR-0095: a pull request already merged at the published head is returned (merged true), never re-created", async () => {
+    f = await start();
+    const call = await f.connect("linus");
+    const { runId } = await f.seedRun();
+    expect((await call("publish_run", { run_id: runId })).body.pull_request).toMatchObject({ number: 42 });
+    // The pull request is merged and GitHub deletes its branch: `gh pr create` would fail with GH_FAILED.
+    f.pulls.open = { number: 42, state: "MERGED", url: PR_URL };
+    f.pulls.failWith = undefined;
+    const again = await call("publish_run", { run_id: runId });
+    expect(again.isError).toBe(false);
+    expect(again.body.pull_request).toEqual({
+      number: 42,
+      url: PR_URL,
+      draft: false,
+      reused: true,
+      merged: true,
+    });
+    expect(again.body.pull_request_error).toBeUndefined();
+    expect(f.pulls.calls.filter((c) => c.op === "create")).toHaveLength(1);
+    expect(f.db.prepare("SELECT number, action FROM pull_request").all()).toEqual([{ number: 42, action: "created" }]);
+  });
+
+  it("ADR-0095: a merged pull request this controller did not record for the head still opens a new one", async () => {
+    f = await start();
+    const call = await f.connect("linus");
+    const { runId } = await f.seedRun();
+    f.pulls.open = {
+      number: 9,
+      state: "MERGED",
+      url: "https://github.com/acme/web/pull/9",
+    };
+    const r = await call("publish_run", { run_id: runId });
+    expect(r.body.pull_request).toEqual({
+      number: 42,
+      url: PR_URL,
+      draft: false,
+      reused: false,
+    });
+    expect(f.pulls.calls.map((c) => c.op)).toEqual(["find", "create"]);
   });
 
   it("open_pull_request false pushes only; a non-github remote is REMOTE_NOT_GITHUB without any gh call", async () => {

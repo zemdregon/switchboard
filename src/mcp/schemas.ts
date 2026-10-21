@@ -70,6 +70,7 @@
 
 import { FAILURE_CODES } from "../adapters/failure.js";
 import { acceptedProviderNames } from "../adapters/providers.js";
+import { GH_FAILURE_MESSAGE_MAX, GH_FAILURE_REASONS } from "../ci/gh-pr.js";
 import {
   MERGE_EVENT_TYPE,
   MERGE_REFUSAL_REASONS,
@@ -2052,6 +2053,18 @@ export const PUBLISH_PULL_REQUEST_ERRORS = [
   "BASE_INVALID",
 ] as const;
 
+/** ADR-0095: why `gh` failed (`GH_FAILED` only): exit code, closed reason, sanitised stderr excerpt. */
+const GH_FAILURE_DETAIL = {
+  type: "object",
+  additionalProperties: false,
+  required: ["exit_code", "reason", "message"],
+  properties: {
+    exit_code: { type: ["integer", "null"] },
+    reason: { enum: [...GH_FAILURE_REASONS] },
+    message: { type: "string", maxLength: GH_FAILURE_MESSAGE_MAX },
+  },
+} as const;
+
 const PUBLISH_INPUTS = {
   close_pr: {
     type: "object",
@@ -2126,11 +2139,13 @@ const PUBLISH_RESULT = {
             url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
             draft: { type: "boolean" },
             reused: { type: "boolean" },
+            merged: { const: true },
           },
         },
       ],
     },
     pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
+    pull_request_error_detail: GH_FAILURE_DETAIL,
     // ADR-0087 item 6 (LLD §3.4.17): one entry per changed submodule repository of an umbrella project (`repo` is
     // `host/owner/repo`); present only for a project whose primary context sets `submodules.mode: "recursive"`.
     submodules: {
@@ -2167,11 +2182,13 @@ const PUBLISH_RESULT = {
                   url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
                   draft: { type: "boolean" },
                   reused: { type: "boolean" },
+                  merged: { const: true },
                 },
               },
             ],
           },
           pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
+          pull_request_error_detail: GH_FAILURE_DETAIL,
         },
       },
     },
@@ -2292,9 +2309,10 @@ const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
     "Publish one of this client's SUCCEEDED runs: the controller pushes the run's branch (its meta-session's " +
     "controller commits, never forced, never the default branch, after the same secret scan as every push) to the " +
     "project's configured remote, then, unless open_pull_request is false, opens a pull request with the operator's " +
-    "GitHub login (gh) or reuses the open one for that branch. Idempotent: publishing again returns the existing push " +
-    "and pull request. A refused push is PERMISSION_BLOCKED with details.reason. If gh fails the push still stands: " +
-    "pull_request is null and pull_request_error names why. The pull request body includes the run's agent-written " +
+    "GitHub login (gh) or reuses the open one for that branch (a merged one of the same head is returned with merged " +
+    "true). Idempotent: publishing again returns the existing push and pull request. A refused push is " +
+    "PERMISSION_BLOCKED with details.reason. If gh fails the push still stands: pull_request is null and " +
+    "pull_request_error names why; GH_FAILED adds pull_request_error_detail (exit code, reason, sanitized gh message). The pull request body includes the run's agent-written " +
     "draft, labelled untrusted. For an umbrella project (submodules.mode recursive) the controller first pushes each " +
     "changed submodule repository's commits to the same branch name on that repository (after a secret scan of every " +
     "repository; a finding refuses everything, with paths prefixed by the submodule path), refuses " +
