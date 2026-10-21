@@ -8,6 +8,14 @@ import { readdir } from "node:fs/promises";
  * The controller therefore finds such directories itself, without running Git and without following symlinks, and
  * excludes them from every operation that scans the worktree. The consequence is stated plainly: files inside a nested
  * repository are not captured in checkpoints, diffs or commits.
+ *
+ * ADR-0079 item 4 narrows this for the declared submodules of a context with `submodules.mode: "recursive"`: the
+ * workspace manager attaches them as linked worktrees of their stores, and they are found here like any nested
+ * repository, so the umbrella's own `status`, `diff` and `add -A` still never enter them. {@link partitionNested} tells
+ * them apart from the nested repositories an agent created (ADR-0022 unchanged for those, and for every submodule of a
+ * context without that mode): the controller commits inside an attached submodule through its store and sets the
+ * umbrella's gitlink itself (`update-index --cacheinfo 160000,<sha>,<path>`), so an explicit commit path inside one is
+ * routed there instead of refused as a nested repository.
  */
 
 const GIT_ENTRY = ".git";
@@ -75,4 +83,28 @@ export function excludePathspec(rel: string): string {
 /** Git arguments that exclude the nested repositories: `-- . <excludes>` (empty when there are none). */
 export function nestedPathspecArgs(nested: NestedRepositories): string[] {
   return nested.excludes.length === 0 ? [] : ["--", ".", ...nested.excludes];
+}
+
+/**
+ * ADR-0079 item 4: split a scan into the attached declared submodule worktrees (a nested path equal to one of
+ * `attached`, the paths of the run's attach record) and every other nested repository. Both stay excluded from the
+ * umbrella's scans; only the caller's routing differs. A path inside an attached submodule is not reported by the scan
+ * at all (it stops at the submodule's `.git`), so nested repositories in a submodule are the submodule commit's concern.
+ */
+export function partitionNested(
+  nested: NestedRepositories,
+  attached: readonly string[],
+): { readonly submodules: readonly string[]; readonly others: NestedRepositories } {
+  const declared = new Set(attached);
+  const submodules: string[] = [];
+  const paths: string[] = [];
+  const excludes: string[] = [];
+  nested.paths.forEach((p, i) => {
+    if (declared.has(p)) submodules.push(p);
+    else {
+      paths.push(p);
+      excludes.push(nested.excludes[i] ?? excludePathspec(p));
+    }
+  });
+  return { submodules, others: { paths, excludes } };
 }
