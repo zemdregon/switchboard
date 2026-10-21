@@ -29,6 +29,7 @@
  *   the mapping only through `FailureEvidence.stderrTail`, which `extractResult` cannot supply (see there).
  */
 
+import { tmpdir } from "node:os";
 import {
   DEFAULT_IDLE_MS,
   DEFAULT_KILL_GRACE_MS,
@@ -41,6 +42,7 @@ import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import { renderObjective } from "../prompt.js";
+import type { ProviderUsageResult } from "../provider-usage.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -96,6 +98,7 @@ import {
   USAGE_KEYS,
   VERSION_ARGS,
 } from "./protocol.js";
+import { AGY_USAGE_METHOD, readAgyUsage } from "./usage.js";
 
 /**
  * Environment names passed through to Antigravity (FR-EXE-07, NFR-SEC-02). Proposed: `PATH` for the binary and `HOME`,
@@ -309,6 +312,25 @@ export class AntigravityAdapter implements ProviderAdapter {
       .join("")
       .slice(0, AUTH_STATUS_LINE_MAX);
     return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (exit ${r.exitCode}${line ? `: ${line}` : ""})` };
+  }
+
+  /**
+   * T6.20 (FR-CAP-13, ADR-0082 on the ADR-0079 reader): the CLI's own `/usage` and `/credits` answers, read only after
+   * `authPreflight` reports a login (signed out, `/usage` waits for a sign-in). Run from the system temporary
+   * directory, never a workspace. See `usage.ts`.
+   */
+  async readProviderUsage(runner: ProbeRunner, now: Date = new Date()): Promise<ProviderUsageResult> {
+    const exe = this.#exe;
+    if (exe === undefined) {
+      return {
+        provider: this.id,
+        source: "unknown",
+        observed_at: now.toISOString(),
+        method: AGY_USAGE_METHOD,
+        error: `${AGY_BINARY} not found on PATH`,
+      };
+    }
+    return readAgyUsage([exe, ...this.#launcher], runner, () => this.authPreflight(runner), now, tmpdir());
   }
 
   /**
