@@ -1037,6 +1037,13 @@ Other versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`, and the ad
 (T4.68 closed Partial-by-ruling 2026-10-19 without a pass; permission gating is Deferred — see ROADMAP T4.68,
 FR-ADP-09).
 
+Plan usage: `get_capacity` and `switchboard capacity` show Kimi's own `/usage` figures as `provider_usage`
+(`source: "provider_reported"`; windows `5h`, `weekly`, `monthly`, plus `kimi:monthly` and `code:monthly`, and the
+"Extra Usage" wallet as `credits`), or `source: "unknown"` with a reason when the read fails. Switchboard types `/usage`
+into the TUI under a pseudo-terminal and reads no Kimi credential
+([ADR-0084](../adr/0084-kimi-usage-via-cli-usage-display.md), shape in
+[ADR-0079](../adr/0079-provider-reported-usage-reader.md)).
+
 ### Login
 
 See the [login table](getting-started.md#log-in-to-the-providers-natively) above. Switchboard never runs `kimi login` or

@@ -11,7 +11,7 @@
   (item 9 keeps a Copilot run adapter out of scope), [ADR-0007](0007-capacity-as-confidence-estimate.md),
   [research note](../research/copilot-usage-2026-10-21.md),
   [LLD §16.11](../design/LLD.md#1611-provider-reported-quota-of-a-usage-only-provider-fr-cap-14-adr-0081),
-  [ROADMAP T6.19](../ROADMAP.md#611-m6-capacity-and-resilience-tasks).
+  [ROADMAP T6.22](../ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 
 ## Context
 
@@ -40,7 +40,7 @@ that the operator host offers.
 6. **On by default, with an opt-out (Delegated).** `capacity.copilot_quota` (boolean, default `true`); `false` turns
    the reader off and no `gh` call is made. Reasons for default on: one read-only GET through the operator's own
    tool, no model use, no credential handled, and the result only informs. The endpoint is undocumented (see Risks), so
-   the key exists to stop the call. Opened as [Q-114](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted)
+   the key exists to stop the call. Opened as [Q-116](../ROADMAP.md#73-open-questions-for-zemdregon-not-blocking-m2-unless-noted)
    for the owner.
 7. **Surfaces.** `get_capacity {"provider":"copilot"}` is accepted and returns `providers: []` plus `provider_quota`
    with the Copilot entry; with no provider argument it returns today's projection plus `provider_quota`; any other
@@ -71,5 +71,5 @@ that the operator host offers.
   consumes quota. Rejected.
 - **Reading the `gh` or Copilot token and calling the endpoint directly.** Rejected by ADR-0003.
 - **A Copilot run adapter** to get usage from runs. Out of scope (ADR-0077 item 9) and not needed.
-- **Default off.** Considered; kept as the owner's choice in Q-114 because the call is read-only and leaves no side
+- **Default off.** Considered; kept as the owner's choice in Q-116 because the call is read-only and leaves no side
   effect.

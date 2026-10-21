@@ -1,4 +1,6 @@
+import path from "node:path";
 import type { AdapterRegistry, ProbeRunner } from "../adapters/index.js";
+import type { TerminalRunner } from "../adapters/types.js";
 import type { LoadReader } from "../capacity/host-load.js";
 import type { ContainerRuntime } from "../environment/runtime.js";
 import type { GraderExec } from "../eval/grader.js";
@@ -49,7 +51,16 @@ export interface CliIo {
   readonly copilotQuota?: (opts: CopilotQuotaReaderOptions) => CopilotQuotaReader;
   /** ADR-0079 (FR-CAP-13): runner for provider usage reads in `capacity` and `doctor`. Defaults to a probe runner. */
   readonly providerUsageRunner?: ProbeRunner;
+  /**
+   * ADR-0079 (FR-CAP-13): builds the pseudo-terminal runner for TUI-only usage readers (Kimi Code) over a probe root
+   * (`<data_dir>/probes`) for `capacity`, `doctor` and `serve`. Only the real entry point (`bin.ts`) sets it, so a test
+   * calling `main` never starts a provider TUI (Delegated); absent means such readers answer `unknown`.
+   */
+  readonly providerUsageTerminal?: (probeRoot: string) => TerminalRunner;
 }
+
+/** ADR-0079: the probe root under the data directory (`<data_dir>/probes`). */
+export const probeRootFor = (dataDir: string): string => path.join(dataDir, "probes");
 
 /** Stable `--json` schema version for every command (Proposed). */
 export const JSON_SCHEMA_VERSION = 1;
