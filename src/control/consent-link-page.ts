@@ -19,13 +19,17 @@
  * link cannot decide another. A mismatch ends the visit.
  *
  * Attempt limits: wrong passphrases count against the `AttemptLimiter` `serve` shares with the OAuth consent page, so
- * this page adds no guesses; wrong pairing codes are throttled as there. Nothing secret reaches `onEvent`: event names,
- * approval ids (after authentication only), methods and reason codes.
+ * this page adds no guesses; wrong pairing codes are throttled as there. Wrong codes and passphrases also count against
+ * the per-address `IpAttemptLimiter` `serve` shares with the OAuth consent page (an address over its limit gets 429).
+ * Only a legacy unbound code (`switchboard consent pair`) signs in here: a profile-bound code issued by `switchboard mcp
+ * oauth issue-code` to approve a remote OAuth client never decides an approval (`PairingCodeStore.redeem`). Nothing
+ * secret reaches `onEvent`: event names, approval ids (after authentication only), methods and reason codes.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { mediaType, readBody } from "../mcp/http-body.js";
 import { errorPage, escapeHtml, sendHtml } from "../mcp/oauth-consent-page.js";
+import { IP_LOCK_MS, IpAttemptLimiter } from "../mcp/oauth-ip-limiter.js";
 import type { PairingCodeStore } from "../mcp/oauth-pairing.js";
 import { verifyPassphrase as defaultVerifyPassphrase } from "../mcp/oauth-passphrase.js";
 import { AttemptLimiter, cookie, LOCKOUT_MS, MAX_PAIRING_FAILURES_PER_MINUTE, parseForm } from "../mcp/oauth-server.js";
@@ -66,6 +70,8 @@ export interface ApprovalLinkPageDeps {
   readonly verifyPassphrase?: (passphrase: string, encoded: string) => Promise<boolean>;
   /** Shared with the OAuth consent page; a fresh one when absent. */
   readonly limiter?: AttemptLimiter;
+  /** Per-address lockout, shared with the OAuth consent page; a fresh one (socket peer only) when absent. */
+  readonly ipLimiter?: IpAttemptLimiter;
   readonly now?: () => Date;
   readonly randomBytes?: (n: number) => Buffer;
   readonly onEvent?: (event: ApprovalLinkEvent, fields: ApprovalLinkEventFields) => void;
@@ -144,6 +150,7 @@ export function decisionPage(action: string, visitId: string, csrf: string, item
 export class ApprovalLinkPage {
   private readonly visits = new Map<string, Visit>();
   private readonly limiter: AttemptLimiter;
+  private readonly ipLimiter: IpAttemptLimiter;
   private pairingFailures: number[] = [];
   private verifying = false;
   private readonly now: () => Date;
@@ -152,6 +159,7 @@ export class ApprovalLinkPage {
 
   constructor(private readonly deps: ApprovalLinkPageDeps) {
     this.limiter = deps.limiter ?? new AttemptLimiter();
+    this.ipLimiter = deps.ipLimiter ?? new IpAttemptLimiter();
     this.now = deps.now ?? (() => new Date());
     this.random = deps.randomBytes ?? randomBytes;
     this.checkPassphrase = deps.verifyPassphrase ?? defaultVerifyPassphrase;
@@ -292,6 +300,17 @@ export class ApprovalLinkPage {
     }
     const passphrase = form.get("passphrase") ?? "";
     const pairingCode = form.get("pairing_code") ?? "";
+    const { key: ipKey } = this.ipLimiter.identify(req);
+    const ipLockedOut = () =>
+      sendHtml(res, 429, errorPage("Too many wrong attempts from this address. Try again later."), {
+        ...clearCookie,
+        "retry-after": String(IP_LOCK_MS / 1000),
+      });
+    if ((passphrase !== "" || pairingCode !== "") && this.ipLimiter.locked(ipKey, now)) {
+      this.event("approval_link_locked", { reason: "address" });
+      ipLockedOut();
+      return;
+    }
     if (passphrase !== "" && this.limiter.locked(now)) {
       this.event("approval_link_locked", { method: "passphrase" });
       sendHtml(res, 429, errorPage("Too many wrong passphrases. Passphrase approval is locked; try again later."), {
@@ -329,6 +348,7 @@ export class ApprovalLinkPage {
     const after = this.now().getTime();
     if (!ok) {
       this.event("approval_link_failed", { method });
+      const ipLock = this.ipLimiter.fail(ipKey, after);
       if (method === "passphrase" && this.limiter.fail(after)) {
         sendHtml(res, 429, errorPage("Too many wrong passphrases. Passphrase approval is locked; try again later."), {
           ...clearCookie,
@@ -337,6 +357,10 @@ export class ApprovalLinkPage {
         return;
       }
       if (method === "pairing_code") this.pairingFailures.push(after);
+      if (ipLock) {
+        ipLockedOut();
+        return;
+      }
       retry(401, "Wrong passphrase or pairing code.");
       return;
     }

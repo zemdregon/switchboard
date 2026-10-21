@@ -131,7 +131,8 @@ Each rule elaborates the cited requirement and does not add to it.
 | BR-56 | **Skill files never reach Git and do not outlive the run.** Recorded native paths are excluded from commits, checkpoints, diff artifacts and handoff diffs; publication is refused while one exists; they are removed before `VERIFYING`, at every terminal state, at reconciliation and by GC, and a failed removal flags the run for attention. | FR-SKL-06, FR-GIT-02, BR-25, [ADR-0056](../adr/0056-switchboard-controlled-skills.md) | Delegated, Proposed |
 | BR-57 | **CI-fix cap and needs-attention on repetitive failure.** When consecutive fix-up work items for a published ref reach `ci_trigger.max_consecutive_fixes`, further failures on that ref are recorded in `ci_trigger_event` without enqueuing a work item, and the project is flagged needs-attention with reason `ci_fix_stuck` (FR-CTL-03). The counter resets when a passing conclusion is observed for the ref or on an operator reset. | FR-QUE-05, FR-QUE-03, FR-CTL-03, [ADR-0050](../adr/0050-ci-status-via-operator-gh-cli.md) | Delegated, Proposed |
 | BR-58 | **Switchboard closes only its own superseded pull requests.** An MCP client that may publish closes a pull request with `close_pr` only when `publish_run` created it (not reused it) for one of that client's visible runs of the project, in the project's own github.com repository, still on the branch Switchboard published and not merged. The closing comment is built by the controller and links the replacement pull request; caller text never reaches GitHub. The head branch is deleted only on request. Every call, allowed or refused, leaves one append-only audit record. | FR-GIT-13, [ADR-0078](../adr/0078-mcp-close-pr.md) | Delegated, not owner-approved |
-| BR-59 | **Usage-only providers report, never route.** A usage-only provider (GitHub Copilot, `copilot`) has no run adapter. Its provider-reported quota is read through the operator's own CLI login, shown only in the `provider_quota` block of `get_capacity` and `switchboard capacity`, labelled `provider_reported` and never an estimate. It is not a routing candidate and is never an input to eligibility, scoring, pacing, the capacity estimator or failover. An unreadable quota is shown as `unavailable` with a closed reason; it never fails a request. | FR-CAP-14, FR-CAP-03, BR-50, [ADR-0081](../adr/0081-copilot-quota-usage-only-provider.md) | Delegated, not owner-approved |
+| BR-59 | **A one-time code approves and binds; it never widens.** A profile-bound code (FR-MCP-20) is spent on first redemption and expires; issuing a new one ends older unused ones. Redeeming it approves the pending client and binds it to one MCP client profile, whose trust ceiling and approval rules then apply unchanged (FR-MCP-14, FR-MCP-21). A profile that could not be an HTTP target, and a client already bound to another profile, are refused. At the MCP endpoint a configured mapping beats a ledger binding, which beats `default_mcp_client`, and the result is re-checked per request; a failed check refuses, never falls back. Sign-in failures are locked out per address (FR-MCP-23). Revocation by the client (FR-MCP-22) or the operator (FR-MCP-24) ends tokens at once. | FR-MCP-20..25, FR-MCP-14, FR-MCP-17, [ADR-0085](../adr/0085-cli-issued-one-time-codes-for-mcp-oauth.md) | Delegated, Proposed |
+| BR-60 | **Usage-only providers report, never route.** A usage-only provider (GitHub Copilot, `copilot`) has no run adapter. Its provider-reported quota is read through the operator's own CLI login, shown only in the `provider_quota` block of `get_capacity` and `switchboard capacity`, labelled `provider_reported` and never an estimate. It is not a routing candidate and is never an input to eligibility, scoring, pacing, the capacity estimator or failover. An unreadable quota is shown as `unavailable` with a closed reason; it never fails a request. | FR-CAP-14, FR-CAP-03, BR-50, [ADR-0081](../adr/0081-copilot-quota-usage-only-provider.md) | Delegated, not owner-approved |
 
 *Note 2026-10-13 (owner decision 36, Q-43; BR-30's wording above unchanged).* zemdregon chose finalize-only for adapters
 with no injected channel ("Finalize-only."): such an adapter is **not** made ineligible for write-capable profiles. It runs
@@ -894,6 +895,31 @@ provider's way, with a native resume re-delivering the files for the new run).*
   the worktree; no commit, checkpoint or artifact contains a recorded path; no event, span, log or sink carries skill
   text.
 
+### WF-17 Connect a remote MCP client with an operator-issued code
+
+*Proposed (2026-10-21, owner request of that date, [ADR-0085](../adr/0085-cli-issued-one-time-codes-for-mcp-oauth.md);
+Delegated wording beyond the request, T13.12 `Partial`).*
+
+- **Actors:** Operator, Remote MCP client (an OAuth 2.1 public client), COMP-OPS, COMP-MCP, COMP-LED.
+- **Preconditions:** `transport.http` is enabled behind the operator's TLS terminator (FR-MCP-12); the target MCP client
+  profile exists in `mcp_clients` and is allowed over HTTP (FR-MCP-14).
+- **Realizes:** FR-MCP-13, FR-MCP-16, FR-MCP-17, FR-MCP-20 to FR-MCP-25; BR-59.
+- **Normal path:** the operator runs `switchboard mcp oauth issue-code --client-profile <id>` and copies the code
+  (FR-MCP-20). In the remote client the operator adds the connector with the public URL. The client discovers the
+  authorization server, registers (FR-MCP-16, or FR-MCP-19), and sends the operator's browser to the consent page. The
+  operator pastes the code; the client is approved and bound to the profile (FR-MCP-17, FR-MCP-21); the client then gets
+  audience-bound tokens by PKCE and calls tools under the profile's ceiling. Later the operator lists clients and
+  tokens and revokes a client with `switchboard mcp oauth` (FR-MCP-24), or the client revokes its own token at
+  `/revoke` (FR-MCP-22); an orchestrator on stdio may see the non-secret list through `list_oauth_clients` (FR-MCP-25).
+- **Alternate paths:** the operator uses the passphrase or an unbound `consent pair` code (FR-MCP-17), in which case
+  the profile comes from the configured mapping or `default_mcp_client`; a configured mapping overrides a binding.
+- **Failure paths:** an expired, spent, superseded or wrong code is refused and counts toward the per-address lockout
+  (FR-MCP-23); a profile that could not be an HTTP target is refused at issue time; a client bound to another profile
+  is refused; a profile removed from configuration refuses the client's next request.
+- **Postconditions:** no token, code, hash or passphrase appears in any output, log or ledger row beyond the stored
+  hashes; every issue, grant, refresh, revocation and lockout is an audit event; privileged runs stay unavailable over
+  HTTP (FR-MCP-14).
+
 ## 9. Traceability summary
 
 | Workflow | User journey | Capabilities | Primary requirements |
@@ -914,6 +940,7 @@ provider's way, with a native resume re-delivering the files for the new run).*
 | WF-14 | UJ-11 | CAP-13 | FR-RAG-01..14 |
 | WF-15 | UJ-12 | CAP-6, 7 | FR-RTE-10, 11, FR-CAP-09, 10 |
 | WF-16 | UJ-13 | CAP-17, 3 | FR-SKL-01..10 |
+| WF-17 | (operator setup) | CAP-1 | FR-MCP-13, FR-MCP-16, FR-MCP-17, FR-MCP-20..25 |
 
 Milestone availability follows the SRS milestone column (for example WF-7 from M3, WF-5 automatic retry and failover
 from M6, WF-3 from M5, WF-9 `adapters validate` from M4, WF-10 to WF-12 from M9 with containers in M10, WF-13 from

@@ -5,7 +5,7 @@
 - Decided by: Delegated agent work on an operator task (2026-10-21), not owner-approved. The goal (show the operator's
   real GitHub Copilot quota in `get_capacity` and `switchboard capacity`, with no run adapter) comes from the operator's
   task; the details marked **Delegated** were chosen while building it.
-- Related: FR-CAP-14, FR-CAP-03, FRD BR-50, FRD BR-59,
+- Related: FR-CAP-14, FR-CAP-03, FRD BR-50, FRD BR-60,
   [ADR-0003](0003-no-credential-handling.md) (no credential handling), [ADR-0050](0050-ci-status-via-operator-gh-cli.md)
   (the operator's `gh` and its environment allowlist `ghEnv`), [ADR-0077](0077-bypass-unconfined-and-every-provider-bypass-cell.md)
   (item 9 keeps a Copilot run adapter out of scope), [ADR-0007](0007-capacity-as-confidence-estimate.md),
@@ -25,7 +25,7 @@ that the operator host offers.
 
 1. **Copilot is a usage-only provider named `copilot`.** It appears only in a new additive `provider_quota` array of
    `get_capacity` and `switchboard capacity --json`. It has no adapter, no registry entry, no routing candidate, no
-   concurrency slot, no breaker and no estimate. It feeds routing, pacing and the estimator nowhere (FRD BR-59).
+   concurrency slot, no breaker and no estimate. It feeds routing, pacing and the estimator nowhere (FRD BR-60).
 2. **The source is the operator's own `gh`.** One fixed argv, `gh api /copilot_internal/user`, run with `execFile`
    (no shell), the allowlisted environment `ghEnv` of the CI trigger (ADR-0050), a 10 s timeout and stderr dropped. The
    output is parsed through a field allowlist; identifying fields (account id, login, analytics tracking id,

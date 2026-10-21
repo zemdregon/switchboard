@@ -458,6 +458,18 @@ describe("T14.10 consent-page approval link: works once, then expires", () => {
   });
 });
 
+describe("approval link and profile-bound one-time codes (migration 0037)", () => {
+  it("a code issued to bind a remote OAuth client never signs in here, and stays live", async () => {
+    pendingRevision();
+    const link = onlyLink();
+    const { code } = pairing.create({ mcpClient: "grok-bot" });
+    const refused = await signIn(pathOf(link.url), { pairing_code: code });
+    expect(refused.status).toBe(401);
+    expect(refused.text).not.toContain("approval needed");
+    expect(pairing.lookup(code)).toEqual({ mcpClient: "grok-bot" });
+  });
+});
+
 describe("T14.10 consent-page approval link: carries no bearer token or secret", () => {
   it("the URL is the issuer origin, a fixed path and an opaque handle, and nothing else", async () => {
     const runId = await privileged();

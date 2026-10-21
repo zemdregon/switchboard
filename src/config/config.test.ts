@@ -169,7 +169,27 @@ describe("loadConfig", () => {
         allowedOrigins: [],
         clientMap: new Map(),
         cimd: true,
+        // Migration 0036: the mcp_clients entries a profile-bound code may bind (no privileged ceiling).
+        bindableMcpClients: new Set(["main"]),
       });
+    });
+
+    it("takes a lower-case client_ip_header and computes which entries a one-time code may bind", () => {
+      const cfg = {
+        ...base(),
+        mcp_clients: [
+          { id: "main", max_trust_profile: "edit-untrusted" },
+          { id: "root", max_trust_profile: "privileged" },
+          { id: "auto", max_trust_profile: "privileged", privileged_approval: "not_required" },
+        ],
+        transport: { http: { ...on, client_ip_header: "cf-connecting-ip" } },
+      };
+      const resolved = loadConfig({ configPath: write(cfg) }).httpTransport;
+      expect(resolved?.clientIpHeader).toBe("cf-connecting-ip");
+      expect([...(resolved?.bindableMcpClients ?? [])]).toEqual(["main"]);
+      for (const bad of ["CF-Connecting-IP", "x_forwarded", "", "-x", "a".repeat(65)]) {
+        expect(() => http({ ...on, client_ip_header: bad }), bad).toThrow(/client_ip_header/);
+      }
     });
 
     it("maps a Client Identifier URL under its derived id and takes cimd: false (T13.11, FR-MCP-19)", () => {
