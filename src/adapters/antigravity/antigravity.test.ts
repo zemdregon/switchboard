@@ -182,10 +182,14 @@ describe("antigravity compile matrix (T4.32)", () => {
     expect(r.outputFormat).toBe("jsonl");
   });
 
-  it("a requested model, an unapproved bypass and a missing binary are Ineligible with a reason", () => {
+  it("an option-like model, an unapproved bypass and a missing binary are Ineligible with a reason", () => {
     const profile = privilegedProfile(BYPASS_SCOPE);
     const approved = { ...profile, bypassApproved: true };
+    // ADR-0077: a plain model id compiles to `--model <id>`; an option-like one is refused.
     expect(adapter().compile(request({ model: "x", bypassApproved: true }), approved)).toMatchObject({
+      policyFlags: ["--dangerously-skip-permissions", "--model", "x"],
+    });
+    expect(adapter().compile(request({ model: "-x", bypassApproved: true }), approved)).toMatchObject({
       reason: "CAPABILITY_MISSING",
     });
     expect(adapter().compile(request(), profile)).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });

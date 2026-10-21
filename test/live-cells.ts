@@ -23,7 +23,7 @@ const FAKE_EXE = "/nonexistent/live-cells/bin";
 const ADAPTERS: Record<string, () => ProviderAdapter> = {
   claude: () => new ClaudeAdapter({ binaryPath: `${FAKE_EXE}/claude` }),
   antigravity: () => new AntigravityAdapter({ executable: `${FAKE_EXE}/agy` }),
-  cursor: () => new CursorAdapter({ executable: `${FAKE_EXE}/cursor-agent`, bwrap: `${FAKE_EXE}/bwrap` }),
+  cursor: () => new CursorAdapter({ executable: `${FAKE_EXE}/cursor-agent` }),
   grok: () => new GrokAdapter({ executable: `${FAKE_EXE}/grok` }),
   kimi: () => new KimiAdapter({ executable: `${FAKE_EXE}/kimi` }),
   opencode: () => new OpenCodeAdapter({ executable: `${FAKE_EXE}/opencode` }),

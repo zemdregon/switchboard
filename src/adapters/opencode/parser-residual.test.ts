@@ -570,9 +570,9 @@ describe("opencode resume/compile parity across request axes (T4.53, FR-SES-03; 
       }
     }
     // A bypass scope compiles when the profile or the request carries the approval (FR-POL-03): the approved profile
-    // with four requests plus the unapproved one with the three approved, writable, model-less requests, on the two
-    // adapters that have an executable.
-    expect(compiled).toBe(14);
+    // with five requests plus the unapproved one with the four approved, writable requests (a model compiles since
+    // ADR-0077), on the two adapters that have an executable.
+    expect(compiled).toBe(18);
   });
 
   it("binding refusals come before every compile refusal, whatever the request, profile or executable", () => {
@@ -2698,7 +2698,7 @@ describe("opencode parser residuals, tenth pass: late binding after stop, traili
     expect(resumed.argv.at(-1)).toBe(flagObj);
     expect(resumed.argv.indexOf("--")).toBe(resumed.argv.length - 2);
     expect(resumed.argv.slice(0, -2).filter((w) => w === "--session")).toEqual(["--session"]);
-    const modelled = { ...request(cwd), model: "synthetic/model" };
+    const modelled = { ...request(cwd), model: "-synthetic/model" };
     const compileModel = a.compile(modelled, PRIVILEGED_BYPASS_PROFILE);
     const resumeModel = a.resumeArgs(
       { provider: "opencode", nativeSessionId: SID },

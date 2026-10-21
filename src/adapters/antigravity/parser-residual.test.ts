@@ -217,7 +217,7 @@ describe("antigravity parser residuals, second pass (T4.33, synthetic shapes)", 
     if (isIneligible(resumed) || isIneligible(compiled)) throw new Error("the approved bypass cell must compile");
     expect(resumed.argv).toEqual([...compiled.argv, "--conversation", CID]);
     const cases: [AntigravityAdapter, CompileRequest, ResolvedProfile][] = [
-      [adapter(), { ...req, model: "synthetic-model" }, approved],
+      [adapter(), { ...req, model: "-synthetic-model" }, approved],
       [adapter(), { ...req, workspace: { cwd: "/work/tree", writable: false } }, approved],
       [adapter(), req, { ...approved, shellAllowlist: ["git commit -m x"] }],
       [new AntigravityAdapter({ pathEnv: "/nonexistent" }), req, approved],

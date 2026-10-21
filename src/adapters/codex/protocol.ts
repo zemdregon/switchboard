@@ -18,6 +18,20 @@ export const JSON_FLAG = "--json";
 /** Resume subcommand under `exec`. R2 adapter matrix: "`codex exec resume <SESSION_ID>` or `--last`"; TDD §4.2. */
 export const RESUME_SUBCOMMAND = "resume";
 
+/**
+ * Bypass flag of an approved privileged bypass scope only (ADR-0077). `codex exec --help` of codex-cli 0.162.0 on the
+ * operator host (2026-10-20): "--dangerously-bypass-approvals-and-sandbox  Skip all confirmation prompts and execute
+ * commands without sandboxing. EXTREMELY DANGEROUS. Intended solely for running in environments that are externally
+ * sandboxed". It replaces `--sandbox`; the argv audit refuses it everywhere else (`../providers.ts`).
+ */
+export const BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox";
+
+/**
+ * Model flag, emitted only in the approved bypass cell (ADR-0077). `codex exec --help` of codex-cli 0.162.0:
+ * "-m, --model <MODEL>  Model the agent should use".
+ */
+export const MODEL_FLAG = "--model";
+
 /** Sandbox flag. R2 adapter matrix / Codex paragraph: "Explicit `--sandbox workspace-write` or stricter policy". */
 export const SANDBOX_FLAG = "--sandbox";
 

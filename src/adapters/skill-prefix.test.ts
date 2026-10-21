@@ -53,7 +53,7 @@ const ADAPTERS: Record<string, () => ProviderAdapter> = {
   codex: () => new CodexAdapter({ executable: EXE }),
   grok: () => new GrokAdapter({ executable: EXE }),
   antigravity: () => new AntigravityAdapter({ executable: EXE }),
-  cursor: () => new CursorAdapter({ executable: EXE, bwrap: "/opt/synthetic/bwrap" }),
+  cursor: () => new CursorAdapter({ executable: EXE }),
   opencode: () => new OpenCodeAdapter({ executable: EXE }),
   kimi: () => new KimiAdapter({ executable: EXE }),
   muse: () => new MuseAdapter({ executable: EXE }),

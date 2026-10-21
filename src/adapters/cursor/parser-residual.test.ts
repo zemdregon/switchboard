@@ -113,8 +113,7 @@ afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
-const adapter = (opts = {}) =>
-  new CursorAdapter({ executable: "/opt/synthetic/cursor-agent", bwrap: "/opt/synthetic/bwrap", ...opts });
+const adapter = (opts = {}) => new CursorAdapter({ executable: "/opt/synthetic/cursor-agent", ...opts });
 const line = (o: unknown) => JSON.stringify(o);
 const parse = (lines: (string | object)[], a = adapter()) => {
   const state: ParseState = { lines: 0, unknownEvents: 0 };
@@ -600,19 +599,19 @@ describe("cursor parser residuals (T4.43, synthetic lines; parser unchanged)", (
     const approved = { ...profile, bypassApproved: true };
     const binding = { provider: "cursor" as const, nativeSessionId: SID };
 
-    // 1. Requested model is CAPABILITY_MISSING
+    // 1. A requested model that is not a plain model id is CAPABILITY_MISSING
     const reqModel: CompileRequest = {
       runId: "run_model_check",
       objective: "synthetic objective",
       constraints: [],
       workspace: { cwd: makeCwd(), writable: true },
       bypassApproved: true,
-      model: "cursor-fast",
+      model: "-x",
     };
     expect(a.resumeArgs(binding, reqModel, approved)).toMatchObject({
       ineligible: true,
       reason: "CAPABILITY_MISSING",
-      detail: "no model registry data for Cursor yet (T4.5; --model is not emitted)",
+      detail: "requested model is not a plain model id",
     });
 
     // 2. Read-only workspace is CAPABILITY_MISSING
@@ -883,7 +882,7 @@ describe("cursor parser residuals, second pass: stream order, usage dedup and re
     // A matrix refusal comes before the missing binary on both paths.
     const refusals: [CompileRequest, ResolvedProfile][] = [
       [req, { ...approved, shellAllowlist: ["git push origin main"] }],
-      [{ ...req, model: "cursor-fast" }, approved],
+      [{ ...req, model: "-x" }, approved],
       [{ ...req, workspace: { cwd: "/w", writable: false } }, approved],
     ];
     for (const [request, profile] of refusals) {

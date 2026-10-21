@@ -53,7 +53,7 @@ const SUBJECTS: Record<string, Subject> = {
     bypassApproved: true,
   },
   cursor: {
-    make: () => new CursorAdapter({ executable: EXE, bwrap: "/opt/synthetic/bwrap" }),
+    make: () => new CursorAdapter({ executable: EXE }),
     profile: CURSOR_PROFILE,
     bypassApproved: true,
   },
