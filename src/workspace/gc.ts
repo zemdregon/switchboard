@@ -5,9 +5,16 @@ import type { ArtifactStore } from "../artifacts/index.js";
 import { type ContainerRuntime, removeRunContainers } from "../environment/index.js";
 import { DEFAULT_PUBLISH_PREFIX } from "../git/publish-ref.js";
 import { createLedger, type Ledger } from "../ledger/index.js";
+import { attachRecordFile } from "../submodules/worktree.js";
 import { assessDiskFloor, type DiskFloor, type DiskFloorStatus } from "./disk.js";
 import { git } from "./git.js";
 import { type NativeSkillFs, pendingNativeSkills, removeNativeSkills } from "./native-skills.js";
+import { detachRunSubmodules } from "./submodules.js";
+
+/** ADR-0079 item 3: `attachRecordFile(<worktree>)` is `<worktree>` plus this suffix, beside the worktree directory. */
+const ATTACH_RECORD_SUFFIX = attachRecordFile("");
+const isAttachRecordName = (name: string): boolean =>
+  name.endsWith(ATTACH_RECORD_SUFFIX) && name.length > ATTACH_RECORD_SUFFIX.length;
 
 /**
  * Retention GC core (T3.12; FR-WS-07, NFR-DATA-01, BR-12, LLD §5, ADR-0006). Q-18 (Delegated, owner decision 25): the
@@ -51,6 +58,12 @@ export interface GcOptions {
   readonly stopWhen?: () => boolean;
   /** T16.6 test seam: the unlink the native-skill cleaner uses before the worktrees are removed. */
   readonly nativeSkillFs?: NativeSkillFs;
+  /**
+   * ADR-0079 item 3: `project_sources.clone_root`, where submodule stores live. A worktree's attach record is read (its
+   * stores must lie below it) and its submodule worktrees are detached before the worktree is removed. Absent: no
+   * record is read, exactly as before.
+   */
+  readonly cloneRoot?: string;
 }
 
 export interface GcUnitResult {
@@ -134,7 +147,14 @@ async function collectUnit(
   // verified first; a path whose removal fails there goes with its worktree, and a second pass records it verified.
   entering("worktrees");
   await removeUnitNativeSkills(o, targets.runIds);
-  const worktreesRemoved = await removeWorktrees(o.dataDir, sessionId, c.repo_root, targets.worktreePaths, warnings);
+  const worktreesRemoved = await removeWorktrees(
+    o.dataDir,
+    sessionId,
+    c.repo_root,
+    targets.worktreePaths,
+    warnings,
+    o.cloneRoot,
+  );
   await removeUnitNativeSkills({ db: o.db }, targets.runIds);
   await hook("worktrees");
 
@@ -211,6 +231,7 @@ async function removeWorktrees(
   repoRoot: string | null,
   recorded: readonly string[],
   warnings: string[],
+  cloneRoot?: string,
 ): Promise<number> {
   const base = path.join(await realpath(dataDir).catch(() => path.resolve(dataDir)), "worktrees", sessionId);
   const repoOk = await isRepo(repoRoot);
@@ -227,15 +248,23 @@ async function removeWorktrees(
     }
     const st = await lstat(wt).catch(() => undefined);
     if (!st) continue;
+    if (isAttachRecordName(path.basename(wt))) {
+      // ADR-0079 item 3: a record left without its worktree; one with a worktree goes with it below.
+      if (!(await exists(wt.slice(0, -ATTACH_RECORD_SUFFIX.length)))) await rm(wt, { force: true });
+      continue;
+    }
     if (st.isSymbolicLink()) {
       warnings.push(`worktree path is a symlink, unlinked without following: ${wt}`);
       await rm(wt, { force: true });
       removed++;
       continue;
     }
+    // ADR-0079 item 3: its submodule worktrees are detached through the record first, so the stores keep no stale entry.
+    if (cloneRoot !== undefined) await detachRunSubmodules(wt, cloneRoot);
     if (repoOk)
       await git(["worktree", "remove", "--force", "--force", wt], { cwd: repoRoot as string }).catch(() => undefined);
     if (await exists(wt)) await rm(wt, { recursive: true, force: true });
+    await rm(attachRecordFile(wt), { force: true }).catch(() => undefined);
     removed++;
   }
   if (repoOk) await git(["worktree", "prune"], { cwd: repoRoot as string });
@@ -352,7 +381,11 @@ export async function findOrphans(options: {
       continue;
     }
     const known = new Set((runsOf.all(sess) as { id: string }[]).map((r) => r.id));
-    for (const name of await readdir(sessDir).catch(() => [] as string[])) {
+    const names = await readdir(sessDir).catch(() => [] as string[]);
+    for (const name of names) {
+      // ADR-0079 item 3: an attach record goes with its run's worktree (live, or itself reported as an orphan).
+      const owner = isAttachRecordName(name) ? name.slice(0, -ATTACH_RECORD_SUFFIX.length) : undefined;
+      if (owner !== undefined && (known.has(owner) || names.includes(owner))) continue;
       if (!known.has(name)) worktrees.push(path.join(sessDir, name));
     }
   }
@@ -399,6 +432,8 @@ export interface OrphanGcOptions {
   readonly publishPrefix?: string;
   /** Test seam, as {@link GcOptions.onStep}: a throw simulates a crash after that step for that orphan. */
   readonly onStep?: (step: OrphanGcStep, target: string) => void | Promise<void>;
+  /** ADR-0079 item 3: as {@link GcOptions.cloneRoot}; an orphan worktree's submodules are detached before removal. */
+  readonly cloneRoot?: string;
 }
 
 export interface OrphanGcResult {
@@ -547,7 +582,9 @@ export async function collectOrphans(options: OrphanGcOptions): Promise<OrphanGc
     }
   };
   for (const k of due.filter((d) => d.kind === "worktree")) {
-    if (await collect(k, () => removeOrphanWorktree(base, k.target))) removedWorktrees.push(k.target);
+    if (await collect(k, () => removeOrphanWorktree(base, k.target, options.cloneRoot))) {
+      removedWorktrees.push(k.target);
+    }
   }
   if (removedWorktrees.length > 0 || due.some((d) => d.kind === "branch")) {
     for (const repoRoot of knownRepos(db)) {
@@ -584,8 +621,9 @@ function orphanRecheck(db: Database.Database, base: string, publishPrefix: strin
     if (k.kind === "worktree") {
       const parts = path.relative(base, k.target).split(path.sep);
       if (parts.length < 1 || parts.length > 2 || parts.some((p) => p === "" || p === "..")) return false;
-      const [sess, run] = parts as [string, string | undefined];
+      const [sess, name] = parts as [string, string | undefined];
       if (!sessionExists.get(sess)) return true;
+      const run = name !== undefined && isAttachRecordName(name) ? name.slice(0, -ATTACH_RECORD_SUFFIX.length) : name;
       return run !== undefined && !runExists.get(run, sess);
     }
     if (!k.target.startsWith("switchboard/")) return false;
@@ -599,7 +637,7 @@ function orphanRecheck(db: Database.Database, base: string, publishPrefix: strin
  * directory is a symlink or not a directory, so nothing outside the data directory is reached through a link; the
  * orphan itself, if a symlink, is unlinked and its target left alone (`fs.rm` never follows links inside the tree).
  */
-async function removeOrphanWorktree(base: string, target: string): Promise<void> {
+async function removeOrphanWorktree(base: string, target: string, cloneRoot?: string): Promise<void> {
   const rel = path.relative(base, target);
   const parts = rel.split(path.sep);
   if (rel === "" || path.isAbsolute(rel) || parts.length > 2 || parts.some((p) => p === "" || p === "..")) {
@@ -615,7 +653,21 @@ async function removeOrphanWorktree(base: string, target: string): Promise<void>
   }
   const st = await lstat(target).catch(() => undefined);
   if (!st) return;
+  if (st.isDirectory() && !st.isSymbolicLink()) {
+    // ADR-0079 item 3: submodule worktrees are detached through their records first (one level for a session
+    // directory, the target itself for a run directory), so their stores keep no stale entry.
+    const worktrees =
+      parts.length === 1
+        ? (await readdir(target).catch(() => [] as string[]))
+            .filter(isAttachRecordName)
+            .map((n) => path.join(target, n.slice(0, -ATTACH_RECORD_SUFFIX.length)))
+        : [target];
+    if (cloneRoot !== undefined) for (const wt of worktrees) await detachRunSubmodules(wt, cloneRoot);
+  }
   await rm(target, { recursive: !st.isSymbolicLink(), force: true });
+  if (parts.length === 2 && !isAttachRecordName(parts[1] as string)) {
+    await rm(attachRecordFile(target), { force: true }).catch(() => undefined);
+  }
 }
 
 async function branchExists(repoRoot: string, branch: string): Promise<boolean> {

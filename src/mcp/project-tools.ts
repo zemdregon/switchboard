@@ -75,6 +75,8 @@ import {
   sourceKey,
   toResolved,
 } from "../projects/index.js";
+import { SubmoduleError, type SubmoduleManifest } from "../submodules/index.js";
+import { planManifest } from "../workspace/submodules.js";
 import { invalid, ToolError, toToolError } from "./errors.js";
 import { inputSchema, PROJECT_TOOL_NAMES, type ProjectToolName } from "./schemas.js";
 
@@ -258,6 +260,57 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
     return st;
   };
 
+  /**
+   * ADR-0079 item 1 (**Delegated**): a recursive context's explicit `writable_paths` are checked against the umbrella's
+   * manifest at `base_ref` (after the filesystem checks, so the repository and the commit exist): an entry naming no
+   * declared submodule is `SUBMODULE_PATH_UNKNOWN`, one naming a wiki `SUBMODULE_WIKI_READ_ONLY`, and a manifest the
+   * library refuses (URL syntax, source not allowed, undeclared or unsafe path, too large) is refused with its reason
+   * and path, never the URL. `["*"]` and an empty list read nothing.
+   */
+  const checkSubmodulePaths = async (def: ProjectConfig): Promise<void> => {
+    const resolved = toResolved(def);
+    for (const [i, c] of def.contexts.entries()) {
+      const s = c.submodules;
+      const writable = s?.writable_paths ?? [];
+      if (s?.mode !== "recursive" || writable.length === 0 || (writable.length === 1 && writable[0] === "*")) continue;
+      const field = `$.project.contexts[${i}].submodules`;
+      const baseRemote = resolved.contexts[i]?.baseRemote;
+      let manifest: SubmoduleManifest;
+      try {
+        manifest = await planManifest(
+          c.path,
+          c.base_ref,
+          { writablePaths: [], exclude: s.exclude ?? [], ...(baseRemote !== undefined ? { baseRemote } : {}) },
+          { sources },
+        );
+      } catch (err) {
+        if (!(err instanceof SubmoduleError)) throw err;
+        throw new ToolError(err.code, err.message, {
+          reason: err.reason,
+          field,
+          ...(err.path !== undefined ? { path: err.path } : {}),
+        });
+      }
+      const byPath = new Map(manifest.entries.map((e) => [e.path, e]));
+      for (const [k, p] of writable.entries()) {
+        const e = byPath.get(p);
+        const at = { field: `${field}.writable_paths[${k}]`, path: p };
+        if (e === undefined) {
+          throw invalid("a writable_paths entry names no submodule declared at base_ref", {
+            reason: "SUBMODULE_PATH_UNKNOWN",
+            ...at,
+          });
+        }
+        if (e.wiki) {
+          throw invalid("a writable_paths entry names a wiki, which is never writable", {
+            reason: "SUBMODULE_WIKI_READ_ONLY",
+            ...at,
+          });
+        }
+      }
+    }
+  };
+
   const checkDefinition = (def: ProjectConfig): void => {
     checkStructure(def);
     checkBaseRemote(def);
@@ -394,6 +447,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
     }
     await runClones(def, clones, audit);
     await checkFilesystem(def, deps.allowedRoots, deps.dataDir);
+    await checkSubmodulePaths(def);
     return write("create_project", def, undefined, approvalReasons(def, undefined, clientMax), audit);
   };
 
@@ -422,6 +476,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
     }
     await runClones(def, clones, audit);
     await checkFilesystem(def, deps.allowedRoots, deps.dataDir);
+    await checkSubmodulePaths(def);
     return write(
       "update_project",
       def,

@@ -88,6 +88,12 @@ export interface SessionRebaseInput {
   /** The primary context's commit identity (committer of replayed publish commits). */
   readonly identity?: { readonly name: string; readonly email: string };
   readonly sign: boolean;
+  /**
+   * ADR-0079 item 3: the primary context sets `submodules.mode: "recursive"`. A gitlink both the session (either
+   * chain) and the fresh base changed, to different commits, is then a `CONFLICT` naming that path: `merge-tree` cannot
+   * merge a submodule whose objects are not in the umbrella's store. Absent or false: exactly as before.
+   */
+  readonly submodules?: boolean;
 }
 
 export interface SessionRebaseResult {
@@ -236,6 +242,15 @@ async function rebaseLocked(
 
   const when = Math.floor((options.now?.() ?? new Date()).getTime() / 1000);
   const conflicts = new Set<string>();
+  if (input.submodules === true) {
+    const base = await changedGitlinks(repoRoot, B, F);
+    for (const tip of [H, ...(hasPublishChain ? [publishTip as string] : [])]) {
+      for (const [p, sha] of await changedGitlinks(repoRoot, B, tip)) {
+        const theirs = base.get(p);
+        if (theirs !== undefined && theirs !== sha) conflicts.add(p);
+      }
+    }
+  }
   const head = await replay(repoRoot, checkpoints, F, CONTROLLER_IDENTITY, when, conflicts);
   const pub = hasPublishChain
     ? await replay(repoRoot, published, F, input.identity as { name: string; email: string }, when, conflicts)
@@ -451,6 +466,26 @@ async function commitParts(
   const m = /^author (.*) <([^>]*)> (\d+ [+-]\d{4})$/mu.exec(header);
   if (m === null) throw new GitError("commit has no author", ["cat-file"], 0, "");
   return { author: { name: m[1] as string, email: m[2] as string, date: m[3] as string }, message };
+}
+
+/**
+ * ADR-0079 item 3: the gitlinks (mode `160000` on either side) that differ between `from` and `to`, as path to the new
+ * gitlink commit (`""` when the gitlink was removed or replaced by something else).
+ */
+async function changedGitlinks(repoRoot: string, from: string, to: string): Promise<Map<string, string>> {
+  const out = (
+    await git(["diff-tree", "-r", "-z", "--no-renames", "--no-commit-id", from, to], { cwd: repoRoot })
+  ).stdout.toString("utf8");
+  const tokens = out.split("\0");
+  const changed = new Map<string, string>();
+  for (let i = 0; i + 1 < tokens.length; i += 2) {
+    const meta = tokens[i] as string;
+    const p = tokens[i + 1] as string;
+    const [oldMode, newMode, , newSha] = meta.replace(/^:/u, "").split(" ");
+    if (oldMode !== "160000" && newMode !== "160000") continue;
+    changed.set(p, newMode === "160000" ? (newSha ?? "") : "");
+  }
+  return changed;
 }
 
 async function resolveCommit(repoRoot: string, ref: string): Promise<string | undefined> {

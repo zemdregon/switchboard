@@ -82,7 +82,7 @@ import {
   resolveGithubRemote,
   supersededDiffOf,
 } from "../ci/index.js";
-import { ConfigError, loadConfig, primaryContext, type ResolvedConfig } from "../config/index.js";
+import { ConfigError, loadConfig, primaryContext, type ResolvedConfig, submodulesEnabled } from "../config/index.js";
 import { collectDigestCounts, digestPushFor } from "../control/digest-push.js";
 import {
   ALL_PROJECTS_ID,
@@ -141,7 +141,13 @@ import type { PendingRevisionAnnouncement, PendingSourceAnnouncement } from "../
 import type { SearchContextDeps } from "../mcp/search-context.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
-import { DynamicProjectStore, innerSettingResolver, ProjectSourceGrantStore, toResolved } from "../projects/index.js";
+import {
+  DynamicProjectStore,
+  effectiveProjectSources,
+  innerSettingResolver,
+  ProjectSourceGrantStore,
+  toResolved,
+} from "../projects/index.js";
 import {
   admitWorkItemRequest,
   attachQueueLowWater,
@@ -171,6 +177,7 @@ import {
   type SeedEnvironment,
   type SeedSpec,
   type SeedStore,
+  type SubmodulePlan,
   seedReclaimer,
   statfsDiskProbe,
   WorkspaceManager,
@@ -523,6 +530,29 @@ export function serveBaseRefresh(
   };
 }
 
+/**
+ * ADR-0079 item 3: the submodule plan of a project's primary context, for configured and (in-force) dynamic projects;
+ * undefined unless it sets `submodules.mode: "recursive"`.
+ */
+export function serveSubmodulePlan(
+  config: Pick<ResolvedConfig, "projects">,
+  store: Pick<DynamicProjectStore, "state">,
+): (projectId: string) => SubmodulePlan | undefined {
+  return (projectId) => {
+    const configured = config.projects.find((p) => p.id === projectId);
+    const dynamic = configured === undefined ? store.state(projectId)?.inForce?.definition : undefined;
+    const project = configured ?? (dynamic !== undefined ? toResolved(dynamic) : undefined);
+    if (project === undefined) return undefined;
+    const ctx = primaryContext(project);
+    if (!submodulesEnabled(ctx) || ctx.submodules === undefined) return undefined;
+    return {
+      writablePaths: ctx.submodules.writablePaths,
+      exclude: ctx.submodules.exclude,
+      ...(ctx.baseRemote !== undefined ? { baseRemote: ctx.baseRemote } : {}),
+    };
+  };
+}
+
 /** T9.13 (FR-WS-10, LLD §5.1, ADR-0057): the dependency seed store and the per-project plan `serve` composes. */
 export interface ServeSeeds {
   readonly store: SeedStore;
@@ -604,6 +634,13 @@ async function runDaemon(
   const ledger = createLedger(db, { ids, ...(now ? { now } : {}) });
   const artifacts = new ArtifactStore(`${config.dataDir}/artifacts`);
   const seeds = serveSeeds(config, db, artifacts, ids, io.env, createDockerRuntime, now);
+  // ADR-0079 items 3 and 8: configured owners plus approved grants, re-read at each check, for submodule URLs and stores.
+  const liveProjectSources = effectiveProjectSources(
+    config.projectSources,
+    config.projectSources !== undefined
+      ? new ProjectSourceGrantStore(db, { ids, config: config.projectSources, ...(now ? { now } : {}) })
+      : undefined,
+  );
   const workspace = new WorkspaceManager({
     db,
     artifacts,
@@ -619,6 +656,12 @@ async function runDaemon(
       io.env,
       now,
     ),
+    // ADR-0079 item 3: submodule worktrees of a primary context with `submodules.mode: "recursive"`; every other
+    // project's worktree is exactly as before.
+    submodules: {
+      sources: liveProjectSources,
+      plan: serveSubmodulePlan(config, new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) })),
+    },
   });
 
   try {
@@ -805,6 +848,7 @@ async function runDaemon(
           artifacts,
           dataDir: config.dataDir,
           days: config.retention.days,
+          ...(config.projectSources !== undefined ? { cloneRoot: config.projectSources.cloneRoot } : {}),
           ...(now ? { now: now() } : {}),
         });
         log.info("retention gc finished", {
@@ -821,6 +865,7 @@ async function runDaemon(
           db,
           dataDir: config.dataDir,
           days: config.retention.days,
+          ...(config.projectSources !== undefined ? { cloneRoot: config.projectSources.cloneRoot } : {}),
           ...(now ? { now: now() } : {}),
         });
         log.info("orphan gc finished", {
@@ -856,7 +901,13 @@ async function runDaemon(
           db,
           floor,
           reclaimers: earlySweepReclaimers({
-            gc: { db, artifacts, dataDir: config.dataDir, days: config.retention.days },
+            gc: {
+              db,
+              artifacts,
+              dataDir: config.dataDir,
+              days: config.retention.days,
+              ...(config.projectSources !== undefined ? { cloneRoot: config.projectSources.cloneRoot } : {}),
+            },
             enabled: config.retentionEnabled,
             ...(seeds !== undefined ? { seeds: seedReclaimer(seeds.store) } : {}),
           }),
@@ -1545,7 +1596,8 @@ async function runDaemon(
       },
       // ADR-0074 (LLD §3.4.15): `refresh_project_base` and `rebase_session`, with the same allowlisted fetch environment
       // as the first-worktree refresh and the controller's own push (ADR-0028).
-      base: { db, ids, sourceEnv: io.env, ...(now ? { now } : {}) },
+      // ADR-0079 item 3: for a recursive context, the fetched base's gitlinks are made present in their stores.
+      base: { db, ids, sourceEnv: io.env, submodules: { sources: liveProjectSources }, ...(now ? { now } : {}) },
       // ADR-0070 (LLD §3.4.13): `merge_run_pr`, offered with `publish_run`: the T15.8 gate on the poller's port, or,
       // when `ci_trigger.enabled` is false, the same G10 to G12 port on `ci_trigger.gh_binary`. Not limited to
       // `ci_trigger.projects`; the project's own merge policy in force decides.

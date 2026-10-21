@@ -1933,6 +1933,18 @@ const BASE_OUTPUTS = {
       previous_commit: { oneOf: [{ type: "null" }, SHA] },
       remote_commit: SHA,
       reason: { enum: [...BASE_REFRESH_REASONS] },
+      // ADR-0079 item 3: only for a context with submodules.mode recursive.
+      submodules: {
+        type: "object",
+        additionalProperties: false,
+        required: ["total", "present", "fetched", "missing"],
+        properties: {
+          total: { type: "integer", minimum: 0 },
+          present: { type: "integer", minimum: 0 },
+          fetched: { type: "integer", minimum: 0 },
+          missing: { type: "integer", minimum: 0 },
+        },
+      },
     },
   }),
   rebase_session: withError({
@@ -1962,7 +1974,10 @@ const BASE_DESCRIPTIONS: Readonly<Record<BaseToolName, string>> = {
     "ref only. Returns base_commit (where a new meta-session of the project starts now), previous_commit (the " +
     "tracking ref before the fetch, or null) and remote_commit. New meta-sessions already fetch before their first " +
     "worktree; this is for checking or forcing it. A project that is not remote-backed is INVALID_REQUEST " +
-    "NOT_REMOTE_BACKED; a failed fetch is TOOL_FAILURE BASE_REFRESH_FAILED with details.fetch_reason.",
+    "NOT_REMOTE_BACKED; a failed fetch is TOOL_FAILURE BASE_REFRESH_FAILED with details.fetch_reason. For a " +
+    "context with submodules.mode recursive, every gitlink commit of base_commit is then made present in its " +
+    "submodule store and counted in submodules {total, present, fetched, missing}; a missing commit does not undo " +
+    "the refresh, a refused submodule manifest is reported with its details.reason and details.path.",
   rebase_session:
     "Rebase one of this client's meta-sessions onto a freshly fetched base, so its next continue_task starts from " +
     "the current remote base plus the session's own commits. Only with no run in progress. The controller fetches " +
@@ -1971,7 +1986,10 @@ const BASE_DESCRIPTIONS: Readonly<Record<BaseToolName, string>> = {
     "with details.reason: CONFLICT (details.conflicting_paths), HEAD_MOVED (expected_head_sha differs), ACTIVE_RUN, " +
     "NOT_REMOTE_BACKED, NOTHING_TO_REBASE, MERGE_COMMIT; or PERMISSION_BLOCKED SIGNING_UNAVAILABLE, " +
     "IDENTITY_REQUIRED, REPO_CONFIG_UNSAFE; or TOOL_FAILURE BASE_REFRESH_FAILED, REPO_BUSY (retryable). A branch " +
-    "publish_run pushed before is not a fast-forward afterwards, and publishing it again is refused NON_FAST_FORWARD.",
+    "publish_run pushed before is not a fast-forward afterwards, and publishing it again is refused NON_FAST_FORWARD. " +
+    "For a context with submodules.mode recursive, a submodule gitlink both the session and the base moved to " +
+    "different commits is a CONFLICT naming that path; after a rebase the new base's submodule commits are fetched " +
+    "into their stores.",
 };
 
 const SKILL_DESCRIPTIONS: Readonly<Record<SkillToolName, string>> = {
