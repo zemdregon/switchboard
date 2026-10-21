@@ -1,5 +1,5 @@
 /**
- * Claude Code usage windows from `rate_limit_event` (ADR-0079; FR-CAP-13). The recorded fixture is the redacted
+ * Claude Code usage windows from `rate_limit_event` (ADR-0080; FR-CAP-14). The recorded fixture is the redacted
  * 2026-10-21 capture (`docs/research/claude-usage-capture-2026-10-21.md`).
  */
 import { readFileSync } from "node:fs";
@@ -25,7 +25,7 @@ const WINDOWS = {
   seven_day_resets_at: "2026-10-22T12:00:00.000Z",
 };
 
-describe("Claude Code rate_limit_event usage windows (ADR-0079)", () => {
+describe("Claude Code rate_limit_event usage windows (ADR-0080)", () => {
   it("the recorded allowed event yields one provider_reported usage event with both windows and no rate_limit", () => {
     const events = parseFixture("usage-windows-recorded.jsonl");
     const usage = events.filter((e) => e.kind === "usage");

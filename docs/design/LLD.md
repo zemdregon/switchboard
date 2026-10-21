@@ -6358,7 +6358,8 @@ per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surfa
 quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
 and `confidence`, labelled "estimate".
 
-T6.17 adds an optional per-provider `reported_usage` block (§16.10), absent when no windowed figure is current.
+T6.18 builds the provider's `provider_usage` report (§16.11) from recorded run output for Claude Code, absent when no
+windowed figure is current.
 
 T6.14 adds an optional top-level `pacing` array, one entry per subscription (§16.9). It is omitted when no subscription
 is configured, so an unconfigured projection stays byte-identical. `doctor` prints one pacing line per subscription.
@@ -6372,6 +6373,10 @@ including `fake`, even when `candidateOrder` omits it). `switchboard capacity` a
 probes. `capacity --json` adds `schema_version` as every CLI `--json` does. With no ledger file, the CLI computes over
 an empty in-memory ledger and creates nothing. The `doctor` JSON gains a `capacity` key, and its text gains one line per
 adapter. The section never changes `ok`, and an unreadable ledger leaves it out.
+
+*Amendment 2026-10-21 (ADR-0079, Delegated):* "never probes a provider" no longer holds as written. For an enabled
+provider whose adapter has `readProviderUsage`, `get_capacity` also runs that CLI's own read-only account call and adds
+`provider_usage` (§16.10). It makes no model call and reads no credential.
 
 ### 16.4 Per-provider circuit breaker
 
@@ -6693,7 +6698,7 @@ including `privileged` and `require_provider` runs and runs admitted to an undef
 became deferred before dispatch. Nothing creates a run, a probe or a provider call. Tests:
 `src/lifecycle/pacing-gate.test.ts`, `src/routing/pacing-admission.test.ts`.
 
-*Update 2026-10-21 ([ADR-0079](../adr/0079-claude-code-usage-windows.md), ROADMAP T6.17, Delegated, not owner-approved):*
+*Update 2026-10-21 ([ADR-0080](../adr/0080-claude-code-usage-windows.md), ROADMAP T6.18, Delegated, not owner-approved):*
 `USAGE_KEYS` now declares Claude Code's `five_hour_used_fraction`, `five_hour_resets_at`, `seven_day_used_fraction` and
 `seven_day_resets_at` (the [capture](../research/claude-usage-capture-2026-10-21.md)). An entry may carry
 `window: { id, lengthSeconds }` (`five_hour` 18000 s, `seven_day` 604800 s). A windowed key feeds only a configured
@@ -6701,14 +6706,75 @@ subscription window whose `length_seconds` equals its own, so a 7-day figure is 
 `REMAINING_KEYS` stays empty (Claude reports a used share). The figures reach `usage_observation` from the adapter's
 `usage` events (`src/adapters/claude/usage.ts`, `parse.ts`).
 
-### 16.10 Provider-reported usage (FR-CAP-13, ADR-0079)
+### 16.10 Provider-reported usage reader (FR-CAP-13, ADR-0079)
 
-No migration. A per-provider `reported_usage` block is computed on read from `usage_observation` rows and the clock:
+*Added 2026-10-21 (Delegated, not owner-approved).* The estimator of §16.2 never sees a provider's own quota, because no
+run output carries one. Where a provider's CLI can report the signed-in account's windows without a model call, an
+optional adapter method reads them, and the result is shown beside the projection.
+
+**Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
+(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; only Codex implements it.
 
 ```jsonc
-"reported_usage": { "source": "provider_reported",
-  "windows": [ { "id": "five_hour", "length_seconds": 18000, "used_fraction": 0.03, "remaining_fraction": 0.97,
-                 "resets_at": "<ISO time>", "observed_at": "<ISO time>", "key": "five_hour_used_fraction" } ] }
+// ProviderUsageReport
+{ "source": "provider_reported", "provider": "codex", "observed_at": "<ISO>", "method": "codex app-server account/rateLimits/read",
+  "plan": "plus", "limit_reached": false, "limit_reached_type": null,
+  "windows": [ { "id": "primary", "limit_id": "codex", "window_seconds": 18000,
+                 "used_fraction": 0.21, "remaining_fraction": 0.79, "resets_at": "<ISO>" } ],
+  "credits": { "has_credits": true, "unlimited": false, "balance": "<string>" } }
+// ProviderUsageUnavailable
+{ "source": "unknown", "provider": "codex", "observed_at": "<ISO>", "error": "<short reason>" }
+```
+
+**Codex wire exchange** (`src/adapters/codex/usage.ts`). The adapter runs `codex app-server` through the existing
+`ProbeRunner` with the environment allowlist `PATH` and `HOME` and a 15 s timeout (**Proposed**). It writes three
+JSON-RPC lines on stdin: `initialize` (id 1), the `initialized` notification, and `account/rateLimits/read` (id 2) with
+`excludeResetCreditDetails: true`. The process exits at stdin end-of-file before answering, so stdin is held open until
+the id-2 answer arrives. No model is called. The CLI uses its own login; Switchboard reads no credential and no file
+under `~/.codex` (ADR-0003).
+
+| Provider field (app-server) | Report field |
+| --- | --- |
+| `rateLimits` and each entry of `rateLimitsByLimitId`: `primary`, `secondary` | `windows[]`, `id` is `primary` or `secondary`, prefixed `<limit_id>:` for a non-default bucket |
+| `usedPercent` | `used_fraction` = `usedPercent / 100`; `remaining_fraction` = `1 - used_fraction` |
+| `windowDurationMins` | `window_seconds` = minutes × 60 |
+| `resetsAt` (Unix seconds) | `resets_at` (ISO) |
+| `limitId` | `limit_id` |
+| `planType` | `plan` |
+| `credits.hasCredits`, `unlimited`, `balance` | `credits.has_credits`, `unlimited`, `balance` |
+| `rateLimitReachedType`, `ordinaryUsageAllowed` | `limit_reached`, `limit_reached_type`, only from the provider's flags, never inferred from a full window |
+
+`accountId` and every other field are dropped.
+
+**Failure rules.** A spawn failure, a timeout, a missing answer or a JSON-RPC error returns `ProviderUsageUnavailable`
+with a short reason. An unknown figure is never headroom (BR-50).
+
+**Reader and cache** (`src/capacity/provider-usage.ts`). `readProviderUsage` runs the readers of enabled providers that
+have one, in parallel. `ProviderUsageCache` is per process with a one-minute TTL (**Proposed**, Delegated).
+`withProviderUsage` adds the report to each provider entry of the §16.3 projection as `provider_usage`; the projection
+itself (`capacity_score`, `explicit_remaining`, `reset_at`, `pacing`, routing) is unchanged. The report is never written
+to the ledger and does not feed routing, pacing or the score; `REMAINING_KEYS` and `USAGE_KEYS` stay empty. Feeding it
+into pacing is possible follow-up work and is not done.
+
+**Surfaces.** `get_capacity` (the output schema gains an optional `provider_usage` per provider), `switchboard capacity`
+(text and `--json`) and `switchboard doctor` (a separate "Provider-reported usage" section, informational, never
+changes `ok`). Text shows fractions, not percentages (FR-CAP-03 wording rule), and "remaining" appears only on
+`provider_reported` lines. Tests: `src/adapters/codex/usage.test.ts` (recorded redacted fixture
+`src/adapters/codex/fixtures/usage/app-server-rate-limits.jsonl` and two synthetic ones),
+`src/capacity/provider-usage.test.ts`, and the block "provider_usage on get_capacity, capacity and doctor (ADR-0079,
+FR-CAP-13)" in `src/mcp/get-capacity.test.ts`.
+
+### 16.11 Claude Code usage windows from run output (FR-CAP-14, ADR-0080)
+
+No migration, no new output field. The Claude figures reach the capacity surfaces as an ADR-0079 `ProviderUsageReport`
+(§16.10) built on read from `usage_observation` rows and the clock, set as the provider's `provider_usage`:
+
+```jsonc
+"provider_usage": { "source": "provider_reported", "provider": "claude", "observed_at": "<ISO time>",
+  "method": "recorded run output (declared usage keys)", "plan": null, "limit_reached": null,
+  "limit_reached_type": null, "credits": null,
+  "windows": [ { "id": "five_hour", "limit_id": null, "window_seconds": 18000, "used_fraction": 0.03,
+                 "remaining_fraction": 0.97, "resets_at": "<ISO time>" } ] }
 ```
 
 - **Collector query:** the ledger's `listLatestProviderReportedUsageWithKey` returns the newest 20
@@ -6719,18 +6785,22 @@ No migration. A per-provider `reported_usage` block is computed on read from `us
   `used_fraction` key, among those rows keep the one with the latest declared reset, then the largest used share, then
   the newest. Reason: a row is written when its run ends, so a long run that read the figure earlier can be stored
   after a newer reading, and within one window the used share only grows. `resets_at` is the kept row's declared reset
-  key; a window whose `resets_at` is not after `now` is dropped; `remaining_fraction` is
-  `1 - used_fraction`; `resets_at` is `null` when the row carried no reset. The block never feeds the §16.2
-  estimate. It is absent when no window remains, so a build without such keys is byte-identical.
+  key (`null` when the row carried none); a window whose `resets_at` is not after `now` is dropped;
+  `remaining_fraction` is `1 - used_fraction`; `window_seconds` is the key's declared window length. The report's
+  `observed_at` is the oldest reading among its windows. `plan`, `limit_reached`, `limit_reached_type` and `credits`
+  are `null`: run output carries none. The report is absent when no window remains, so a build without such keys is
+  byte-identical, and it never feeds the §16.2 estimate.
+- **Relation to a live reader (§16.10):** a provider with a `readProviderUsage` reader (Codex) has its live report
+  overlay or replace this one; a provider without a reader (Claude) shows this one. §16.10 item "may run a provider
+  CLI" does not apply to Claude: nothing is started for it.
 - **Freshness:** as new as the newest run of that provider. Nothing creates a run, a probe or a provider call
   (FR-CAP-10) and nothing reads a credential (ADR-0003).
-- **Surfaces:** `get_capacity` (the optional `reported_usage` property of each provider in the output schema,
-  `src/mcp/schemas.ts`; the tool description names it), `switchboard capacity` (text line `provider-reported usage
-  five_hour: used 0.03, remaining 0.97 of the window, resets ... (at ...)`; `--json` is the same object) and `doctor`
-  (suffix `; provider-reported used five_hour 0.03, seven_day 0.06` on the provider's `capacity` line). The §16.3
-  wording rule holds: "remaining" appears only with "provider-reported".
+- **Surfaces:** the existing `provider_usage` of `get_capacity`, and the shared text lines of `switchboard capacity`
+  and `doctor` (`providerUsageLines`), for example
+  `five_hour (18000 s, provider_reported): used 0.03, remaining 0.97, resets <ISO time>`. The §16.3 wording rule
+  holds: "remaining" appears only on `provider_reported` lines.
 - **Relation to pacing (§16.9):** the same rows feed a configured subscription window of the same length as a
-  `provider_reported` `used_fraction` and `reset_at`; the block shows them even when no subscription is configured.
+  `provider_reported` `used_fraction` and `reset_at`; the report shows them even when no subscription is configured.
 
 Tests: `src/capacity/reported-usage.test.ts`, `src/adapters/claude/usage.test.ts`, `src/mcp/get-capacity.test.ts`.
 

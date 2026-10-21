@@ -6,6 +6,7 @@
 import type { PrivilegedScopeBinding } from "../policy/types.js";
 import type { FailureCode } from "./failure.js";
 import type { PromptSkill } from "./prompt.js";
+import type { ProviderUsageResult } from "./provider-usage.js";
 import type { BuiltinProviderId } from "./providers.js";
 
 /** Adapter ids, derived from the provider registry table `BUILTIN_PROVIDERS` (`./providers.ts`, T4.1, LLD §2). */
@@ -541,6 +542,17 @@ export function acceptsReportedModel(adapter: { readonly reportedModelFlag?: unk
   return typeof d === "object" && d !== null && (d as { kind?: unknown }).kind === "accepted";
 }
 
+/**
+ * ADR-0077: which compiled cells pass a *requested* model (`CompileRequest.model`, for example a model-group member) to
+ * the CLI's model flag; separate from {@link ReportedModelFlag}, which is about pinning a model the session reported.
+ * - `all`: every compiled cell; `bypass`: only the approved privileged bypass cell (the other cells refuse a model).
+ * Absent: doctor falls back to the {@link ReportedModelFlag} check (its pre-ADR-0077 behaviour).
+ */
+export interface RequestedModelFlag {
+  cells: "all" | "bypass";
+  detail: string;
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly transports: readonly Transport[];
@@ -552,6 +564,8 @@ export interface ProviderAdapter {
   readonly gitCapabilities: GitCapabilities;
   /** T7.12 declaration ({@link ReportedModelFlag}); absent means `not_accepted`. */
   readonly reportedModelFlag?: ReportedModelFlag;
+  /** ADR-0077 declaration ({@link RequestedModelFlag}); used by doctor's model-group check. */
+  readonly requestedModelFlag?: RequestedModelFlag;
   /** T16.5/T16.6 declaration ({@link SkillDelivery}), pure, per compiled cell; absent means `prompt_prefix` for every cell. */
   skillDelivery?(request: CompileRequest, profile: ResolvedProfile): SkillDelivery;
 
@@ -559,6 +573,11 @@ export interface ProviderAdapter {
   probe(runner: ProbeRunner): Promise<ProbeResult>;
   /** Provider's own status command or a harmless headless call; never reads credentials (FR-AUTH-02). */
   authPreflight(runner: ProbeRunner): Promise<AuthResult>;
+  /**
+   * ADR-0079 (FR-CAP-13): optional. The account's quota windows as the provider's own CLI reports them, read through
+   * the runner with no model call and no credential read by Switchboard. Absent means the provider has no such reader.
+   */
+  readProviderUsage?(runner: ProbeRunner, now?: Date): Promise<ProviderUsageResult>;
   /** Pure. Returns Ineligible (never a downgraded profile) when the profile cannot be satisfied (FR-POL-02). */
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible;
   /** One stdout line (JSONL) or one ACP message -> zero or more events. Stateful via ParseState. */

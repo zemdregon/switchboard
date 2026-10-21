@@ -1,5 +1,5 @@
 /**
- * Provider-reported usage windows in the capacity projection (ADR-0079; FR-CAP-13, BR-50). Rows carry the metrics the
+ * Provider-reported usage windows in the capacity projection (ADR-0080; FR-CAP-14, BR-50). Rows carry the metrics the
  * Claude parser records from the 2026-10-21 capture.
  */
 import { mkdtempSync, rmSync } from "node:fs";
@@ -11,7 +11,7 @@ import { renderCapacity } from "../cli/capacity.js";
 import { createLedger, type Ledger, openLedger } from "../ledger/index.js";
 import type { CapacityProviderInfo } from "./collect.js";
 import { capacityProjection } from "./projection.js";
-import { reportedShareKeys, reportedUsage } from "./reported-usage.js";
+import { RECORDED_USAGE_METHOD, reportedShareKeys, reportedUsage } from "./reported-usage.js";
 import { USAGE_KEYS, type UsageKeyDeclaration, usageWindows } from "./usage-window.js";
 
 const NOW = new Date("2026-10-21T03:00:00.000Z");
@@ -33,27 +33,32 @@ describe("reportedUsage (pure)", () => {
       NOW,
     );
     expect(out).toEqual({
+      provider: "claude",
       source: "provider_reported",
+      observed_at: "2026-10-21T02:30:00.000Z",
+      method: RECORDED_USAGE_METHOD,
+      plan: null,
+      limit_reached: null,
+      limit_reached_type: null,
       windows: [
         {
           id: "five_hour",
-          length_seconds: 18000,
+          limit_id: null,
+          window_seconds: 18000,
           used_fraction: 0.03,
           remaining_fraction: 0.97,
           resets_at: "2026-10-21T07:30:00.000Z",
-          observed_at: "2026-10-21T02:30:00.000Z",
-          key: "five_hour_used_fraction",
         },
         {
           id: "seven_day",
-          length_seconds: 604800,
+          limit_id: null,
+          window_seconds: 604800,
           used_fraction: 0.06,
           remaining_fraction: 0.94,
           resets_at: "2026-10-22T12:00:00.000Z",
-          observed_at: "2026-10-21T02:30:00.000Z",
-          key: "seven_day_used_fraction",
         },
       ],
+      credits: null,
     });
   });
 
@@ -70,7 +75,8 @@ describe("reportedUsage (pure)", () => {
       ],
       NOW,
     );
-    expect(sameWindow?.windows[0]).toMatchObject({ used_fraction: 0.4, observed_at: "2026-10-21T02:00:00.000Z" });
+    expect(sameWindow?.windows[0]?.used_fraction).toBe(0.4);
+    expect(sameWindow?.observed_at).toBe("2026-10-21T02:00:00.000Z");
     const newWindow = reportedUsage(
       "claude",
       [
@@ -119,9 +125,7 @@ describe("reportedUsage (pure)", () => {
     };
     expect(
       reportedUsage("p", [{ metrics: { rem: 0.25 }, observedAt: "2026-10-21T02:00:00Z" }], NOW, keys)?.windows,
-    ).toEqual([
-      expect.objectContaining({ id: "d", used_fraction: 0.75, remaining_fraction: 0.25, resets_at: null, key: "rem" }),
-    ]);
+    ).toEqual([expect.objectContaining({ id: "d", used_fraction: 0.75, remaining_fraction: 0.25, resets_at: null })]);
     expect(reportedShareKeys("p", keys)).toEqual([{ key: "rem", lengthSeconds: 86400 }]);
     expect(reportedShareKeys("claude")).toEqual([
       { key: "five_hour_used_fraction", lengthSeconds: 18000 },
@@ -171,7 +175,7 @@ describe("USAGE_KEYS for Claude Code feeds pacing only in a window of the same l
   });
 });
 
-describe("capacity projection over the ledger shows reported_usage", () => {
+describe("capacity projection over the ledger shows provider_usage from recorded run output", () => {
   let dir: string;
   let db: Database.Database;
   let ledger: Ledger;
@@ -211,20 +215,23 @@ describe("capacity projection over the ledger shows reported_usage", () => {
   const project = () => capacityProjection(ledger, [claude], { windowSeconds: 3600, confidenceRuns: 5 }, NOW);
 
   it("absent with no row; present from the newest row even outside the estimator window; printed by the CLI", () => {
-    expect(project().providers[0]?.reported_usage).toBeUndefined();
+    expect(project().providers[0]?.provider_usage).toBeUndefined();
     observe("2026-10-20T20:00:00.000Z", { ...CAPTURED, five_hour_used_fraction: 0.5, seven_day_used_fraction: 0.05 });
     observe("2026-10-21T01:00:00.000Z", CAPTURED); // 2 h ago: outside the 1 h estimator window, inside 5 h
     observe("2026-10-21T01:30:00.000Z", { "usage.output_tokens": 4 }); // a token row: not a window
     const p = project();
-    expect(p.providers[0]?.reported_usage?.windows.map((w) => [w.id, w.used_fraction, w.observed_at])).toEqual([
-      ["five_hour", 0.03, "2026-10-21T01:00:00.000Z"],
-      ["seven_day", 0.06, "2026-10-21T01:00:00.000Z"],
+    const usage = p.providers[0]?.provider_usage;
+    expect(usage?.source).toBe("provider_reported");
+    expect(usage?.observed_at).toBe("2026-10-21T01:00:00.000Z");
+    expect(usage?.source === "provider_reported" && usage.windows.map((w) => [w.id, w.used_fraction])).toEqual([
+      ["five_hour", 0.03],
+      ["seven_day", 0.06],
     ]);
     expect(p.providers[0]?.explicit_remaining).toBeNull();
     const text = renderCapacity(p);
     expect(text).toContain(
-      "  provider-reported usage five_hour: used 0.03, remaining 0.97 of the window, resets 2026-10-21T07:30:00.000Z (at 2026-10-21T01:00:00.000Z)",
+      "    five_hour (18000 s, provider_reported): used 0.03, remaining 0.97, resets 2026-10-21T07:30:00.000Z",
     );
-    expect(text).toContain("  provider-reported usage seven_day: used 0.06, remaining 0.94 of the window");
+    expect(text).toContain("    seven_day (604800 s, provider_reported): used 0.06, remaining 0.94");
   });
 });

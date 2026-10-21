@@ -1,0 +1,2 @@
+{"id":1,"result":{"userAgent":"switchboard/0.162.0","codexHome":"/home/<user>/.codex","platformFamily":"unix","platformOs":"linux"}}
+{"id":2,"error":{"code":-32600,"message":"codex account authentication required to read rate limits"}}

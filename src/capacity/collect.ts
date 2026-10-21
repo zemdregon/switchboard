@@ -48,7 +48,7 @@ export function collectCapacityInputs(
     metrics: parseMetrics(u.metrics_json),
     observedAt: u.observed_at,
   }));
-  // ADR-0079: the newest rows per declared window share key, looked back one window length (not the estimator window).
+  // ADR-0080: the newest rows per declared window share key, looked back one window length (not the estimator window).
   const reportedUsageRows: ReportedUsageRow[] = [];
   for (const { key, lengthSeconds } of reportedShareKeys(provider.id)) {
     const from = new Date(now.getTime() - lengthSeconds * 1000).toISOString();

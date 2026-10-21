@@ -1,5 +1,5 @@
 /**
- * Provider-reported usage windows per provider (ADR-0079; FR-CAP-13, BR-50, LLD §16.10).
+ * Provider-reported usage windows per provider (ADR-0080; FR-CAP-14, BR-50, LLD §16.11).
  *
  * A pure function of the rows the collector read and a clock. It works for any provider from its declarations in
  * {@link USAGE_KEYS} that name a window: for each such window it reads the rows that hold the declared used (or
@@ -8,28 +8,15 @@
  * the one with the latest reported reset (the current window), then the largest used share (usage within one window
  * only grows), then the newest. A window whose reported reset has passed is left out, because its share belongs to a
  * window that has ended. Nothing is estimated, summed or defaulted: no row means no window, and no window means no
- * block.
+ * report. The result has the ADR-0079 `ProviderUsageReport` shape, so it appears as the provider's `provider_usage`;
+ * its `observed_at` is the oldest reading among its windows (plan, limit flags and credits are not in run output).
  */
 
+import type { ProviderUsageReport, ProviderUsageWindow } from "../adapters/provider-usage.js";
 import { USAGE_KEYS, type UsageKeyDeclaration } from "./usage-window.js";
 
-export interface ReportedUsageWindow {
-  /** The provider's own window name (e.g. Claude Code's `five_hour`). */
-  id: string;
-  length_seconds: number;
-  used_fraction: number;
-  remaining_fraction: number;
-  /** Null when the provider reported no reset with the share. */
-  resets_at: string | null;
-  observed_at: string;
-  /** The declared key the share came from. */
-  key: string;
-}
-
-export interface ReportedUsage {
-  source: "provider_reported";
-  windows: ReportedUsageWindow[];
-}
+/** The ADR-0079 `method` of a report built from recorded run output (no CLI is started for it). */
+export const RECORDED_USAGE_METHOD = "recorded run output (declared usage keys)";
 
 export interface ReportedUsageRow {
   metrics: Readonly<Record<string, unknown>>;
@@ -56,16 +43,17 @@ export function reportedShareKeys(
   return out;
 }
 
-/** The provider's reported windows in declaration order, or `undefined` when none is current. */
+/** The provider's reported windows in declaration order, as an ADR-0079 report; `undefined` when none is current. */
 export function reportedUsage(
   provider: string,
   rows: readonly ReportedUsageRow[],
   now: Date,
   keys: Readonly<Record<string, readonly UsageKeyDeclaration[]>> = USAGE_KEYS,
-): ReportedUsage | undefined {
+): ProviderUsageReport | undefined {
   const nowMs = now.getTime();
   const declared = (keys[provider] ?? []).filter((d) => d.origin === "usage_observation" && d.window !== undefined);
-  const windows: ReportedUsageWindow[] = [];
+  const windows: ProviderUsageWindow[] = [];
+  let oldest = Number.POSITIVE_INFINITY;
   const seen = new Set<string>();
   for (const d of declared) {
     const w = d.window;
@@ -95,15 +83,26 @@ export function reportedUsage(
     if (best === undefined || (Number.isFinite(best.resetMs) && best.resetMs <= nowMs)) continue;
     const { used, resetMs } = best;
     seen.add(w.id);
+    oldest = Math.min(oldest, best.at);
     windows.push({
       id: w.id,
-      length_seconds: w.lengthSeconds,
+      limit_id: null,
+      window_seconds: w.lengthSeconds,
       used_fraction: round6(used),
       remaining_fraction: round6(1 - used),
       resets_at: Number.isFinite(resetMs) ? new Date(resetMs).toISOString() : null,
-      observed_at: new Date(best.at).toISOString(),
-      key: d.key,
     });
   }
-  return windows.length === 0 ? undefined : { source: "provider_reported", windows };
+  if (windows.length === 0) return undefined;
+  return {
+    provider,
+    source: "provider_reported",
+    observed_at: new Date(oldest).toISOString(),
+    method: RECORDED_USAGE_METHOD,
+    plan: null,
+    limit_reached: null,
+    limit_reached_type: null,
+    windows,
+    credits: null,
+  };
 }
