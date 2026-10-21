@@ -31,7 +31,7 @@ Only one `serve` can hold a data directory at a time.
 | `cancel_run` | run | Requests cancellation of a run (asynchronous; poll `get_run`). | Always (orchestrator only) |
 | `get_artifacts` | run | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. | Always (orchestrator only) |
 | `list_capabilities` | capability | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. | Always (orchestrator only) |
-| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription. Read-only; it never calls a provider. | Always (orchestrator only) |
+| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription; for Claude Code, a `reported_usage` block with the provider's own 5-hour and 7-day used shares and resets, as of the newest run. Read-only; it never calls a provider. | Always (orchestrator only) |
 | `explain_route` | capability | Why a run went to its provider, from Switchboard's stored route decision: candidates with eligibility reasons, the recorded task features, weights and per-candidate scores, the selection rule and short deciding factors. Price, model quality and sandbox strength are not sourced, so those terms are equal for every provider. Read-only; no model is asked. | Always (orchestrator only) |
 | `list_runs` | control | Runs visible to this client, newest first, with optional project, status and time filters. | Always; `console` sees it |
 | `get_digest` | control | A per-project digest since a cursor: paused state, budgets, needs-attention runs, finished and failed runs, pending approvals and untrusted summaries. | Always; `console` sees it |
@@ -247,9 +247,17 @@ member's code and one pacing line per subscribed provider.
 **What pacing shows.** `capacity.subscriptions` describes your own subscriptions: which providers share one, each
 window's length and reset (`fixed`, `rolling` or `provider_reported`) and an optional budget (`runs`,
 `reported_tokens` or `reported_cost_usd`). `get_capacity`, `switchboard capacity` and `doctor` then show, per
-subscription and window, the used share, the reset and time left, and the source of each figure. No provider is known
-to report a used or remaining share in a key Switchboard reads, so today a used share is either
+subscription and window, the used share, the reset and time left, and the source of each figure. Only Claude Code
+reports a used share in a key Switchboard reads (below), so for every other provider a used share is either
 `controller_estimated` (your budget against Switchboard's own dispatches) or `unknown`.
+
+**Provider-reported usage (Claude Code).** Claude Code prints its 5-hour and 7-day usage windows (used share and reset
+time) with every run. Switchboard records them, and `get_capacity` (`reported_usage`), `switchboard capacity` and
+`doctor` show the newest figure per window, labelled `provider_reported`, with the time it was observed. The figures are
+as fresh as the newest Claude Code run: Switchboard never starts a run or calls the provider to refresh them, and it
+reads no login token. A window whose reset time has passed is left out, and with no recent Claude Code run nothing is
+shown. A subscription window whose length is 5 hours or 7 days reads the matching figure as `provider_reported`
+([ADR-0079](../adr/0079-claude-code-usage-windows.md)).
 
 **What pacing never claims.**
 
