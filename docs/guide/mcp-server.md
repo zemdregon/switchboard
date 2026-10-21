@@ -333,8 +333,10 @@ one-time code comes from the CLI. This is *Proposed* until ROADMAP T13.12 is Don
 
 Prerequisites: `transport.http` is enabled with a `public_url` behind your TLS proxy (see the `transport` row of the
 [configuration table](getting-started.md#configure)), and the MCP client profile you will offer exists in
-`mcp_clients`. Only a profile that is allowed over HTTP works: not `privileged`, and not
-`privileged_approval: not_required`. Privileged runs are never available over HTTP.
+`mcp_clients`. Only a profile that is allowed over HTTP works: not `privileged_approval: not_required`. A
+profile with a `privileged` ceiling is allowed, as with a `clients` mapping, and its privileged runs still wait for your
+approval ([ADR-0086](../adr/0086-bound-codes-follow-the-mapped-rule.md)); `default_mcp_client` still refuses a
+`privileged` ceiling.
 
 1. On the host running Switchboard, issue a code for the profile. The code is printed once, works once and expires
    after 10 minutes unless you pass `--ttl` (1 to 60 minutes). Issuing a new code ends every older unused code.
@@ -387,7 +389,7 @@ subsections below give the full behaviour; `switchboard --help` prints the same 
 | `pause` | Pause every project: no new run is admitted until resume (an MCP client can pause only its own projects) | `--json` | [Control plane](advanced-features.md#control-plane-milestone-14) |
 | `resume` | Lift the operator pause set by `pause` (a project paused by an MCP client stays paused) | `--json` | [Control plane](advanced-features.md#control-plane-milestone-14) |
 | `consent hash-passphrase`, `consent pair` | Hash the HTTP consent-page passphrase for config; print a one-time pairing code (Switchboard's own secrets, never a provider sign-in) | `--json` | [ROADMAP §6.10](../ROADMAP.md#610-m13-network-mcp-transport-tasks) |
-| `mcp oauth issue-code --client-profile <mcp_client_id> [--ttl <n>s\|m\|h]` | Print a single-use code (default 10 minutes, 1 to 60) that approves a remote OAuth client on the consent page and binds it to that MCP client profile; issuing a code ends older unused ones; a `privileged` profile is refused | `--client-profile` (required), `--ttl`, `--json` | [Connect a remote MCP client with OAuth](#connect-a-remote-mcp-client-with-oauth) |
+| `mcp oauth issue-code --client-profile <mcp_client_id> [--ttl <n>s\|m\|h]` | Print a single-use code (default 10 minutes, 1 to 60) that approves a remote OAuth client on the consent page and binds it to that MCP client profile; issuing a code ends older unused ones; a profile with `privileged_approval: not_required` is refused (a `privileged` ceiling is allowed; its runs still need approval, ADR-0086) | `--client-profile` (required), `--ttl`, `--json` | [Connect a remote MCP client with OAuth](#connect-a-remote-mcp-client-with-oauth) |
 | `mcp oauth clients`, `mcp oauth client <client_id>`, `mcp oauth tokens [--client <id>] [--all]`, `mcp oauth revoke <client_id> [--tokens-only]` | List and inspect OAuth clients and their tokens (never token values), and revoke a client's tokens or the client itself | `--client`, `--all`, `--tokens-only`, `--json` | [Connect a remote MCP client with OAuth](#connect-a-remote-mcp-client-with-oauth) |
 | `schedule list`, `schedule show <id>`, `schedule enable <id>`, `schedule disable <id>`, `schedule approve <id>`, `schedule deny <id>`, `schedule create <cron> <project> <template_json>` | List, inspect, enable, disable, approve, reject and create UTC cron schedules (off by default) | `--project` (list), `--json` | [ROADMAP §6.14](../ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks) |
 | `decisions list`, `decisions decide <dec_id> --option <n>` | List decision requests with their (untrusted) question and options; decide one as the operator: its work item resumes or is cancelled and its enqueue list is added once; deciding twice is refused | `--project`, `--state` (list), `--option`, `--note` (decide), `--json` | [LLD §20.3](../design/LLD.md#203-decision-requests-fr-ctl-13-t1415) |
