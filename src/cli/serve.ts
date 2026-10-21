@@ -72,6 +72,7 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { osLoadReader } from "../capacity/host-load.js";
+import { ProviderUsageCache } from "../capacity/provider-usage.js";
 import {
   CiTriggerPoller,
   GhCiStatusPort,
@@ -1477,6 +1478,8 @@ async function runDaemon(
         modelGroups: config.modelGroups,
       },
       ...(now ? { now } : {}),
+      // ADR-0079 (FR-CAP-13): `get_capacity` reads provider-reported usage through each provider's own CLI.
+      providerUsage: { runner: createProbeRunner(PROBE_ENV_ALLOWLIST), cache: new ProviderUsageCache() },
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
       // T14.8 (FR-CTL-08, ADR-0047 2f): proxied decisions the transition hook does not announce reach the same sinks.
       ...(sinks !== undefined

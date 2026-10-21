@@ -5,5 +5,6 @@ export * from "./estimate.js";
 export * from "./host-load.js";
 export * from "./pacing-gate.js";
 export * from "./projection.js";
+export * from "./provider-usage.js";
 export * from "./providers.js";
 export * from "./usage-window.js";

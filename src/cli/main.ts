@@ -15,7 +15,7 @@ import { UnknownOAuthClientError } from "../mcp/oauth-admin.js";
 import { renderValidate, runAdaptersValidate } from "./adapters-validate.js";
 import { renderAdaptersVersionCanary, runAdaptersVersionCanary } from "./adapters-version-canary.js";
 import { listAffinity, renderAffinityList, renderAffinityReset, resetAffinity } from "./affinity.js";
-import { renderCapacity, runCapacity } from "./capacity.js";
+import { renderCapacity, runCapacityWithUsage } from "./capacity.js";
 import { consentHashPassphrase, consentPair, renderPair, renderPassphraseHash } from "./consent.js";
 import {
   decideDecision,
@@ -246,7 +246,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       }
       case "capacity": {
         if (sub !== undefined) throw new UsageError("capacity takes no positional arguments");
-        const projection = runCapacity(io, loaderArgv, values.provider);
+        const projection = await runCapacityWithUsage(io, loaderArgv, values.provider);
         emit({ schema_version: JSON_SCHEMA_VERSION, ...projection }, renderCapacity(projection));
         return 0;
       }

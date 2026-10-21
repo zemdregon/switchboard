@@ -1,4 +1,4 @@
-import type { AdapterRegistry } from "../adapters/index.js";
+import type { AdapterRegistry, ProbeRunner } from "../adapters/index.js";
 import type { LoadReader } from "../capacity/host-load.js";
 import type { ContainerRuntime } from "../environment/runtime.js";
 import type { GraderExec } from "../eval/grader.js";
@@ -40,6 +40,8 @@ export interface CliIo {
   readonly graderExec?: GraderExec;
   /** Test seam (T3.24): the load reader `doctor` uses for `host.max_load1` instead of `os.loadavg()`. */
   readonly loadReader?: LoadReader;
+  /** ADR-0079 (FR-CAP-13): runner for provider usage reads in `capacity` and `doctor`. Defaults to a probe runner. */
+  readonly providerUsageRunner?: ProbeRunner;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */
