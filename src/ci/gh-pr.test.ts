@@ -1,8 +1,11 @@
 /**
  * ADR-0069: the `publish_run` pull-request argv (G13 `pr create`, G14 `pr view --json number,state,url`), its audit and
  * parsers, and {@link GhPullRequestPort} over a fake {@link GhRunner}. ADR-0078: G16 `pr close` for MCP `close_pr`.
- * No real `gh` runs.
+ * ADR-0095: the `GH_FAILED` detail classified from stderr. No real `gh` runs (a fake `gh` script does).
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   G14_FIELDS,
@@ -21,8 +24,8 @@ import {
   parsePrNumberView,
   pullRequestNumberOf,
 } from "./gh-argv.js";
-import type { GhRunner, GhRunResult } from "./gh-port.js";
-import { GhPullRequestPort, PullRequestPortError } from "./gh-pr.js";
+import { execGh, type GhRunner, type GhRunResult } from "./gh-port.js";
+import { GH_FAILURE_MESSAGE_MAX, GhPullRequestPort, ghFailureDetail, PullRequestPortError } from "./gh-pr.js";
 
 const URL1 = "https://github.com/acme/web/pull/7";
 
@@ -227,5 +230,91 @@ describe("GhPullRequestPort (ADR-0069)", () => {
       .close({ owner: "acme", repo: "web", number: 7, comment: "c", deleteBranch: false })
       .catch((e: unknown) => e);
     expect((err as PullRequestPortError).code).toBe("GH_FAILED");
+  });
+  it.each([
+    [
+      "GraphQL: Head sha can't be blank, Base sha can't be blank, No commits between main and sb/x, Head ref must be a branch (createPullRequest)",
+      "HEAD_BRANCH_MISSING",
+    ],
+    ["GraphQL: Base ref must be a branch (createPullRequest)", "BASE_BRANCH_MISSING"],
+    ["GraphQL: No commits between main and sb/x (createPullRequest)", "NO_COMMITS"],
+    ['a pull request for branch "sb/x" into branch "main" already exists:', "PULL_REQUEST_EXISTS"],
+    ["API rate limit exceeded for user ID 1. (HTTP 403)", "RATE_LIMITED"],
+    ["GraphQL: Resource not accessible by integration (createPullRequest)", "PERMISSION_DENIED"],
+    ["GraphQL: Could not resolve to a Repository with the name 'acme/web'. (repository)", "NOT_FOUND"],
+    ["error connecting to api.github.com: dial tcp: i/o timeout", "NETWORK"],
+    ["HTTP 422: Validation Failed", "VALIDATION_FAILED"],
+    ["something else", "UNKNOWN"],
+    ["", "UNKNOWN"],
+  ] as const)("ADR-0095: stderr %j is the closed reason %s", (stderr, reason) => {
+    expect(ghFailureDetail(1, stderr).reason).toBe(reason);
+  });
+
+  it("ADR-0095: the excerpt redacts secrets, drops control characters, joins lines and is capped", () => {
+    const token = `ghp_${"b".repeat(36)}`;
+    const d = ghFailureDetail(1, `line one\u001b[31m\r\n\n Bearer abcdefghijkl ${token}\n${"x".repeat(1000)}`);
+    expect(d.exit_code).toBe(1);
+    expect(d.message).toMatch(/^line one \[31m \| Bearer \[REDACTED\] \[REDACTED\] \| x+\.\.\.$/u);
+    expect(d.message.length).toBe(GH_FAILURE_MESSAGE_MAX);
+    expect(d.message).not.toContain(token);
+  });
+
+  it("ADR-0095: a non-zero create exit is GH_FAILED with the detail read from stderr", async () => {
+    const { runner } = fake([
+      {
+        exitCode: 1,
+        stdout: "",
+        stderr: "GraphQL: No commits between main and sb/x",
+      },
+    ]);
+    const err = await new GhPullRequestPort({ runner })
+      .create({
+        owner: "acme",
+        repo: "web",
+        branch: "sb/x",
+        base: "main",
+        title: "t",
+        body: "b",
+        draft: false,
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PullRequestPortError);
+    expect((err as PullRequestPortError).detail).toEqual({
+      exit_code: 1,
+      reason: "NO_COMMITS",
+      message: "GraphQL: No commits between main and sb/x",
+    });
+  });
+
+  it("ADR-0095: execGh keeps the stderr tail of a failed gh (fake gh script), and none on success", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "sb-gh-stderr-"));
+    try {
+      const bin = path.join(dir, "fake-gh");
+      writeFileSync(
+        bin,
+        [
+          "#!/bin/sh",
+          'if [ "$1" = "ok" ]; then echo out; exit 0; fi',
+          "echo 'Head ref must be a branch' >&2",
+          "exit 1",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      const failed = await execGh(bin, ["pr"], {
+        env: { PATH: process.env.PATH ?? "" },
+        timeoutMs: 10_000,
+      });
+      expect(failed).toMatchObject({
+        exitCode: 1,
+        stderr: "Head ref must be a branch\n",
+      });
+      const ok = await execGh(bin, ["ok"], {
+        env: { PATH: process.env.PATH ?? "" },
+        timeoutMs: 10_000,
+      });
+      expect(ok).toEqual({ exitCode: 0, stdout: "out\n" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
