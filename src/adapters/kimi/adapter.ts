@@ -276,6 +276,12 @@ export class KimiAdapter implements ProviderAdapter {
     kind: "not_accepted",
     detail: "the model a Kimi Code session reports is not captured yet (Unverified: T4.68)",
   } as const;
+  /** ADR-0077: a requested model reaches the CLI only in the approved bypass cell. */
+  readonly requestedModelFlag = {
+    cells: "bypass",
+    detail:
+      "--model=<id> in the approved bypass cell; the ACP cell is behind the bypass-only gate (ADR-0049, ADR-0077)",
+  } as const;
   readonly gitCapabilities = KIMI_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];
