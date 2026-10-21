@@ -59,6 +59,49 @@ export type ProbeRunner = (
   },
 ) => Promise<ProbeOutput>;
 
+/**
+ * ADR-0079 (FR-CAP-13): what a {@link TerminalRunner} hands its `drive` callback. Output is the child's terminal text
+ * (ANSI included), newest 1 MiB kept; offsets from `mark()` stay valid when older text is dropped.
+ */
+export interface TerminalIo {
+  /** Real path of the probe directory the child runs in. */
+  readonly cwd: string;
+  /** All output still held. */
+  output(): string;
+  /** An offset for {@link outputSince}: the end of the output so far. */
+  mark(): number;
+  outputSince(mark: number): string;
+  /** Writes to the child's terminal input (ignored once it has exited). */
+  write(text: string): void;
+  exited(): boolean;
+  /** Milliseconds left of the run's time budget (may be negative). */
+  remaining(): number;
+  /** Resolves true as soon as `pred` holds (checked on every output chunk and on exit), or `pred()` after `ms`. */
+  waitFor(pred: () => boolean, ms: number): Promise<boolean>;
+}
+
+/** A terminal run's result: the drive callback's value, or a fixed reason the run could not happen. */
+export type TerminalRunResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * ADR-0079 (FR-CAP-13): runs `argv` under a pseudo-terminal (`script`) in a stable private probe directory
+ * (`<probeRoot>/<probeDirName>`, checked empty before every run) and lets `drive` talk to it; the process group is
+ * always stopped before the promise settles. For a provider whose usage display exists only in its interactive TUI.
+ * Production: `createTerminalRunner` (`src/adapters/terminal-run.ts`); tests inject a fake or a temporary probe root.
+ */
+export type TerminalRunner = <T>(
+  argv: readonly string[],
+  opts: {
+    readonly probeDirName: string;
+    readonly timeoutMs: number;
+    /** The child's whole environment (the caller applies its allowlist). */
+    readonly env: Readonly<Record<string, string>>;
+    readonly drive: (io: TerminalIo) => Promise<T>;
+  },
+) => Promise<TerminalRunResult<T>>;
+
 export interface ProbeResult {
   binaryPath: string;
   binaryVersion: string | null;
@@ -563,8 +606,13 @@ export interface ProviderAdapter {
   /**
    * ADR-0079 (FR-CAP-13): optional. The account's quota windows as the provider's own CLI reports them, read through
    * the runner with no model call and no credential read by Switchboard. Absent means the provider has no such reader.
+   * `opts.terminal` is for a reader that needs a pseudo-terminal (Kimi Code); without it such a reader returns `unknown`.
    */
-  readProviderUsage?(runner: ProbeRunner, now?: Date): Promise<ProviderUsageResult>;
+  readProviderUsage?(
+    runner: ProbeRunner,
+    now?: Date,
+    opts?: { readonly terminal?: TerminalRunner },
+  ): Promise<ProviderUsageResult>;
   /** Pure. Returns Ineligible (never a downgraded profile) when the profile cannot be satisfied (FR-POL-02). */
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible;
   /** One stdout line (JSONL) or one ACP message -> zero or more events. Stateful via ParseState. */

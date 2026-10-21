@@ -127,8 +127,12 @@ Switchboard's own records when you ask:
 - **Provider-reported usage (Codex).** For an enabled provider whose CLI can report the signed-in account's quota
   without a model call, each provider entry also carries `provider_usage`: `source: "provider_reported"` with the plan,
   `limit_reached`, the windows (`used_fraction`, `remaining_fraction`, `window_seconds`, `resets_at`) and credits, or
-  `source: "unknown"` with a reason when the read failed, which is never headroom. Today only Codex has it, read by
+  `source: "unknown"` with a reason when the read failed, which is never headroom. Codex has it, read by
   running `codex app-server` with your own Codex login (Switchboard reads no credential and no file under `~/.codex`).
+  Kimi Code has it too, read from the CLI's own `/usage` display: Switchboard runs `kimi` under a pseudo-terminal in
+  `<data_dir>/probes/kimi-usage`, types `/usage` and parses the 5 hour, weekly and monthly rows (whole percent, reset
+  to the minute, [ADR-0080](../adr/0080-kimi-usage-via-cli-usage-display.md)); it needs the terminal runner that
+  `serve` wires, and Kimi lists that directory in its workspace list and keeps a `/usage` line in its input history.
   It is shown beside the estimates and does not change them, routing or pacing, and it is not stored. `doctor` prints
   it in a separate "Provider-reported usage" section that never changes `ok`. Details:
   [ADR-0079](../adr/0079-provider-reported-usage-reader.md),

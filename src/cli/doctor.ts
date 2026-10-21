@@ -699,7 +699,7 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   let capacity = cfg ? capacitySection(cfg, registry, capacityNow) : undefined;
   if (capacity !== undefined) {
     // ADR-0079 (FR-CAP-13): informational, never changes `ok`; a failed read is an `unknown` entry, not an error.
-    capacity = await addProviderUsage({ ...io, adapters: registry }, capacity, capacityNow);
+    capacity = await addProviderUsage({ ...io, adapters: registry }, capacity, capacityNow, cfg?.dataDir);
   }
   const modelGroups = cfg ? modelGroupsSection(cfg, registry, models) : undefined;
   const ok = checks.every((c) => c.status !== "fail") && adapters.every((a) => a.status !== "fail");

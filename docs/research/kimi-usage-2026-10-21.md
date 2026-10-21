@@ -1,7 +1,7 @@
 # Kimi Code plan usage: where the number can be read (2026-10-21)
 
 Delegated agent research (2026-10-21), Kimi Code CLI 2.1.1, not owner-approved. No account data is recorded here. It
-feeds [ADR-0079](../adr/0079-provider-reported-usage-via-cli-usage-display.md).
+feeds [ADR-0080](../adr/0080-kimi-usage-via-cli-usage-display.md).
 
 Question: can Switchboard show the plan usage that Kimi Code reports (5 hour, weekly and monthly windows) without
 handling a credential?

@@ -2,52 +2,44 @@
  * Kimi Code provider-reported plan usage (FR-CAP-13, ADR-0079, BR-50). Kimi Code CLI 2.1.1 shows the plan quota only in
  * its interactive TUI, through the `/usage` slash command: the CLI fetches the figures with its own login and draws a
  * panel; no model is called and no session is created (2026-10-21 live check, recorded as
- * `fixtures/usage-tui-2.1.1.raw`). This module starts that TUI under a pseudo-terminal (`script`), types `/usage`,
- * reads the panel text and stops the TUI.
+ * `fixtures/usage-tui-2.1.1.raw`). {@link readKimiUsage} starts that TUI through a {@link TerminalRunner} (a
+ * pseudo-terminal in a stable private probe directory, `src/adapters/terminal-run.ts`), types `/usage`, reads the panel
+ * text and maps it to the shared {@link ProviderUsageResult}.
  *
  * Credential boundary (ADR-0003): Switchboard reads terminal text only. It reads no Kimi file, token or server token,
  * calls no Kimi HTTP API, never sets `KIMI_CODE_HOME` and passes only `KIMI_ENV_ALLOWLIST` (PATH, HOME) plus terminal
- * size variables. The raw terminal output never leaves {@link KimiUsageReader.read}: it is not logged and no reason
- * quotes it, except a scrubbed and clipped error line the panel itself shows.
+ * type and size. The raw terminal output never leaves the drive function: it is not logged and no error quotes it,
+ * except a scrubbed, bounded error line the panel itself shows.
  *
  * Panel format (the CLI bundle's `usage-panel.ts`, 2.1.1): a `Plan usage` heading, then rows `5h limit`,
  * `Weekly limit`, `Monthly limit` (each optional) of the form `<label>  <bar>  <N>% used[  resets in <dur>| reset]`,
  * an optional `kimi N% · code M%` line after `Monthly limit`, or a single error line, or `No usage data available.`;
  * optionally an `Extra Usage` section with `Used this month`, `Monthly limit` and `Balance` money rows.
  *
- * Proposed: the input is typed one character at a time and Enter is sent only after the TUI's input line shows
- * exactly `/usage` and its menu selection (if drawn) is `usage`, so a dropped keystroke can never run another command.
- * Nothing is typed until the prompt's status line (`context:`) shows; without it the read fails closed.
+ * Proposed: nothing is typed until the prompt's status line (`context:`) shows; without it the read fails closed. The
+ * input is typed one character at a time and Enter is sent only after the TUI's input line shows exactly `/usage` and
+ * its menu selection (if drawn) is `usage`, so a dropped keystroke can never run another command.
  *
- * Delegated (2026-10-21, live check on 2.1.1): the TUI runs in one STABLE probe directory
- * (`<data_dir>/probes/kimi-usage`), not a fresh temporary directory. Kimi Code asks "Trust this folder?" once per exact
- * folder and remembers the answer in its own data directory, so a fresh directory per read would show the dialog
- * every time and leave one trust record per read. The directory must be a real directory (no symlink), owned by this
- * user, without group or other write permission, and EMPTY before every run, so no planted project configuration
- * (`.kimi-code/mcp.json`, [K5]) can start with the TUI. The trust dialog is answered at most once per run and only
- * when it names this directory's real path and its selected option is `Trust and continue`; any other dialog fails
- * closed without a key sent.
+ * Delegated (2026-10-21, live check on 2.1.1): in a folder it has not trusted, the TUI first asks "Trust this folder?"
+ * and remembers the answer per exact folder. The run therefore uses the stable probe directory `kimi-usage` (production
+ * `<data_dir>/probes/kimi-usage`, checked private and empty before every run by the runner), and the dialog is
+ * answered at most once per run and only when it names that directory's real path and its selected option is
+ * `Trust and continue`; any other dialog fails closed without a key sent.
  */
-import { type ChildProcess, spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
-import { EventEmitter } from "node:events";
-import { lstat, mkdir, readdir, realpath } from "node:fs/promises";
 import { defaultRedactor } from "../../artifacts/redact.js";
 import {
-  type ProviderUsageBalance,
-  type ProviderUsageReader,
-  type ProviderUsageReport,
+  type ProviderUsageCredits,
+  type ProviderUsageResult,
   type ProviderUsageWindow,
-  round6,
-} from "../../capacity/provider-usage.js";
-import { resolveOnPath } from "../codex/adapter.js";
-import { KIMI_ENV_ALLOWLIST } from "./adapter.js";
-import { KIMI_BINARY } from "./protocol.js";
+  safeExcerpt,
+} from "../provider-usage.js";
+import type { TerminalIo, TerminalRunner } from "../types.js";
 
-export const KIMI_USAGE_VIA = "Kimi Code TUI /usage (the CLI's own credentials; Switchboard reads terminal text only)";
+export const KIMI_USAGE_METHOD = "kimi TUI /usage (pseudo-terminal)";
+export const KIMI_USAGE_PROBE_DIR = "kimi-usage";
 export const DEFAULT_KIMI_USAGE_TIMEOUT_MS = 45_000;
-/** Most terminal output kept while waiting (the newest bytes are kept). */
-export const MAX_KIMI_USAGE_OUTPUT_CHARS = 1024 * 1024;
 const MAX_REASON_CHARS = 160;
+const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Pure parsing
@@ -85,8 +77,33 @@ export function stripTerminal(raw: string): string[] {
   });
 }
 
+/** One `Plan usage` row. Fractions are 0..1 (6 decimal places); `precision` 0.01 for the rounded whole percent. */
+export interface KimiUsageWindow {
+  /** `5h`, `weekly`, `monthly`, or a slug of an unknown label. */
+  id: string;
+  label: string;
+  used_fraction: number;
+  remaining_fraction: number;
+  precision: number;
+  /** Derived from the relative hint and `now`; null when the panel gave none. */
+  reset_at: string | null;
+  reset_precision_seconds: number | null;
+  /** The `kimi N% · code M%` split under the row, as fractions. */
+  breakdown?: Record<string, number>;
+}
+
+/** One `Extra Usage` money row; `text` is the provider's own string (`$5.00`, `Unlimited`). */
+export interface KimiUsageBalance {
+  id: string;
+  label: string;
+  text: string;
+  amount: number | null;
+  currency: string | null;
+  unlimited?: true;
+}
+
 export type KimiUsagePanel =
-  | { kind: "ok"; windows: ProviderUsageWindow[]; balances: ProviderUsageBalance[] }
+  | { kind: "ok"; windows: KimiUsageWindow[]; balances: KimiUsageBalance[] }
   | { kind: "error"; reason: string }
   | { kind: "not_logged_in" }
   | { kind: "absent" };
@@ -147,7 +164,7 @@ function parseDuration(text: string): { seconds: number; precision: number } {
   return { seconds, precision: onlySeconds ? 1 : 60 };
 }
 
-function parseMoney(text: string): Pick<ProviderUsageBalance, "amount" | "currency"> & { unlimited?: true } {
+function parseMoney(text: string): Pick<KimiUsageBalance, "amount" | "currency"> & { unlimited?: true } {
   const t = text.trim();
   if (t === "Unlimited") return { amount: null, currency: null, unlimited: true };
   const num = (s: string) => {
@@ -181,8 +198,8 @@ export function parseKimiUsagePanel(raw: string, now: Date): KimiUsagePanel {
   if (at < 0) {
     return lines.some((l) => NOT_LOGGED_IN.some((re) => re.test(l))) ? { kind: "not_logged_in" } : { kind: "absent" };
   }
-  const windows: ProviderUsageWindow[] = [];
-  const balances: ProviderUsageBalance[] = [];
+  const windows: KimiUsageWindow[] = [];
+  const balances: KimiUsageBalance[] = [];
   const errorLines: string[] = [];
   let mode: "plan" | "extra" = "plan";
   for (const line of lines.slice(at + 1)) {
@@ -196,7 +213,8 @@ export function parseKimiUsagePanel(raw: string, now: Date): KimiUsagePanel {
       const money = MONEY_ROW.exec(line);
       if (money) {
         const label = money[1] as string;
-        balances.push({ id: slug(label), label, ...parseMoney(money[2] as string) });
+        const text = (money[2] as string).trim();
+        balances.push({ id: slug(label), label, text, ...parseMoney(text) });
       }
       continue; // the optional bar line and anything unknown
     }
@@ -243,81 +261,27 @@ export function parseKimiUsagePanel(raw: string, now: Date): KimiUsagePanel {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The TUI driver
+// The TUI dialogue and the mapping to the shared shape
 // ---------------------------------------------------------------------------------------------------------------------
 
-export type SpawnImpl = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
-
-export interface KimiUsageReaderOptions {
-  /** The `kimi` executable; default resolved on `pathEnv` like the adapter. */
-  readonly executable?: string;
-  /** Default `env.PATH`. */
-  readonly pathEnv?: string;
-  /** Environment the allowlist is taken from. Default `process.env`. */
-  readonly env?: Readonly<Record<string, string | undefined>>;
-  readonly timeoutMs?: number;
-  /** The pseudo-terminal wrapper; default `script` on PATH. */
-  readonly scriptCommand?: string;
-  readonly platform?: NodeJS.Platform;
-  readonly spawnImpl?: SpawnImpl;
-  /** Delay between typed characters. Default 150 ms. */
-  readonly keyDelayMs?: number;
-  /** Longest wait for the prompt (and again after answering the trust dialog). Default 15 000 ms. */
-  readonly readyWaitMs?: number;
-  /**
-   * The stable directory the TUI runs in (Delegated, see the module comment). Required: without it every read is
-   * `unavailable`; no location is invented. Production wiring: `<data_dir>/probes/kimi-usage`.
-   */
-  readonly probeDir?: string;
-}
-
-export const REASON_NO_PROBE_DIR = "no Kimi usage probe directory is configured";
-export const REASON_PROBE_DIR_NOT_EMPTY = "the Kimi usage probe directory is not empty";
-export const REASON_PROBE_DIR_UNSAFE =
-  "the Kimi usage probe directory is not a private directory (a symlink, another owner, or group or other write access)";
-export const REASON_NOT_READY = "the Kimi Code TUI did not show its prompt in time; nothing was typed";
-export const REASON_TRUST_REFUSED =
-  "the Kimi Code TUI showed a folder trust dialog that does not match the probe directory; it was not answered";
-
-/**
- * Creates the probe directory (mode 0700) if missing and checks it before a run. Returns its real path, or the fixed
- * reason it cannot be used. Only the directory itself is listed, never read into.
- */
-export async function prepareProbeDir(
-  dir: string,
-): Promise<{ ok: true; realPath: string } | { ok: false; reason: string }> {
-  try {
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    const st = await lstat(dir);
-    const uid = process.getuid?.();
-    if (st.isSymbolicLink() || !st.isDirectory() || (uid !== undefined && st.uid !== uid) || (st.mode & 0o022) !== 0) {
-      return { ok: false, reason: REASON_PROBE_DIR_UNSAFE };
-    }
-    if ((await readdir(dir)).length > 0) return { ok: false, reason: REASON_PROBE_DIR_NOT_EMPTY };
-    return { ok: true, realPath: await realpath(dir) };
-  } catch {
-    return { ok: false, reason: REASON_PROBE_DIR_UNSAFE };
-  }
-}
-
+export const REASON_NO_TERMINAL = "no terminal runner configured";
 export const REASON_NOT_LOGGED_IN =
   "Kimi Code is not logged in; run `kimi login` (Switchboard never handles the login)";
 export const REASON_NO_PLAN_SECTION =
   "the Kimi Code /usage panel showed no Plan usage section (not a Kimi-managed login, or an unknown CLI version)";
+export const REASON_NOT_READY = "the Kimi Code TUI did not show its prompt in time; nothing was typed";
+export const REASON_TRUST_REFUSED =
+  "the Kimi Code TUI showed a folder trust dialog that does not match the probe directory; it was not answered";
+export const REASON_INPUT_REFUSED = "the Kimi Code TUI did not show /usage in its input line; Enter was not sent";
+export const REASON_EXITED = "the Kimi Code TUI exited before it showed plan usage";
 
-const unsafeExe = (exe: string) => exe.includes("'") || /\p{Cc}/u.test(exe);
-
-/** Builds the `script` argv that runs `exe` under a pseudo-terminal, or undefined on an unsupported platform. */
-export function scriptArgs(platform: NodeJS.Platform, exe: string): string[] | undefined {
-  if (platform === "linux") return ["-qfc", `'${exe}'`, "/dev/null"];
-  if (platform === "darwin") return ["-q", "/dev/null", exe];
-  return undefined;
-}
-
-/** The child environment: only `KIMI_ENV_ALLOWLIST` names from `env`, plus terminal type and size. */
-export function kimiUsageEnv(env: Readonly<Record<string, string | undefined>>): Record<string, string> {
+/** The child environment: only `allowlist` names from `env`, plus terminal type and size. */
+export function kimiUsageEnv(
+  allowlist: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const k of KIMI_ENV_ALLOWLIST) {
+  for (const k of allowlist) {
     const v = env[k];
     if (v !== undefined) out[k] = v;
   }
@@ -357,82 +321,7 @@ function inputShowsUsage(lines: readonly string[]): boolean {
   return input === "/usage" && (selected === undefined || selected === "usage");
 }
 
-/** FR-CAP-13: Kimi Code plan usage through the TUI's `/usage` panel. */
-export class KimiUsageReader implements ProviderUsageReader {
-  readonly provider = "kimi";
-  readonly via = KIMI_USAGE_VIA;
-  readonly #opts: KimiUsageReaderOptions;
-
-  constructor(opts: KimiUsageReaderOptions = {}) {
-    this.#opts = opts;
-  }
-
-  async read(now: Date): Promise<ProviderUsageReport> {
-    const observed = now.toISOString();
-    const base = {
-      provider: this.provider,
-      source: "provider_reported" as const,
-      observed_at: observed,
-      via: this.via,
-    };
-    const unavailable = (reason: string): ProviderUsageReport => ({ status: "unavailable", ...base, reason });
-    const env = this.#opts.env ?? process.env;
-    const pathEnv = this.#opts.pathEnv ?? env.PATH;
-    const platform = this.#opts.platform ?? process.platform;
-    const exe = this.#opts.executable ?? resolveOnPath(KIMI_BINARY, pathEnv);
-    if (exe === undefined) return unavailable(`${KIMI_BINARY} not found on PATH`);
-    if (unsafeExe(exe)) return unavailable("the kimi executable path cannot be passed to `script` safely");
-    const args = scriptArgs(platform, exe);
-    if (args === undefined) {
-      return unavailable("Kimi Code plan usage needs Linux or macOS (a pseudo-terminal through `script`)");
-    }
-    const scriptName = this.#opts.scriptCommand ?? "script";
-    const script = scriptName.includes("/") ? scriptName : resolveOnPath(scriptName, pathEnv);
-    if (script === undefined) {
-      return unavailable("`script` not found on PATH; it provides the pseudo-terminal the Kimi Code TUI needs");
-    }
-    if (this.#opts.probeDir === undefined) return unavailable(REASON_NO_PROBE_DIR);
-    const probe = await prepareProbeDir(this.#opts.probeDir);
-    if (!probe.ok) return unavailable(probe.reason);
-    const timeoutMs = this.#opts.timeoutMs ?? DEFAULT_KIMI_USAGE_TIMEOUT_MS;
-    const outcome = await driveUsage({
-      spawnImpl: this.#opts.spawnImpl ?? (nodeSpawn as SpawnImpl),
-      command: script,
-      args,
-      cwd: probe.realPath,
-      env: kimiUsageEnv(env),
-      timeoutMs,
-      keyDelayMs: this.#opts.keyDelayMs ?? 150,
-      readyWaitMs: this.#opts.readyWaitMs ?? 15_000,
-    });
-    switch (outcome.kind) {
-      case "spawn_error":
-        return unavailable("could not start the Kimi Code TUI through `script`");
-      case "exited":
-        return unavailable("the Kimi Code TUI exited before it showed plan usage");
-      case "timeout":
-        return unavailable(`the Kimi Code TUI did not show plan usage within ${Math.round(timeoutMs / 1000)} s`);
-      case "input_refused":
-        return unavailable("the Kimi Code TUI did not show /usage in its input line; Enter was not sent");
-      case "not_logged_in":
-        return unavailable(REASON_NOT_LOGGED_IN);
-      case "not_ready":
-        return unavailable(REASON_NOT_READY);
-      case "trust_refused":
-        return unavailable(REASON_TRUST_REFUSED);
-      case "settled": {
-        const panel = parseKimiUsagePanel(outcome.text, now);
-        if (panel.kind === "ok") return { status: "ok", ...base, windows: panel.windows, balances: panel.balances };
-        if (panel.kind === "error") return unavailable(`Kimi Code reported: ${panel.reason}`);
-        if (panel.kind === "not_logged_in") return unavailable(REASON_NOT_LOGGED_IN);
-        return unavailable(REASON_NO_PLAN_SECTION);
-      }
-    }
-  }
-}
-
-type DriveOutcome =
-  | { kind: "spawn_error" }
+export type KimiDriveOutcome =
   | { kind: "exited" }
   | { kind: "timeout" }
   | { kind: "input_refused" }
@@ -441,168 +330,168 @@ type DriveOutcome =
   | { kind: "trust_refused" }
   | { kind: "settled"; text: string };
 
-interface DriveOptions {
-  spawnImpl: SpawnImpl;
-  command: string;
-  args: string[];
-  cwd: string;
-  env: Record<string, string>;
-  timeoutMs: number;
-  keyDelayMs: number;
-  readyWaitMs: number;
+export interface KimiDriveOptions {
+  /** Delay between typed characters. Default 150 ms. */
+  readonly keyDelayMs?: number;
+  /** Longest wait for the prompt (and again after answering the trust dialog). Default 15 000 ms. */
+  readonly readyWaitMs?: number;
 }
 
-/** Runs the TUI, types `/usage`, waits for the panel and always stops the process group before returning. */
-async function driveUsage(o: DriveOptions): Promise<DriveOutcome> {
-  const deadline = Date.now() + o.timeoutMs;
-  const events = new EventEmitter();
-  let buf = "";
-  let dropped = 0; // characters dropped from the head of `buf` by the cap
-  let exited = false;
-  let spawnError = false;
-  let child: ChildProcess;
-  try {
-    child = o.spawnImpl(o.command, o.args, {
-      cwd: o.cwd,
-      env: o.env,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-  } catch {
-    return { kind: "spawn_error" };
-  }
-  const onChunk = (chunk: Buffer | string) => {
-    buf += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    if (buf.length > MAX_KIMI_USAGE_OUTPUT_CHARS) {
-      const cut = buf.length - MAX_KIMI_USAGE_OUTPUT_CHARS;
-      buf = buf.slice(cut);
-      dropped += cut;
-    }
-    events.emit("change");
-  };
-  child.stdout?.on("data", onChunk);
-  child.stderr?.on("data", () => undefined); // drained, never kept
-  child.stdin?.on("error", () => undefined);
-  child.on("error", () => {
-    spawnError = true;
-    exited = true;
-    events.emit("change");
-  });
-  child.on("exit", () => {
-    exited = true;
-    events.emit("change");
-  });
-  const since = (abs: number) => buf.slice(Math.max(0, abs - dropped));
-  const mark = () => dropped + buf.length;
-  const write = (s: string) => {
-    if (!exited && child.stdin?.writable) child.stdin.write(s);
-  };
-  const waitFor = (pred: () => boolean, ms: number) =>
-    new Promise<boolean>((resolve) => {
-      if (pred()) return resolve(true);
-      const done = (v: boolean) => {
-        clearTimeout(timer);
-        events.off("change", check);
-        resolve(v);
-      };
-      const check = () => {
-        if (pred()) done(true);
-      };
-      const timer = setTimeout(() => done(pred()), Math.max(0, ms));
-      events.on("change", check);
-    });
-  const remaining = () => deadline - Date.now();
-  const notLoggedIn = (text: string) => stripTerminal(text).some((l) => NOT_LOGGED_IN.some((re) => re.test(l)));
-  const ready = (text: string) => stripTerminal(text).some((l) => l.includes("context:"));
-  const trustShown = (text: string) => stripTerminal(text).includes(TRUST_QUESTION);
+/** The `/usage` dialogue over a {@link TerminalIo}; returns the panel text after Enter, or why there is none. */
+export async function driveKimiUsage(io: TerminalIo, o: KimiDriveOptions = {}): Promise<KimiDriveOutcome> {
+  const keyDelayMs = o.keyDelayMs ?? 150;
+  const readyWaitMs = o.readyWaitMs ?? 15_000;
+  const lines = (text: string) => stripTerminal(text);
+  const notLoggedIn = (text: string) => lines(text).some((l) => NOT_LOGGED_IN.some((re) => re.test(l)));
+  const ready = (text: string) => lines(text).some((l) => l.includes("context:"));
+  const trustShown = (text: string) => lines(text).includes(TRUST_QUESTION);
+  const late = (): KimiDriveOutcome => (io.remaining() <= 0 ? { kind: "timeout" } : { kind: "not_ready" });
 
-  const run = async (): Promise<DriveOutcome> => {
-    await waitFor(
-      () => exited || ready(buf) || trustShown(buf) || notLoggedIn(buf),
-      Math.min(o.readyWaitMs, remaining()),
+  await io.waitFor(
+    () => io.exited() || ready(io.output()) || trustShown(io.output()) || notLoggedIn(io.output()),
+    Math.min(readyWaitMs, io.remaining()),
+  );
+  if (notLoggedIn(io.output())) return { kind: "not_logged_in" };
+  if (io.exited()) return { kind: "exited" };
+  if (trustShown(io.output())) {
+    // Let the dialog finish drawing (its selected option), then answer it once, only if it names this folder.
+    await io.waitFor(() => io.exited() || trustDialogDrawn(lines(io.output())), Math.min(3_000, io.remaining()));
+    if (io.exited()) return { kind: "exited" };
+    if (!trustDialogMatches(lines(io.output()), io.cwd)) return { kind: "trust_refused" };
+    const answeredAt = io.mark();
+    io.write("\r");
+    await io.waitFor(
+      () => io.exited() || ready(io.outputSince(answeredAt)) || trustShown(io.outputSince(answeredAt)),
+      Math.min(readyWaitMs, io.remaining()),
     );
-    if (spawnError) return { kind: "spawn_error" };
-    if (notLoggedIn(buf)) return { kind: "not_logged_in" };
-    if (exited) return { kind: "exited" };
-    if (trustShown(buf)) {
-      // Let the dialog finish drawing (its selected option line), then answer it once, only if it names this folder.
-      await waitFor(() => exited || trustDialogDrawn(stripTerminal(buf)), Math.min(3_000, remaining()));
-      if (exited) return { kind: "exited" };
-      if (!trustDialogMatches(stripTerminal(buf), o.cwd)) return { kind: "trust_refused" };
-      const answeredAt = mark();
-      write("\r");
-      await waitFor(
-        () => exited || ready(since(answeredAt)) || trustShown(since(answeredAt)),
-        Math.min(o.readyWaitMs, remaining()),
-      );
-      if (exited) return { kind: "exited" };
-      if (trustShown(since(answeredAt))) return { kind: "trust_refused" }; // never answered twice
-      if (!ready(since(answeredAt))) return remaining() <= 0 ? { kind: "timeout" } : { kind: "not_ready" };
-    } else if (!ready(buf)) {
-      return remaining() <= 0 ? { kind: "timeout" } : { kind: "not_ready" };
-    }
-    const typedAt = mark();
-    for (const c of "/usage") {
-      write(c);
-      await sleep(o.keyDelayMs);
-      if (exited) return { kind: "exited" };
-    }
-    const echoed = await waitFor(
-      () => exited || inputShowsUsage(stripTerminal(since(typedAt))),
-      Math.min(3_000, remaining()),
-    );
-    if (exited) return { kind: "exited" };
-    if (!echoed || !inputShowsUsage(stripTerminal(since(typedAt)))) {
-      return remaining() <= 0 ? { kind: "timeout" } : { kind: "input_refused" };
-    }
-    const enterAt = mark();
-    write("\r");
-    const settled = await waitFor(() => exited || kimiUsagePanelSettled(stripTerminal(since(enterAt))), remaining());
-    const text = since(enterAt);
-    if (kimiUsagePanelSettled(stripTerminal(text))) return { kind: "settled", text };
-    return settled ? { kind: "exited" } : { kind: "timeout" };
-  };
-
-  try {
-    return await run();
-  } finally {
-    await stop(child, () => exited, write, waitFor);
-    buf = "";
+    if (io.exited()) return { kind: "exited" };
+    if (trustShown(io.outputSince(answeredAt))) return { kind: "trust_refused" }; // never answered twice
+    if (!ready(io.outputSince(answeredAt))) return late();
+  } else if (!ready(io.output())) {
+    return late();
   }
+  const typedAt = io.mark();
+  for (const c of "/usage") {
+    io.write(c);
+    await sleep(keyDelayMs);
+    if (io.exited()) return { kind: "exited" };
+  }
+  const echoed = () => inputShowsUsage(lines(io.outputSince(typedAt)));
+  await io.waitFor(() => io.exited() || echoed(), Math.min(3_000, io.remaining()));
+  if (io.exited()) return { kind: "exited" };
+  if (!echoed()) return io.remaining() <= 0 ? { kind: "timeout" } : { kind: "input_refused" };
+  const enterAt = io.mark();
+  io.write("\r");
+  const settled = () => kimiUsagePanelSettled(lines(io.outputSince(enterAt)));
+  await io.waitFor(() => io.exited() || settled(), io.remaining());
+  if (settled()) return { kind: "settled", text: io.outputSince(enterAt) };
+  return io.exited() ? { kind: "exited" } : { kind: "timeout" };
 }
 
-/** Ctrl-C twice, then SIGTERM to the process group after about 1 s, then SIGKILL after about 3 s. */
-async function stop(
-  child: ChildProcess,
-  isExited: () => boolean,
-  write: (s: string) => void,
-  waitFor: (pred: () => boolean, ms: number) => Promise<boolean>,
-): Promise<void> {
-  const signal = (sig: NodeJS.Signals) => {
-    try {
-      if (child.pid !== undefined) process.kill(-child.pid, sig);
-      else child.kill(sig);
-    } catch {
-      try {
-        child.kill(sig);
-      } catch {
-        // already gone
-      }
-    }
-  };
-  if (!isExited()) {
-    write("\u0003");
-    await sleep(200);
-    write("\u0003");
-    if (!(await waitFor(isExited, 1_000))) {
-      signal("SIGTERM");
-      if (!(await waitFor(isExited, 2_000))) {
-        signal("SIGKILL");
-        await waitFor(isExited, 1_000);
-      }
+/** Window lengths for the known rows (Kimi's `monthly` is a calendar month: no fixed length). */
+const WINDOW_SECONDS: Record<string, number | null> = { "5h": 18_000, weekly: 604_800, monthly: null };
+
+/** Maps a parsed panel to the shared report (ADR-0079): the breakdown becomes `<limit>:<window>` windows. */
+export function kimiUsageReport(
+  panel: Extract<KimiUsagePanel, { kind: "ok" }>,
+  observedAt: string,
+): ProviderUsageResult {
+  const windows: ProviderUsageWindow[] = [];
+  for (const w of panel.windows) {
+    const windowSeconds = WINDOW_SECONDS[w.id] ?? null;
+    windows.push({
+      id: w.id,
+      limit_id: null,
+      window_seconds: windowSeconds,
+      used_fraction: w.used_fraction,
+      remaining_fraction: w.remaining_fraction,
+      resets_at: w.reset_at,
+    });
+    for (const [limit, used] of Object.entries(w.breakdown ?? {})) {
+      windows.push({
+        id: `${limit}:${w.id}`,
+        limit_id: limit,
+        window_seconds: windowSeconds,
+        used_fraction: used,
+        remaining_fraction: round6(1 - used),
+        resets_at: w.reset_at,
+      });
     }
   }
-  child.stdin?.destroy();
-  child.stdout?.destroy();
-  child.stderr?.destroy();
+  let credits: ProviderUsageCredits | null = null;
+  if (panel.balances.length > 0) {
+    const balance = panel.balances.find((b) => b.id === "balance");
+    const limit = panel.balances.find((b) => b.id === "monthly_limit");
+    credits = {
+      has_credits: (balance?.amount ?? 0) > 0,
+      unlimited: limit?.unlimited === true,
+      balance: balance === undefined ? null : safeExcerpt(balance.text, 40),
+    };
+  }
+  return {
+    provider: "kimi",
+    source: "provider_reported",
+    observed_at: observedAt,
+    method: KIMI_USAGE_METHOD,
+    plan: null,
+    limit_reached: null,
+    limit_reached_type: null,
+    windows,
+    credits,
+  };
+}
+
+export interface ReadKimiUsageOptions extends KimiDriveOptions {
+  /** The resolved `kimi` executable (undefined: not on PATH). */
+  readonly exe: string | undefined;
+  /** Launcher arguments before the CLI's own (tests: a fake TUI script). */
+  readonly launcher?: readonly string[];
+  readonly terminal: TerminalRunner | undefined;
+  readonly env: Readonly<Record<string, string>>;
+  readonly now: Date;
+  readonly timeoutMs?: number;
+}
+
+/** FR-CAP-13: Kimi Code plan usage through the TUI's `/usage` panel; every failure is `unknown` with a fixed reason. */
+export async function readKimiUsage(o: ReadKimiUsageOptions): Promise<ProviderUsageResult> {
+  const observedAt = o.now.toISOString();
+  const unknown = (error: string): ProviderUsageResult => ({
+    provider: "kimi",
+    source: "unknown",
+    observed_at: observedAt,
+    method: KIMI_USAGE_METHOD,
+    error,
+  });
+  if (o.exe === undefined) return unknown("kimi not found on PATH");
+  if (o.terminal === undefined) return unknown(REASON_NO_TERMINAL);
+  const timeoutMs = o.timeoutMs ?? DEFAULT_KIMI_USAGE_TIMEOUT_MS;
+  const run = await o.terminal([o.exe, ...(o.launcher ?? [])], {
+    probeDirName: KIMI_USAGE_PROBE_DIR,
+    timeoutMs,
+    env: o.env,
+    drive: (io) => driveKimiUsage(io, o),
+  });
+  if (!run.ok) return unknown(run.error);
+  const outcome = run.value;
+  switch (outcome.kind) {
+    case "exited":
+      return unknown(REASON_EXITED);
+    case "timeout":
+      return unknown(`the Kimi Code TUI did not show plan usage within ${Math.round(timeoutMs / 1000)} s`);
+    case "input_refused":
+      return unknown(REASON_INPUT_REFUSED);
+    case "not_logged_in":
+      return unknown(REASON_NOT_LOGGED_IN);
+    case "not_ready":
+      return unknown(REASON_NOT_READY);
+    case "trust_refused":
+      return unknown(REASON_TRUST_REFUSED);
+    case "settled": {
+      const panel = parseKimiUsagePanel(outcome.text, o.now);
+      if (panel.kind === "ok") return kimiUsageReport(panel, observedAt);
+      if (panel.kind === "error") return unknown(`Kimi Code reported: ${safeExcerpt(panel.reason)}`);
+      if (panel.kind === "not_logged_in") return unknown(REASON_NOT_LOGGED_IN);
+      return unknown(REASON_NO_PLAN_SECTION);
+    }
+  }
 }

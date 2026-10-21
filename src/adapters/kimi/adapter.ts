@@ -46,6 +46,7 @@ import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import { renderObjective } from "../prompt.js";
+import type { ProviderUsageResult } from "../provider-usage.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -67,6 +68,7 @@ import type {
   ResolvedProfile,
   RunResult,
   SkillDelivery,
+  TerminalRunner,
 } from "../types.js";
 import {
   ACP_CONFIG_MODEL,
@@ -97,6 +99,7 @@ import {
   VERSION_ARGS,
 } from "./protocol.js";
 import { withScratchDir } from "./scratch.js";
+import { kimiUsageEnv, readKimiUsage } from "./usage.js";
 
 /**
  * Environment names passed through to Kimi Code (FR-EXE-07, NFR-SEC-02). Proposed: `PATH` for the binary and `HOME` so
@@ -348,6 +351,27 @@ export class KimiAdapter implements ProviderAdapter {
       },
     );
     return { binaryPath: exe, binaryVersion: version, steps };
+  }
+
+  /**
+   * ADR-0079 (FR-CAP-13): the plan quota from the TUI's `/usage` panel, through `opts.terminal` (a pseudo-terminal in
+   * the stable probe directory `kimi-usage`; see ./usage.ts). No model call, no session, no Kimi file read; the
+   * environment is {@link KIMI_ENV_ALLOWLIST} plus terminal type and size. Without a terminal runner (every caller but
+   * the production wiring) nothing is spawned and the answer is `unknown`. Any failure is `unknown`, never headroom
+   * (BR-50).
+   */
+  async readProviderUsage(
+    _runner: ProbeRunner,
+    now: Date = new Date(),
+    opts?: { readonly terminal?: TerminalRunner },
+  ): Promise<ProviderUsageResult> {
+    return readKimiUsage({
+      exe: this.#exe,
+      launcher: this.#launcher,
+      terminal: opts?.terminal,
+      env: kimiUsageEnv(KIMI_ENV_ALLOWLIST, process.env),
+      now,
+    });
   }
 
   /**
