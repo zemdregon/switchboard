@@ -89,7 +89,7 @@ export interface SessionRebaseInput {
   readonly identity?: { readonly name: string; readonly email: string };
   readonly sign: boolean;
   /**
-   * ADR-0079 item 3: the primary context sets `submodules.mode: "recursive"`. A gitlink both the session (either
+   * ADR-0080 item 3: the primary context sets `submodules.mode: "recursive"`. A gitlink both the session (either
    * chain) and the fresh base changed, to different commits, is then a `CONFLICT` naming that path: `merge-tree` cannot
    * merge a submodule whose objects are not in the umbrella's store. Absent or false: exactly as before.
    */
@@ -469,7 +469,7 @@ async function commitParts(
 }
 
 /**
- * ADR-0079 item 3: the gitlinks (mode `160000` on either side) that differ between `from` and `to`, as path to the new
+ * ADR-0080 item 3: the gitlinks (mode `160000` on either side) that differ between `from` and `to`, as path to the new
  * gitlink commit (`""` when the gitlink was removed or replaced by something else).
  */
 async function changedGitlinks(repoRoot: string, from: string, to: string): Promise<Map<string, string>> {

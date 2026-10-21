@@ -27,7 +27,7 @@ function stub(): { publisher: GitPublisher; calls: CommitInput[] } {
       calls.push(input);
       return { sha: "a".repeat(40), provenanceId: "gcm_1", filesChanged: input.paths?.length ?? 0 } as CommitResult;
     },
-    // ADR-0079 item 4: no attached submodules here.
+    // ADR-0080 item 4: no attached submodules here.
     async hasAttachedSubmodules(): Promise<boolean> {
       return false;
     },

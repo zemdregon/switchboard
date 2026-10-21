@@ -765,7 +765,7 @@ describe("projects[] (T9.1, FR-PRJ-01, 02, 04)", () => {
     ).toThrow(/\$\.projects\[0\]\.contexts\[1\]\.finalize_commit: only the primary, writable context/);
   });
 
-  it("contexts[].submodules (ADR-0079 item 1): resolved, primary-only recursive, safe paths, writable needs recursive", () => {
+  it("contexts[].submodules (ADR-0080 item 1): resolved, primary-only recursive, safe paths, writable needs recursive", () => {
     const load = (contexts: unknown[]) => () =>
       loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts }) });
     const absent = loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx] }) });
@@ -839,7 +839,7 @@ describe("projects[] (T9.1, FR-PRJ-01, 02, 04)", () => {
     expect(load([{ ...repoCtx, submodules: { mode: "recursive", exclude: ["a".repeat(257)] } }])).toThrow(/submodules/);
   });
 
-  it("merge_policy.checks (ADR-0079 item 7): default required, all_reported accepted, anything else refused", () => {
+  it("merge_policy.checks (ADR-0080 item 7): default required, all_reported accepted, anything else refused", () => {
     const cfg = (mp: unknown) =>
       loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx], merge_policy: mp }) });
     expect(cfg({ enabled: true }).projects[0]?.mergePolicy?.checks).toBe("required");

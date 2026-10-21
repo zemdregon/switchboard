@@ -35,7 +35,7 @@
  * names" above: the remote branch is what the caller publishes and reviews; it is the controller's
  * `<branch_prefix><meta-session id>`, never a run branch or a worktree path.
  *
- * ADR-0079 items 6 and 7 (LLD §3.4.16): a publication of an umbrella project carries `linked_pull_requests`, the
+ * ADR-0080 items 6 and 7 (LLD §3.4.17): a publication of an umbrella project carries `linked_pull_requests`, the
  * submodule pull requests `publish_run` linked to the branch (newest per repository, with the pushed paths) and, once
  * the ordered merge reached one, its `merge_state` read from the `submodule_merge` steps.
  */
@@ -111,11 +111,11 @@ export interface PublicationView {
   pushed_at: string;
   pull_request_url?: string;
   pull_request_number?: number;
-  /** ADR-0079 item 6: the submodule pull requests `publish_run` linked to this branch; present only when there is one. */
+  /** ADR-0080 item 6: the submodule pull requests `publish_run` linked to this branch; present only when there is one. */
   linked_pull_requests?: LinkedPullRequestView[];
 }
 
-/** ADR-0079 items 6 and 7: one linked submodule pull request and, once the ordered merge reached it, its state. */
+/** ADR-0080 items 6 and 7: one linked submodule pull request and, once the ordered merge reached it, its state. */
 export interface LinkedPullRequestView {
   /** `host/owner/repo` (as `publish_run`'s `submodules[].repo`). */
   repo: string;
@@ -128,7 +128,7 @@ export interface LinkedPullRequestView {
 }
 
 /**
- * ADR-0079: the newest `submodule_pull_request` row per repository linked to `branch`, with the paths of the push it
+ * ADR-0080: the newest `submodule_pull_request` row per repository linked to `branch`, with the paths of the push it
  * was opened for and its merge state from the `submodule_merge` steps of the umbrella ref: `merged` once a
  * `submodule_merged` step names the pull request, else `refused` with the newest refusal at its head, else absent.
  */

@@ -1182,7 +1182,7 @@ in_force_revision?, message? }` (`in_force_revision` and `message` Proposed). `a
 `container_environment`, `push_policy`, `commit_identity`, `commit_signing`, `widened_trust_ceiling`,
 `widened_providers` (widening is measured against the revision in force), `merge_policy` (T15.8: the definition sets
 `merge_policy.enabled: true`, on every revision that keeps it on, §20.7), `project_setup` (ADR-0071: a `setup` that is
-new or differs from the revision in force, §5.3), `submodule_write` and `merge_checks` (ADR-0079, §3.4.16). Errors,
+new or differs from the revision in force, §5.3), `submodule_write` and `merge_checks` (ADR-0080, §3.4.17). Errors,
 in check order: schema `INVALID_REQUEST`; a control, separator or bidirectional character in any string `INVALID_REQUEST`
 (`CONTROL_CHARACTER`); a configured id or another client's project `PERMISSION_BLOCKED` with one message for both
 (`NOT_MANAGEABLE`); unknown id for update/delete, deleted id, or an existing id for create `INVALID_REQUEST` (ids are
@@ -2208,7 +2208,7 @@ Delegated, not owner-approved):**
   Without it a proxy targets only itself. `tool_profile` is not consulted.
 - `approval_proxy_kinds` ([ADR-0068](../adr/0068-mcp-only-project-onboarding.md), Delegated detail): a non-empty list
   of unique values from `privileged_scope | dynamic_project | push_revision | project_source`, default the
-  first three (`project_source` only when listed, [ADR-0079](../adr/0079-submodule-projects.md), §3.4.16), refused at
+  first three (`project_source` only when listed, [ADR-0080](../adr/0080-submodule-projects.md), §3.4.17), refused at
   load without `approval_proxy: true`. `list_pending_approvals` lists and `decide_approval` decides only those kinds; any
   other kind gets the same single refusal as an unknown id (no oracle). Implementation: `proxyKinds` in
   `src/control/approval-proxy.ts`. The orchestrator profile offers both tools whenever `approval_proxy` is true.
@@ -2561,14 +2561,52 @@ remote-tracking ref (recorded) when a later step refuses.
 **`publish_run` after a rebase.** A push the remote rejects as not a fast-forward is `PERMISSION_BLOCKED`
 `NON_FAST_FORWARD` (it was `TOOL_FAILURE`); the controller never forces (Q-112).
 
-#### 3.4.16 Submodule projects (ADR-0079)
+#### 3.4.16 `close_pr` (FR-GIT-13, ADR-0078)
+
+*Added 2026-10-21 from an operator task (Delegated agent work, not owner-approved).* Code: `src/mcp/close-pr.ts`, G16
+and G17 in `src/ci/gh-argv.ts` (`ghPrCloseArgv`, `ghPrNumberViewArgv`), `GhPullRequestPort.findByNumber` and `close` in
+`src/ci/gh-pr.ts`, schemas in `src/mcp/schemas.ts` (`PUBLISH_TOOL_NAMES`), `listCreatedPullRequests` and
+`recordPullRequestClose` in `src/ledger/repo.ts`, migration `src/ledger/migrations/0036_pr_close_audit.ts`.
+Decision record: [ADR-0078](../adr/0078-mcp-close-pr.md).
+
+**Offered** exactly when `publish_run` is (§3.4.12) and the publish port's pull-request port has `findByNumber` and
+`close` (`serve` wires `GhPullRequestPort` on `ci_trigger.gh_binary`, which has both). Otherwise it is answered exactly
+like an unknown tool; `tools/list` and `callTool` read the same `offeredDescriptors`.
+
+**Input** (closed): `{ project_id, pull_request_number: integer >= 1, replacement_pull_request_number: integer >= 1,
+delete_branch?: boolean = false }`. **Output** (closed): `{ project_id, run_id, pull_request: { number, url },
+replacement_pull_request: { number, url }, closed: boolean, branch_deleted: boolean }`; `closed: false` means the pull
+request was already closed and nothing was written.
+
+**Checks, in order.** The two numbers differ (`INVALID_REQUEST`, `SAME_PULL_REQUEST`); the project passes
+`publishableContext` (§3.4.12: `PERMISSION_BLOCKED` `NO_PROJECT`, `CONTEXT_UNKNOWN` or `POLICY_NONE`); the primary
+context's push remote is a github.com remote (`INVALID_REQUEST`, `REMOTE_NOT_GITHUB`); a `pull_request` row with
+`action = 'created'`, that number and that `owner/repo` (case-insensitive) exists for a run of the project whose
+`client_id` is the caller and whose meta-session the caller's HTTP subject may see (newest first; otherwise
+`PERMISSION_BLOCKED` `NOT_SWITCHBOARD_PR`). No `gh` call happens before this point. Then G17 reads the pull request and
+the replacement: a pull request that is missing or whose `headRefName` is not the row's branch is `PERMISSION_BLOCKED`
+`HEAD_BRANCH_MISMATCH`; a missing replacement is `INVALID_REQUEST` `REPLACEMENT_NOT_FOUND`; `MERGED` is
+`PERMISSION_BLOCKED` `ALREADY_MERGED`; `CLOSED` returns `closed: false`; `OPEN` is closed with G16 and the comment
+`Superseded by #<replacement>.` plus a fixed line naming `close_pr`, the client id and the run id, with
+`--delete-branch` only when `delete_branch` is true. A G16 or G17 failure is `TOOL_FAILURE` with `details.reason` the
+port's closed code, retryable except `GH_MISSING` and `AUTH_REQUIRED`. Not gated on the merge policy or a pause.
+
+**Records.** Every call is one append-only `pull_request_close` row (migration 0036): `client_id`, `project_id`,
+`number`, `replacement_number` and `delete_branch` from the arguments (only well-typed values, else NULL), the matched
+`pull_request_id`, `run_id` and `repo` once known, `outcome` (`closed`, `already_closed`, `refused`, `failed`) and
+`reason` (the error's `details.reason`, else its code; NULL on success). Calls the server refuses first are recorded
+too: `TOOL_NOT_OFFERED` (not offered to this client, or outside its tool profile) and `SCHEMA_INVALID`. A row with a run
+also appends a `pull_request_close` run event on that run with the same facts. Never a comment, title or body. Tests:
+`src/mcp/publish-run.test.ts` ("close_pr (ADR-0078)"), `src/ci/gh-pr.test.ts`, `src/mcp/tools-list-callable.test.ts`.
+
+#### 3.4.17 Submodule projects (ADR-0080)
 
 *Added 2026-10-21 (Delegated agent work for an operator task for zemdregon, owner decision 25; not owner-approved).*
-Realizes FR-PRJ-11, FR-PRJ-12, FR-GIT-13, FR-GIT-14 and FR-SUB-03. Decision record and rationale:
-[ADR-0079](../adr/0079-submodule-projects.md); this section holds only the contracts. Code: `src/submodules/`
+Realizes FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15 and FR-SUB-03. Decision record and rationale:
+[ADR-0080](../adr/0080-submodule-projects.md); this section holds only the contracts. Code: `src/submodules/`
 (manifest, store, worktree, errors), `src/ci/submodule-merge.ts`, `src/projects/source-grants.ts`, `src/mcp/project-tools.ts`,
 `src/mcp/schemas.ts`, `src/config/schema.ts`, `src/control/approval-proxy.ts`, `src/cli/projects-sources.ts`;
-migration `src/ledger/migrations/0036_submodule_projects.ts`.
+migration `src/ledger/migrations/0037_submodule_projects.ts`.
 
 **Setting** (`projects[].contexts[].submodules`, strict): `{ mode: "off" | "recursive", writable_paths?: string[],
 exclude?: string[] }`. `writable_paths` and `exclude` hold at most 512 worktree-relative POSIX paths each (no leading
@@ -2637,13 +2675,13 @@ the meta-session's publish ref moves to it (compare-and-swap) and the controller
 `submodule_merged` and `gitlinks_repointed` steps are also `ref_event` run events of those kinds on the publishing
 run.
 
-**Audited `gh` argv** (ADR-0050 amendment 1 item 10 continues after G15, §20.7): G16 `pr checks <n> --repo <o>/<r>
+**Audited `gh` argv** (ADR-0050 amendment 1 item 10 continues after G17, §20.7): G18 `pr checks <n> --repo <o>/<r>
 --json bucket` (every reported check, no `--required`; used only for `merge_policy.checks: all_reported`; the §20.7
-parsing assumptions for exit codes 1 and 8 apply) and G17 `pr view <n> --repo <o>/<r> --json state,mergeCommit` (the
+parsing assumptions for exit codes 1 and 8 apply) and G19 `pr view <n> --repo <o>/<r> --json state,mergeCommit` (the
 merge commit of a merged submodule pull request). **Assumption:** both flags and fields are taken from the `gh` manual
 pages, not checked against the installed `gh` (Q-109).
 
-**Persistence** (migration 0036; append-only, `STRICT`; ids `smc_`, `smp_`, `spr_`, `smm_`, `psr_`, `psd_`):
+**Persistence** (migration 0037; append-only, `STRICT`; ids `smc_`, `smp_`, `spr_`, `smm_`, `psr_`, `psd_`):
 `submodule_commit` (`run_id`, `meta_session_id`, `kind = 'publish'`, `repo` as `host/owner/repo`, `paths_json`,
 `parent_sha`, `commit_sha`, `umbrella_commit_sha`); `submodule_push` (`outcome` `ACCEPTED | REFUSED_POLICY |
 REJECTED_REMOTE | ERROR`, `ref`, `head_sha`, `umbrella_head_sha`, `requested_by`); `submodule_pull_request` (`repo` as
@@ -6426,6 +6464,10 @@ probes. `capacity --json` adds `schema_version` as every CLI `--json` does. With
 an empty in-memory ledger and creates nothing. The `doctor` JSON gains a `capacity` key, and its text gains one line per
 adapter. The section never changes `ok`, and an unreadable ledger leaves it out.
 
+*Amendment 2026-10-21 (ADR-0079, Delegated):* "never probes a provider" no longer holds as written. For an enabled
+provider whose adapter has `readProviderUsage`, `get_capacity` also runs that CLI's own read-only account call and adds
+`provider_usage` (§16.10). It makes no model call and reads no credential.
+
 ### 16.4 Per-provider circuit breaker
 
 State in `provider_health` (one row per adapter provider id; created on first write, with `auth_state = 'UNKNOWN'` and
@@ -6743,6 +6785,64 @@ breaker's probe): a queued run whose provider is deferred stays in `QUEUED`, one
 including `privileged` and `require_provider` runs and runs admitted to an undeferred provider whose subscription
 became deferred before dispatch. Nothing creates a run, a probe or a provider call. Tests:
 `src/lifecycle/pacing-gate.test.ts`, `src/routing/pacing-admission.test.ts`.
+
+### 16.10 Provider-reported usage reader (FR-CAP-13, ADR-0079)
+
+*Added 2026-10-21 (Delegated, not owner-approved).* The estimator of §16.2 never sees a provider's own quota, because no
+run output carries one. Where a provider's CLI can report the signed-in account's windows without a model call, an
+optional adapter method reads them, and the result is shown beside the projection.
+
+**Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
+(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; only Codex implements it.
+
+```jsonc
+// ProviderUsageReport
+{ "source": "provider_reported", "provider": "codex", "observed_at": "<ISO>", "method": "codex app-server account/rateLimits/read",
+  "plan": "plus", "limit_reached": false, "limit_reached_type": null,
+  "windows": [ { "id": "primary", "limit_id": "codex", "window_seconds": 18000,
+                 "used_fraction": 0.21, "remaining_fraction": 0.79, "resets_at": "<ISO>" } ],
+  "credits": { "has_credits": true, "unlimited": false, "balance": "<string>" } }
+// ProviderUsageUnavailable
+{ "source": "unknown", "provider": "codex", "observed_at": "<ISO>", "error": "<short reason>" }
+```
+
+**Codex wire exchange** (`src/adapters/codex/usage.ts`). The adapter runs `codex app-server` through the existing
+`ProbeRunner` with the environment allowlist `PATH` and `HOME` and a 15 s timeout (**Proposed**). It writes three
+JSON-RPC lines on stdin: `initialize` (id 1), the `initialized` notification, and `account/rateLimits/read` (id 2) with
+`excludeResetCreditDetails: true`. The process exits at stdin end-of-file before answering, so stdin is held open until
+the id-2 answer arrives. No model is called. The CLI uses its own login; Switchboard reads no credential and no file
+under `~/.codex` (ADR-0003).
+
+| Provider field (app-server) | Report field |
+| --- | --- |
+| `rateLimits` and each entry of `rateLimitsByLimitId`: `primary`, `secondary` | `windows[]`, `id` is `primary` or `secondary`, prefixed `<limit_id>:` for a non-default bucket |
+| `usedPercent` | `used_fraction` = `usedPercent / 100`; `remaining_fraction` = `1 - used_fraction` |
+| `windowDurationMins` | `window_seconds` = minutes × 60 |
+| `resetsAt` (Unix seconds) | `resets_at` (ISO) |
+| `limitId` | `limit_id` |
+| `planType` | `plan` |
+| `credits.hasCredits`, `unlimited`, `balance` | `credits.has_credits`, `unlimited`, `balance` |
+| `rateLimitReachedType`, `ordinaryUsageAllowed` | `limit_reached`, `limit_reached_type`, only from the provider's flags, never inferred from a full window |
+
+`accountId` and every other field are dropped.
+
+**Failure rules.** A spawn failure, a timeout, a missing answer or a JSON-RPC error returns `ProviderUsageUnavailable`
+with a short reason. An unknown figure is never headroom (BR-50).
+
+**Reader and cache** (`src/capacity/provider-usage.ts`). `readProviderUsage` runs the readers of enabled providers that
+have one, in parallel. `ProviderUsageCache` is per process with a one-minute TTL (**Proposed**, Delegated).
+`withProviderUsage` adds the report to each provider entry of the §16.3 projection as `provider_usage`; the projection
+itself (`capacity_score`, `explicit_remaining`, `reset_at`, `pacing`, routing) is unchanged. The report is never written
+to the ledger and does not feed routing, pacing or the score; `REMAINING_KEYS` and `USAGE_KEYS` stay empty. Feeding it
+into pacing is possible follow-up work and is not done.
+
+**Surfaces.** `get_capacity` (the output schema gains an optional `provider_usage` per provider), `switchboard capacity`
+(text and `--json`) and `switchboard doctor` (a separate "Provider-reported usage" section, informational, never
+changes `ok`). Text shows fractions, not percentages (FR-CAP-03 wording rule), and "remaining" appears only on
+`provider_reported` lines. Tests: `src/adapters/codex/usage.test.ts` (recorded redacted fixture
+`src/adapters/codex/fixtures/usage/app-server-rate-limits.jsonl` and two synthetic ones),
+`src/capacity/provider-usage.test.ts`, and the block "provider_usage on get_capacity, capacity and doctor (ADR-0079,
+FR-CAP-13)" in `src/mcp/get-capacity.test.ts`.
 
 ## 17. Routing (M7)
 
@@ -8249,18 +8349,22 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
    (`CiTriggerPoller`): `ci_trigger.enabled` is the one switch for every `gh` call and `poll_interval_seconds` the pace,
    but a project needs no `ci_trigger.projects[]` entry to be merged. A paused project (§3.4.4) and a superseded ref
    (§20.4) are skipped without a `gh` call. Only refs the project published (`listPublishedRefs`, §18.6).
-3. **`gh` templates** (`src/ci/gh-argv.ts`, ADR-0050 amendment 1 item 10), audited like G1 to G9: G10 `pr view
-   <branch> --json number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName`; G11 `pr checks <n> --required
-   --json bucket` (only the required checks' buckets, so non-required checks are never read and cannot block or pass a
-   merge); G12 `pr merge <n> --repo <o>/<r> --<method> --match-head-commit <sha>`. Never `--admin`, `--auto` or
+3. **`gh` templates** (`src/ci/gh-argv.ts`, ADR-0050 amendment 1 item 10), audited like G1 to G9: G10 `pr view <branch>
+   --json number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName`; G11 `pr checks <n> --required --json
+   bucket` (only the required checks' buckets, so non-required checks are never read and cannot block or pass a merge);
+   G12 `pr merge <n> --repo <o>/<r> --<method> --match-head-commit <sha>`. Never `--admin`, `--auto` or
    `--delete-branch`. G15 (ADR-0073, §3.4.14) `api --method PUT repos/{owner}/{repo}/pulls/{n}/update-branch -f
-   expected_head_sha=<sha> --silent` is the only write besides G12 and the publish templates, used by `update_run_branch`
-   only. The flags and fields were checked against the `gh` manual pages (`gh_pr_merge`,
-   `gh_pr_checks`, `gh_pr_view` on cli.github.com, 2026-10-20); `gh --help` could not be run on the build host, so the
-   check against the installed `gh` that ADR-0050 asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from
-   the manual's exit code 8 for pending checks): with `--json`, `gh pr checks` prints the array also when it exits 1
-   (a failed check) or 8 (a pending one), and exits 1 with no output when the base reports no required check. Every
-   reading fails closed: exit 1 with no output is `none` (refused), anything unparseable is `gh_error` (refused).
+   expected_head_sha=<sha> --silent` is the only write besides G12 and the publish templates, used by
+   `update_run_branch` only. G16 `pr close <n> --repo <o>/<r> --comment <comment> [--delete-branch]` and G17 `pr view
+   <n> --repo <o>/<r> --json number,state,url,headRefName` (ADR-0078, §3.4.16) are used by `close_pr` only. G18 `pr
+   checks <n> --json bucket` and G19 `pr view <n> --json state,mergeCommit` (ADR-0080, §3.4.17) are reads of the ordered
+   submodule merge. The flags and fields were checked against the `gh` manual pages (`gh_pr_merge`, `gh_pr_checks`,
+   `gh_pr_view` on cli.github.com, 2026-10-20); `gh --help` could not be run on the build host, so the check against
+   the installed `gh` that ADR-0050 asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from the manual's
+   exit code 8 for pending checks): with
+   `--json`, `gh pr checks` prints the array also when it exits 1 (a failed check) or 8 (a pending one), and exits 1
+   with no output when the base reports no required check. Every reading fails closed: exit 1 with no output is `none`
+   (refused), anything unparseable is `gh_error` (refused).
 4. **Gate order** (the first failing step is the reason): G10 (no pull request → nothing; not `OPEN` → a `merged` or
    `closed` ref event only; `draft`; head other than the published tip or head branch other than the ref → `head_moved`;
    base other than the primary context's base branch → `base_mismatch`; not `MERGEABLE`, `UNKNOWN` included →

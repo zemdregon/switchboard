@@ -202,7 +202,7 @@ describe("refresh_project_base (ADR-0074)", () => {
   });
 });
 
-describe("refresh_project_base with submodules (ADR-0079 item 3)", () => {
+describe("refresh_project_base with submodules (ADR-0080 item 3)", () => {
   let fx: Fixture;
   beforeEach(() => {
     fx = makeFixture("sb-base-sub-");

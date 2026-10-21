@@ -10,6 +10,9 @@
  * queued item is visible to every subject of the client, a run another subject delegated is not, on every run-scoped
  * tool (`get_run`, `list_runs`, `get_artifacts`, `get_digest`, `explain_route`, `publish_run`).
  *
+ * ADR-0078: MCP `close_pr` over the same fixture: only a pull request `publish_run` created for the caller's run, the
+ * replacement linked in a controller-built comment, idempotent, and every call (allowed or denied) audited.
+ *
  * Temporary repositories and a LOCAL bare remote; the push URL is reported as a github.com URL by an injected reader,
  * and no real `gh` or provider CLI runs.
  */
@@ -23,7 +26,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type ResolvedProfile } from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
-import { type PullRequestLink, type PullRequestPort, PullRequestPortError } from "../ci/gh-pr.js";
+import {
+  type PullRequestByNumber,
+  type PullRequestLink,
+  type PullRequestPort,
+  PullRequestPortError,
+} from "../ci/gh-pr.js";
 import type { ResolvedMcpClient, ResolvedProject } from "../config/index.js";
 import { GitPublisher, GitPusher, projectPushContextResolver } from "../git/index.js";
 import { createIdGenerator } from "../ids/index.js";
@@ -63,9 +71,22 @@ const profileFor = (name: TrustProfile): ResolvedProfile => ({
 });
 
 class FakePulls implements PullRequestPort {
-  calls: { op: "find" | "create"; args: Json }[] = [];
+  calls: { op: "find" | "create" | "view" | "close"; args: Json }[] = [];
   open: PullRequestLink | null = null;
   failWith: PullRequestPortError | undefined;
+  /** ADR-0078: what G17 reads by number (`create` adds the pull request it opens). */
+  byNumber = new Map<number, PullRequestByNumber>();
+  closeFailWith: PullRequestPortError | undefined;
+  async findByNumber(q: { owner: string; repo: string; number: number }): Promise<PullRequestByNumber | null> {
+    this.calls.push({ op: "view", args: q });
+    return this.byNumber.get(q.number) ?? null;
+  }
+  async close(q: { owner: string; repo: string; number: number; comment: string; deleteBranch: boolean }) {
+    this.calls.push({ op: "close", args: q });
+    if (this.closeFailWith) throw this.closeFailWith;
+    const pr = this.byNumber.get(q.number);
+    if (pr) this.byNumber.set(q.number, { ...pr, state: "CLOSED" });
+  }
   async findForBranch(q: { owner: string; repo: string; branch: string }): Promise<PullRequestLink | null> {
     this.calls.push({ op: "find", args: q });
     if (this.failWith) throw this.failWith;
@@ -75,6 +96,7 @@ class FakePulls implements PullRequestPort {
     this.calls.push({ op: "create", args: q });
     if (this.failWith) throw this.failWith;
     this.open = { number: 42, state: "OPEN", url: PR_URL };
+    this.byNumber.set(42, { number: 42, state: "OPEN", url: PR_URL, headBranch: q.branch });
     return { number: 42, url: PR_URL };
   }
 }
@@ -707,5 +729,214 @@ describe("run visibility of queue-admitted runs over the HTTP-subject path (FR-Q
     await visible(subjectA, directRun);
     await unknown(subjectB, directRun);
     await unknown(peer, directRun);
+  });
+});
+
+const REPLACEMENT_URL = "https://github.com/acme/web/pull/43";
+const closeRows = (db: Database.Database) =>
+  db
+    .prepare(
+      `SELECT client_id, project_id, number, replacement_number, delete_branch, run_id, repo, outcome, reason
+       FROM pull_request_close ORDER BY created_at, id`,
+    )
+    .all() as Json[];
+
+describe("close_pr (ADR-0078)", () => {
+  /** Publish a run of `linus` (pull request #42 created) and give the replacement #43 on another branch. */
+  const published = async (fx: Fixture) => {
+    const call = await fx.connect("linus");
+    const seeded = await fx.seedRun();
+    const r = await call("publish_run", { run_id: seeded.runId });
+    expect(r.body.pull_request, JSON.stringify(r.body)).toMatchObject({ number: 42, reused: false });
+    fx.pulls.byNumber.set(43, { number: 43, state: "OPEN", url: REPLACEMENT_URL, headBranch: "sb/next" });
+    fx.pulls.calls = [];
+    return { call, ...seeded };
+  };
+
+  it("is offered with publish_run only; a call from a client without it is audited and answered as unknown", async () => {
+    f = await start();
+    expect(await f.tools("linus")).toContain("close_pr");
+    expect(await f.tools("nopush")).not.toContain("close_pr");
+    expect(await f.tools("console")).not.toContain("close_pr");
+    for (const id of ["nopush", "console"]) {
+      const call = await f.connect(id);
+      const r = await call("close_pr", {
+        project_id: "web",
+        pull_request_number: 42,
+        replacement_pull_request_number: 43,
+      });
+      expect(r.body.error).toMatchObject({ code: "INVALID_REQUEST", message: 'unknown tool "close_pr"' });
+    }
+    expect(closeRows(f.db)).toEqual([
+      expect.objectContaining({
+        client_id: "nopush",
+        project_id: "web",
+        number: 42,
+        outcome: "refused",
+        reason: "TOOL_NOT_OFFERED",
+      }),
+      expect.objectContaining({ client_id: "console", outcome: "refused", reason: "TOOL_NOT_OFFERED" }),
+    ]);
+    expect(f.pulls.calls).toEqual([]);
+  });
+
+  it("closes a pull request publish_run created, comments the replacement, deletes the branch; again is a no-op", async () => {
+    f = await start();
+    const { call, runId, sessionId } = await published(f);
+    const args = {
+      project_id: "web",
+      pull_request_number: 42,
+      replacement_pull_request_number: 43,
+      delete_branch: true,
+    };
+    const r = await call("close_pr", args);
+    expect(r.isError, JSON.stringify(r.body)).toBe(false);
+    expect(r.body).toEqual({
+      project_id: "web",
+      run_id: runId,
+      pull_request: { number: 42, url: PR_URL },
+      replacement_pull_request: { number: 43, url: REPLACEMENT_URL },
+      closed: true,
+      branch_deleted: true,
+    });
+    const closes = f.pulls.calls.filter((c) => c.op === "close");
+    expect(closes).toHaveLength(1);
+    expect(closes[0]?.args).toMatchObject({ owner: "acme", repo: "web", number: 42, deleteBranch: true });
+    expect(closes[0]?.args.comment).toMatch(/^Superseded by #43\./u);
+    expect(closes[0]?.args.comment).toContain(runId);
+    expect(f.pulls.byNumber.get(42)?.headBranch).toBe(`sb/${sessionId}`);
+
+    const again = await call("close_pr", args);
+    expect(again.body).toMatchObject({ closed: false, branch_deleted: false });
+    expect(f.pulls.calls.filter((c) => c.op === "close")).toHaveLength(1);
+    expect(closeRows(f.db)).toEqual([
+      {
+        client_id: "linus",
+        project_id: "web",
+        number: 42,
+        replacement_number: 43,
+        delete_branch: 1,
+        run_id: runId,
+        repo: "acme/web",
+        outcome: "closed",
+        reason: null,
+      },
+      expect.objectContaining({ outcome: "already_closed", reason: null }),
+    ]);
+    const events = f.ledger.listRunEvents(runId).filter((e) => e.type === "pull_request_close");
+    expect(events.map((e) => JSON.parse(e.payload_json).outcome)).toEqual(["closed", "already_closed"]);
+    expect(() => f?.db.prepare("DELETE FROM pull_request_close").run()).toThrow(/append-only/u);
+  });
+
+  it("refuses anything Switchboard did not create for this client's run, before any gh call, and audits it", async () => {
+    f = await start();
+    await published(f);
+    const peer = await f.connect("peer");
+    const linus = await f.connect("linus");
+    const other = await linus("close_pr", {
+      project_id: "web",
+      pull_request_number: 7,
+      replacement_pull_request_number: 43,
+    });
+    expect(other.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "NOT_SWITCHBOARD_PR" } });
+    const notMine = await peer("close_pr", {
+      project_id: "web",
+      pull_request_number: 42,
+      replacement_pull_request_number: 43,
+    });
+    expect(notMine.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "NOT_SWITCHBOARD_PR" } });
+    const quiet = await linus("close_pr", {
+      project_id: "quiet",
+      pull_request_number: 42,
+      replacement_pull_request_number: 43,
+    });
+    expect(quiet.body.error).toMatchObject({ code: "PERMISSION_BLOCKED", details: { reason: "POLICY_NONE" } });
+    const self = await linus("close_pr", {
+      project_id: "web",
+      pull_request_number: 42,
+      replacement_pull_request_number: 42,
+    });
+    expect(self.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { reason: "SAME_PULL_REQUEST" } });
+    const schema = await linus("close_pr", { project_id: "web", pull_request_number: "42" });
+    expect(schema.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+    f.pushUrl = "https://gitlab.example/acme/web.git";
+    const gitlab = await linus("close_pr", {
+      project_id: "web",
+      pull_request_number: 42,
+      replacement_pull_request_number: 43,
+    });
+    expect(gitlab.body.error).toMatchObject({ details: { reason: "REMOTE_NOT_GITHUB" } });
+    expect(f.pulls.calls).toEqual([]);
+    expect(closeRows(f.db).map((r) => [r.client_id, r.outcome, r.reason])).toEqual([
+      ["linus", "refused", "NOT_SWITCHBOARD_PR"],
+      ["peer", "refused", "NOT_SWITCHBOARD_PR"],
+      ["linus", "refused", "POLICY_NONE"],
+      ["linus", "refused", "SAME_PULL_REQUEST"],
+      ["linus", "refused", "SCHEMA_INVALID"],
+      ["linus", "refused", "REMOTE_NOT_GITHUB"],
+    ]);
+  });
+
+  it("a reused pull request is not Switchboard's; another HTTP subject's run does not match either", async () => {
+    f = await start();
+    const { runId, sessionId } = await f.seedRun();
+    f.pulls.open = { number: 9, state: "OPEN", url: "https://github.com/acme/web/pull/9" };
+    const call = await f.connect("linus");
+    expect((await call("publish_run", { run_id: runId })).body.pull_request).toMatchObject({ number: 9, reused: true });
+    const reused = await call("close_pr", {
+      project_id: "web",
+      pull_request_number: 9,
+      replacement_pull_request_number: 43,
+    });
+    expect(reused.body.error).toMatchObject({ details: { reason: "NOT_SWITCHBOARD_PR" } });
+
+    const second = await f.seedRun();
+    f.pulls.open = null;
+    f.bindings.bind(second.sessionId, "sbc_subject_a");
+    const ownerA = await f.connect("linus", "sbc_subject_a");
+    expect((await ownerA("publish_run", { run_id: second.runId })).body.pull_request).toMatchObject({ number: 42 });
+    f.pulls.byNumber.set(43, { number: 43, state: "OPEN", url: REPLACEMENT_URL, headBranch: "sb/next" });
+    const otherSubject = await f.connect("linus", "sbc_subject_b");
+    const hidden = await otherSubject("close_pr", {
+      project_id: "web",
+      pull_request_number: 42,
+      replacement_pull_request_number: 43,
+    });
+    expect(hidden.body.error).toMatchObject({ details: { reason: "NOT_SWITCHBOARD_PR" } });
+    expect(sessionId).not.toBe(second.sessionId);
+    const ok = await ownerA("close_pr", {
+      project_id: "web",
+      pull_request_number: 42,
+      replacement_pull_request_number: 43,
+    });
+    expect(ok.body).toMatchObject({ closed: true, branch_deleted: false, run_id: second.runId });
+  });
+
+  it("refuses a merged pull request, a moved head branch and a missing replacement; a gh failure is TOOL_FAILURE", async () => {
+    f = await start();
+    const { call } = await published(f);
+    const args = { project_id: "web", pull_request_number: 42, replacement_pull_request_number: 43 };
+    const pr = f.pulls.byNumber.get(42) as PullRequestByNumber;
+    f.pulls.byNumber.set(42, { ...pr, state: "MERGED" });
+    expect((await call("close_pr", args)).body.error).toMatchObject({ details: { reason: "ALREADY_MERGED" } });
+    f.pulls.byNumber.set(42, { ...pr, headBranch: "someone/else" });
+    expect((await call("close_pr", args)).body.error).toMatchObject({ details: { reason: "HEAD_BRANCH_MISMATCH" } });
+    f.pulls.byNumber.set(42, pr);
+    const missing = await call("close_pr", { ...args, replacement_pull_request_number: 44 });
+    expect(missing.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { reason: "REPLACEMENT_NOT_FOUND" } });
+    f.pulls.closeFailWith = new PullRequestPortError("GH_FAILED", "gh exited 1");
+    const failed = await call("close_pr", args);
+    expect(failed.body.error).toMatchObject({
+      code: "TOOL_FAILURE",
+      retryable: true,
+      details: { reason: "GH_FAILED" },
+    });
+    expect(f.pulls.calls.filter((c) => c.op === "close")).toHaveLength(1);
+    expect(closeRows(f.db).map((r) => [r.outcome, r.reason])).toEqual([
+      ["refused", "ALREADY_MERGED"],
+      ["refused", "HEAD_BRANCH_MISMATCH"],
+      ["refused", "REPLACEMENT_NOT_FOUND"],
+      ["failed", "GH_FAILED"],
+    ]);
   });
 });

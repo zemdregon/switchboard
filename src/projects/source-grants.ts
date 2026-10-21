@@ -1,11 +1,11 @@
 /**
- * Runtime grants of `project_sources.allowed_owners` (ADR-0079 item 8). A `manage_projects` MCP client requests that an
+ * Runtime grants of `project_sources.allowed_owners` (ADR-0080 item 8). A `manage_projects` MCP client requests that an
  * owner be added; an approver client (approval kind `project_source`) or the operator (`switchboard projects sources`)
  * decides it once. An approved owner joins the configured `allowed_owners` at once, with no restart, because every
  * reader asks {@link effectiveProjectSources} at the time of the check. Hosts are never added: a grant can only name a
  * host already in `allowed_hosts`.
  *
- * Both tables are append-only (migration 0036): a request's status is derived from its one decision row.
+ * Both tables are append-only (migration 0037): a request's status is derived from its one decision row.
  * **Delegated** limitation: `allowed_owners` is a single list, not per host, so an approved owner is allowed on every
  * host in `allowed_hosts`, exactly like a configured owner.
  */

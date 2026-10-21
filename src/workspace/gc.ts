@@ -11,7 +11,7 @@ import { git } from "./git.js";
 import { type NativeSkillFs, pendingNativeSkills, removeNativeSkills } from "./native-skills.js";
 import { detachRunSubmodules } from "./submodules.js";
 
-/** ADR-0079 item 3: `attachRecordFile(<worktree>)` is `<worktree>` plus this suffix, beside the worktree directory. */
+/** ADR-0080 item 3: `attachRecordFile(<worktree>)` is `<worktree>` plus this suffix, beside the worktree directory. */
 const ATTACH_RECORD_SUFFIX = attachRecordFile("");
 const isAttachRecordName = (name: string): boolean =>
   name.endsWith(ATTACH_RECORD_SUFFIX) && name.length > ATTACH_RECORD_SUFFIX.length;
@@ -59,7 +59,7 @@ export interface GcOptions {
   /** T16.6 test seam: the unlink the native-skill cleaner uses before the worktrees are removed. */
   readonly nativeSkillFs?: NativeSkillFs;
   /**
-   * ADR-0079 item 3: `project_sources.clone_root`, where submodule stores live. A worktree's attach record is read (its
+   * ADR-0080 item 3: `project_sources.clone_root`, where submodule stores live. A worktree's attach record is read (its
    * stores must lie below it) and its submodule worktrees are detached before the worktree is removed. Absent: no
    * record is read, exactly as before.
    */
@@ -252,7 +252,7 @@ async function removeWorktrees(
     const st = await lstat(wt).catch(() => undefined);
     if (!st) continue;
     if (isAttachRecordName(path.basename(wt))) {
-      // ADR-0079 item 3: a record left without its worktree; one with a worktree goes with it below.
+      // ADR-0080 item 3: a record left without its worktree; one with a worktree goes with it below.
       if (!(await exists(wt.slice(0, -ATTACH_RECORD_SUFFIX.length)))) await rm(wt, { force: true });
       continue;
     }
@@ -262,7 +262,7 @@ async function removeWorktrees(
       removed++;
       continue;
     }
-    // ADR-0079 item 3: its submodule worktrees are detached through the record first, so the stores keep no stale entry.
+    // ADR-0080 item 3: its submodule worktrees are detached through the record first, so the stores keep no stale entry.
     if (cloneRoot !== undefined) await detachRunSubmodules(wt, cloneRoot, (id) => runIds.has(id));
     if (repoOk)
       await git(["worktree", "remove", "--force", "--force", wt], { cwd: repoRoot as string }).catch(() => undefined);
@@ -386,7 +386,7 @@ export async function findOrphans(options: {
     const known = new Set((runsOf.all(sess) as { id: string }[]).map((r) => r.id));
     const names = await readdir(sessDir).catch(() => [] as string[]);
     for (const name of names) {
-      // ADR-0079 item 3: an attach record goes with its run's worktree (live, or itself reported as an orphan).
+      // ADR-0080 item 3: an attach record goes with its run's worktree (live, or itself reported as an orphan).
       const owner = isAttachRecordName(name) ? name.slice(0, -ATTACH_RECORD_SUFFIX.length) : undefined;
       if (owner !== undefined && (known.has(owner) || names.includes(owner))) continue;
       if (!known.has(name)) worktrees.push(path.join(sessDir, name));
@@ -435,7 +435,7 @@ export interface OrphanGcOptions {
   readonly publishPrefix?: string;
   /** Test seam, as {@link GcOptions.onStep}: a throw simulates a crash after that step for that orphan. */
   readonly onStep?: (step: OrphanGcStep, target: string) => void | Promise<void>;
-  /** ADR-0079 item 3: as {@link GcOptions.cloneRoot}; an orphan worktree's submodules are detached before removal. */
+  /** ADR-0080 item 3: as {@link GcOptions.cloneRoot}; an orphan worktree's submodules are detached before removal. */
   readonly cloneRoot?: string;
 }
 
@@ -662,7 +662,7 @@ async function removeOrphanWorktree(
   const st = await lstat(target).catch(() => undefined);
   if (!st) return;
   if (st.isDirectory() && !st.isSymbolicLink()) {
-    // ADR-0079 item 3: submodule worktrees are detached through their records first (one level for a session
+    // ADR-0080 item 3: submodule worktrees are detached through their records first (one level for a session
     // directory, the target itself for a run directory), so their stores keep no stale entry.
     const worktrees =
       parts.length === 1

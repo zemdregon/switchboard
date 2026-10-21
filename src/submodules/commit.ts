@@ -1,5 +1,5 @@
 /**
- * Controller-made submodule commits (ADR-0079 item 4, FR-GIT-14), the part of the commit tool and `finalize_commit`
+ * Controller-made submodule commits (ADR-0080 item 4, FR-GIT-14), the part of the commit tool and `finalize_commit`
  * that works inside the attached submodule worktrees of a run. `src/git/commit.ts` drives it; this module never
  * touches the umbrella's publish ref or the ledger's `git_commit` row.
  *

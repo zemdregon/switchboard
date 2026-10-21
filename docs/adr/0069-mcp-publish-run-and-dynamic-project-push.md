@@ -1,6 +1,8 @@
 # ADR-0069: MCP `publish_run`, pull requests through the operator's `gh`, and push from approved dynamic projects
 
 - Status: Accepted (built 2026-10-20).
+- Amended by [ADR-0078](0078-mcp-close-pr.md) (2026-10-21): MCP `close_pr` may close a pull request `publish_run`
+  created, with one controller-built comment linking its replacement; "no edit, no comment" otherwise stands.
 - Date: 2026-10-20
 - Decided by: Linus (design authority) under owner ruling 2026-10-20 ([owner decision 78](../ROADMAP.md#42-owner-decisions)).
   The ruling sets the goal ("fix MCP project onboarding and run visibility, then onboard digifender-llc/whumpo-website

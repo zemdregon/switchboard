@@ -1,6 +1,6 @@
 /**
- * The ordered merge (ADR-0079 item 7, LLD §3.4.16) through the policy poller and the hook: linked submodule pull
- * requests in path order through the gate's checks and G12 pinned to the pushed head, G17 merge commits recorded, one
+ * The ordered merge (ADR-0080 item 7, LLD §3.4.17) through the policy poller and the hook: linked submodule pull
+ * requests in path order through the gate's checks and G12 pinned to the pushed head, G19 merge commits recorded, one
  * gitlinks-only repoint commit on the published umbrella tip (provenance row, secret scan, fast-forward push through the
  * controller pusher), then the umbrella gate at the new head with verification read at the pre-repoint tip. Local
  * fixture repositories and a fake GitHub only.
@@ -41,7 +41,7 @@ const pr = (world: World, repo: string) => world.gh.prs.get(repo) as FakePr;
 const lsTree = (dir: string, rev: string) => g(dir, "ls-tree", rev, "--", "libs/a", "libs/b", "vendor/a");
 const linkOf = (dir: string, rev: string, p: string) => g(dir, "rev-parse", `${rev}:${p}`);
 
-describe("ordered merge (ADR-0079 item 7)", () => {
+describe("ordered merge (ADR-0080 item 7)", () => {
   it("lists the linked repositories in path order with their duplicate paths", async () => {
     w = await makeWorld();
     const repos = linkedRepositories(w.db, PROJECT, w.publishRef);
@@ -266,7 +266,7 @@ describe("ordered merge (ADR-0079 item 7)", () => {
     }
   });
 
-  it("applies merge_policy.checks all_reported to submodule PRs (G16; none reported refuses)", async () => {
+  it("applies merge_policy.checks all_reported to submodule PRs (G18; none reported refuses)", async () => {
     w = await makeWorld({ policy: { checks: "all_reported" } });
     w.verify();
     pr(w, "acme/liba").reported = { kind: "none" };

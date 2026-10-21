@@ -727,7 +727,7 @@ export class GitToolService {
         result: {
           sha: result.sha,
           files_changed: result.filesChanged,
-          // ADR-0079 item 4: present only for a run with attached submodules, so every other result is unchanged.
+          // ADR-0080 item 4: present only for a run with attached submodules, so every other result is unchanged.
           ...(result.submodules !== undefined
             ? {
                 submodules: result.submodules.map((s) => ({ paths: s.paths, repo: s.repo, commit_sha: s.commitSha })),

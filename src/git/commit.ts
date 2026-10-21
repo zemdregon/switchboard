@@ -86,7 +86,7 @@ import {
  * exists, it never refuses, and a scan or ledger failure is swallowed, so the commit and its result are unchanged. The
  * push still scans and refuses on its own.
  *
- * Submodule commits (ADR-0079 item 4, FR-GIT-14): when the run worktree has an attach record
+ * Submodule commits (ADR-0080 item 4, FR-GIT-14): when the run worktree has an attach record
  * (`src/submodules/worktree.ts`, written by the workspace manager for a context with `submodules.mode: "recursive"`)
  * and {@link GitPublisherOptions.submoduleCloneRoot} is set, each changed writable submodule in scope (every one for
  * "all changes" and for `allSubmodules`; a named one for explicit `paths`) gets one commit in its store, made by
@@ -132,11 +132,11 @@ export type PathRefusalReason =
   | "ignored"
   | "nested_repository"
   | "contains_nested_repository"
-  /** ADR-0079 item 4: inside an attached read-only submodule (a wiki included). */
+  /** ADR-0080 item 4: inside an attached read-only submodule (a wiki included). */
   | "submodule_read_only"
-  /** ADR-0079 item 4: inside an attached submodule whose `.git` link does not verify (fail closed). */
+  /** ADR-0080 item 4: inside an attached submodule whose `.git` link does not verify (fail closed). */
   | "submodule_link_invalid"
-  /** ADR-0079 item 4: two paths of one submodule repository changed to different trees. */
+  /** ADR-0080 item 4: two paths of one submodule repository changed to different trees. */
   | "submodule_duplicate_diverged";
 
 export interface PathRefusal {
@@ -199,7 +199,7 @@ export interface GitPublisherOptions {
    */
   readonly secretScanAllow?: readonly SecretScanAllowEntry[];
   /**
-   * ADR-0079 item 4: `project_sources.clone_root`, where every submodule store lives. An attach record's stores must be
+   * ADR-0080 item 4: `project_sources.clone_root`, where every submodule store lives. An attach record's stores must be
    * under it. Unset: submodule commits are off and an attach record refuses the commit (fail closed).
    */
   readonly submoduleCloneRoot?: string;
@@ -281,7 +281,7 @@ export interface CommitInput {
    */
   readonly sign?: { readonly reach: CredentialReach };
   /**
-   * ADR-0079 item 4: set only by the finalize-only path (honoured only with `origin: "finalize_only"`). Every attached
+   * ADR-0080 item 4: set only by the finalize-only path (honoured only with `origin: "finalize_only"`). Every attached
    * writable submodule is committed in full, whatever `paths` names (the run's changed paths cannot see inside a
    * submodule); a `paths` entry inside a read-only or unverifiable submodule is reported in `submodulesSkipped`
    * instead of refused; and `paths` may be empty (submodule changes only).
@@ -289,7 +289,7 @@ export interface CommitInput {
   readonly allSubmodules?: boolean;
 }
 
-/** ADR-0079 item 4: one submodule commit made with an umbrella commit. */
+/** ADR-0080 item 4: one submodule commit made with an umbrella commit. */
 export interface SubmoduleCommitSummary {
   /** Every umbrella path whose gitlink was set to {@link commitSha} (two for a repository referenced twice). */
   readonly paths: readonly string[];
@@ -313,9 +313,9 @@ export interface CommitResult {
   readonly messageSource: "agent" | "inner";
   /** T15.7: the second parent (the merged base) of a rebase run's first commit; absent otherwise. */
   readonly mergeParentSha?: string;
-  /** ADR-0079 item 4: present (possibly empty) only when the run worktree has attached submodules. */
+  /** ADR-0080 item 4: present (possibly empty) only when the run worktree has attached submodules. */
   readonly submodules?: readonly SubmoduleCommitSummary[];
-  /** ADR-0079 item 4: changed or named submodule paths not committed, with the reason; same presence rule. */
+  /** ADR-0080 item 4: changed or named submodule paths not committed, with the reason; same presence rule. */
   readonly submodulesSkipped?: readonly SubmoduleSkip[];
 }
 
@@ -361,7 +361,7 @@ interface IntentRecord {
   readonly finalizing_event_id?: string;
   /** T15.7: present only for a rebase run's two-parent commit (the second parent). */
   readonly merge_parent_sha?: string;
-  /** ADR-0079 item 4: present only when submodule commits were made; recorded as `submodule_commit` rows. */
+  /** ADR-0080 item 4: present only when submodule commits were made; recorded as `submodule_commit` rows. */
   readonly submodules?: readonly {
     readonly repo: string;
     readonly paths: readonly string[];
@@ -508,7 +508,7 @@ export class GitPublisher {
   }
 
   /**
-   * ADR-0079 item 4: whether the run's worktree has attached submodules (an attach record exists). A cheap check for
+   * ADR-0080 item 4: whether the run's worktree has attached submodules (an attach record exists). A cheap check for
    * the finalize-only path, which has no umbrella paths to commit when only submodules changed. Never throws.
    */
   async hasAttachedSubmodules(runId: string): Promise<boolean> {
@@ -523,7 +523,7 @@ export class GitPublisher {
   // ---- internals ----------------------------------------------------------------------------------------------
 
   /**
-   * ADR-0079 item 4: the run worktree's attach record, or undefined when there is none. A record that is not valid,
+   * ADR-0080 item 4: the run worktree's attach record, or undefined when there is none. A record that is not valid,
    * names another worktree, or exists without {@link GitPublisherOptions.submoduleCloneRoot} refuses the commit
    * (`GIT_FAILED`; fail closed): nothing would keep the umbrella from recording a gitlink the agent chose.
    */
@@ -702,7 +702,7 @@ export class GitPublisher {
     if (!parent) throw new CommitError("NO_WORKTREE", "the session's base commit is not in the repository");
     const mergeParent = await this.mergeParentFor(ctx, parent);
     const parentTree = await gitText(["rev-parse", "--verify", "--end-of-options", `${parent}^{tree}`], { cwd });
-    // ADR-0079 item 4: the umbrella parent's gitlinks and each submodule repository's next parent.
+    // ADR-0080 item 4: the umbrella parent's gitlinks and each submodule repository's next parent.
     const parents =
       record !== undefined
         ? await resolveSubmoduleParents({
@@ -829,7 +829,7 @@ export class GitPublisher {
       GIT_COMMITTER_EMAIL: identity.email,
       GIT_COMMITTER_DATE: `${when} +0000`,
     };
-    // ADR-0079 item 4: the submodule commits (same identity, dates, message and signing), then their gitlinks.
+    // ADR-0080 item 4: the submodule commits (same identity, dates, message and signing), then their gitlinks.
     let made: readonly MadeSubmoduleCommit[] = [];
     if (record !== undefined && parents !== undefined && plan !== undefined && plan.groups.length > 0) {
       const created = await createSubmoduleCommits(plan, {
@@ -946,7 +946,7 @@ export class GitPublisher {
     try {
       await this.options.testHooks?.afterStep?.("intent_recorded");
 
-      // ADR-0079 item 4: each store's publish ref keeps its new commit (compare-and-swap) before the umbrella moves.
+      // ADR-0080 item 4: each store's publish ref keeps its new commit (compare-and-swap) before the umbrella moves.
       if (made.length > 0) {
         const moved = await updateStoreRefs(made, publishRef).catch((err: unknown) => {
           this.ledger.appendRunEvent({
@@ -1054,7 +1054,7 @@ export class GitPublisher {
     parent: string,
     sha: string,
     publishRef: string,
-    /** ADR-0079 item 4: a submodule commit is scanned in its store; hit paths get the submodule path as prefix. */
+    /** ADR-0080 item 4: a submodule commit is scanned in its store; hit paths get the submodule path as prefix. */
     repo: string = ctx.worktreePath,
     pathPrefix?: string,
   ): Promise<void> {
@@ -1080,7 +1080,7 @@ export class GitPublisher {
   }
 
   /**
-   * ADR-0079 item 4: plan the submodule commits; two paths of one repository changed differently refuse the commit
+   * ADR-0080 item 4: plan the submodule commits; two paths of one repository changed differently refuse the commit
    * (`PATH_REFUSED`, `submodule_duplicate_diverged` per path).
    */
   private async planSubmodules(
@@ -1117,7 +1117,7 @@ export class GitPublisher {
     }
   }
 
-  /** ADR-0079 item 4: `tree` with the gitlink entries of `indexInfo` (a fresh temporary index; returns the new tree). */
+  /** ADR-0080 item 4: `tree` with the gitlink entries of `indexInfo` (a fresh temporary index; returns the new tree). */
   private async withGitlinks(cwd: string, tree: string, indexInfo: string): Promise<string> {
     const tmp = await mkdtemp(path.join(this.options.scratchDir, "idx-"));
     try {
@@ -1132,7 +1132,7 @@ export class GitPublisher {
 
   /**
    * The outcome step: `git_commit` event and row in one transaction (idempotent per run and commit), with the
-   * `submodule_commit` rows of the intent (ADR-0079 item 4) in the same transaction.
+   * `submodule_commit` rows of the intent (ADR-0080 item 4) in the same transaction.
    */
   private recordOutcome(intent: IntentRecord, recovered: boolean): GitCommitRow {
     return this.options.db.transaction(() => {
@@ -1179,7 +1179,7 @@ export class GitPublisher {
         sanitizer: r.sanitizer,
         // T11.4 (LLD §12.7): present only for a drafted message, so an agent commit's event is unchanged.
         ...(messageSource === "inner" ? { message_source: "inner", inner_call_id: innerCallId ?? null } : {}),
-        // ADR-0079 item 4: present only with submodule commits, so every other event is unchanged.
+        // ADR-0080 item 4: present only with submodule commits, so every other event is unchanged.
         ...(intent.submodules !== undefined
           ? { submodules: intent.submodules.map((s) => ({ repo: s.repo, paths: s.paths, commit_sha: s.commit_sha })) }
           : {}),
@@ -1221,7 +1221,7 @@ export class GitPublisher {
 
   /**
    * Per-path checks before anything is staged (LLD §12.3 step 1). Returns the normalised accepted umbrella paths and
-   * (ADR-0079 item 4) the paths routed into attached submodules, or throws with a report for every refused path.
+   * (ADR-0080 item 4) the paths routed into attached submodules, or throws with a report for every refused path.
    * Nothing is partially committed.
    */
   private async classifyPaths(
@@ -1254,7 +1254,7 @@ export class GitPublisher {
         refused.push({ path: rel, reason: "symlink_in_path" });
         continue;
       }
-      // ADR-0079 item 4: a path in an attached submodule is committed in that submodule only.
+      // ADR-0080 item 4: a path in an attached submodule is committed in that submodule only.
       const hit = sub !== undefined ? routeSubmodulePath(sub.record, rel) : undefined;
       if (hit !== undefined) {
         const r = routed.get(hit.entry.path) ?? { entry: hit.entry, subs: [] };
@@ -1334,14 +1334,14 @@ export class GitPublisher {
 interface ClassifiedPaths {
   /** Accepted umbrella paths. */
   readonly umbrella: readonly string[];
-  /** ADR-0079 item 4: attached path → accepted submodule-relative paths, or `"all"` when its root was named. */
+  /** ADR-0080 item 4: attached path → accepted submodule-relative paths, or `"all"` when its root was named. */
   readonly submodules: ReadonlyMap<string, readonly string[] | "all">;
-  /** ADR-0079 item 4 (finalize-only): named submodules that are not committed. */
+  /** ADR-0080 item 4 (finalize-only): named submodules that are not committed. */
   readonly skipped: readonly SubmoduleSkip[];
 }
 
 /**
- * The tracked, missing and ignored checks of LLD §12.3 step 1 for paths below `cwd` (the umbrella worktree or, ADR-0079
+ * The tracked, missing and ignored checks of LLD §12.3 step 1 for paths below `cwd` (the umbrella worktree or, ADR-0080
  * item 4, a verified submodule worktree) against `parentTree`. Returns one refusal per refused path (relative to `cwd`).
  */
 async function livePathRefusals(
@@ -1444,7 +1444,7 @@ function validateInput(input: CommitInput): void {
     throw new CommitError("INVALID_REQUEST", "message must be a non-empty string");
   }
   if (input.paths !== undefined) {
-    // ADR-0079 item 4: the finalize-only commit of submodule changes alone names no umbrella path.
+    // ADR-0080 item 4: the finalize-only commit of submodule changes alone names no umbrella path.
     const submodulesOnly = input.allSubmodules === true && input.origin === "finalize_only";
     if (!Array.isArray(input.paths) || (input.paths.length === 0 && !submodulesOnly)) {
       throw new CommitError("INVALID_REQUEST", "paths must be omitted (all changes) or a non-empty array");
@@ -1536,7 +1536,7 @@ async function changedCount(cwd: string, fromTree: string, toTree: string): Prom
     .filter((n) => n !== "").length;
 }
 
-/** ADR-0079 item 4: one skip per path (the first reason wins), sorted by path. */
+/** ADR-0080 item 4: one skip per path (the first reason wins), sorted by path. */
 function mergeSkips(...lists: readonly (readonly SubmoduleSkip[])[]): SubmoduleSkip[] {
   const byPath = new Map<string, SubmoduleSkip>();
   for (const list of lists) for (const s of list) if (!byPath.has(s.path)) byPath.set(s.path, s);

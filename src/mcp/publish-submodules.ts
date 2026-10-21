@@ -1,5 +1,5 @@
 /**
- * Linked publication of an umbrella run's submodule commits (ADR-0079 items 5 and 6, FR-GIT-14, LLD §3.4.16): the part
+ * Linked publication of an umbrella run's submodule commits (ADR-0080 items 5 and 6, FR-GIT-15, LLD §3.4.17): the part
  * of `publish_run` that runs before the umbrella push when the project's primary context sets
  * `submodules.mode: "recursive"`. `src/mcp/publish.ts` drives it and opens the pull requests; this module does the Git
  * work and never touches the umbrella's own push (the {@link import("../git/push.js").GitPusher} still does that, with
@@ -68,7 +68,7 @@ import { nativeSkillPresent } from "../workspace/native-skills.js";
 import { planManifest, type SubmodulePlan } from "../workspace/submodules.js";
 import { ToolError } from "./errors.js";
 
-/** What `serve` wires into `publish_run` for umbrella projects (ADR-0079 item 6). */
+/** What `serve` wires into `publish_run` for umbrella projects (ADR-0080 item 6). */
 export interface PublishSubmoduleDeps {
   /** The ledger's database (the submodule tables). */
   readonly db: Database.Database;

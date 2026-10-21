@@ -9,7 +9,7 @@ import { readdir } from "node:fs/promises";
  * excludes them from every operation that scans the worktree. The consequence is stated plainly: files inside a nested
  * repository are not captured in checkpoints, diffs or commits.
  *
- * ADR-0079 item 4 narrows this for the declared submodules of a context with `submodules.mode: "recursive"`: the
+ * ADR-0080 item 4 narrows this for the declared submodules of a context with `submodules.mode: "recursive"`: the
  * workspace manager attaches them as linked worktrees of their stores, and they are found here like any nested
  * repository, so the umbrella's own `status`, `diff` and `add -A` still never enter them. {@link partitionNested} tells
  * them apart from the nested repositories an agent created (ADR-0022 unchanged for those, and for every submodule of a
@@ -86,7 +86,7 @@ export function nestedPathspecArgs(nested: NestedRepositories): string[] {
 }
 
 /**
- * ADR-0079 item 4: split a scan into the attached declared submodule worktrees (a nested path equal to one of
+ * ADR-0080 item 4: split a scan into the attached declared submodule worktrees (a nested path equal to one of
  * `attached`, the paths of the run's attach record) and every other nested repository. Both stay excluded from the
  * umbrella's scans; only the caller's routing differs. A path inside an attached submodule is not reported by the scan
  * at all (it stops at the submodule's `.git`), so nested repositories in a submodule are the submodule commit's concern.

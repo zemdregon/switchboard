@@ -120,7 +120,7 @@ export type ToolName = (typeof TOOL_NAMES)[number];
 
 /**
  * T9.9: offered only to a client with `manage_projects` (FR-PRJ-10); absent from every other client's tool list.
- * ADR-0079: `request_project_source` is offered only when the server also has `project_sources` (`toolDescriptors`
+ * ADR-0080: `request_project_source` is offered only when the server also has `project_sources` (`toolDescriptors`
  * option `projectSources`).
  */
 export const PROJECT_TOOL_NAMES = [
@@ -153,9 +153,11 @@ export type SkillToolName = (typeof SKILL_TOOL_NAMES)[number];
  * ADR-0069 (LLD §3.4.12): `publish_run`, offered only to a client whose `max_push_policy` is `branch` and only when the
  * server has the publish port (`serve`); to any other client it does not exist. ADR-0070 (LLD §3.4.13): `merge_run_pr`
  * under the same gate and only when the server also has the merge port. ADR-0073 (LLD §3.4.14): `update_run_branch`
- * with `merge_run_pr` and only when the server also has the branch-update port and the pull-head reader.
+ * with `merge_run_pr` and only when the server also has the branch-update port and the pull-head reader. ADR-0078
+ * (LLD §3.4.16): `close_pr` under `publish_run`'s gate and only when the pull-request port can read by number and
+ * close.
  */
-export const PUBLISH_TOOL_NAMES = ["publish_run", "merge_run_pr", "update_run_branch"] as const;
+export const PUBLISH_TOOL_NAMES = ["publish_run", "merge_run_pr", "update_run_branch", "close_pr"] as const;
 export type PublishToolName = (typeof PUBLISH_TOOL_NAMES)[number];
 
 /**
@@ -563,7 +565,7 @@ const ENVELOPE = {
           pushed_at: { type: "string" },
           pull_request_url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
           pull_request_number: { type: "integer", minimum: 1 },
-          // ADR-0079 items 6 and 7 (LLD §3.4.16): the submodule pull requests publish_run linked to this branch, with
+          // ADR-0080 items 6 and 7 (LLD §3.4.17): the submodule pull requests publish_run linked to this branch, with
           // the ordered merge's state once it reached each; present only when there is one.
           linked_pull_requests: {
             type: "array",
@@ -780,7 +782,7 @@ const DIGEST = {
                 event_id: { type: "string" },
                 run_id: RUN_ID,
                 ts: { type: "string" },
-                // ADR-0079 item 7: `submodule_merge` entries are the ordered merge's steps (`code` is the step).
+                // ADR-0080 item 7: `submodule_merge` entries are the ordered merge's steps (`code` is the step).
                 type: { enum: [REF_EVENT_TYPE, MERGE_EVENT_TYPE, "submodule_merge"] },
                 // `merged` is already a ref_event kind: list it once. A duplicate enum item makes get_digest's output
                 // schema invalid to a draft-07 meta-schema check (enum `uniqueItems`), which a strict MCP client can
@@ -1132,6 +1134,79 @@ const CAPABILITIES = {
 /** `list_projects` (LLD §3 project additions): no paths, remotes, identities or image references (FR-MCP-04). */
 /** T6.3 (LLD §16.3, ADR-0043 item 6): the capacity projection; estimates and provider-reported values kept apart. */
 const NULLABLE_NUMBER = { type: ["number", "null"] } as const;
+/** ADR-0079 (FR-CAP-13, LLD §16.10): one provider's usage report, or `unknown` with a reason. */
+const PROVIDER_USAGE = {
+  anyOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "provider",
+        "source",
+        "observed_at",
+        "method",
+        "plan",
+        "limit_reached",
+        "limit_reached_type",
+        "windows",
+        "credits",
+      ],
+      properties: {
+        provider: { type: "string" },
+        source: { const: "provider_reported" },
+        observed_at: { type: "string" },
+        method: { type: "string" },
+        plan: { type: ["string", "null"] },
+        limit_reached: { type: ["boolean", "null"] },
+        limit_reached_type: { type: ["string", "null"] },
+        windows: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "limit_id", "window_seconds", "used_fraction", "remaining_fraction", "resets_at"],
+            properties: {
+              id: { type: "string" },
+              limit_id: { type: ["string", "null"] },
+              window_seconds: { type: ["integer", "null"], minimum: 1 },
+              used_fraction: { type: "number", minimum: 0, maximum: 1 },
+              remaining_fraction: { type: "number", minimum: 0, maximum: 1 },
+              resets_at: { type: ["string", "null"] },
+            },
+          },
+        },
+        credits: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["has_credits", "unlimited", "balance"],
+              properties: {
+                has_credits: { type: "boolean" },
+                unlimited: { type: "boolean" },
+                balance: { type: ["string", "null"] },
+              },
+            },
+          ],
+        },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["provider", "source", "observed_at", "method", "error"],
+      properties: {
+        provider: { type: "string" },
+        source: { const: "unknown" },
+        observed_at: { type: "string" },
+        method: { type: "string" },
+        error: { type: "string" },
+      },
+    },
+  ],
+} as const;
+
 const CAPACITY = {
   type: "object",
   additionalProperties: false,
@@ -1234,6 +1309,8 @@ const CAPACITY = {
               key_source: { type: "string" },
             },
           },
+          // ADR-0079 (FR-CAP-13): the provider's own report, read live through its CLI; absent without a reader.
+          provider_usage: PROVIDER_USAGE,
           concurrency_available: { type: "integer", minimum: 0 },
           concurrency_limit: { type: "integer", minimum: 1 },
           breaker: {
@@ -1460,7 +1537,7 @@ const PROJECTS = {
                 kind: { type: "string", enum: ["repository"] },
                 primary: { type: "boolean" },
                 push_policy: { type: "string", enum: ["none", "branch"] },
-                // ADR-0079 item 8 (G2): the effective definition, so a client can read back what it set. Never a path
+                // ADR-0080 item 8 (G2): the effective definition, so a client can read back what it set. Never a path
                 // or a secret.
                 base_ref: { type: "string" },
                 push_remote: { type: "string" },
@@ -1503,7 +1580,7 @@ const PROJECTS = {
               method: { enum: [...MERGE_POLICY_METHODS] },
               required_reports: { type: "array", items: { enum: [...MERGE_POLICY_REPORTS] } },
               require_verification: { type: "boolean" },
-              // ADR-0079 item 7.
+              // ADR-0080 item 7.
               checks: { enum: [...MERGE_POLICY_CHECKS] },
             },
           },
@@ -1790,6 +1867,17 @@ export const PUBLISH_PULL_REQUEST_ERRORS = [
 ] as const;
 
 const PUBLISH_INPUTS = {
+  close_pr: {
+    type: "object",
+    additionalProperties: false,
+    required: ["project_id", "pull_request_number", "replacement_pull_request_number"],
+    properties: {
+      project_id: PROJECT_REF,
+      pull_request_number: { type: "integer", minimum: 1, maximum: 9_999_999_999 },
+      replacement_pull_request_number: { type: "integer", minimum: 1, maximum: 9_999_999_999 },
+      delete_branch: { type: "boolean", default: false },
+    },
+  },
   update_run_branch: {
     type: "object",
     additionalProperties: false,
@@ -1857,7 +1945,7 @@ const PUBLISH_RESULT = {
       ],
     },
     pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
-    // ADR-0079 item 6 (LLD §3.4.16): one entry per changed submodule repository of an umbrella project (`repo` is
+    // ADR-0080 item 6 (LLD §3.4.17): one entry per changed submodule repository of an umbrella project (`repo` is
     // `host/owner/repo`); present only for a project whose primary context sets `submodules.mode: "recursive"`.
     submodules: {
       type: "array",
@@ -1924,7 +2012,7 @@ const MERGE_RUN_PR_RESULT = {
     head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
     head_kind: { enum: ["published", "base_merge"] },
     method: { enum: [...MERGE_POLICY_METHODS] },
-    // ADR-0079 item 7: only for a publication with linked submodule pull requests (the same object a refusal's
+    // ADR-0080 item 7: only for a publication with linked submodule pull requests (the same object a refusal's
     // details.submodule_merge carries).
     submodule_merge: {
       type: "object",
@@ -1975,10 +2063,42 @@ const UPDATE_RUN_BRANCH_RESULT = {
   },
 } as const;
 
+/** ADR-0078 (LLD §3.4.16): a closed (or already closed) Switchboard pull request; a refusal is an error envelope. */
+const CLOSE_PR_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["project_id", "run_id", "pull_request", "replacement_pull_request", "closed", "branch_deleted"],
+  properties: {
+    project_id: PROJECT_REF,
+    run_id: RUN_ID,
+    pull_request: {
+      type: "object",
+      additionalProperties: false,
+      required: ["number", "url"],
+      properties: {
+        number: { type: "integer", minimum: 1 },
+        url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+      },
+    },
+    replacement_pull_request: {
+      type: "object",
+      additionalProperties: false,
+      required: ["number", "url"],
+      properties: {
+        number: { type: "integer", minimum: 1 },
+        url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+      },
+    },
+    closed: { type: "boolean" },
+    branch_deleted: { type: "boolean" },
+  },
+} as const;
+
 const PUBLISH_OUTPUTS = {
   publish_run: withError(PUBLISH_RESULT),
   merge_run_pr: withError(MERGE_RUN_PR_RESULT),
   update_run_branch: withError(UPDATE_RUN_BRANCH_RESULT),
+  close_pr: withError(CLOSE_PR_RESULT),
 } as const;
 
 const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
@@ -2028,6 +2148,15 @@ const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
     "branch already contains the base head (nothing is asked of GitHub). A refusal is PERMISSION_BLOCKED with " +
     "details.reason (policy_off, head_moved, base_mismatch, not_mergeable: no open pull request, or the base merge " +
     "would conflict); a gh or fetch failure is TOOL_FAILURE gh_error, retryable.",
+  close_pr:
+    "Close a superseded pull request that publish_run opened for one of this client's runs of project_id, with the " +
+    "operator's GitHub login (gh), posting a fixed comment that links replacement_pull_request_number (a pull " +
+    "request in the same repository), and, if delete_branch is true, deleting its head branch. Only a pull request " +
+    "Switchboard itself created (not one it reused, nor any other) in the project's own repository, still on the " +
+    "branch Switchboard published and not merged; anything else is PERMISSION_BLOCKED with details.reason " +
+    "(NOT_SWITCHBOARD_PR, HEAD_BRANCH_MISMATCH, ALREADY_MERGED, CONTEXT_UNKNOWN, POLICY_NONE). Idempotent: an " +
+    "already closed pull request returns closed false and nothing is written. A gh failure is TOOL_FAILURE with " +
+    "details.reason. Every call, allowed or refused, is recorded.",
 };
 
 const SHA = { type: "string", pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$" } as const;
@@ -2077,7 +2206,7 @@ const BASE_OUTPUTS = {
       previous_commit: { oneOf: [{ type: "null" }, SHA] },
       remote_commit: SHA,
       reason: { enum: [...BASE_REFRESH_REASONS] },
-      // ADR-0079 item 3: only for a context with submodules.mode recursive.
+      // ADR-0080 item 3: only for a context with submodules.mode recursive.
       submodules: {
         type: "object",
         additionalProperties: false,
@@ -2212,7 +2341,10 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "with no recent evidence they read unknown (score null, confidence 0). explicit_remaining and reset_at are set " +
     "only when the provider itself reported them. Optional provider narrows the answer to one provider. When " +
     "subscriptions are configured, pacing lists one entry per subscription with each window's figures, " +
-    "deferred_until and the gate verdict; that hold is not applied here.",
+    "deferred_until and the gate verdict; that hold is not applied here. provider_usage, where present, is the " +
+    "provider's own report read live through its CLI with no model call (Codex: account/rateLimits/read): each " +
+    "quota window's used_fraction, remaining_fraction and resets_at, the plan, credits and whether a limit is " +
+    "reached, all source provider_reported; source unknown carries the reason the read failed.",
   explain_route:
     "Why a run went to its provider, read-only, from Switchboard's stored route decision: candidates with eligibility " +
     "reasons, the recorded task features, weights and per-candidate scores, the selection rule, the project's " +
@@ -2299,7 +2431,7 @@ export interface ToolDescriptor {
 export function toolDescriptors(
   opts: {
     manageProjects?: boolean;
-    /** ADR-0079: the server has `project_sources` and a grant store, so `request_project_source` exists. */
+    /** ADR-0080: the server has `project_sources` and a grant store, so `request_project_source` exists. */
     projectSources?: boolean;
     searchContext?: boolean;
     workQueue?: boolean;
@@ -2307,6 +2439,7 @@ export function toolDescriptors(
     publish?: boolean;
     mergeRunPr?: boolean;
     updateRunBranch?: boolean;
+    closePr?: boolean;
     baseTools?: boolean;
   } = {},
 ): ToolDescriptor[] {
@@ -2329,9 +2462,12 @@ export function toolDescriptors(
   if (opts.publish === true) {
     // ADR-0069: right after the work-queue tools, before every retrieval-, skill- or project-gated tool. ADR-0070:
     // `merge_run_pr` only with `mergeRunPr` as well; ADR-0073: `update_run_branch` only with `updateRunBranch` too.
+    // ADR-0078: `close_pr` only with `closePr`.
     const offered = (name: PublishToolName) =>
       name === "publish_run" ||
-      (opts.mergeRunPr === true && (name === "merge_run_pr" || opts.updateRunBranch === true));
+      (name === "close_pr"
+        ? opts.closePr === true
+        : opts.mergeRunPr === true && (name === "merge_run_pr" || opts.updateRunBranch === true));
     base.push(
       ...PUBLISH_TOOL_NAMES.filter(offered).map((name) => ({
         name,

@@ -692,6 +692,28 @@ export interface PullRequestRow {
 
 export type NewPullRequest = Omit<PullRequestRow, "id" | "created_at">;
 
+/** ADR-0078 `close_pr` outcomes (migration 0036). */
+export type PullRequestCloseOutcome = "closed" | "already_closed" | "refused" | "failed";
+
+/** One `pull_request_close` row (ADR-0078, migration 0036). Append-only: one per `close_pr` call, allowed or denied. */
+export interface PullRequestCloseRow {
+  id: string;
+  client_id: string;
+  project_id: string | null;
+  number: number | null;
+  replacement_number: number | null;
+  delete_branch: 0 | 1;
+  pull_request_id: string | null;
+  run_id: string | null;
+  repo: string | null;
+  outcome: PullRequestCloseOutcome;
+  /** A closed code (`NOT_SWITCHBOARD_PR`, `GH_FAILED`, ...); null when closed. */
+  reason: string | null;
+  created_at: string;
+}
+
+export type NewPullRequestClose = Omit<PullRequestCloseRow, "id" | "created_at">;
+
 /** Everything `recordGitPush` needs; `id` and `created_at` are assigned by the ledger. */
 export interface NewGitPush {
   runId: string | null;
@@ -1072,13 +1094,23 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, De
   /** ADR-0069: the `pull_request` rows of every run of a meta-session, oldest first. */
   listPullRequestsForMetaSession(metaSessionId: string): PullRequestRow[];
   /**
-   * ADR-0079 item 6 (read side of `src/submodules/ledger.ts`): one run's linked pull requests (`submodule_pull_request`),
+   * ADR-0080 item 6 (read side of `src/submodules/ledger.ts`): one run's linked pull requests (`submodule_pull_request`),
    * each with the `submodule_push` row it was opened for, and the run's `submodule_merge` steps; oldest first.
    */
   listSubmodulePullRequestsForRun(runId: string): (SubmodulePullRequestRow & { push: SubmodulePushRow | undefined })[];
   listSubmoduleMergeStepsForRun(runId: string): SubmoduleMergeRow[];
-  /** ADR-0079 item 7: every step of the ordered merge of one umbrella publish ref of a project, oldest first. */
+  /** ADR-0080 item 7: every step of the ordered merge of one umbrella publish ref of a project, oldest first. */
   listSubmoduleMergeSteps(projectId: string, umbrellaRef: string): SubmoduleMergeRow[];
+  /**
+   * ADR-0078: the `pull_request` rows `publish_run` CREATED (never `reused`) as pull request `number` of `repo`
+   * (`owner/repo`, compared case-insensitively as GitHub does) for a run of `projectId`, newest first.
+   */
+  listCreatedPullRequests(q: { projectId: string; repo: string; number: number }): PullRequestRow[];
+  /**
+   * ADR-0078: in ONE `BEGIN IMMEDIATE` transaction insert the append-only `pull_request_close` row and, when it names a
+   * run, append the `pull_request_close` run event on that run (payload: the row's facts).
+   */
+  recordPullRequestClose(input: NewPullRequestClose): PullRequestCloseRow;
   /**
    * `push_id`s named by the `secret_scan_acknowledged` run events of a meta-session (T9.14, operator
    * `git ack-secret-scan`, LLD §20.9). Unreadable payloads are skipped.
@@ -2393,6 +2425,60 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
 
     listSubmoduleMergeSteps(projectId, umbrellaRef) {
       return listSubmoduleMergeSteps(db, projectId, umbrellaRef);
+    },
+
+    listCreatedPullRequests(q) {
+      return db
+        .prepare(
+          `SELECT p.* FROM pull_request p JOIN run r ON r.id = p.run_id
+           WHERE r.project_id = ? AND p.number = ? AND lower(p.repo) = lower(?) AND p.action = 'created'
+           ORDER BY p.created_at DESC, p.id DESC`,
+        )
+        .all(q.projectId, q.number, q.repo) as PullRequestRow[];
+    },
+
+    recordPullRequestClose(input) {
+      return immediate(() => {
+        const when = ts();
+        const id = ids.id("prc");
+        db.prepare(
+          `INSERT INTO pull_request_close (id, client_id, project_id, number, replacement_number, delete_branch,
+             pull_request_id, run_id, repo, outcome, reason, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          id,
+          input.client_id,
+          input.project_id,
+          input.number,
+          input.replacement_number,
+          input.delete_branch,
+          input.pull_request_id,
+          input.run_id,
+          input.repo,
+          input.outcome,
+          input.reason,
+          when,
+        );
+        if (input.run_id !== null) {
+          insertEvent(
+            input.run_id,
+            "pull_request_close",
+            {
+              pull_request_close_id: id,
+              pull_request_id: input.pull_request_id,
+              repo: input.repo,
+              number: input.number,
+              replacement_number: input.replacement_number,
+              delete_branch: input.delete_branch === 1,
+              outcome: input.outcome,
+              ...(input.reason !== null ? { reason: input.reason } : {}),
+              requested_by: `mcp_client:${input.client_id}`,
+            },
+            when,
+          );
+        }
+        return db.prepare("SELECT * FROM pull_request_close WHERE id = ?").get(id) as PullRequestCloseRow;
+      });
     },
 
     listSecretScanAcknowledgedPushIds(metaSessionId) {

@@ -1,4 +1,4 @@
-# ADR-0079: Umbrella projects with Git submodules, linked publication and ordered merge over MCP
+# ADR-0080: Umbrella projects with Git submodules, linked publication and ordered merge over MCP
 
 - Status: Accepted (built 2026-10-21). Narrows [ADR-0022](0022-nested-repositories-excluded-from-controller-git.md)
   for declared submodules of an opted-in context; extends [ADR-0068](0068-mcp-only-project-onboarding.md),
@@ -12,8 +12,8 @@
   merged commits and the opt-in `all_reported` check policy. Every detail below is the coder's, not owner-approved.
   Nothing here changes bypass runs, the Git-write denial (the agent still cannot run `git submodule`) or worktree
   isolation.
-- Related: FR-PRJ-11, FR-PRJ-12, FR-GIT-13, FR-GIT-14, FR-SUB-03, FRD BR-58, BR-59,
-  [LLD §3.4.16](../design/LLD.md#3416-submodule-projects-adr-0079), [ROADMAP T9.22](../ROADMAP.md#63-m9-projects-and-controlled-commits-tasks),
+- Related: FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15, FR-SUB-03, FRD BR-59, BR-60,
+  [LLD §3.4.17](../design/LLD.md#3417-submodule-projects-adr-0080), [ROADMAP T9.22](../ROADMAP.md#63-m9-projects-and-controlled-commits-tasks),
   Q-114, Q-115, Q-116.
 
 ## Context
@@ -137,7 +137,7 @@ same branch when that is an ancestor, else from the base gitlink) and of the umb
 Any finding refuses the whole publication with the ADR-0075 shape; each finding's `path` is prefixed with the submodule
 path, and `details.repos` names the repositories with findings. The umbrella push then scans again, unchanged.
 
-### 6. Linked publication (G6, FR-GIT-14)
+### 6. Linked publication (G6, FR-GIT-15)
 
 `publish_run` on a run whose umbrella head changes gitlinks of writable submodules:
 
@@ -161,14 +161,14 @@ publication, pull_request, pull_request_error? }]`. `get_run`, `list_runs` and `
 ### 7. Ordered merge and the check policy (G7, G8, FR-SUB-03)
 
 - `merge_policy.checks: "required" | "all_reported"` (default `required`, unchanged). `all_reported` means: at least
-  one check ran at the head and every reported check passed (new audited argv **G16**, `gh pr checks <n> --repo <o/r>
+  one check ran at the head and every reported check passed (new audited argv **G18**, `gh pr checks <n> --repo <o/r>
   --json bucket`, without `--required`); none reported is the new refusal `no_checks_reported`. Setting `all_reported`
   waits for approval with the new reason `merge_checks`. The default is not weakened.
 - For a run with linked submodule pull requests, `merge_run_pr` and the policy poller run one resumable step machine,
   persisted in the append-only `submodule_merge` table (so it survives restarts):
   1. each linked submodule pull request, in path order, through the gate's checks (open, not draft, head equal to the
      pushed head, base equal to the repository's default branch, mergeable, checks per `merge_policy.checks`), merged
-     with G12 pinned to its head; its merge commit is read with the new audited argv **G17** (`gh pr view <n> --repo
+     with G12 pinned to its head; its merge commit is read with the new audited argv **G19** (`gh pr view <n> --repo
      <o/r> --json state,mergeCommit`) and recorded;
   2. when all are merged: the merged commits are fetched into their stores, and the controller writes one umbrella
      commit on the published umbrella tip that sets every changed path's gitlink (duplicates together) to its merged
@@ -197,7 +197,7 @@ publication, pull_request, pull_request_error? }]`. `get_run`, `list_runs` and `
 
 ### 9. Persistence
 
-Migration 0036 adds the append-only, `STRICT` tables `submodule_commit`, `submodule_push`, `submodule_pull_request`,
+Migration 0037 adds the append-only, `STRICT` tables `submodule_commit`, `submodule_push`, `submodule_pull_request`,
 `submodule_merge`, `project_source_request` and `project_source_decision`. Ids, SHAs, `host/owner/repo` keys and
 umbrella-relative submodule paths only; never a URL with credentials, a title, a body or `gh` text.
 

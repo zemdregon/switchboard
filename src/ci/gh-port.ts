@@ -264,12 +264,12 @@ export class GhCiStatusPort
     return this.readChecks(ghPrRequiredChecksArgv(q.owner, q.repo, String(q.prNumber)), parseRequiredChecks);
   }
 
-  /** G16 (ADR-0079 item 7): as {@link requiredChecks} without `--required`; none reported reads as `none`. */
+  /** G18 (ADR-0080 item 7): as {@link requiredChecks} without `--required`; none reported reads as `none`. */
   async reportedChecks(q: { owner: string; repo: string; prNumber: number }): Promise<CiReportedChecks> {
     return this.readChecks(ghPrReportedChecksArgv(q.owner, q.repo, String(q.prNumber)), parseReportedChecks);
   }
 
-  /** G17 (ADR-0079 item 7): the state and merge commit of one pull request of any `owner/repo`; no `gh` text is kept. */
+  /** G19 (ADR-0080 item 7): the state and merge commit of one pull request of any `owner/repo`; no `gh` text is kept. */
   async pullRequestMergeState(q: { owner: string; repo: string; prNumber: number }): Promise<CiPullRequestMergeState> {
     const out = this.parse(await this.run(ghPrMergeStateArgv(q.owner, q.repo, String(q.prNumber))), parsePrMergeState);
     return out.mergeCommitSha === undefined

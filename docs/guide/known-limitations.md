@@ -4,7 +4,7 @@ What Switchboard does not do, or does not yet verify. Part of the [Switchboard g
 
 ## Known limitations
 
-- **Submodules (ADR-0079).** Nested submodules (a submodule's own `.gitmodules`) are ignored and stay empty (ROADMAP
+- **Submodules (ADR-0080).** Nested submodules (a submodule's own `.gitmodules`) are ignored and stay empty (ROADMAP
   Q-114). A GitHub wiki submodule is read-only. The umbrella commit that re-points gitlinks during the ordered merge
   is not signed, even with `sign: true`. Only `https` URLs on GitHub-style hosts you allowed are supported (no `ssh`,
   no GitHub Enterprise). The umbrella pull request body is not edited after the first publication, and a

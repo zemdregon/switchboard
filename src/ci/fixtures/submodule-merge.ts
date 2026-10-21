@@ -1,9 +1,9 @@
 /**
- * Test world of the ordered merge (ADR-0079 item 7): an umbrella repository with a local bare `origin`, two submodule
+ * Test world of the ordered merge (ADR-0080 item 7): an umbrella repository with a local bare `origin`, two submodule
  * "remotes" (`acme/liba` at the duplicate paths `libs/a` and `vendor/a`, `acme/libb` at `libs/b`) reached through the
  * store fixture's https-to-local runner, their stores already cloned, one published umbrella tip whose gitlinks point
  * at the session's pushed submodule heads, and the ledger rows `publish_run` writes (`git_commit`, `git_push`,
- * `submodule_push`, `submodule_pull_request`) inserted directly. {@link FakeGh} plays GitHub: G10/G11/G16/G12/G17 over
+ * `submodule_push`, `submodule_pull_request`) inserted directly. {@link FakeGh} plays GitHub: G10/G11/G18/G12/G19 over
  * these local repositories (a squash merge writes a new commit on the remote's `main`). No network, no real `gh`.
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -58,7 +58,7 @@ export interface FakePr {
   dir: string;
 }
 
-/** G10, G11, G16, G12 and G17 over local repositories; every call is logged as `<verb> <owner/repo>`. */
+/** G10, G11, G18, G12 and G19 over local repositories; every call is logged as `<verb> <owner/repo>`. */
 export class FakeGh implements CiMergePort, CiPullRequestMergeStatePort {
   readonly calls: string[] = [];
   readonly prs = new Map<string, FakePr>();

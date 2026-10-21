@@ -1,4 +1,4 @@
-/** ADR-0079 item 8: runtime grants of `project_sources.allowed_owners` (store and live settings). */
+/** ADR-0080 item 8: runtime grants of `project_sources.allowed_owners` (store and live settings). */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";

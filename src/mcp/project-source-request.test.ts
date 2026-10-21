@@ -1,5 +1,5 @@
 /**
- * ADR-0079 item 8: `request_project_source` and the `project_source` approval kind. A scripted MCP client talks to the
+ * ADR-0080 item 8: `request_project_source` and the `project_source` approval kind. A scripted MCP client talks to the
  * server through the SDK's in-memory transport against the fake adapter, a local bare repository standing in for the
  * remote (the injected Git runner rewrites the HTTPS URL to it) and a real ledger. No provider CLI, login or network.
  */
@@ -225,7 +225,7 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe("request_project_source (ADR-0079 item 8)", () => {
+describe("request_project_source (ADR-0080 item 8)", () => {
   it("request -> list_pending_approvals -> decide_approval -> create_project passes the source check, no restart", async () => {
     await setup();
     const before = await call("mgr", "create_project", { project: project() });

@@ -21,8 +21,8 @@ import { approvalReasons } from "../projects/index.js";
 import {
   G10_FIELDS,
   G11_FIELDS,
-  G16_FIELDS,
-  G17_FIELDS,
+  G18_FIELDS,
+  G19_FIELDS,
   GhArgvError,
   ghPrGateViewArgv,
   ghPrMergeArgv,
@@ -242,7 +242,7 @@ describe("G10 to G12 gh argv (T15.8, ADR-0050 amendment 1 item 10)", () => {
       merge.slice(0, 6),
       [...merge.slice(0, 7), "2222222"],
       [...merge.slice(0, 2), "-1", ...merge.slice(3)],
-      // G11 is exactly --required (the same argv without it is G16, tested below); no other field set
+      // G11 is exactly --required (the same argv without it is G18, tested below); no other field set
       ["pr", "checks", "42", "--repo", "acme/app", "--json", "bucket,name"],
       ["pr", "checks", "42", "--repo", "acme/app", "--required", "--json", "bucket,name,link"],
       ["pr", "view", BRANCH, "--repo", "acme/app", "--json", "number,body"],
@@ -771,7 +771,7 @@ describe("ref events (FR-SUB-01 first delivery)", () => {
   });
 });
 
-describe("G16 and G17 gh argv and the all_reported check policy (ADR-0079 item 7)", () => {
+describe("G18 and G19 gh argv and the all_reported check policy (ADR-0080 item 7)", () => {
   const ALL: ProjectMergePolicy = { ...POLICY, checks: "all_reported" };
   const allDeps = (fx: Fixture, merge: CiMergePort) =>
     deps(fx, merge, { targets: (): MergeTarget[] => [{ projectId: "app", policy: ALL, baseRef: "main" }] });
@@ -785,7 +785,7 @@ describe("G16 and G17 gh argv and the all_reported check policy (ADR-0079 item 7
     }
   }
 
-  it("builds G16 without --required and G17 by number; the audit refuses drift", () => {
+  it("builds G18 without --required and G19 by number; the audit refuses drift", () => {
     expect(ghPrReportedChecksArgv("acme", "app", "42")).toEqual([
       "pr",
       "checks",
@@ -793,7 +793,7 @@ describe("G16 and G17 gh argv and the all_reported check policy (ADR-0079 item 7
       "--repo",
       "acme/app",
       "--json",
-      G16_FIELDS,
+      G18_FIELDS,
     ]);
     expect(ghPrMergeStateArgv("acme", "sub-repo", "7")).toEqual([
       "pr",
@@ -802,17 +802,17 @@ describe("G16 and G17 gh argv and the all_reported check policy (ADR-0079 item 7
       "--repo",
       "acme/sub-repo",
       "--json",
-      G17_FIELDS,
+      G19_FIELDS,
     ]);
     expect(isAllowedGhArgv(ghPrReportedChecksArgv("acme", "app", "42"))).toBe(true);
     expect(isAllowedGhArgv(ghPrMergeStateArgv("acme", "app", "7"))).toBe(true);
     for (const bad of [
       ["pr", "checks", "42", "--repo", "acme/app", "--json", "bucket,link"],
-      ["pr", "checks", "0", "--repo", "acme/app", "--json", G16_FIELDS],
-      ["pr", "checks", "42", "--repo", "acme/app", "--json", G16_FIELDS, "--watch"],
-      ["pr", "view", BRANCH, "--repo", "acme/app", "--json", G17_FIELDS],
+      ["pr", "checks", "0", "--repo", "acme/app", "--json", G18_FIELDS],
+      ["pr", "checks", "42", "--repo", "acme/app", "--json", G18_FIELDS, "--watch"],
+      ["pr", "view", BRANCH, "--repo", "acme/app", "--json", G19_FIELDS],
       ["pr", "view", "7", "--repo", "acme/app", "--json", "state,mergeCommit,body"],
-      ["pr", "view", "7", "--repo", "acme", "--json", G17_FIELDS],
+      ["pr", "view", "7", "--repo", "acme", "--json", G19_FIELDS],
     ]) {
       expect(isAllowedGhArgv(bad), bad.join(" ")).toBe(false);
     }
@@ -820,7 +820,7 @@ describe("G16 and G17 gh argv and the all_reported check policy (ADR-0079 item 7
     expect(() => ghPrMergeStateArgv("acme", "app", "-1")).toThrow(GhArgvError);
   });
 
-  it("parses G16 and G17 strictly", () => {
+  it("parses G18 and G19 strictly", () => {
     expect(parseReportedChecks(JSON.stringify([{ bucket: "skipping", name: "x" }]))).toEqual(["skipping"]);
     expect(parseReportedChecks(JSON.stringify(Array.from({ length: 300 }, () => ({ bucket: "pass" }))))).toHaveLength(
       300,
@@ -840,7 +840,7 @@ describe("G16 and G17 gh argv and the all_reported check policy (ADR-0079 item 7
     }
   });
 
-  it("GhCiStatusPort runs G16 and G17 for an explicit owner/repo, reading exit codes fail closed", async () => {
+  it("GhCiStatusPort runs G18 and G19 for an explicit owner/repo, reading exit codes fail closed", async () => {
     const seen: string[][] = [];
     let answer: { exitCode: number | null; stdout: string } = { exitCode: 0, stdout: "[]" };
     const runner: GhRunner = async (_b, argv) => {
@@ -903,7 +903,7 @@ describe("G16 and G17 gh argv and the all_reported check policy (ADR-0079 item 7
     expect(mergeRows(f).map((x) => x.reason)).toEqual([reason]);
   });
 
-  it("all_reported fails closed (gh_error) on a port without G16", async () => {
+  it("all_reported fails closed (gh_error) on a port without G18", async () => {
     f = openFixture();
     const p = publish(f);
     verify(f, p, SHA_TIP);

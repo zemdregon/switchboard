@@ -1,5 +1,5 @@
 /**
- * MCP `merge_run_pr` on an umbrella publication with linked submodule pull requests (ADR-0079 item 7, LLD §3.4.16),
+ * MCP `merge_run_pr` on an umbrella publication with linked submodule pull requests (ADR-0080 item 7, LLD §3.4.17),
  * through the server as an orchestrating client calls it: each call advances the ordered merge as far as it can and
  * returns `submodule_merge: { phase, repos }` on the result and on every refusal's details; the state survives a new
  * server instance over the same ledger. The result is checked against the published output schema by the SDK.
@@ -156,7 +156,7 @@ async function connect(
 
 const pr = (world: World, repo: string) => world.gh.prs.get(repo) as FakePr;
 
-describe("merge_run_pr with linked submodule pull requests (ADR-0079 item 7)", () => {
+describe("merge_run_pr with linked submodule pull requests (ADR-0080 item 7)", () => {
   it("merges both submodule PRs (squash), pushes the repoint commit and merges the umbrella in one call", async () => {
     w = await makeWorld();
     w.verify();

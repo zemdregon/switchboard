@@ -1,5 +1,5 @@
 /**
- * Submodule checkpoints (ADR-0079 item 3 "Checkpoints"). A run's post-run checkpoint (`WorkspaceManager.finalize`)
+ * Submodule checkpoints (ADR-0080 item 3 "Checkpoints"). A run's post-run checkpoint (`WorkspaceManager.finalize`)
  * also checkpoints each changed writable submodule worktree in its store and records the new gitlink in the umbrella
  * checkpoint, so a continued meta-session starts with its submodule edits. Changes in a read-only submodule (a wiki
  * included) are not carried (`submodule_changes_skipped` warning).

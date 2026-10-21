@@ -44,7 +44,7 @@
  *   delta the scanned ones, in a snapshot the newest {@link SNAPSHOT_TERMINAL_MAX} per project. Metadata only: each
  *   entry is rebuilt from closed fields (codes from the closed lists, the ref, a SHA, a pull request number), never
  *   from `gh` or agent text. Present only when non-empty.
- * - ADR-0079 item 7 (LLD §3.4.16): `ref_events` also lists the `submodule_merged` and `gitlinks_repointed` steps of the
+ * - ADR-0080 item 7 (LLD §3.4.17): `ref_events` also lists the `submodule_merged` and `gitlinks_repointed` steps of the
  *   ordered merge (`submodule_merge` rows of the listed runs, type `submodule_merge`, the row id as `event_id`): in a
  *   snapshot all of them, in a delta those recorded after the cursor's event. A `submodule_refused` step is not listed
  *   (the `merge_run_pr` refusal and `get_run`'s `linked_pull_requests[].merge_state` carry it).
@@ -85,14 +85,14 @@ export interface ApprovalProxyItem {
   requested_at: string;
 }
 
-/** ADR-0079 item 7: the `type` of a digest ref event read from a `submodule_merge` step. */
+/** ADR-0080 item 7: the `type` of a digest ref event read from a `submodule_merge` step. */
 export const SUBMODULE_MERGE_TYPE = "submodule_merge";
-/** ADR-0079 item 7: the steps listed as ref events (`code`). */
+/** ADR-0080 item 7: the steps listed as ref events (`code`). */
 export const SUBMODULE_REF_EVENT_KINDS = ["submodule_merged", "gitlinks_repointed"] as const;
 
 /** T15.8: one ref or merge event in the digest (metadata only). */
 export interface DigestRefEvent {
-  /** A `run_event` id, or (ADR-0079) a `submodule_merge` row id. */
+  /** A `run_event` id, or (ADR-0080) a `submodule_merge` row id. */
   event_id: string;
   run_id: string;
   ts: string;
@@ -290,7 +290,7 @@ function digestRefEvent(e: RunEventRow): DigestRefEvent | undefined {
 }
 
 /**
- * ADR-0079 item 7: the `submodule_merged` and `gitlinks_repointed` steps of `runs` (a refusal is not a ref event: the
+ * ADR-0080 item 7: the `submodule_merged` and `gitlinks_repointed` steps of `runs` (a refusal is not a ref event: the
  * `merge_run_pr` refusal carries it), created strictly after `since` when given. Rebuilt from closed fields only.
  */
 function submoduleRefEvents(ledger: Ledger, runs: readonly RunRecord[], since?: string): DigestRefEvent[] {
@@ -317,7 +317,7 @@ function submoduleRefEvents(ledger: Ledger, runs: readonly RunRecord[], since?: 
   return out;
 }
 
-/** T15.8: attaches each listed project's ref events (and ADR-0079's), newest first, at most `max` per project. */
+/** T15.8: attaches each listed project's ref events (and ADR-0080's), newest first, at most `max` per project. */
 function addRefEvents(
   projects: DigestProject[],
   runs: RunRecord[],

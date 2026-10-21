@@ -13,7 +13,7 @@ import { LockError } from "../lock/index.js";
 import { renderValidate, runAdaptersValidate } from "./adapters-validate.js";
 import { renderAdaptersVersionCanary, runAdaptersVersionCanary } from "./adapters-version-canary.js";
 import { listAffinity, renderAffinityList, renderAffinityReset, resetAffinity } from "./affinity.js";
-import { renderCapacity, runCapacity } from "./capacity.js";
+import { renderCapacity, runCapacityWithUsage } from "./capacity.js";
 import { consentHashPassphrase, consentPair, renderPair, renderPassphraseHash } from "./consent.js";
 import {
   decideDecision,
@@ -225,7 +225,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       }
       case "capacity": {
         if (sub !== undefined) throw new UsageError("capacity takes no positional arguments");
-        const projection = runCapacity(io, loaderArgv, values.provider);
+        const projection = await runCapacityWithUsage(io, loaderArgv, values.provider);
         emit({ schema_version: JSON_SCHEMA_VERSION, ...projection }, renderCapacity(projection));
         return 0;
       }
@@ -354,7 +354,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           return 0;
         }
         if (sub === "sources") {
-          // ADR-0079 item 8: the operator's side of `request_project_source`.
+          // ADR-0080 item 8: the operator's side of `request_project_source`.
           const action = rest[0];
           if (action === "list") {
             if (rest.length > 1) throw new UsageError("projects sources list takes no arguments");

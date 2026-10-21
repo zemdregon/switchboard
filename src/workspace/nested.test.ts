@@ -255,7 +255,7 @@ describe("nested repository guard (Q-31, R-35)", () => {
     expect(excludePathspec("x*[y]�z")).toBe(":(exclude,top,glob)x\\*\\[y]*z");
   });
 
-  it("ADR-0079: partitionNested separates attached declared submodules from other nested repositories", () => {
+  it("ADR-0080: partitionNested separates attached declared submodules from other nested repositories", () => {
     const nested = {
       paths: ["libs/a", "libs/a-copy", "tmp/agent-repo", "vendor/b"],
       excludes: ["libs/a", "libs/a-copy", "tmp/agent-repo", "vendor/b"].map(excludePathspec),

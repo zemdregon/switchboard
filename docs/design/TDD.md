@@ -74,10 +74,10 @@ pinned by the task that introduces them). "Current LTS" means the Node.js LTS li
 | `mcp_clients[].tool_profile` | `orchestrator` (default) or `console`; selects the MCP tool list ([LLD §3.4.10](LLD.md#3410-tool_profile-fr-ctl-11), T14.11) | FR-CTL-11 |
 | `mcp_clients[].approval_proxy` | Boolean, default `false`. When true, offers `list_pending_approvals` and `decide_approval` under [ADR-0047](../adr/0047-approval-proxy-over-mcp.md) (T14.8) | FR-CTL-08 |
 | `mcp_clients[].approval_proxy_targets` | Optional string array of MCP client ids whose pending approvals this proxy may decide; default: the client itself | FR-CTL-08, ADR-0047 |
-| `mcp_clients[].approval_proxy_kinds` | Optional non-empty, unique subset of `privileged_scope`, `dynamic_project`, `push_revision`, `project_source`; default the first three (`project_source` only when listed, ADR-0079); refused without `approval_proxy: true`. A proxy lists and decides only these kinds ([ADR-0068](../adr/0068-mcp-only-project-onboarding.md)) | FR-CTL-08 |
+| `mcp_clients[].approval_proxy_kinds` | Optional non-empty, unique subset of `privileged_scope`, `dynamic_project`, `push_revision`, `project_source`; default the first three (`project_source` only when listed, ADR-0080); refused without `approval_proxy: true`. A proxy lists and decides only these kinds ([ADR-0068](../adr/0068-mcp-only-project-onboarding.md)) | FR-CTL-08 |
 | `project_sources` | Optional top-level `{ clone_root, allowed_hosts?, allowed_owners }`: lets `create_project` and `update_project` clone an `https` `clone_url`. `clone_root` absolute, existing, under an allowed root, not in `data_dir`; `allowed_hosts` default `["github.com"]`; `allowed_owners` required, case-insensitive. Absent: every `clone_url` is refused ([ADR-0068](../adr/0068-mcp-only-project-onboarding.md)) | FR-PRJ-10 |
-| `projects[].contexts[].submodules` | Optional `{ mode, writable_paths?, exclude? }` (`mode` is `off` or `recursive`) on the primary context; absent or `off` is ADR-0022. A non-empty `writable_paths` waits for approval (`submodule_write`). Submodule URLs must pass `project_sources` ([ADR-0079](../adr/0079-submodule-projects.md), [LLD §3.4.16](LLD.md#3416-submodule-projects-adr-0079)) | FR-PRJ-11 |
-| `projects[].merge_policy.checks` | `required` (default) or `all_reported`; `all_reported` waits for approval (`merge_checks`) ([ADR-0079](../adr/0079-submodule-projects.md)) | FR-SUB-03 |
+| `projects[].contexts[].submodules` | Optional `{ mode, writable_paths?, exclude? }` (`mode` is `off` or `recursive`) on the primary context; absent or `off` is ADR-0022. A non-empty `writable_paths` waits for approval (`submodule_write`). Submodule URLs must pass `project_sources` ([ADR-0080](../adr/0080-submodule-projects.md), [LLD §3.4.17](LLD.md#3417-submodule-projects-adr-0080)) | FR-PRJ-11 |
+| `projects[].merge_policy.checks` | `required` (default) or `all_reported`; `all_reported` waits for approval (`merge_checks`) ([ADR-0080](../adr/0080-submodule-projects.md)) | FR-SUB-03 |
 | `control_plane.budgets` | Global and per-project operator caps (`runs_per_day`, `concurrent_runs`, `wall_clock_per_run_seconds`, `usage_per_window`); unset means unlimited; never shown as provider limits ([LLD §3.4.6](LLD.md#346-budgets-and-loop-breaker-fr-ctl-06-fr-ctl-07), T14.4) | FR-CTL-06, ADR-0007 |
 | `control_plane.loop_breaker` | `identical_failure_threshold` (**N**), `stall_minutes` (**T**), `max_successors_per_meta_session`; Assumption defaults in LLD §3.4.6 (T14.5) | FR-CTL-07 |
 | `control_plane.digest_schedule` | Push a metadata-only digest to the sinks on a UTC cron schedule (`{ cron }`, five fields, §18.5 syntax); absent means off ([LLD §20.5](LLD.md#205-scheduled-digest-and-progress-stall-fr-ctl-14-t1416), T14.16, Delegated, not owner-approved) | FR-CTL-14 |
@@ -556,13 +556,13 @@ time with `--coverage` and uploads `coverage/` through the SHA-pinned `actions/u
 spelling variants (quoting, environment prefixes, `-`/`--` and `_`/`-` forms, path prefixes, hostile block markers)
 rather than random bytes, because the past gaps were spelling gaps (ADR-0037, ADR-0045).
 
-*Submodule projects (Delegated, 2026-10-21; ROADMAP T9.22, [ADR-0079](../adr/0079-submodule-projects.md)).* Tests for
+*Submodule projects (Delegated, 2026-10-21; ROADMAP T9.22, [ADR-0080](../adr/0080-submodule-projects.md)).* Tests for
 umbrella projects build local fixture repositories in temporary directories (`src/submodules/fixtures/repos.ts`: a
 bare umbrella and bare submodule repositories, a runner that maps each registered `https` URL to its local repository
 with `url.<local>.insteadOf` so the controller's argv is still the `https` one; cases include two paths for one
 repository, a wiki-named repository and a hostile `.gitmodules`); no test uses the network, a real GitHub host or a
 provider CLI. Pull requests go through the fake `PullRequestPort` and the `gh` runner of the merge tests is a stub, so
-the audited argv (G16, G17) is asserted as text and the answers are canned. The real-Git assertions cover the
+the audited argv (G18, G19) is asserted as text and the answers are canned. The real-Git assertions cover the
 controller commits, the gitlink bump, the multi-repository scan, the push order and the resumable merge steps.
 
 ### 3.7 Packaging and release

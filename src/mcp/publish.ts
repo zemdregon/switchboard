@@ -20,7 +20,7 @@
  * from which source, and the controller footer (run, meta-session, provider, project, head); with no proposal, the
  * footer alone. A reused open pull request is never edited.
  *
- * ADR-0079 items 5 and 6 (LLD §3.4.16): for a project whose primary context sets `submodules.mode: "recursive"`
+ * ADR-0080 items 5 and 6 (LLD §3.4.17): for a project whose primary context sets `submodules.mode: "recursive"`
  * ({@link PublishDeps.submodules}), the umbrella push is preceded by the linked publication of
  * `src/mcp/publish-submodules.ts` (verified history, the multi-repository secret scan, one push per changed submodule
  * repository; any refusal stops before the umbrella push), and the pull request step opens or reuses one pull request
@@ -74,7 +74,7 @@ export interface PublishDeps {
   readonly pulls: PullRequestPort;
   /** The push URL of `remote` in `repo` (default: `git remote get-url --push` through the hardened helper). */
   readonly pushUrl?: (repo: string, remote: string) => Promise<string | undefined>;
-  /** ADR-0079 item 6: linked publication of umbrella projects; absent, every project publishes as before. */
+  /** ADR-0080 item 6: linked publication of umbrella projects; absent, every project publishes as before. */
   readonly submodules?: PublishSubmoduleDeps;
 }
 
@@ -103,13 +103,13 @@ export interface PublishResult {
   pull_request: { number: number; url: string; draft: boolean; reused: boolean } | null;
   pull_request_error?: PublishPullRequestError;
   /**
-   * ADR-0079 item 6: one entry per changed submodule repository, in path order; present (possibly empty) only for a
+   * ADR-0080 item 6: one entry per changed submodule repository, in path order; present (possibly empty) only for a
    * project whose primary context sets `submodules.mode: "recursive"`.
    */
   submodules?: LinkedPublication[];
 }
 
-/** ADR-0079 item 6: one changed submodule repository of a publication. */
+/** ADR-0080 item 6: one changed submodule repository of a publication. */
 export interface LinkedPublication {
   /** `host/owner/repo`. */
   repo: string;
@@ -252,7 +252,7 @@ export async function publishRun(
 }
 
 /**
- * ADR-0079 items 5 and 6: before the umbrella push, the linked publication of every changed submodule repository.
+ * ADR-0080 items 5 and 6: before the umbrella push, the linked publication of every changed submodule repository.
  * Undefined when the project has no submodule plan (or the head is unknown: the pusher then refuses as before).
  */
 async function publishLinked(
@@ -288,7 +288,7 @@ async function publishLinked(
 const codeSpan = (s: string): string => `\`${s.replace(CONTROL, " ").replace(/`/gu, "'")}\``;
 
 /**
- * ADR-0079 item 6.5: open or reuse the pull request of one pushed submodule repository against its default branch,
+ * ADR-0080 item 6.5: open or reuse the pull request of one pushed submodule repository against its default branch,
  * recorded as a `submodule_pull_request` row and a `pull_request_opened` event (a reuse once per number and head).
  */
 async function openLinkedPullRequest(
@@ -450,7 +450,8 @@ export function pushRefusal(r: PushResult): ToolError {
   return new ToolError("TOOL_FAILURE", `push failed (${r.reason})`, details);
 }
 
-async function defaultPushUrl(repo: string, remote: string): Promise<string | undefined> {
+/** The push URL of `remote` in `repo` (`git remote get-url --push` through the hardened helper), or undefined. */
+export async function defaultPushUrl(repo: string, remote: string): Promise<string | undefined> {
   if (!isRemoteName(remote)) return undefined;
   try {
     return (await gitText(["remote", "get-url", "--push", remote], { cwd: repo })).split("\n")[0]?.trim();
@@ -706,7 +707,7 @@ export function pullRequestBody(
   run: Pick<RunRecord, "id" | "meta_session_id" | "provider" | "model" | "project_id">,
   publication: Pick<PublishResult["publication"], "head_sha">,
   proposal: Pick<ProposedText, "body" | "source"> | undefined,
-  /** ADR-0079 item 6: controller-built lines appended to the footer (already sanitised by the caller). */
+  /** ADR-0080 item 6: controller-built lines appended to the footer (already sanitised by the caller). */
   extra: readonly string[] = [],
 ): string {
   const provider =

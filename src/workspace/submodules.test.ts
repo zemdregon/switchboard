@@ -1,5 +1,5 @@
 /**
- * ADR-0079 item 3: the workspace manager attaches the submodules of a recursive context's run worktree, refreshes them
+ * ADR-0080 item 3: the workspace manager attaches the submodules of a recursive context's run worktree, refreshes them
  * in a resumed worktree, rolls them back with the run, and every removal path (retention gc, partial-worktree repair)
  * detaches them through the attach record. Git runs for real against local "remote" repositories (the fixture runner
  * maps the https URLs with command-scope `insteadOf`); nothing leaves the host.
@@ -110,7 +110,7 @@ function storeWorktrees(repo: string): string[] {
     .slice(1);
 }
 
-describe("run worktree submodules (ADR-0079 item 3)", () => {
+describe("run worktree submodules (ADR-0080 item 3)", () => {
   it("attaches every declared submodule at its gitlink commit and records it beside the worktree", async () => {
     const { a, b, u } = umbrella();
     const { ws } = await prepare(manager(), u.dir);
@@ -302,7 +302,7 @@ describe("run worktree submodules (ADR-0079 item 3)", () => {
     expect(storeWorktrees("lib-a")).toEqual([]);
   });
 
-  describe("checkpoints (ADR-0079 item 3)", () => {
+  describe("checkpoints (ADR-0080 item 3)", () => {
     const refsOf = (repo: string) =>
       g(
         storePath({ host: HOST, owner: OWNER, repo }, fx.settings),

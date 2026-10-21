@@ -1,6 +1,6 @@
 /**
- * The ordered merge of an umbrella publication with linked submodule pull requests (ADR-0079 item 7, G7, FR-SUB-03;
- * LLD §3.4.16). MCP `merge_run_pr` ({@link mergeOnRequest}) and the policy poller ({@link pollMergePolicies}) run this
+ * The ordered merge of an umbrella publication with linked submodule pull requests (ADR-0080 item 7, G7, FR-SUB-03;
+ * LLD §3.4.17). MCP `merge_run_pr` ({@link mergeOnRequest}) and the policy poller ({@link pollMergePolicies}) run this
  * one step machine through {@link submoduleMergeHook} for an umbrella publish ref that has `submodule_pull_request`
  * rows; every other ref takes the T15.8 gate exactly as before. Its state is the append-only `submodule_merge` table
  * (plus `git_push` and `merge_event`), recomputed on every call, so it survives restarts. Each call advances as far as
@@ -9,10 +9,10 @@
  * 1. **submodules**: each linked pull request (the newest row per repository), in path order, through the gate's own
  *    checks read from `gh` JSON for that repository: G10 open, not a draft, its head the pushed head on the pushed
  *    branch, its base the repository's default branch (the store's `origin/HEAD`), mergeable; the checks per
- *    `merge_policy.checks` (G11 or G16); the policy and G10 read again; then G12 pinned to the pushed head and G17 for
+ *    `merge_policy.checks` (G11 or G18); the policy and G10 read again; then G12 pinned to the pushed head and G19 for
  *    its merge commit (`submodule_merged`). The run's verification and reports belong to the umbrella and are not read
- *    here. A pull request already merged at the pushed head (by a person, or by an earlier call whose G17 failed) is
- *    accepted with its G17 merge commit. A refusal is one `submodule_refused` row per (ref, repository, head, reason)
+ *    here. A pull request already merged at the pushed head (by a person, or by an earlier call whose G19 failed) is
+ *    accepted with its G19 merge commit. A refusal is one `submodule_refused` row per (ref, repository, head, reason)
  *    and stops the walk (later repositories stay `waiting`). A failed G12 is `merge_failed`; the poller does not retry
  *    it at that head, an explicit request does (G12 is head-pinned).
  * 2. **repoint**: every merge commit is fetched into its store (`ensureCommits`) and must be on the repository's default
@@ -71,7 +71,7 @@ import type { PublishedRef } from "./published-refs.js";
 
 /** The inputs of steps 1 to 3 beyond the T15.8 merge port. */
 export interface SubmoduleMergeDeps {
-  /** G17: a pull request's state and merge commit. */
+  /** G19: a pull request's state and merge commit. */
   readonly mergeState: CiPullRequestMergeStatePort;
   /** The controller pusher `publish_run` uses: the repoint push gets the same checks, scan and hardening. */
   readonly pusher: Pick<GitPusher, "push">;
@@ -135,7 +135,7 @@ type Refusal = MergeRefusalReason | SubmoduleMergeRefusalReason;
 
 /**
  * The {@link LinkedMergeHook} of `serve`: undefined for a ref without linked pull requests, else one call of the step
- * machine. Without `sub` (the server lacks the stores, pusher or G17 port) a linked ref is refused
+ * machine. Without `sub` (the server lacks the stores, pusher or G19 port) a linked ref is refused
  * `submodule_merge_unavailable` (fail closed: the umbrella is never merged with unrepointed gitlinks).
  */
 export function submoduleMergeHook(deps: GateDeps, sub: SubmoduleMergeDeps | undefined): LinkedMergeHook {
@@ -244,7 +244,7 @@ class StepMachine {
     );
   }
 
-  /** The gate of one linked pull request, then G12 and G17 (step 1). Never throws for a `gh` or Git failure. */
+  /** The gate of one linked pull request, then G12 and G19 (step 1). Never throws for a `gh` or Git failure. */
   private async mergeOne(
     r: LinkedRepository,
   ): Promise<{ kind: "merged"; sha: string } | { kind: "refused"; reason: Refusal }> {
@@ -263,7 +263,7 @@ class StepMachine {
     if (view === null) return { kind: "refused", reason: "not_mergeable" };
     if (view.number !== r.pr.number) return { kind: "refused", reason: "head_moved" };
     if (view.state === "MERGED") {
-      // Merged by a person, or by an earlier call whose G17 read failed: accepted at the pushed head only.
+      // Merged by a person, or by an earlier call whose G19 read failed: accepted at the pushed head only.
       if (view.headSha !== r.pr.head_sha) return { kind: "refused", reason: "head_moved" };
       return this.readMergeCommit(r, owner, repo);
     }
@@ -273,7 +273,7 @@ class StepMachine {
     const baseBranch = await defaultBranchOf(store, this.storeDeps(r)).catch(() => undefined);
     const first = viewRefusal(view, r, baseBranch);
     if (first !== undefined) return { kind: "refused", reason: first };
-    // The checks per `merge_policy.checks` (G11 or G16), as the umbrella's step 3.
+    // The checks per `merge_policy.checks` (G11 or G18), as the umbrella's step 3.
     const allReported = policy.checks === "all_reported";
     const reported = this.deps.merge.reportedChecks;
     if (allReported && reported === undefined) return { kind: "refused", reason: "gh_error" };
@@ -320,7 +320,7 @@ class StepMachine {
     return this.readMergeCommit(r, owner, repo);
   }
 
-  /** G17: the merge commit of a merged pull request, recorded as `submodule_merged`. */
+  /** G19: the merge commit of a merged pull request, recorded as `submodule_merged`. */
   private async readMergeCommit(
     r: LinkedRepository,
     owner: string,

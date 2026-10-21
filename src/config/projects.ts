@@ -87,11 +87,11 @@ export interface ResolvedContext {
   readonly innerAgent?: ProjectInnerSetting;
   /** T12.1 (LLD §14.1): present only when the context sets `rag`. */
   readonly rag?: ContextRagConfig;
-  /** ADR-0079 item 1 (FR-PRJ-11): present only when the context sets `submodules`. */
+  /** ADR-0080 item 1 (FR-PRJ-11): present only when the context sets `submodules`. */
   readonly submodules?: ResolvedSubmodules;
 }
 
-/** ADR-0079 item 1: a context's `submodules` setting, resolved (lists copied; absent lists are empty). */
+/** ADR-0080 item 1: a context's `submodules` setting, resolved (lists copied; absent lists are empty). */
 export interface ResolvedSubmodules {
   readonly mode: "off" | "recursive";
   /** Worktree-relative POSIX paths, or exactly `["*"]`. */
@@ -99,12 +99,12 @@ export interface ResolvedSubmodules {
   readonly exclude: readonly string[];
 }
 
-/** ADR-0079 item 1: true when the context sets `submodules.mode: "recursive"`. */
+/** ADR-0080 item 1: true when the context sets `submodules.mode: "recursive"`. */
 export function submodulesEnabled(ctx: Pick<ResolvedContext, "submodules"> | undefined): boolean {
   return ctx?.submodules?.mode === "recursive";
 }
 
-/** ADR-0079 item 1: the structural reason codes (`INVALID_REQUEST` for a dynamic definition). */
+/** ADR-0080 item 1: the structural reason codes (`INVALID_REQUEST` for a dynamic definition). */
 export const SUBMODULE_RULE_CODES = [
   "SUBMODULES_PRIMARY_ONLY",
   "SUBMODULE_PATH_UNSAFE",
@@ -168,7 +168,7 @@ export interface ProjectMergePolicy {
   readonly requiredReports: readonly MergePolicyReport[];
   /** ADR-0070: false skips the `verification_result`-at-head condition. Absent means true (T15.8's gate). */
   readonly requireVerification?: boolean;
-  /** ADR-0079 item 7: `required` (default, today's gate; absent reads as `required`) or `all_reported`. Resolution always sets it. */
+  /** ADR-0080 item 7: `required` (default, today's gate; absent reads as `required`) or `all_reported`. Resolution always sets it. */
   readonly checks?: MergePolicyChecks;
 }
 
@@ -201,7 +201,7 @@ export function resolveSkillAssignment(lists: SkillAssignmentConfig | undefined)
 }
 
 /**
- * ADR-0079 item 1: structural rules of one context's `submodules`. Each line is `<path>: <CODE>: <message>` so a
+ * ADR-0080 item 1: structural rules of one context's `submodules`. Each line is `<path>: <CODE>: <message>` so a
  * dynamic definition reports the code as its reason (`checkStructure`). Never echoes a value.
  */
 function checkSubmodules(c: ContextConfig, cat: string, isPrimary: boolean): string[] {
@@ -239,7 +239,7 @@ function checkSubmodules(c: ContextConfig, cat: string, isPrimary: boolean): str
   return errs;
 }
 
-/** ADR-0079 item 1: problem of one submodule path, or undefined (no empty, `.`, `..` or `.git` segment, no leading `/`, no backslash). */
+/** ADR-0080 item 1: problem of one submodule path, or undefined (no empty, `.`, `..` or `.git` segment, no leading `/`, no backslash). */
 function submoduleSegmentProblem(p: string): string | undefined {
   if (p.length === 0) return "must not be empty";
   if (p.includes("\\")) return "must not contain a backslash";

@@ -483,7 +483,7 @@ describe("merge_run_pr (ADR-0070)", () => {
     expect(f.merge.merges).toEqual([expect.objectContaining({ method: "rebase", headSha: TIP })]);
   });
 
-  it("merge_policy.checks all_reported reads G16 (not G11): merges on all-pass, refuses none reported", async () => {
+  it("merge_policy.checks all_reported reads G18 (not G11): merges on all-pass, refuses none reported", async () => {
     f = await start();
     const { call } = await f.connect("steward");
     const p = f.published({ projectId: "allrep" });

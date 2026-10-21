@@ -2647,7 +2647,7 @@ describe("projects (T9.2; FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; FRD V12, BR-23)", () 
       expect(bad.body.error.code).toBe("INVALID_REQUEST");
     });
 
-    it("shows each context's effective definition without a path or secret (ADR-0079 item 8)", async () => {
+    it("shows each context's effective definition without a path or secret (ADR-0080 item 8)", async () => {
       const rich = project({
         mergePolicy: { enabled: true, method: "squash", requiredReports: [], checks: "all_reported" },
       });
