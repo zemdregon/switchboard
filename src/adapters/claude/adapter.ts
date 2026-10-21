@@ -186,7 +186,8 @@ export const CLAUDE_GIT_WRITE_CONTROL: GitWriteControl = {
   kind: "provider-deny-rules",
   detail:
     "Layered, all from `claude --help` 2.1.296: (1) no Bash tool in --tools for inspect-untrusted and edit-untrusted " +
-    "unless the operator allowlists commands (exact; command prefixes in trusted-development), and any allowlist " +
+    "unless the operator allowlists commands (exact; command prefixes in trusted-development) or sets " +
+    "trusted-development shell broad (the allow rule `Bash`, ADR-0090), and any allowlist " +
     "entry that could write Git (commit, ref change, push, config, git global options, gh, command launchers, " +
     "non-read-only subcommands) makes the run Ineligible; " +
     "(2) --disallowedTools Git write deny rules on every invocation (`Bash(git commit)`, `Bash(git commit *)`, ...); " +
@@ -280,13 +281,16 @@ export const CLAUDE_BYPASS_NOT_APPROVED =
  * 3. A `scoped` dimension outside `privileged`: PROFILE_UNSUPPORTED (only the privileged scope may say `scoped`).
  * 4. `trusted-development` (owner decisions 10-12: operator overrides may loosen it):
  *    - network `allowlist` or `policy`: CAPABILITY_MISSING ([H] has no network or host control; R-36).
- *    - shell `broad` (network `off`): CAPABILITY_MISSING, because nothing in [H] stops a command's network use
- *      (Q-34 Proposed). With rule 4a this means `broad` never compiles for Claude today.
+ *    - shell `broad` (network `off`) compiles since ADR-0090: `Bash` in `--tools` with the allow rule `Bash`, under
+ *      the same dontAsk, `--restricted` and Git deny rules. Network `off` then holds at the tool level only (no
+ *      `WebFetch`), as it already did for allowlisted interpreters (R-36); it replaces the Q-34 refusal for this profile.
+ *      With file access `read-only` it stays CAPABILITY_MISSING (nothing in [H] stops a command writing files).
  *    - repository configuration `approved-only` or `allowlisted`: CAPABILITY_MISSING. [H] has no per-item control for
  *      approved hooks or instructions; `--setting-sources` selects whole sources, and `--mcp-config` (approved MCP
  *      servers) is barred by ADR-0015.
- *    What remains compiles as `edit-untrusted` (file access, shell allowlist as command prefixes per ADR-0066, network
- *    off at the tool level, repository configuration disabled with `--safe-mode --restricted --strict-mcp-config`).
+ *    What remains compiles as `edit-untrusted` (file access, shell allowlist as command prefixes per ADR-0066 or
+ *    `broad` per ADR-0090, network off at the tool level, repository configuration disabled with `--safe-mode
+ *    --restricted --strict-mcp-config`).
  * `inspect-untrusted` and `edit-untrusted` keep their M2 behaviour (T2.2; Q-34: network off at the tool level).
  */
 export function matrixIneligible(profile: ResolvedProfile, bypassApproved = false): Ineligible | undefined {
@@ -315,11 +319,11 @@ export function matrixIneligible(profile: ResolvedProfile, bypassApproved = fals
           "(TDD §4.1.1, R-36)",
       );
     }
-    if (profile.shell === "broad") {
+    if (profile.shell === "broad" && profile.fileAccess === "read-only") {
       return ineligible(
         "CAPABILITY_MISSING",
-        "trusted-development shell=broad with network=off: claude --help 2.1.296 documents nothing that stops a " +
-          "command's network use (Q-34, R-36)",
+        "trusted-development file_access=read-only with shell=broad: claude --help 2.1.296 documents nothing that " +
+          "stops a command writing files (ADR-0090)",
       );
     }
     if (profile.repoConfig !== "disabled") {
@@ -405,6 +409,19 @@ function standardPlan(request: CompileRequest, profile: ResolvedProfile): Claude
         tools.push("Bash");
         allow.push(...rules);
       }
+    } else if (profile.shell === "broad" && profile.name === "trusted-development") {
+      // ADR-0090: an allowlist under dontAsk denies ordinary shell (loops, `$?`, pipes into an unlisted program) for
+      // every model, so trusted-development may name `broad`: any command, with the Git deny rules still applied.
+      // A read-only workspace cannot take it: nothing stops a command writing files.
+      if (!request.workspace.writable) {
+        return ineligible(
+          "CAPABILITY_MISSING",
+          "trusted-development shell=broad on a read-only workspace: claude --help 2.1.296 documents nothing that " +
+            "stops a command writing files (ADR-0090)",
+        );
+      }
+      tools.push("Bash");
+      allow.push("Bash");
     } else if (profile.shell !== "none") {
       return ineligible("PROFILE_UNSUPPORTED", `${profile.name} with shell=${profile.shell} is not narrow`);
     }
