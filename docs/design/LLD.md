@@ -6374,6 +6374,10 @@ probes. `capacity --json` adds `schema_version` as every CLI `--json` does. With
 an empty in-memory ledger and creates nothing. The `doctor` JSON gains a `capacity` key, and its text gains one line per
 adapter. The section never changes `ok`, and an unreadable ledger leaves it out.
 
+*Amendment 2026-10-21 (ADR-0079, Delegated):* "never probes a provider" no longer holds as written. For an enabled
+provider whose adapter has `readProviderUsage`, `get_capacity` also runs that CLI's own read-only account call and adds
+`provider_usage` (§16.10). It makes no model call and reads no credential.
+
 ### 16.4 Per-provider circuit breaker
 
 State in `provider_health` (one row per adapter provider id; created on first write, with `auth_state = 'UNKNOWN'` and
@@ -6691,6 +6695,64 @@ breaker's probe): a queued run whose provider is deferred stays in `QUEUED`, one
 including `privileged` and `require_provider` runs and runs admitted to an undeferred provider whose subscription
 became deferred before dispatch. Nothing creates a run, a probe or a provider call. Tests:
 `src/lifecycle/pacing-gate.test.ts`, `src/routing/pacing-admission.test.ts`.
+
+### 16.10 Provider-reported usage reader (FR-CAP-13, ADR-0079)
+
+*Added 2026-10-21 (Delegated, not owner-approved).* The estimator of §16.2 never sees a provider's own quota, because no
+run output carries one. Where a provider's CLI can report the signed-in account's windows without a model call, an
+optional adapter method reads them, and the result is shown beside the projection.
+
+**Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
+(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; only Codex implements it.
+
+```jsonc
+// ProviderUsageReport
+{ "source": "provider_reported", "provider": "codex", "observed_at": "<ISO>", "method": "codex app-server account/rateLimits/read",
+  "plan": "plus", "limit_reached": false, "limit_reached_type": null,
+  "windows": [ { "id": "primary", "limit_id": "codex", "window_seconds": 18000,
+                 "used_fraction": 0.21, "remaining_fraction": 0.79, "resets_at": "<ISO>" } ],
+  "credits": { "has_credits": true, "unlimited": false, "balance": "<string>" } }
+// ProviderUsageUnavailable
+{ "source": "unknown", "provider": "codex", "observed_at": "<ISO>", "error": "<short reason>" }
+```
+
+**Codex wire exchange** (`src/adapters/codex/usage.ts`). The adapter runs `codex app-server` through the existing
+`ProbeRunner` with the environment allowlist `PATH` and `HOME` and a 15 s timeout (**Proposed**). It writes three
+JSON-RPC lines on stdin: `initialize` (id 1), the `initialized` notification, and `account/rateLimits/read` (id 2) with
+`excludeResetCreditDetails: true`. The process exits at stdin end-of-file before answering, so stdin is held open until
+the id-2 answer arrives. No model is called. The CLI uses its own login; Switchboard reads no credential and no file
+under `~/.codex` (ADR-0003).
+
+| Provider field (app-server) | Report field |
+| --- | --- |
+| `rateLimits` and each entry of `rateLimitsByLimitId`: `primary`, `secondary` | `windows[]`, `id` is `primary` or `secondary`, prefixed `<limit_id>:` for a non-default bucket |
+| `usedPercent` | `used_fraction` = `usedPercent / 100`; `remaining_fraction` = `1 - used_fraction` |
+| `windowDurationMins` | `window_seconds` = minutes × 60 |
+| `resetsAt` (Unix seconds) | `resets_at` (ISO) |
+| `limitId` | `limit_id` |
+| `planType` | `plan` |
+| `credits.hasCredits`, `unlimited`, `balance` | `credits.has_credits`, `unlimited`, `balance` |
+| `rateLimitReachedType`, `ordinaryUsageAllowed` | `limit_reached`, `limit_reached_type`, only from the provider's flags, never inferred from a full window |
+
+`accountId` and every other field are dropped.
+
+**Failure rules.** A spawn failure, a timeout, a missing answer or a JSON-RPC error returns `ProviderUsageUnavailable`
+with a short reason. An unknown figure is never headroom (BR-50).
+
+**Reader and cache** (`src/capacity/provider-usage.ts`). `readProviderUsage` runs the readers of enabled providers that
+have one, in parallel. `ProviderUsageCache` is per process with a one-minute TTL (**Proposed**, Delegated).
+`withProviderUsage` adds the report to each provider entry of the §16.3 projection as `provider_usage`; the projection
+itself (`capacity_score`, `explicit_remaining`, `reset_at`, `pacing`, routing) is unchanged. The report is never written
+to the ledger and does not feed routing, pacing or the score; `REMAINING_KEYS` and `USAGE_KEYS` stay empty. Feeding it
+into pacing is possible follow-up work and is not done.
+
+**Surfaces.** `get_capacity` (the output schema gains an optional `provider_usage` per provider), `switchboard capacity`
+(text and `--json`) and `switchboard doctor` (a separate "Provider-reported usage" section, informational, never
+changes `ok`). Text shows fractions, not percentages (FR-CAP-03 wording rule), and "remaining" appears only on
+`provider_reported` lines. Tests: `src/adapters/codex/usage.test.ts` (recorded redacted fixture
+`src/adapters/codex/fixtures/usage/app-server-rate-limits.jsonl` and two synthetic ones),
+`src/capacity/provider-usage.test.ts`, and the block "provider_usage on get_capacity, capacity and doctor (ADR-0079,
+FR-CAP-13)" in `src/mcp/get-capacity.test.ts`.
 
 ### 16.11 Provider-reported quota of a usage-only provider (FR-CAP-14, ADR-0081)
 

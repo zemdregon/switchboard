@@ -1,4 +1,4 @@
-import type { AdapterRegistry } from "../adapters/index.js";
+import type { AdapterRegistry, ProbeRunner } from "../adapters/index.js";
 import type { LoadReader } from "../capacity/host-load.js";
 import type { ContainerRuntime } from "../environment/runtime.js";
 import type { GraderExec } from "../eval/grader.js";
@@ -47,6 +47,8 @@ export interface CliIo {
    * and never run the operator's `gh`.
    */
   readonly copilotQuota?: (opts: CopilotQuotaReaderOptions) => CopilotQuotaReader;
+  /** ADR-0079 (FR-CAP-13): runner for provider usage reads in `capacity` and `doctor`. Defaults to a probe runner. */
+  readonly providerUsageRunner?: ProbeRunner;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */

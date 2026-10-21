@@ -145,7 +145,14 @@ import {
   type ResolvedProfile,
 } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
-import { capacityProjection, capacityProviders } from "../capacity/index.js";
+import {
+  capacityProjection,
+  capacityProviders,
+  type ProviderUsageReaderDeps,
+  readProviderUsage,
+  usageReadTargets,
+  withProviderUsage,
+} from "../capacity/index.js";
 import {
   type CapacitySettings,
   CONTAINER_NOT_IMPLEMENTED,
@@ -408,6 +415,11 @@ export interface McpServerDeps {
   readonly candidateOrder?: readonly ProviderId[];
   /** Clock for `get_capacity` (T6.3) and the routing window (T7.2); defaults to the system clock. */
   readonly now?: () => Date;
+  /**
+   * ADR-0079 (FR-CAP-13): the probe runner and cache `get_capacity` reads provider-reported usage with. Absent means
+   * no provider is read and no entry carries `provider_usage`.
+   */
+  readonly providerUsage?: ProviderUsageReaderDeps;
   /**
    * T14.8 (FR-CTL-08, ADR-0047 2f): announces a `decide_approval` decision to the notification sinks when the
    * lifecycle's transition hook does not (see `src/control/approval-proxy.ts`). Absent means no sink is configured.
@@ -2000,7 +2012,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
   /**
    * LLD §16.3 `get_capacity` (T6.3; FR-MCP-02, FR-CAP-02, FR-CAP-03): the one capacity projection, for every registered
-   * provider in candidate order or for the one named. Read-only; it never probes or calls a provider.
+   * provider in candidate order or for the one named. Read-only. ADR-0079 (FR-CAP-13): with `providerUsage`, each
+   * enabled provider whose adapter has a usage reader is asked through its own CLI (no model call, cached a minute)
+   * and its entry carries `provider_usage`; nothing else is probed.
    */
   const getCapacity = async (args: Args) => {
     const registered = deps.registry.list().map((a) => a.id);
@@ -2030,13 +2044,23 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
     });
     // T6.7: the affinity block shows this client's own runs only.
-    const projection = capacityProjection(
-      ledger,
-      providers,
-      settings,
-      (deps.now ?? (() => new Date()))(),
-      deps.clientId,
-    );
+    const now = (deps.now ?? (() => new Date()))();
+    const estimated = capacityProjection(ledger, providers, settings, now, deps.clientId);
+    // ADR-0079 (FR-CAP-13): provider-reported usage per adapter entry. A usage-only `copilot` request has no entries.
+    const projection =
+      deps.providerUsage === undefined
+        ? estimated
+        : withProviderUsage(
+            estimated,
+            await readProviderUsage(
+              usageReadTargets(
+                deps.registry.list().filter((a) => providers.some((p) => p.id === a.id)),
+                estimated,
+              ),
+              deps.providerUsage,
+              now,
+            ),
+          );
     // ADR-0081: the provider-reported quota rides alongside, never mixed into the estimates. The reader never throws.
     if (quota === undefined || (named !== undefined && !usageOnly)) return projection;
     return { ...projection, provider_quota: [await quota()] };

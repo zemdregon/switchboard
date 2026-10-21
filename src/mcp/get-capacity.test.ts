@@ -11,9 +11,21 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
-import { AdapterRegistry, type ProviderId, type ResolvedProfile } from "../adapters/index.js";
+import {
+  AdapterRegistry,
+  type ProbeRunner,
+  type ProviderId,
+  type ProviderUsageResult,
+  type ResolvedProfile,
+} from "../adapters/index.js";
 import { ArtifactStore } from "../artifacts/index.js";
-import { CAPACITY_NOTE } from "../capacity/index.js";
+import {
+  CAPACITY_NOTE,
+  type CapacityProjection,
+  ProviderUsageCache,
+  type ProviderUsageReaderDeps,
+  usageReadTargets,
+} from "../capacity/index.js";
 import { main } from "../cli/index.js";
 import type { CliIo } from "../cli/io.js";
 import { type CapacitySettings, loadConfig } from "../config/index.js";
@@ -116,10 +128,15 @@ function finished(state: "SUCCEEDED" | "FAILED", code: string | null = null, fin
 
 async function connect(
   capacity?: Pick<CapacitySettings, "windowSeconds" | "confidenceRuns" | "subscriptions" | "pacing">,
-  opts?: { candidateOrder?: readonly ProviderId[]; copilotQuota?: CopilotQuotaReader },
+  opts?: {
+    candidateOrder?: readonly ProviderId[];
+    copilotQuota?: CopilotQuotaReader;
+    registry?: AdapterRegistry;
+    providerUsage?: ProviderUsageReaderDeps;
+  },
 ): Promise<Client> {
   if (!db) openData();
-  const reg = registry();
+  const reg = opts?.registry ?? registry();
   const artifacts = new ArtifactStore(path.join(dataDir, "artifacts"));
   const workspace = new WorkspaceManager({
     db: db as Database.Database,
@@ -151,6 +168,7 @@ async function connect(
     registry: reg,
     ...(opts?.candidateOrder !== undefined ? { candidateOrder: opts.candidateOrder } : {}),
     ...(opts?.copilotQuota !== undefined ? { copilotQuota: opts.copilotQuota } : {}),
+    ...(opts?.providerUsage !== undefined ? { providerUsage: opts.providerUsage } : {}),
     config: {
       allowedRoots: [root],
       mcpClients: new Map([["c1", { id: "c1", maxTrustProfile: "edit-untrusted" as TrustProfile }]]),
@@ -213,23 +231,29 @@ function expectHonestText(text: string): void {
   expect(text).not.toMatch(/quota left|available quota|%/i);
 }
 
-/** FR-CAP-03 over a JSON surface: the only "remaining" key is explicit_remaining, null or provider-reported. */
+/**
+ * FR-CAP-03 over a JSON surface: the only "remaining" keys are explicit_remaining, null or provider-reported, and
+ * (ADR-0079) a window's remaining_fraction inside a provider_reported `provider_usage` report.
+ */
 function expectHonestJson(value: unknown): void {
-  const walk = (v: unknown): void => {
+  const walk = (v: unknown, reported: boolean): void => {
     if (Array.isArray(v)) {
-      for (const item of v) walk(item);
+      for (const item of v) walk(item, reported);
       return;
     }
     if (v === null || typeof v !== "object") return;
     for (const [k, child] of Object.entries(v)) {
       if (/remaining/i.test(k)) {
-        expect(k).toBe("explicit_remaining");
-        if (child !== null) expect((child as Json).source).toBe("provider_reported");
+        if (k === "remaining_fraction") expect(reported).toBe(true);
+        else {
+          expect(k).toBe("explicit_remaining");
+          if (child !== null) expect((child as Json).source).toBe("provider_reported");
+        }
       }
-      walk(child);
+      walk(child, reported || (k === "provider_usage" && (child as Json | null)?.source === "provider_reported"));
     }
   };
-  walk(value);
+  walk(value, false);
 }
 
 describe("get_capacity on the MCP server (T6.3; FR-MCP-02, LLD §16.3)", () => {
@@ -746,5 +770,109 @@ describe("usage-only copilot quota on get_capacity and capacity (ADR-0081)", () 
       },
     });
     expect(seen).toEqual([{ binary: "/opt/gh/bin/gh", sourceEnv: env }]);
+  });
+});
+
+/**
+ * ADR-0079 (FR-CAP-13, LLD §16.10): the provider's own usage report laid over the projection. A fake adapter with a
+ * reader stands in for Codex; the reader's figures are passed through unchanged and never move the estimate.
+ */
+describe("provider_usage on get_capacity, capacity and doctor (ADR-0079, FR-CAP-13)", () => {
+  const REPORT: ProviderUsageResult = {
+    provider: "fake",
+    source: "provider_reported",
+    observed_at: NOW.toISOString(),
+    method: "fake usage read",
+    plan: "plus",
+    limit_reached: false,
+    limit_reached_type: null,
+    windows: [
+      {
+        id: "primary",
+        limit_id: "codex",
+        window_seconds: 18_000,
+        used_fraction: 0.21,
+        remaining_fraction: 0.79,
+        resets_at: "2026-10-14T15:00:00.000Z",
+      },
+    ],
+    credits: { has_credits: true, unlimited: false, balance: "12.5" },
+  };
+
+  class ReportingFake extends FakeAdapter {
+    reads = 0;
+    constructor(private readonly answer: ProviderUsageResult = REPORT) {
+      super({ script: "/nonexistent/fake-cli.mjs" });
+    }
+    async readProviderUsage(_runner: ProbeRunner, now?: Date): Promise<ProviderUsageResult> {
+      this.reads++;
+      return { ...this.answer, observed_at: (now ?? NOW).toISOString() };
+    }
+  }
+  const noRun: ProbeRunner = async () => {
+    throw new Error("the fake reader takes no runner");
+  };
+
+  it("carries the report on the provider's entry, validated by the output schema, and caches it for a minute", async () => {
+    const fake = new ReportingFake();
+    const client = await connect(undefined, {
+      registry: new AdapterRegistry().register(fake),
+      providerUsage: { runner: noRun, cache: new ProviderUsageCache() },
+    });
+    const first = await capacityTool(client);
+    expect(first.isError).toBe(false);
+    expect(first.body.providers[0].provider_usage).toEqual(REPORT);
+    // The estimate is unchanged by the report.
+    expect(first.body.providers[0]).toMatchObject({ capacity_score: null, explicit_remaining: null, reset_at: null });
+    expectHonestJson(first.body);
+    await capacityTool(client, { provider: "fake" });
+    expect(fake.reads).toBe(1);
+  });
+
+  it("an unknown read is passed through with its reason; without reader deps nothing is read", async () => {
+    const unknown: ProviderUsageResult = {
+      provider: "fake",
+      source: "unknown",
+      observed_at: NOW.toISOString(),
+      method: "fake usage read",
+      error: "timed out",
+    };
+    const fake = new ReportingFake(unknown);
+    const client = await connect(undefined, {
+      registry: new AdapterRegistry().register(fake),
+      providerUsage: { runner: noRun },
+    });
+    expect((await capacityTool(client)).body.providers[0].provider_usage).toEqual(unknown);
+
+    const silent = new ReportingFake();
+    const other = await connect(undefined, { registry: new AdapterRegistry().register(silent) });
+    expect((await capacityTool(other)).body.providers[0]).not.toHaveProperty("provider_usage");
+    expect(silent.reads).toBe(0);
+  });
+
+  it("`switchboard capacity` and `doctor` print the reported windows under the wording rule; JSON matches", async () => {
+    const reg = new AdapterRegistry().register(new ReportingFake());
+    const text = await cli(["capacity"], { adapters: reg, providerUsageRunner: noRun });
+    expect(text.code).toBe(0);
+    expect(text.out).toContain("provider-reported usage (fake usage read, at 2026-10-14T12:00:00.000Z): plan plus");
+    expect(text.out).toContain(
+      "primary (18000 s, provider_reported): used 0.21, remaining 0.79, resets 2026-10-14T15:00:00.000Z",
+    );
+    expectHonestText(text.out);
+    const json = await cli(["capacity", "--json"], { adapters: reg, providerUsageRunner: noRun });
+    expect((JSON.parse(json.out) as Json).providers[0].provider_usage).toEqual(REPORT);
+    const doctor = await cli(["doctor"], { adapters: reg, providerUsageRunner: noRun });
+    expect(doctor.out).toContain("Provider-reported usage (read through each provider's own CLI):");
+    expect(doctor.out).toContain("primary (18000 s, provider_reported): used 0.21, remaining 0.79");
+  });
+
+  it("a provider disabled in config is not read (usageReadTargets keeps enabled entries only)", () => {
+    const fake = new ReportingFake();
+    const entry = { provider: "fake", enabled: false } as CapacityProjection["providers"][number];
+    const projection = { providers: [entry] } as CapacityProjection;
+    expect(usageReadTargets([fake], projection)).toEqual([]);
+    expect(usageReadTargets([fake], { providers: [{ ...entry, enabled: true }] } as CapacityProjection)).toEqual([
+      fake,
+    ]);
   });
 });
