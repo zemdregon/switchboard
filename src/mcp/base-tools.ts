@@ -222,6 +222,7 @@ export async function rebaseSessionTool(
   expectedHeadSha: string | undefined,
 ): Promise<RebaseSessionResult> {
   const { ctx, remote } = remoteBacked(project);
+  const plan = submodulePlan(ctx);
   if (session.repoRoot === null) {
     throw invalid(`meta-session ${session.id} has no recorded repository yet`, { reason: "NOTHING_TO_REBASE" });
   }
@@ -242,9 +243,15 @@ export async function rebaseSessionTool(
         remote,
         ...(ctx.identity !== undefined ? { identity: ctx.identity } : {}),
         sign: ctx.sign,
+        ...(plan !== undefined ? { submodules: true } : {}),
       },
       { ...options(deps), serialise: serialisedWorktreeCreate },
     );
+    // ADR-0079 item 3: the new base's (and the rebased head's) gitlinks are made present in their stores, best effort:
+    // the rebase is already recorded, and the next run's worktree re-points its attached submodules from its record.
+    if (plan !== undefined && r.newHead !== r.previousHead) {
+      await ensureSubmoduleCommits(deps, repoRoot, [r.baseCommit, r.newHead], plan).catch(() => undefined);
+    }
     return {
       session_id: session.id,
       previous_head: r.previousHead,

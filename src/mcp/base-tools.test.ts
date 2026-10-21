@@ -291,6 +291,56 @@ describe("refresh_project_base with submodules (ADR-0079 item 3)", () => {
     expect(Object.keys(r)).not.toContain("submodules");
     expect(fx.calls).toEqual([]);
   });
+
+  /** A session commit on a side branch from `from` that moves gitlinks (`main` is never moved). */
+  function sideGitlinks(from: string, links: Record<string, string>): string {
+    g(repo, "checkout", "-q", "-B", "work", from);
+    for (const [p, sha] of Object.entries(links)) g(repo, "update-index", "--cacheinfo", `160000,${sha},${p}`);
+    g(repo, "commit", "-q", "-m", "bump gitlinks");
+    const tip = g(repo, "rev-parse", "HEAD");
+    g(repo, "checkout", "-q", "main");
+    return tip;
+  }
+  const storeHas = (repoName: string, sha: string) =>
+    execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], {
+      cwd: path.join(fx.settings.cloneRoot, HOST, OWNER.toLowerCase(), repoName),
+      env: GIT_ENV,
+      stdio: "ignore",
+    }) !== undefined;
+
+  it("rebase_session refuses a gitlink both the session and the base moved, naming that path", async () => {
+    const a = makeRemote(fx, "lib-a", { "a.txt": "a1\n" });
+    pushGitlinks({ "mods/lib-a": a.head });
+    g(repo, "pull", "-q", "--ff-only");
+    const a2 = commitFiles(a.dir, { "a.txt": "session\n" }, "session");
+    const a3 = commitFiles(a.dir, { "a.txt": "upstream\n" }, "upstream");
+    const s = session((b) => sideGitlinks(b, { "mods/lib-a": a2 }));
+    pushGitlinks({ "mods/lib-a": a3 });
+    await expect(
+      rebaseSessionTool(subDeps(), { id: s.id, repoRoot: repo }, recursive(), undefined),
+    ).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      details: { reason: "CONFLICT", conflicting_paths: expect.arrayContaining(["mods/lib-a"]) },
+    });
+    expect(sessionRow(s.id)).toEqual({ base_commit: s.base, head_commit: s.head });
+  });
+
+  it("rebase_session replays gitlink changes on other paths and makes the new base's commits present", async () => {
+    const a = makeRemote(fx, "lib-a", { "a.txt": "a1\n" });
+    const b = makeRemote(fx, "lib-b", { "b.txt": "b1\n" });
+    pushGitlinks({ "mods/lib-a": a.head, "mods/lib-b": b.head });
+    g(repo, "pull", "-q", "--ff-only");
+    const a2 = commitFiles(a.dir, { "a.txt": "session\n" }, "session");
+    const b2 = commitFiles(b.dir, { "b.txt": "upstream\n" }, "upstream");
+    const s = session((base) => sideGitlinks(base, { "mods/lib-a": a2 }));
+    const fresh = pushGitlinks({ "mods/lib-a": a.head, "mods/lib-b": b2 });
+    const r = await rebaseSessionTool(subDeps(), { id: s.id, repoRoot: repo }, recursive(), s.head);
+    expect(r).toMatchObject({ base_commit: fresh, rebased_commits: 1 });
+    expect(g(repo, "rev-parse", `${r.new_head}:mods/lib-a`)).toBe(a2);
+    expect(g(repo, "rev-parse", `${r.new_head}:mods/lib-b`)).toBe(b2);
+    expect(storeHas("lib-a", a2)).toBe(true);
+    expect(storeHas("lib-b", b2)).toBe(true);
+  });
 });
 
 describe("rebase_session (ADR-0074)", () => {

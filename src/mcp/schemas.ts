@@ -1986,7 +1986,10 @@ const BASE_DESCRIPTIONS: Readonly<Record<BaseToolName, string>> = {
     "with details.reason: CONFLICT (details.conflicting_paths), HEAD_MOVED (expected_head_sha differs), ACTIVE_RUN, " +
     "NOT_REMOTE_BACKED, NOTHING_TO_REBASE, MERGE_COMMIT; or PERMISSION_BLOCKED SIGNING_UNAVAILABLE, " +
     "IDENTITY_REQUIRED, REPO_CONFIG_UNSAFE; or TOOL_FAILURE BASE_REFRESH_FAILED, REPO_BUSY (retryable). A branch " +
-    "publish_run pushed before is not a fast-forward afterwards, and publishing it again is refused NON_FAST_FORWARD.",
+    "publish_run pushed before is not a fast-forward afterwards, and publishing it again is refused NON_FAST_FORWARD. " +
+    "For a context with submodules.mode recursive, a submodule gitlink both the session and the base moved to " +
+    "different commits is a CONFLICT naming that path; after a rebase the new base's submodule commits are fetched " +
+    "into their stores.",
 };
 
 const SKILL_DESCRIPTIONS: Readonly<Record<SkillToolName, string>> = {
