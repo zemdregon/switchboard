@@ -11,7 +11,7 @@
  */
 import { realpath } from "node:fs/promises";
 import type Database from "better-sqlite3";
-import { primaryContext, type ResolvedProject } from "../config/index.js";
+import { primaryContext, type ResolvedContext, type ResolvedProject, submodulesEnabled } from "../config/index.js";
 import {
   type BaseRefreshOptions,
   type BaseRefreshReason,
@@ -20,8 +20,17 @@ import {
   SessionRebaseError,
   type SessionRebaseRefusal,
 } from "../git/index.js";
+import { SubmoduleError } from "../submodules/errors.js";
 import { gitText } from "../workspace/git.js";
 import { serialisedWorktreeCreate } from "../workspace/manager.js";
+import {
+  planManifest,
+  presenceOf,
+  readyStores,
+  type SubmoduleDeps,
+  type SubmodulePlan,
+  type SubmodulePresence,
+} from "../workspace/submodules.js";
 import { invalid, ToolError } from "./errors.js";
 
 /** What `serve` wires: the ledger handle, ids and the fetch environment of the controller's own push (ADR-0028). */
@@ -32,6 +41,11 @@ export interface BaseToolDeps {
   readonly now?: () => Date;
   /** Test seam of {@link refreshBase}. */
   readonly runFetch?: BaseRefreshOptions["runFetch"];
+  /**
+   * ADR-0079 item 3: the submodule stores of a recursive context (live `project_sources`, store runner). Absent: a
+   * recursive context's sources are empty, so every submodule URL is refused.
+   */
+  readonly submodules?: SubmoduleDeps;
 }
 
 export interface RefreshProjectBaseResult {
@@ -42,6 +56,8 @@ export interface RefreshProjectBaseResult {
   previous_commit: string | null;
   remote_commit: string;
   reason: BaseRefreshReason;
+  /** ADR-0079 item 3: only for a recursive context; distinct gitlink commits of `base_commit` and their presence. */
+  submodules?: SubmodulePresence;
 }
 
 export interface RebaseSessionResult {
@@ -74,6 +90,58 @@ async function repoRootOf(contextPath: string): Promise<string> {
   } catch {
     throw new ToolError("TOOL_FAILURE", "the project's repository could not be read", { reason: "GIT_FAILED" });
   }
+}
+
+/** ADR-0079 item 3: the context's submodule plan, or undefined unless it sets `submodules.mode: "recursive"`. */
+function submodulePlan(ctx: ResolvedContext): SubmodulePlan | undefined {
+  if (!submodulesEnabled(ctx) || ctx.submodules === undefined) return undefined;
+  return {
+    writablePaths: ctx.submodules.writablePaths,
+    exclude: ctx.submodules.exclude,
+    ...(ctx.baseRemote !== undefined ? { baseRemote: ctx.baseRemote } : {}),
+  };
+}
+
+const submoduleDeps = (deps: BaseToolDeps): SubmoduleDeps => deps.submodules ?? { sources: () => undefined };
+
+/**
+ * ADR-0079 item 3: make every gitlink commit of `commits` present in its store (bounded parallel; only missing commits
+ * are fetched) and count them. Never fails for a missing commit; a manifest refusal is a ToolError with the library's
+ * reason and path (never the URL), after the umbrella refresh already happened.
+ */
+export async function ensureSubmoduleCommits(
+  deps: BaseToolDeps,
+  repoRoot: string,
+  commits: readonly string[],
+  plan: SubmodulePlan,
+): Promise<SubmodulePresence> {
+  const sub = submoduleDeps(deps);
+  const shasByKey = new Map<string, string[]>();
+  let manifest: Awaited<ReturnType<typeof planManifest>> | undefined;
+  const entries = new Map<string, Awaited<ReturnType<typeof planManifest>>["entries"][number]>();
+  try {
+    for (const commit of [...new Set(commits)]) {
+      const m = await planManifest(repoRoot, commit, plan, sub);
+      manifest ??= m;
+      for (const e of m.entries) {
+        if (!entries.has(e.key)) entries.set(e.key, e);
+        const list = shasByKey.get(e.key) ?? [];
+        if (!list.includes(e.sha)) list.push(e.sha);
+        shasByKey.set(e.key, list);
+      }
+    }
+  } catch (err) {
+    if (!(err instanceof SubmoduleError)) throw err;
+    throw new ToolError(err.code, `the submodule manifest of the base was refused: ${err.message}`, {
+      reason: err.reason,
+      ...(err.path !== undefined ? { path: err.path } : {}),
+    });
+  }
+  if (manifest === undefined) return { total: 0, present: 0, fetched: 0, missing: 0 };
+  // One manifest whose keys cover every commit read (the first entry of each key names its source).
+  const all = [...entries.values()];
+  const byKey = new Map(all.map((e) => [e.key, [e]]));
+  return presenceOf(await readyStores({ ...manifest, entries: all, byKey }, sub, shasByKey));
 }
 
 function options(deps: BaseToolDeps): BaseRefreshOptions {
@@ -115,6 +183,9 @@ export async function refreshProjectBase(
     if (RETRYABLE_FETCH.has(r.reason)) te.retryable = true;
     throw te;
   }
+  // ADR-0079 item 3: the stores are warmed after the refresh, which a missing commit never undoes.
+  const plan = submodulePlan(ctx);
+  const submodules = plan !== undefined ? await ensureSubmoduleCommits(deps, repoRoot, [start], plan) : undefined;
   return {
     project_id: project.id,
     base_ref: ctx.baseRef,
@@ -123,6 +194,7 @@ export async function refreshProjectBase(
     previous_commit: r.facts?.trackingBefore ?? null,
     remote_commit: fetchedTip,
     reason: r.reason,
+    ...(submodules !== undefined ? { submodules } : {}),
   };
 }
 

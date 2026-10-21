@@ -16,6 +16,16 @@ import { BASE_REFRESH_EVENT, SESSION_REBASED_EVENT } from "../git/index.js";
 import { createIdGenerator, type IdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type RunRecord } from "../ledger/index.js";
 import { toResolved } from "../projects/index.js";
+import {
+  commitFiles,
+  type Fixture,
+  gIn,
+  gitmodulesText,
+  HOST,
+  makeFixture,
+  makeRemote,
+  OWNER,
+} from "../submodules/fixtures/repos.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { type BaseToolDeps, rebaseSessionTool, refreshProjectBase } from "./base-tools.js";
 
@@ -189,6 +199,97 @@ describe("refresh_project_base (ADR-0074)", () => {
       retryable: true,
       details: { reason: "BASE_REFRESH_FAILED", fetch_reason: "FETCH_FAILED" },
     });
+  });
+});
+
+describe("refresh_project_base with submodules (ADR-0079 item 3)", () => {
+  let fx: Fixture;
+  beforeEach(() => {
+    fx = makeFixture("sb-base-sub-");
+  });
+  afterEach(() => rmSync(fx.root, { recursive: true, force: true }));
+
+  /** Push an umbrella commit whose gitlinks are `links` (path → sha) and whose `.gitmodules` declares them. */
+  function pushGitlinks(links: Record<string, string>): string {
+    writeFileSync(
+      path.join(pusher, ".gitmodules"),
+      gitmodulesText(Object.keys(links).map((p) => [p, p, `https://${HOST}/${OWNER}/${path.basename(p)}.git`])),
+    );
+    g(pusher, "add", ".gitmodules");
+    gIn(
+      pusher,
+      Object.entries(links)
+        .map(([p, sha]) => `160000 ${sha}\t${p}\n`)
+        .join(""),
+      "update-index",
+      "--add",
+      "--index-info",
+    );
+    g(pusher, "commit", "-q", "-m", "gitlinks");
+    g(pusher, "push", "-q", "origin", "main");
+    return g(pusher, "rev-parse", "HEAD");
+  }
+  const recursive = () => project({ submodules: { mode: "recursive" } });
+  const subDeps = (): BaseToolDeps => ({ ...deps, submodules: { sources: () => fx.settings, git: fx.runner } });
+
+  it("makes every gitlink of the fetched base present in its store and counts them", async () => {
+    const s = session((b) => b);
+    const a = makeRemote(fx, "lib-a", { "a.txt": "a1\n" });
+    const b = makeRemote(fx, "lib-b", { "b.txt": "b1\n" });
+    const tip = pushGitlinks({ "mods/lib-a": a.head, "mods/lib-b": b.head });
+    const first = await refreshProjectBase(subDeps(), recursive(), () => s.runId);
+    expect(first.base_commit).toBe(tip);
+    // A fresh store's clone brings the commit: present, nothing fetched by id.
+    expect(first.submodules).toEqual({ total: 2, present: 2, fetched: 0, missing: 0 });
+
+    const a2 = commitFiles(a.dir, { "a.txt": "a2\n" }, "second");
+    pushGitlinks({ "mods/lib-a": a2, "mods/lib-b": b.head });
+    const before = fx.calls.length;
+    const second = await refreshProjectBase(subDeps(), recursive(), () => s.runId);
+    expect(second.submodules).toEqual({ total: 2, present: 1, fetched: 1, missing: 0 });
+    // No clone, and one branch fetch: only the store that missed a commit went to the network.
+    const later = fx.calls.slice(before);
+    expect(later.filter((c) => c.includes("clone"))).toEqual([]);
+    expect(later.filter((c) => c.includes("fetch"))).toHaveLength(1);
+  });
+
+  it("a commit missing from its repository is reported and does not undo the refresh", async () => {
+    const s = session((b) => b);
+    const a = makeRemote(fx, "lib-a", { "a.txt": "a1\n" });
+    const ghost = "0".repeat(39) + "1";
+    const tip = pushGitlinks({ "mods/lib-a": a.head, "mods/lib-b": ghost });
+    makeRemote(fx, "lib-b", { "b.txt": "b1\n" });
+    const r = await refreshProjectBase(subDeps(), recursive(), () => s.runId);
+    expect(r).toMatchObject({ base_commit: tip, remote_commit: tip, reason: "ADVANCED" });
+    expect(r.submodules).toEqual({ total: 2, present: 1, fetched: 0, missing: 1 });
+    expect(g(repo, "rev-parse", "refs/remotes/origin/main")).toBe(tip);
+  });
+
+  it("a submodule URL outside project_sources is refused with its reason and path, never the URL", async () => {
+    const s = session((b) => b);
+    const a = makeRemote(fx, "lib-a", { "a.txt": "a1\n" });
+    pushGitlinks({ "mods/lib-a": a.head });
+    const err = (await refreshProjectBase(
+      { ...deps, submodules: { sources: () => ({ ...fx.settings, allowedOwners: ["nobody"] }), git: fx.runner } },
+      recursive(),
+      () => s.runId,
+    ).catch((e: unknown) => e)) as { code: string; message: string; details: Record<string, unknown> };
+    expect(err).toMatchObject({
+      code: "PERMISSION_BLOCKED",
+      details: { reason: "SUBMODULE_SOURCE_NOT_ALLOWED", path: "mods/lib-a" },
+    });
+    expect(err.message).not.toContain(HOST);
+    expect(fx.calls).toEqual([]);
+  });
+
+  it("a context without recursive mode returns no submodules field and touches no store", async () => {
+    const s = session((b) => b);
+    const a = makeRemote(fx, "lib-a", { "a.txt": "a1\n" });
+    pushGitlinks({ "mods/lib-a": a.head });
+    const r = await refreshProjectBase(subDeps(), project(), () => s.runId);
+    expect(r.submodules).toBeUndefined();
+    expect(Object.keys(r)).not.toContain("submodules");
+    expect(fx.calls).toEqual([]);
   });
 });
 
