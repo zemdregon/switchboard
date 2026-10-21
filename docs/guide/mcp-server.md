@@ -31,7 +31,7 @@ Only one `serve` can hold a data directory at a time.
 | `cancel_run` | run | Requests cancellation of a run (asynchronous; poll `get_run`). | Always (orchestrator only) |
 | `get_artifacts` | run | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. | Always (orchestrator only) |
 | `list_capabilities` | capability | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. | Always (orchestrator only) |
-| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription; and, for Codex, Cursor and Antigravity, `provider_usage` (the signed-in account's quota windows, plan and credits, `provider_reported`, read through `codex app-server` or Cursor's own `/usage` command, cached for a minute, `unknown` when the read fails); and, unless `capacity.copilot_quota` is `false`, a `provider_quota` array with your GitHub Copilot quota read through your own `gh` (usage-only, `provider_reported`). Read-only; it makes no model call and reads no credential, and `{"provider":"copilot"}` returns only the Copilot entry. | Always (orchestrator only) |
+| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription; and, for Codex, Cursor and Antigravity, `provider_usage` (the signed-in account's quota windows, plan and credits, `provider_reported`, read through `codex app-server` or Cursor's own `/usage` command, cached for a minute, `unknown` when the read fails); for Claude Code, the same report built from the windows printed in recorded run output, as of the newest Claude run; and, unless `capacity.copilot_quota` is `false`, a `provider_quota` array with your GitHub Copilot quota read through your own `gh` (usage-only, `provider_reported`). Read-only; it makes no model call and reads no credential, and `{"provider":"copilot"}` returns only the Copilot entry. | Always (orchestrator only) |
 | `explain_route` | capability | Why a run went to its provider, from Switchboard's stored route decision: candidates with eligibility reasons, the recorded task features, weights and per-candidate scores, the selection rule and short deciding factors. Price, model quality and sandbox strength are not sourced, so those terms are equal for every provider. Read-only; no model is asked. | Always (orchestrator only) |
 | `list_runs` | control | Runs visible to this client, newest first, with optional project, status and time filters. | Always; `console` sees it |
 | `get_digest` | control | A per-project digest since a cursor: paused state, budgets, needs-attention runs, finished and failed runs, pending approvals and untrusted summaries. | Always; `console` sees it |
@@ -296,9 +296,19 @@ member's code and one pacing line per subscribed provider.
 **What pacing shows.** `capacity.subscriptions` describes your own subscriptions: which providers share one, each
 window's length and reset (`fixed`, `rolling` or `provider_reported`) and an optional budget (`runs`,
 `reported_tokens` or `reported_cost_usd`). `get_capacity`, `switchboard capacity` and `doctor` then show, per
-subscription and window, the used share, the reset and time left, and the source of each figure. No provider is known
-to report a used or remaining share in a key Switchboard reads, so today a used share is either
+subscription and window, the used share, the reset and time left, and the source of each figure. A used share
+is `provider_reported` only from a key Switchboard reads (Claude Code, below); otherwise it is either
 `controller_estimated` (your budget against Switchboard's own dispatches) or `unknown`.
+
+**Provider-reported usage (Claude Code).** Claude Code prints its 5-hour and 7-day usage windows (used share and reset
+time) with every run. Switchboard records them, and `get_capacity`, `switchboard capacity` and
+`doctor` show the newest figure per window as the provider's `provider_usage` report
+([ADR-0079](../adr/0079-provider-reported-usage-reader.md) shape), labelled `provider_reported`, with the time it was
+observed. The figures are
+as fresh as the newest Claude Code run: Switchboard never starts a run or calls the provider to refresh them, and it
+reads no login token. A window whose reset time has passed is left out, and with no recent Claude Code run nothing is
+shown. A subscription window whose length is 5 hours or 7 days reads the matching figure as `provider_reported`
+([ADR-0088](../adr/0088-claude-code-usage-windows.md)).
 
 **What pacing never claims.**
 

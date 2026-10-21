@@ -10,6 +10,7 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ClaudeAdapter } from "../adapters/claude/adapter.js";
 import { parseCursorUsageScreen } from "../adapters/cursor/usage.js";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { grokUsageFromResult } from "../adapters/grok/usage.js";
@@ -68,7 +69,11 @@ let ledger: Ledger;
 let lifecycle: RunLifecycle | undefined;
 const servers: { mcp: SwitchboardMcpServer; client: Client }[] = [];
 
-const registry = () => new AdapterRegistry().register(new FakeAdapter({ script: "/nonexistent/fake-cli.mjs" }));
+let withClaude = false;
+const registry = () => {
+  const reg = new AdapterRegistry().register(new FakeAdapter({ script: "/nonexistent/fake-cli.mjs" }));
+  return withClaude ? reg.register(new ClaudeAdapter({ binaryPath: "/nonexistent/claude" })) : reg;
+};
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-cap-")));
@@ -89,6 +94,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  withClaude = false;
   await lifecycle?.shutdown();
   lifecycle = undefined;
   for (const s of servers.splice(0)) {
@@ -332,6 +338,72 @@ describe("get_capacity on the MCP server (T6.3; FR-MCP-02, LLD §16.3)", () => {
   });
 });
 
+describe("Claude Code provider_usage from recorded run output on get_capacity (ADR-0088; FR-CAP-15)", () => {
+  it("shows Claude Code's own windows from the newest run's usage row, schema-valid and honest", async () => {
+    withClaude = true;
+    openData();
+    const ms = ledger.createMetaSession({ objective: "o" });
+    const r = ledger.createRun({
+      metaSessionId: ms.id,
+      trustProfile: "inspect-untrusted",
+      policySnapshot: {},
+      request: {},
+      requestHash: "h",
+      clientId: "c1",
+      provider: "claude",
+    });
+    // The metrics the Claude parser records from the 2026-10-21 capture; observed at the ledger clock (NOW).
+    ledger.insertUsageObservation({
+      runId: r.id,
+      provider: "claude",
+      harness: "claude",
+      source: "provider_reported",
+      metrics: {
+        five_hour_used_fraction: 0.03,
+        five_hour_resets_at: "2026-10-14T14:30:00.000Z",
+        seven_day_used_fraction: 0.06,
+        seven_day_resets_at: "2026-10-16T12:00:00.000Z",
+      },
+    });
+    const client = await connect();
+    const res = await capacityTool(client, { provider: "claude" });
+    expect(res.isError).toBe(false);
+    expect(res.body.providers).toHaveLength(1);
+    expect(res.body.providers[0].explicit_remaining).toBeNull();
+    expect(res.body.providers[0].provider_usage).toEqual({
+      provider: "claude",
+      source: "provider_reported",
+      observed_at: NOW.toISOString(),
+      method: "recorded run output (declared usage keys)",
+      plan: null,
+      limit_reached: null,
+      limit_reached_type: null,
+      windows: [
+        {
+          id: "five_hour",
+          limit_id: null,
+          window_seconds: 18000,
+          used_fraction: 0.03,
+          remaining_fraction: 0.97,
+          resets_at: "2026-10-14T14:30:00.000Z",
+        },
+        {
+          id: "seven_day",
+          limit_id: null,
+          window_seconds: 604800,
+          used_fraction: 0.06,
+          remaining_fraction: 0.94,
+          resets_at: "2026-10-16T12:00:00.000Z",
+        },
+      ],
+      credits: null,
+    });
+    expectHonestJson(res.body);
+    const fake = await capacityTool(client, { provider: "fake" });
+    expect(fake.body.providers[0].provider_usage).toBeUndefined();
+  });
+});
+
 describe("one projection for get_capacity, switchboard capacity and doctor (T6.3; FR-OPS-05, FR-CAP-03)", () => {
   it("get_capacity and capacity --json return the same fields and values for the same ledger and clock", async () => {
     openData();
@@ -406,6 +478,40 @@ describe("one projection for get_capacity, switchboard capacity and doctor (T6.3
     expect(text.out).toContain("Capacity (controller estimates, not provider quota");
     expect(text.out).toMatch(/fake: breaker CLOSED, throttle risk high, estimate confidence 0\.25/);
     expectHonestText(text.out);
+  });
+
+  it("ADR-0088: doctor and capacity print Claude Code's provider-reported windows, labelled", async () => {
+    withClaude = true;
+    openData();
+    const ms = ledger.createMetaSession({ objective: "o" });
+    const r = ledger.createRun({
+      metaSessionId: ms.id,
+      trustProfile: "inspect-untrusted",
+      policySnapshot: {},
+      request: {},
+      requestHash: "h",
+      clientId: "c1",
+      provider: "claude",
+    });
+    ledger.insertUsageObservation({
+      runId: r.id,
+      provider: "claude",
+      harness: "claude",
+      source: "provider_reported",
+      metrics: { five_hour_used_fraction: 0.03, five_hour_resets_at: "2026-10-14T14:30:00.000Z" },
+    });
+    db?.close();
+    db = undefined;
+    const doctor = await cli(["doctor"]);
+    expect(doctor.out).toContain("five_hour (18000 s, provider_reported): used 0.03, remaining 0.97");
+    const capacity = await cli(["capacity", "--provider", "claude"]);
+    expect(capacity.out).toContain(
+      "  provider-reported usage (recorded run output (declared usage keys), at 2026-10-14T12:00:00.000Z)",
+    );
+    expect(capacity.out).toContain(
+      "    five_hour (18000 s, provider_reported): used 0.03, remaining 0.97, resets 2026-10-14T14:30:00.000Z",
+    );
+    expectHonestText(capacity.out);
   });
 });
 
