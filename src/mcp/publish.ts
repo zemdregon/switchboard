@@ -10,7 +10,7 @@
  * Idempotent: when the meta-session already has an ACCEPTED push of the current publish head to the current target,
  * nothing is pushed again and that push is returned; an open pull request for the branch is reused (and recorded once
  * per number and head). ADR-0095: a merged pull request this controller recorded for the same branch and head is
- * returned as reused with `merged: true` instead of opening another (GitHub deletes a merged branch, so `gh pr create`
+ * returned as reused with `merged: true` instead of opening another (GitHub deletes a merged branch, so G13
  * would fail). A `gh` failure never undoes the push: the result then has `pull_request: null`, a closed
  * `pull_request_error` and, for `GH_FAILED`, `pull_request_error_detail` (exit code, closed reason, sanitised excerpt).
  *
