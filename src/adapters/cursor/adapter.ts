@@ -93,6 +93,7 @@ import {
   USAGE_KEYS,
   VERSION_ARGS,
 } from "./protocol.js";
+import { type CursorUsageResult, readCursorUsage } from "./usage.js";
 
 /**
  * Environment names passed through to Cursor (FR-EXE-07, NFR-SEC-02). Proposed: `PATH` for the binary and `HOME` so
@@ -329,6 +330,19 @@ export class CursorAdapter implements ProviderAdapter {
     if (flag === true) return { state: "OK" };
     if (flag === false) return { state: "AUTH_REQUIRED", loginCommand: CURSOR_LOGIN_COMMAND };
     return unknown(`no boolean ${AUTH_STATUS_KEY}`);
+  }
+
+  /**
+   * ADR-0080 (FR-CAP-13): the account's plan and usage as the CLI's own `/usage` command shows them, read in a
+   * pseudo-terminal with no model call (`./usage.ts`). The CLI uses its own login; Switchboard reads no credential
+   * (FR-AUTH-02). The probe runner cannot give a terminal, so it is not used.
+   */
+  async readProviderUsage(_runner: ProbeRunner, now?: Date): Promise<CursorUsageResult> {
+    return await readCursorUsage({
+      exe: this.#exe,
+      launcherArgs: this.#launcher,
+      ...(now === undefined ? {} : { now: () => now }),
+    });
   }
 
   /**
