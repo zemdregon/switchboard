@@ -6711,12 +6711,15 @@ No migration. A per-provider `reported_usage` block is computed on read from `us
                  "resets_at": "<ISO time>", "observed_at": "<ISO time>", "key": "five_hour_used_fraction" } ] }
 ```
 
-- **Collector query:** the ledger's `latestProviderReportedUsageWithKey` returns the newest `provider_reported` row
-  carrying a given metric key for a provider (`src/ledger/repo.ts`); `src/capacity/collect.ts` calls it for each
-  declared windowed share key.
+- **Collector query:** the ledger's `listLatestProviderReportedUsageWithKey` returns the newest 20
+  (`REPORTED_USAGE_ROWS`, Assumption) `provider_reported` rows carrying a given metric key for a provider, observed
+  within one window length (`src/ledger/repo.ts`); `src/capacity/collect.ts` calls it for each declared windowed share
+  key.
 - **Selection rule** (`src/capacity/reported-usage.ts`, pure function with an injected clock): per declared windowed
-  `used_fraction` key, take the newest row observed within one window length of `now`; `resets_at` is the same row's
-  declared reset key; a window whose `resets_at` is not after `now` is dropped; `remaining_fraction` is
+  `used_fraction` key, among those rows keep the one with the latest declared reset, then the largest used share, then
+  the newest. Reason: a row is written when its run ends, so a long run that read the figure earlier can be stored
+  after a newer reading, and within one window the used share only grows. `resets_at` is the kept row's declared reset
+  key; a window whose `resets_at` is not after `now` is dropped; `remaining_fraction` is
   `1 - used_fraction`; `resets_at` is `null` when the row carried no reset. The block never feeds the §16.2
   estimate. It is absent when no window remains, so a build without such keys is byte-identical.
 - **Freshness:** as new as the newest run of that provider. Nothing creates a run, a probe or a provider call

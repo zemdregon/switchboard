@@ -2,10 +2,13 @@
  * Provider-reported usage windows per provider (ADR-0079; FR-CAP-13, BR-50, LLD §16.10).
  *
  * A pure function of the rows the collector read and a clock. It works for any provider from its declarations in
- * {@link USAGE_KEYS} that name a window: for each such window it takes the newest row that holds the declared used (or
- * remaining) share, observed no earlier than one window length ago, and the reset from that same row. A window whose
- * reported reset has passed is left out, because the share it reported belongs to a window that has ended. Nothing is
- * estimated, summed or defaulted: no row means no window, and no window means no block.
+ * {@link USAGE_KEYS} that name a window: for each such window it reads the rows that hold the declared used (or
+ * remaining) share, observed no earlier than one window length ago, and takes the reset from the same row. A row is
+ * stored when its run ends, so concurrent runs can store an older reading after a newer one; the row kept is therefore
+ * the one with the latest reported reset (the current window), then the largest used share (usage within one window
+ * only grows), then the newest. A window whose reported reset has passed is left out, because its share belongs to a
+ * window that has ended. Nothing is estimated, summed or defaulted: no row means no window, and no window means no
+ * block.
  */
 
 import { USAGE_KEYS, type UsageKeyDeclaration } from "./usage-window.js";
@@ -32,6 +35,9 @@ export interface ReportedUsageRow {
   metrics: Readonly<Record<string, unknown>>;
   observedAt: string;
 }
+
+/** Rows read per declared share key, newest first (Assumption: enough to cover the runs that overlap the newest). */
+export const REPORTED_USAGE_ROWS = 20;
 
 const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
 const finite01 = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
@@ -67,19 +73,27 @@ export function reportedUsage(
       continue;
     }
     const resetKey = declared.find((r) => r.carries === "reset_at" && r.window?.id === w.id)?.key;
-    let best: { at: number; row: ReportedUsageRow; share: number } | undefined;
+    // A reset that is absent or unparsable ranks below any reported one.
+    let best: { at: number; resetMs: number; used: number } | undefined;
     for (const row of rows) {
       const at = Date.parse(row.observedAt);
       if (!Number.isFinite(at) || at > nowMs || at < nowMs - w.lengthSeconds * 1000) continue;
       const v = row.metrics[d.key];
       if (!finite01(v)) continue;
-      if (best === undefined || at > best.at) best = { at, row, share: v };
+      const resetRaw = resetKey === undefined ? undefined : row.metrics[resetKey];
+      const parsed = typeof resetRaw === "string" ? Date.parse(resetRaw) : Number.NaN;
+      const resetMs = Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+      const used = d.carries === "used_fraction" ? v : 1 - v;
+      if (
+        best === undefined ||
+        resetMs > best.resetMs ||
+        (resetMs === best.resetMs && (used > best.used || (used === best.used && at > best.at)))
+      ) {
+        best = { at, resetMs, used };
+      }
     }
-    if (best === undefined) continue;
-    const resetRaw = resetKey === undefined ? undefined : best.row.metrics[resetKey];
-    const resetMs = typeof resetRaw === "string" ? Date.parse(resetRaw) : Number.NaN;
-    if (Number.isFinite(resetMs) && resetMs <= nowMs) continue;
-    const used = d.carries === "used_fraction" ? best.share : 1 - best.share;
+    if (best === undefined || (Number.isFinite(best.resetMs) && best.resetMs <= nowMs)) continue;
+    const { used, resetMs } = best;
     seen.add(w.id);
     windows.push({
       id: w.id,

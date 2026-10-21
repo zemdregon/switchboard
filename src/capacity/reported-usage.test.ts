@@ -57,6 +57,31 @@ describe("reportedUsage (pure)", () => {
     });
   });
 
+  it("concurrent runs: within one reset the largest share wins over a later-stored older reading; a later reset wins", () => {
+    const five = (used: number, reset: string, at: string) => ({
+      metrics: { five_hour_used_fraction: used, five_hour_resets_at: reset },
+      observedAt: at,
+    });
+    const sameWindow = reportedUsage(
+      "claude",
+      [
+        five(0.4, "2026-10-21T07:30:00.000Z", "2026-10-21T02:00:00.000Z"),
+        five(0.3, "2026-10-21T07:30:00.000Z", "2026-10-21T02:50:00.000Z"), // a long run that read earlier, ended later
+      ],
+      NOW,
+    );
+    expect(sameWindow?.windows[0]).toMatchObject({ used_fraction: 0.4, observed_at: "2026-10-21T02:00:00.000Z" });
+    const newWindow = reportedUsage(
+      "claude",
+      [
+        five(0.9, "2026-10-21T02:30:00.000Z", "2026-10-21T02:20:00.000Z"),
+        five(0.01, "2026-10-21T07:30:00.000Z", "2026-10-21T02:40:00.000Z"),
+      ],
+      NOW,
+    );
+    expect(newWindow?.windows[0]).toMatchObject({ used_fraction: 0.01, resets_at: "2026-10-21T07:30:00.000Z" });
+  });
+
   it("leaves out a window whose reported reset has passed, or that was observed more than one length ago", () => {
     const out = reportedUsage(
       "claude",

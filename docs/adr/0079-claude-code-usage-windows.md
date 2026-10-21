@@ -36,8 +36,10 @@ figure in `get_capacity`.
    `length_seconds`. Reason: without it a 7-day figure could be read into a 5-hour window and the reverse. Unwindowed
    keys keep their old behaviour.
 4. **One generic `reported_usage` block on the one projection.** Per provider, `{ source: "provider_reported",
-   windows: [{ id, length_seconds, used_fraction, remaining_fraction, resets_at, observed_at, key }] }`, from the newest
-   row per declared windowed share key observed within one window length; a window whose reset has passed is dropped;
+   windows: [{ id, length_seconds, used_fraction, remaining_fraction, resets_at, observed_at, key }] }`, from the rows
+   per declared windowed share key observed within one window length: the latest reported reset, then the largest
+   share (a row is stored when its run ends, so concurrent runs can store an older reading last; within one window the
+   share only grows), then the newest; a window whose reset has passed is dropped;
    the block is absent when no window remains. It is generic: any provider that declares windowed keys gets it. It
    appears in `get_capacity` (optional output field), `switchboard capacity` and the `doctor` capacity line.
    `remaining_fraction` is `1 - used_fraction` and is printed only next to the provider-reported label (FR-CAP-03).

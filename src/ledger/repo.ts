@@ -908,10 +908,15 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, De
   /** `provider_reported` usage rows of `provider` observed at or after `sinceIso`, oldest first (never `inner_agent`). */
   listProviderReportedUsageSince(provider: string, sinceIso: string): ProviderUsageRow[];
   /**
-   * ADR-0079: the newest `provider_reported` usage row of `provider` observed at or after `sinceIso` whose metrics hold
-   * `key` (a declared usage key), or `undefined`.
+   * ADR-0079: the newest `limit` `provider_reported` usage rows of `provider` observed at or after `sinceIso` whose
+   * metrics hold `key` (a declared usage key), newest first.
    */
-  latestProviderReportedUsageWithKey(provider: string, key: string, sinceIso: string): ProviderUsageRow | undefined;
+  listLatestProviderReportedUsageWithKey(
+    provider: string,
+    key: string,
+    sinceIso: string,
+    limit: number,
+  ): ProviderUsageRow[];
   /**
    * T14.4 (FR-CTL-06): run rows created at or after `sinceIso` (every admission that wrote a row, whatever its state);
    * only the runs of `projectId` when it is given.
@@ -1685,15 +1690,15 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
         .all(provider, sinceIso) as ProviderUsageRow[];
     },
 
-    latestProviderReportedUsageWithKey(provider, key, sinceIso) {
+    listLatestProviderReportedUsageWithKey(provider, key, sinceIso, limit) {
       return db
         .prepare(
           `SELECT metrics_json, observed_at FROM usage_observation
            WHERE provider = ? AND source = 'provider_reported' AND observed_at >= ?
              AND json_extract(metrics_json, ?) IS NOT NULL
-           ORDER BY observed_at DESC, id DESC LIMIT 1`,
+           ORDER BY observed_at DESC, id DESC LIMIT ?`,
         )
-        .get(provider, sinceIso, `$.${JSON.stringify(key)}`) as ProviderUsageRow | undefined;
+        .all(provider, sinceIso, `$.${JSON.stringify(key)}`, limit) as ProviderUsageRow[];
     },
 
     countRunsCreatedSince(sinceIso, projectId) {

@@ -7,7 +7,7 @@
 import type { Ledger, RunState } from "../ledger/index.js";
 import { SLOT_STATES } from "../lifecycle/states.js";
 import type { CapacityInputs, CapacityRunInput } from "./estimate.js";
-import { type ReportedUsageRow, reportedShareKeys } from "./reported-usage.js";
+import { REPORTED_USAGE_ROWS, type ReportedUsageRow, reportedShareKeys } from "./reported-usage.js";
 
 /** What the caller knows about a provider from the registry and configuration. */
 export interface CapacityProviderInfo {
@@ -48,13 +48,13 @@ export function collectCapacityInputs(
     metrics: parseMetrics(u.metrics_json),
     observedAt: u.observed_at,
   }));
-  // ADR-0079: the newest row per declared window share key, looked back one window length (not the estimator window).
+  // ADR-0079: the newest rows per declared window share key, looked back one window length (not the estimator window).
   const reportedUsageRows: ReportedUsageRow[] = [];
   for (const { key, lengthSeconds } of reportedShareKeys(provider.id)) {
     const from = new Date(now.getTime() - lengthSeconds * 1000).toISOString();
-    const row = ledger.latestProviderReportedUsageWithKey(provider.id, key, from);
-    if (row !== undefined)
+    for (const row of ledger.listLatestProviderReportedUsageWithKey(provider.id, key, from, REPORTED_USAGE_ROWS)) {
       reportedUsageRows.push({ metrics: parseMetrics(row.metrics_json), observedAt: row.observed_at });
+    }
   }
   const health = ledger.getProviderHealth(provider.id);
   return {
