@@ -41,7 +41,7 @@
  * for a URL whose origin is this issuer, or when the fetch cap is busy. A refused document is an error page with no
  * redirect, like an unknown client.
  *
- * Profile-bound one-time codes (migration 0036, `switchboard mcp oauth issue-code`): the consent form's `pairing_code`
+ * Profile-bound one-time codes (migration 0037, `switchboard mcp oauth issue-code`): the consent form's `pairing_code`
  * field takes them as well as legacy `consent pair` codes. A bound code is looked up first without being spent; a client
  * bound (in config or in the ledger) to another profile, or a profile no longer eligible for a binding, gets an error
  * page and the code stays live. Otherwise the code is spent atomically and, in one transaction, a pending client is

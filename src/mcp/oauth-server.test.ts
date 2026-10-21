@@ -840,7 +840,7 @@ describe("operator passphrase hash (Q-75)", () => {
   });
 });
 
-describe("profile-bound one-time codes on the consent page (migration 0036)", () => {
+describe("profile-bound one-time codes on the consent page (migration 0037)", () => {
   async function approveWithCode(clientId: string, code: string, headers: Record<string, string> = {}) {
     const c = await openConsent(clientId, pkce().challenge);
     return submit(c, { decision: "approve", pairing_code: code }, headers);

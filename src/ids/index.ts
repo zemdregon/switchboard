@@ -6,7 +6,7 @@ import { randomFillSync } from "node:crypto";
  * (provider_binding, T2.4), which is Proposed here and not yet listed in LLD §1; `gcm_` (git_commit) is Proposed in LLD §1 and `gps_` (git_push) is Proposed in T9.3;
  * `prv_` (project_revision) is Proposed in LLD §1, and `prd_` (project_revision_decision) and `pev_` (project_event) are
  * Proposed in T9.9 (ADR-0030); `inc_` (inner_call) is Proposed in LLD §13.3 (T11.1); `prq_` (pull_request) is Proposed in
- * ADR-0069.
+ * ADR-0069; `prc_` (pull_request_close) is Proposed in ADR-0078.
  */
 export const ID_PREFIXES = [
   "sess",
@@ -34,6 +34,7 @@ export const ID_PREFIXES = [
   "sch",
   "vrs",
   "prq",
+  "prc",
 ] as const;
 export type IdPrefix = (typeof ID_PREFIXES)[number];
 

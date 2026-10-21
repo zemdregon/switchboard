@@ -52,6 +52,16 @@
  * | ID | argv (after the binary) |
  * | --- | --- |
  * | G15 | `api --method PUT repos/{owner}/{repo}/pulls/{number}/update-branch -f expected_head_sha={sha} --silent` (write) |
+ *
+ * ADR-0078 (MCP `close_pr`, LLD §3.4.16). G16 is the one pull-request close verb, spawned only by `close_pr` for a pull
+ * request that `publish_run` created (its `pull_request` row) on the project's own repository, after G14 showed it open
+ * on the recorded branch (G17, a read by number). The comment is controller-built ({@link isPrBody}); `--delete-branch`
+ * only when asked (with `--repo`, `gh` deletes the remote branch only):
+ *
+ * | ID | argv (after the binary) |
+ * | --- | --- |
+ * | G16 | `pr close {number} --repo {owner}/{repo} --comment {comment} [--delete-branch]` (write) |
+ * | G17 | `pr view {number} --repo {owner}/{repo} --json {G17_FIELDS}` |
  */
 
 export const G1_FIELDS = "databaseId,conclusion,headBranch,status,headSha";
@@ -66,6 +76,8 @@ export const G9_FIELDS = "number,state,isDraft,mergeable,headRefOid";
 export const G10_FIELDS = "number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName";
 /** G14: the link facts of the pull request whose head is the pushed branch (ADR-0069). */
 export const G14_FIELDS = "number,state,url";
+/** G17: one pull request by number, link facts and its head branch (ADR-0078; `gh pr view` manual lists all four). */
+export const G17_FIELDS = "number,state,url,headRefName";
 /** ADR-0069: most characters of a G13 title cell (controller-built: `switchboard: ` and at most 120 of the run's). */
 export const PR_TITLE_MAX = 200;
 /** ADR-0069: most bytes of a G13 body cell (controller footer plus the capped agent-written draft). */
@@ -296,8 +308,29 @@ export function ghPrUpdateBranchArgv(owner: string, repo: string, prNumber: stri
   return audited(["api", "--method", "PUT", path, "-f", `expected_head_sha=${sha}`, "--silent"]);
 }
 
+/** G17: one pull request by number, link facts and head branch (ADR-0078, read-only). */
+export function ghPrNumberViewArgv(owner: string, repo: string, prNumber: string): string[] {
+  if (!isPrNumber(prNumber)) throw new GhArgvError("invalid pull request number");
+  return audited(["pr", "view", prNumber, "--repo", repoArg(owner, repo), "--json", G17_FIELDS]);
+}
+
+/** G16: close one pull request with a controller-built comment, optionally deleting its branch (ADR-0078, write). */
+export function ghPrCloseArgv(
+  owner: string,
+  repo: string,
+  prNumber: string,
+  comment: string,
+  deleteBranch: boolean,
+): string[] {
+  if (!isPrNumber(prNumber)) throw new GhArgvError("invalid pull request number");
+  if (!isPrBody(comment)) throw new GhArgvError("invalid pull request comment");
+  const argv = ["pr", "close", prNumber, "--repo", repoArg(owner, repo), "--comment", comment];
+  if (deleteBranch) argv.push("--delete-branch");
+  return audited(argv);
+}
+
 /**
- * The argv audit: true only for an argv that is exactly one of G1 to G15 with validated values in the value cells.
+ * The argv audit: true only for an argv that is exactly one of G1 to G17 with validated values in the value cells.
  * Builders call it before returning, so a template edit that drifts fails closed.
  */
 export function isAllowedGhArgv(argv: readonly string[]): boolean {
@@ -355,6 +388,15 @@ export function isAllowedGhArgv(argv: readonly string[]): boolean {
   if (argv[0] === "run" && argv[1] === "cancel") {
     return argv.length === 5 && isDatabaseId(argv[2] ?? "") && argv[3] === "--repo" && ownerRepo(argv[4]);
   }
+  if (argv[0] === "pr" && argv[1] === "view" && argv[6] === G17_FIELDS) {
+    return (
+      argv.length === 7 &&
+      isPrNumber(argv[2] ?? "") &&
+      argv[3] === "--repo" &&
+      ownerRepo(argv[4]) &&
+      argv[5] === "--json"
+    );
+  }
   if (argv[0] === "pr" && argv[1] === "view") {
     return (
       argv.length === 7 &&
@@ -378,6 +420,16 @@ export function isAllowedGhArgv(argv: readonly string[]): boolean {
       isPrTitle(argv[9] ?? "") &&
       argv[10] === "--body" &&
       isPrBody(argv[11] ?? "")
+    );
+  }
+  if (argv[0] === "pr" && argv[1] === "close") {
+    return (
+      (argv.length === 7 || (argv.length === 8 && argv[7] === "--delete-branch")) &&
+      isPrNumber(argv[2] ?? "") &&
+      argv[3] === "--repo" &&
+      ownerRepo(argv[4]) &&
+      argv[5] === "--comment" &&
+      isPrBody(argv[6] ?? "")
     );
   }
   if (argv[0] === "pr" && argv[1] === "checks") {
@@ -713,6 +765,19 @@ export function parsePrLinkView(stdout: string, owner: string, repo: string): Gh
   }
   if (pullRequestNumberOf(url, owner, repo) !== number) throw new Error("pull request URL does not match");
   return { number, state, url };
+}
+
+/** G17 fields after the closed allowlist (ADR-0078): G14's plus the head branch name. */
+export interface GhPrNumberViewFields extends GhPrLinkFields {
+  headRefName: string;
+}
+
+/** G17 stdout: G14's checks, plus a head branch that must be a safe branch name. Throws on anything else. */
+export function parsePrNumberView(stdout: string, owner: string, repo: string): GhPrNumberViewFields {
+  const link = parsePrLinkView(stdout, owner, repo);
+  const r = JSON.parse(stdout) as Record<string, unknown>;
+  if (typeof r.headRefName !== "string" || !isSafeBranch(r.headRefName)) throw new Error("unexpected head branch");
+  return { ...link, headRefName: r.headRefName };
 }
 
 /** G13 stdout: `gh pr create` prints the new pull request's URL (the last non-empty line). Throws on anything else. */

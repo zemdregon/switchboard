@@ -9,7 +9,7 @@
  * most ten wrong codes a minute, so at most a hundred against one code's lifetime of a 2^60 space), separately from the
  * passphrase lockout, so a stranger who locks the passphrase cannot also block a fresh pairing code.
  *
- * Profile-bound codes (migration 0036): `switchboard mcp oauth issue-code --client-profile <id>` creates the same kind of
+ * Profile-bound codes (migration 0037): `switchboard mcp oauth issue-code --client-profile <id>` creates the same kind of
  * code with the `mcp_clients` id it was issued for and a lifetime of {@link MIN_PAIRING_CODE_TTL_MS} to
  * {@link MAX_PAIRING_CODE_TTL_MS}. It shares the single-live-code invariant with `consent pair` (either command ends
  * every older unused code). {@link PairingCodeStore.lookup} reads a live code without spending it (so the consent page

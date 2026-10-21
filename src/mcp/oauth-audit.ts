@@ -1,5 +1,5 @@
 /**
- * Durable audit of the embedded authorization server's grants and revocations (`oauth_event`, migration 0036).
+ * Durable audit of the embedded authorization server's grants and revocations (`oauth_event`, migration 0037).
  *
  * `serve` records the consent approvals, token issues and refreshes and `/revoke` revocations its authorization server
  * reports; the operator CLI records the one-time codes it issues and the revocations it makes. A row holds the event

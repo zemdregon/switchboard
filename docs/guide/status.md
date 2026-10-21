@@ -158,7 +158,7 @@ Pre-release. The package is private and is not published to any registry; you bu
   under [HLD TB-12](../design/HLD.md#3-trust-boundaries). See
   [ROADMAP §6.10](../ROADMAP.md#610-m13-network-mcp-transport-tasks). Task T13.12 (2026-10-21, `Partial`) adds operator-issued
   one-time codes bound to an MCP client profile, per-address sign-in lockout, token revocation and the `mcp oauth`
-  commands ([ADR-0078](../adr/0078-cli-issued-one-time-codes-for-mcp-oauth.md)).
+  commands ([ADR-0083](../adr/0083-cli-issued-one-time-codes-for-mcp-oauth.md)).
 - **Milestone 14 (control plane) is `Partial`.** T14.0–T14.11 are implemented on fakes, including pause
   ([#539](https://github.com/zemdregon/switchboard/pull/539)); digest, `list_runs`, `get_run`, budgets, the loop
   breaker, `steer_run`, pause/resume, the approval proxy and notification sinks are covered by unit and

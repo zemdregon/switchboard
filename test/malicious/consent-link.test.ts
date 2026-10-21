@@ -458,7 +458,7 @@ describe("T14.10 consent-page approval link: works once, then expires", () => {
   });
 });
 
-describe("approval link and profile-bound one-time codes (migration 0036)", () => {
+describe("approval link and profile-bound one-time codes (migration 0037)", () => {
   it("a code issued to bind a remote OAuth client never signs in here, and stays live", async () => {
     pendingRevision();
     const link = onlyLink();

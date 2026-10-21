@@ -35,7 +35,8 @@ import { sql as sql0032 } from "./0032_decision_onboarding.js";
 import { sql as sql0033 } from "./0033_mcp_publication.js";
 import { sql as sql0034 } from "./0034_setup_log_artifact.js";
 import { sql as sql0035 } from "./0035_merge_head_kind.js";
-import { sql as sql0036 } from "./0036_oauth_profile_binding.js";
+import { sql as sql0036 } from "./0036_pr_close_audit.js";
+import { sql as sql0037 } from "./0037_oauth_profile_binding.js";
 
 export interface Migration {
   readonly version: number;
@@ -89,5 +90,6 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 33, name: "mcp_publication", sql: sql0033, foreignKeysOff: true },
   { version: 34, name: "setup_log_artifact", sql: sql0034, foreignKeysOff: true },
   { version: 35, name: "merge_head_kind", sql: sql0035 },
-  { version: 36, name: "oauth_profile_binding", sql: sql0036 },
+  { version: 36, name: "pull_request_close", sql: sql0036 },
+  { version: 37, name: "oauth_profile_binding", sql: sql0037 },
 ];

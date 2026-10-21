@@ -1,4 +1,4 @@
-# ADR-0078: CLI-issued, profile-bound one-time codes for MCP OAuth, per-IP lockout, revocation and operator OAuth CLI
+# ADR-0083: CLI-issued, profile-bound one-time codes for MCP OAuth, per-IP lockout, revocation and operator OAuth CLI
 
 - Status: Accepted for the direction (owner request, 2026-10-21, quoted below); the mechanism is Delegated (agent,
   2026-10-21) under [owner decision 25](../ROADMAP.md#42-owner-decisions) and is not owner-approved line by line. Extends
@@ -37,7 +37,7 @@ missing for the request above:
 
 1. **Profile-bound one-time codes.** `switchboard mcp oauth issue-code --client-profile <mcp_client_id> [--ttl
    <n>s|m|h]` prints a single-use code (Switchboard's own secret, never a provider credential, shown once).
-   The code is 128 random bits behind a fixed prefix, stored only as its SHA-256 in the ledger (migration 0036, which
+   The code is 128 random bits behind a fixed prefix, stored only as its SHA-256 in the ledger (migration 0037, which
    adds a profile column to the pairing code and a binding to the client); the lifetime defaults to 10 minutes and must
    lie between 1 and 60 minutes. Issuing a code ends every older unused code (supersede, not accumulate). The code is
    typed into the consent page's existing pairing-code field; redeeming it approves the pending client and binds it to

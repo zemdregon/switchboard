@@ -1,5 +1,5 @@
 /**
- * One-time codes (T13.8; migration 0036 profile binding): bound and legacy codes share the single-live-code invariant,
+ * One-time codes (T13.8; migration 0037 profile binding): bound and legacy codes share the single-live-code invariant,
  * `lookup` never spends a code, `consume` spends it atomically and yields its profile, `redeem` (the approval-link page)
  * spends only a legacy code, and the lifetime is bounded to 1 to 60 minutes.
  */
@@ -34,7 +34,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe("profile-bound one-time codes (migration 0036)", () => {
+describe("profile-bound one-time codes (migration 0037)", () => {
   it("stores the profile with the hash only, looks it up without spending it and consumes it once", () => {
     const c = store.create({ mcpClient: "grok-bot" });
     expect(c.mcpClient).toBe("grok-bot");

@@ -55,6 +55,7 @@ const EXPECTED_TABLES = [
   "provider_binding",
   "provider_health",
   "pull_request",
+  "pull_request_close",
   "rag_record",
   "rag_request",
   "ref_event",

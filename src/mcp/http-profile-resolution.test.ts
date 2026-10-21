@@ -1,5 +1,5 @@
 /**
- * Which configured MCP client an OAuth client acts as at `/mcp` (migration 0036): the config `clients` map, then the
+ * Which configured MCP client an OAuth client acts as at `/mcp` (migration 0037): the config `clients` map, then the
  * ledger binding a profile-bound code made, then `default_mcp_client`. A ledger binding is re-checked on every request
  * and refused (403 `insufficient_scope`) when it no longer names an entry eligible for a binding; it never falls
  * through to the default.

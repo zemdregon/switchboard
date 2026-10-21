@@ -229,7 +229,8 @@ export function pushRefusal(r: PushResult): ToolError {
   return new ToolError("TOOL_FAILURE", `push failed (${r.reason})`, details);
 }
 
-async function defaultPushUrl(repo: string, remote: string): Promise<string | undefined> {
+/** The push URL of `remote` in `repo` (`git remote get-url --push` through the hardened helper), or undefined. */
+export async function defaultPushUrl(repo: string, remote: string): Promise<string | undefined> {
   if (!isRemoteName(remote)) return undefined;
   try {
     return (await gitText(["remote", "get-url", "--push", remote], { cwd: repo })).split("\n")[0]?.trim();

@@ -1,5 +1,5 @@
 /**
- * Migration 0036 (MCP OAuth profile-bound one-time codes; ADR-0041 items 3 and 4, LLD §3.3): bind an OAuth client to a
+ * Migration 0037 (MCP OAuth profile-bound one-time codes; ADR-0041 items 3 and 4, LLD §3.3): bind an OAuth client to a
  * configured MCP client (`mcp_clients` entry) through a one-time code the operator issued for that profile.
  *
  * - `oauth_pairing_code.mcp_client`: the profile a code was issued for by `switchboard mcp oauth issue-code`; NULL for a

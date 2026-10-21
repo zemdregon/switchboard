@@ -33,7 +33,7 @@ export type TokenRejectReason = "malformed" | "unknown" | "wrong_kind" | "expire
 
 export interface VerifiedToken {
   readonly clientId: string;
-  /** The grant the token belongs to (migration 0036); absent for a token issued before it. */
+  /** The grant the token belongs to (migration 0037); absent for a token issued before it. */
   readonly grantId?: string;
   readonly resource: string;
   readonly scopes: readonly string[];

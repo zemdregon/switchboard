@@ -136,9 +136,11 @@ export type SkillToolName = (typeof SKILL_TOOL_NAMES)[number];
  * ADR-0069 (LLD §3.4.12): `publish_run`, offered only to a client whose `max_push_policy` is `branch` and only when the
  * server has the publish port (`serve`); to any other client it does not exist. ADR-0070 (LLD §3.4.13): `merge_run_pr`
  * under the same gate and only when the server also has the merge port. ADR-0073 (LLD §3.4.14): `update_run_branch`
- * with `merge_run_pr` and only when the server also has the branch-update port and the pull-head reader.
+ * with `merge_run_pr` and only when the server also has the branch-update port and the pull-head reader. ADR-0083
+ * (LLD §3.4.16): `close_pr` under `publish_run`'s gate and only when the pull-request port can read by number and
+ * close.
  */
-export const PUBLISH_TOOL_NAMES = ["publish_run", "merge_run_pr", "update_run_branch"] as const;
+export const PUBLISH_TOOL_NAMES = ["publish_run", "merge_run_pr", "update_run_branch", "close_pr"] as const;
 export type PublishToolName = (typeof PUBLISH_TOOL_NAMES)[number];
 
 /**
@@ -1683,6 +1685,17 @@ export const PUBLISH_PULL_REQUEST_ERRORS = [
 ] as const;
 
 const PUBLISH_INPUTS = {
+  close_pr: {
+    type: "object",
+    additionalProperties: false,
+    required: ["project_id", "pull_request_number", "replacement_pull_request_number"],
+    properties: {
+      project_id: PROJECT_REF,
+      pull_request_number: { type: "integer", minimum: 1, maximum: 9_999_999_999 },
+      replacement_pull_request_number: { type: "integer", minimum: 1, maximum: 9_999_999_999 },
+      delete_branch: { type: "boolean", default: false },
+    },
+  },
   update_run_branch: {
     type: "object",
     additionalProperties: false,
@@ -1797,10 +1810,42 @@ const UPDATE_RUN_BRANCH_RESULT = {
   },
 } as const;
 
+/** ADR-0083 (LLD §3.4.16): a closed (or already closed) Switchboard pull request; a refusal is an error envelope. */
+const CLOSE_PR_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["project_id", "run_id", "pull_request", "replacement_pull_request", "closed", "branch_deleted"],
+  properties: {
+    project_id: PROJECT_REF,
+    run_id: RUN_ID,
+    pull_request: {
+      type: "object",
+      additionalProperties: false,
+      required: ["number", "url"],
+      properties: {
+        number: { type: "integer", minimum: 1 },
+        url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+      },
+    },
+    replacement_pull_request: {
+      type: "object",
+      additionalProperties: false,
+      required: ["number", "url"],
+      properties: {
+        number: { type: "integer", minimum: 1 },
+        url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+      },
+    },
+    closed: { type: "boolean" },
+    branch_deleted: { type: "boolean" },
+  },
+} as const;
+
 const PUBLISH_OUTPUTS = {
   publish_run: withError(PUBLISH_RESULT),
   merge_run_pr: withError(MERGE_RUN_PR_RESULT),
   update_run_branch: withError(UPDATE_RUN_BRANCH_RESULT),
+  close_pr: withError(CLOSE_PR_RESULT),
 } as const;
 
 const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
@@ -1834,6 +1879,15 @@ const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
     "branch already contains the base head (nothing is asked of GitHub). A refusal is PERMISSION_BLOCKED with " +
     "details.reason (policy_off, head_moved, base_mismatch, not_mergeable: no open pull request, or the base merge " +
     "would conflict); a gh or fetch failure is TOOL_FAILURE gh_error, retryable.",
+  close_pr:
+    "Close a superseded pull request that publish_run opened for one of this client's runs of project_id, with the " +
+    "operator's GitHub login (gh), posting a fixed comment that links replacement_pull_request_number (a pull " +
+    "request in the same repository), and, if delete_branch is true, deleting its head branch. Only a pull request " +
+    "Switchboard itself created (not one it reused, nor any other) in the project's own repository, still on the " +
+    "branch Switchboard published and not merged; anything else is PERMISSION_BLOCKED with details.reason " +
+    "(NOT_SWITCHBOARD_PR, HEAD_BRANCH_MISMATCH, ALREADY_MERGED, CONTEXT_UNKNOWN, POLICY_NONE). Idempotent: an " +
+    "already closed pull request returns closed false and nothing is written. A gh failure is TOOL_FAILURE with " +
+    "details.reason. Every call, allowed or refused, is recorded.",
 };
 
 const SHA = { type: "string", pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$" } as const;
@@ -2160,6 +2214,7 @@ export function toolDescriptors(
     publish?: boolean;
     mergeRunPr?: boolean;
     updateRunBranch?: boolean;
+    closePr?: boolean;
     baseTools?: boolean;
     oauthClients?: boolean;
   } = {},
@@ -2183,9 +2238,12 @@ export function toolDescriptors(
   if (opts.publish === true) {
     // ADR-0069: right after the work-queue tools, before every retrieval-, skill- or project-gated tool. ADR-0070:
     // `merge_run_pr` only with `mergeRunPr` as well; ADR-0073: `update_run_branch` only with `updateRunBranch` too.
+    // ADR-0078: `close_pr` only with `closePr`.
     const offered = (name: PublishToolName) =>
       name === "publish_run" ||
-      (opts.mergeRunPr === true && (name === "merge_run_pr" || opts.updateRunBranch === true));
+      (name === "close_pr"
+        ? opts.closePr === true
+        : opts.mergeRunPr === true && (name === "merge_run_pr" || opts.updateRunBranch === true));
     base.push(
       ...PUBLISH_TOOL_NAMES.filter(offered).map((name) => ({
         name,
