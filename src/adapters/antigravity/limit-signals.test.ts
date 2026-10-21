@@ -116,13 +116,12 @@ describe("antigravity AGY_ERROR mapping on the recorded fixture (T6.15, FR-CAP-1
     expect(c.detail).not.toContain("Resets in");
     expect(c.detail).not.toContain("synthetic-error-id");
     expect(c.detail).not.toContain(CAPTURED.short_error);
-    // Pinned gap: the adapter contract gives `extractResult` no stderr (LLD §2; `startAdapterRun` passes events and
-    // exit only), so the result the lifecycle reads is still TOOL_FAILURE `exit code 3`. When `startAdapterRun` passes
-    // the tail it already captures, this expectation must flip to QUOTA_EXHAUSTED.
+    // `extractResult` gets no stderr (LLD §2), but `startAdapterRun` re-asks `classifyFailure` with the captured tail
+    // when the folded result is TOOL_FAILURE (2026-10-21, with Cursor's identical gap), so the lifecycle reads quota.
     expect(outcome.result).toEqual({
       ok: false,
-      failureCode: "TOOL_FAILURE",
-      failureDetail: "exit code 3",
+      failureCode: "QUOTA_EXHAUSTED",
+      failureDetail: QUOTA.detail,
       nativeSessionId: DEFAULT_SESSION_ID,
       unknownEventCount: 0,
     });

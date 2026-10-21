@@ -121,9 +121,10 @@ describe("opencode compile matrix (T4.52)", () => {
         count += 1;
         expect("ineligible" in r, label).toBe(false);
         if ("ineligible" in r) continue;
-        expect(r.policyFlags, label).toEqual(["--standalone"]);
-        // No bypass-class flag is emitted, so the audit finds nothing in any context (Q-83).
-        expect(auditInvocation(r), label).toEqual([]);
+        expect(r.policyFlags, label).toEqual(["--standalone", "--auto"]);
+        // `--auto` is the one bypass-class flag (ADR-0077): refused without the approved context, admitted with it.
+        expect(auditInvocation(r), label).toEqual(["--auto"]);
+        expect(auditInvocation(r, { profile, bypassApproved: true }), label).toEqual([]);
       }
     }
     expect(count).toBe(1);
@@ -137,20 +138,13 @@ describe("opencode compile matrix (T4.52)", () => {
 
   it("puts the prompt last after `--` and never emits a flag the TDD §4.6 rules exclude", () => {
     const r = compiled();
-    expect(r.argv).toEqual([EXE, "run", "--format", "json", "--standalone", "--", "fix the failing test"]);
-    const never = [
-      "--auto",
-      "--continue",
-      "-c",
-      "--fork",
-      "--server",
-      "--share",
-      "--attach",
-      "--model",
-      "-m",
-      "--agent",
-    ];
+    expect(r.argv).toEqual([EXE, "run", "--format", "json", "--standalone", "--auto", "--", "fix the failing test"]);
+    const never = ["--continue", "-c", "--fork", "--server", "--share", "--attach", "--model", "-m", "--agent"];
     for (const a of r.argv.slice(1)) expect(never.includes(a), a).toBe(false);
+    // ADR-0077 (2026-10-21): the approved bypass cell carries `--auto` exactly once, so OpenCode's own permission
+    // system does not refuse an out-of-tree path in a non-interactive run.
+    expect(r.argv.filter((a) => a === "--auto")).toHaveLength(1);
+    expect(r.policyFlags).toContain("--auto");
     expect(r.env).toEqual({ OPENCODE_DISABLE_AUTOUPDATE: "1" });
     expect(r.envAllowlist).toEqual(["PATH", "HOME"]);
     for (const name of ["OPENCODE_PERMISSION", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG"]) {
@@ -166,8 +160,10 @@ describe("opencode compile matrix (T4.52)", () => {
   it("a prompt that looks like a flag stays one word after `--`; a bypass-flag prompt is refused by the audit", () => {
     const r = compiled({ objective: "-c continue the last session" });
     expect(r.argv.slice(-2)).toEqual(["--", "-c continue the last session"]);
-    expect(auditInvocation(r)).toEqual([]);
-    expect(auditInvocation(compiled({ objective: "--auto" }))).toEqual(["--auto"]);
+    const ctx = { profile: privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    expect(auditInvocation(r, ctx)).toEqual([]);
+    // Without the approved context the audit refuses the cell's own `--auto` and a bypass-word prompt alike.
+    expect(auditInvocation(compiled({ objective: "--yolo" }))).toEqual(["--auto", "--yolo"]);
   });
 
   it("an option-like model, an unapproved bypass and a missing binary are Ineligible with a reason", () => {
@@ -175,7 +171,7 @@ describe("opencode compile matrix (T4.52)", () => {
     const approved = { ...profile, bypassApproved: true };
     // ADR-0077: a plain model id compiles to `--model <id>` before `--`; an option-like one is refused.
     expect(adapter().compile(request({ model: "x/y", bypassApproved: true }), approved)).toMatchObject({
-      policyFlags: ["--standalone", "--model", "x/y"],
+      policyFlags: ["--standalone", "--auto", "--model", "x/y"],
     });
     expect(adapter().compile(request({ model: "-x", bypassApproved: true }), approved)).toMatchObject({
       reason: "CAPABILITY_MISSING",
@@ -208,7 +204,7 @@ describe("opencode bypass-class declaration (ADR-0035)", () => {
       expect(auditInvocation(inv, { profile: scoped, bypassApproved: true }), label).toEqual([]);
     }
     // Cursor's `--auto-review` is its own declaration; `--auto` does not match it by prefix.
-    expect(auditInvocation({ ...base, argv: [...base.argv, "--auto-review"] })).toEqual(["--auto-review"]);
+    expect(auditInvocation({ ...base, argv: [...base.argv, "--auto-review"] })).toEqual(["--auto", "--auto-review"]);
   });
 });
 
@@ -771,6 +767,7 @@ describe("opencode parser and result (T4.53)", () => {
       "--format",
       "json",
       "--standalone",
+      "--auto",
       "--session",
       SID,
       "--",

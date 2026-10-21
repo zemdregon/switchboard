@@ -5,17 +5,20 @@
  * host's shared background service, [LIVE] ESCAPED). The adapter never reads OpenCode credential or configuration files
  * (`auth.json`, `mcp-auth.json`, `.env`), never runs `auth login`, `auth list` output into logs or `auth export`, never
  * writes provider configuration, never sets `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` (ignored on v2.0.23, Q-64),
- * and never emits `--auto`, `--continue`, `--fork`, `--server`, `--attach`, `--share`, `--dir` or `--model`.
+ * and never emits `--continue`, `--fork`, `--server`, `--attach`, `--share`, `--dir` or `--model`.
  *
  * Compile matrix (Proposed, fail closed; Delegated decisions from the 2026-10-14 live check, Q-64 and Q-83):
  * - the four non-`privileged` profiles are `Ineligible: PROFILE_UNSUPPORTED`: no per-run deny took effect, the default
  *   runs every shell command, no sandbox is documented and repository configuration loads (FR-POL-02, FR-POL-06);
  * - `privileged` compiles only when its scope sets `bypass` and the run is approved (owner decision 46), and only for
  *   the scope OpenCode cannot narrow below: worktree files, shell `broad`, network `on` and repository configuration
- *   `enabled`. Its invocation adds no bypass flag: the observed default already runs shell and edits without asking,
- *   and `--auto` would only widen what is refused by default (out-of-tree paths, [LIVE] 11), so it is not emitted
- *   (Q-83). OpenCode confines nothing in that run; what remains is the controller's worktree, the tool-call guard
- *   (ADR-0039), FR-GIT-03 and FR-GIT-06;
+ *   `enabled`. Its invocation adds `--auto` (bypass-class, "Auto-approve permissions that are not explicitly
+ *   denied"; `opencode run --help` of v2.0.23) and nothing else. It was omitted until 2026-10-21 (Q-83) because it
+ *   only widens what is refused by default (out-of-tree paths, [LIVE] 11); ADR-0077 permits exactly that widening in
+ *   an approved bypass run, and the production smoke showed the refusal ("This non-interactive run cannot ask the
+ *   user for permission"). `--auto` is emitted in no other cell (none compiles) and the argv audit refuses it outside
+ *   an approved bypass run. What remains is the controller's worktree, the tool-call guard (ADR-0039), FR-GIT-03 and
+ *   FR-GIT-06;
  * - the parser (T4.53) reads only the `--format json` fields the 2026-10-14 live check recorded; success needs a
  *   `step_finish` with reason `stop`, or a text-only run without one (Q-85 as narrowed by owner decision 68); resume is `--session <id>` through the same matrix. The auth preflight
  *   (T4.54) reads the connection types of `auth list --format json --standalone`. The manifest range admits no version, so none of this runs before `adapters validate`
@@ -59,6 +62,7 @@ import {
   AUTH_ENV_CONNECTION_TYPES,
   AUTH_STATUS_ARGS,
   AUTH_STATUS_TIMEOUT_MS,
+  AUTO_FLAG,
   DISABLE_AUTOUPDATE_ENV,
   END_OF_OPTIONS,
   ERROR_TYPE_CATEGORIES,
@@ -369,7 +373,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
     }
     if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${OPENCODE_BINARY} not found on PATH`);
 
-    const policyFlags = [STANDALONE_FLAG, ...(request.model !== undefined ? [MODEL_FLAG, request.model] : [])];
+    const policyFlags = [
+      STANDALONE_FLAG,
+      AUTO_FLAG,
+      ...(request.model !== undefined ? [MODEL_FLAG, request.model] : []),
+    ];
     return {
       transport: "subprocess-jsonl",
       // The prompt is one argv word after `--` (Assumption, see protocol.ts); it is visible in the process list.

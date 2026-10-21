@@ -5,28 +5,47 @@
  *
  * SYNTHETIC tails only, built from the redacted capture line (the capture carries no secret): a non-zero exited
  * run whose stderr tail holds a line with both `ActionRequiredError` and `out of usage` maps to `QUOTA_EXHAUSTED`
- * (`cursorQuotaClassification`, reached only through `FailureEvidence.stderrTail`, which `extractResult` cannot
- * supply). A near-miss stays on the old mapping (either phrase alone, the phrases on different lines, or a generic
+ * (`cursorQuotaClassification`, reached through `FailureEvidence.stderrTail`, which `extractResult` cannot
+ * supply; `startAdapterRun` applies it to a TOOL_FAILURE result). A near-miss stays on the old mapping (either phrase alone, the phrases on different lines, or a generic
  * limit word with neither phrase), and exit 0 never maps to quota. No `cursor-agent` is run.
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { startAdapterRun } from "../run.js";
 import type { ExitInfo, FailureEvidence, NormalizedEvent } from "../types.js";
 import { CursorAdapter, cursorQuotaClassification } from "./adapter.js";
 
 const adapter = () => new CursorAdapter({ executable: "/usr/bin/false" });
-const EXIT_OK: ExitInfo = { outcome: "exited", exitCode: 0, signal: null, expectedExitCodes: [0] };
+const EXIT_OK: ExitInfo = {
+  outcome: "exited",
+  exitCode: 0,
+  signal: null,
+  expectedExitCodes: [0],
+};
 const EXIT_1: ExitInfo = { ...EXIT_OK, exitCode: 1 };
 const evidence = (
   events: NormalizedEvent[],
   stderrTail: string,
   exit: ExitInfo = EXIT_1,
   extra: Partial<FailureEvidence> = {},
-): FailureEvidence => ({ events, exit, stderrTail, timedOut: false, cancelled: false, ...extra });
+): FailureEvidence => ({
+  events,
+  exit,
+  stderrTail,
+  timedOut: false,
+  cancelled: false,
+  ...extra,
+});
 /** The redacted capture line, verbatim (no secret, no account identifier). */
 const CAPTURE_LINE =
   "ActionRequiredError: Increase limits for faster responses You're out of usage. Switch to Auto, " +
   "or ask your admin to increase your limit to continue.";
-const QUOTA = { code: "QUOTA_EXHAUSTED", detail: "quota: ActionRequiredError out of usage" };
+const QUOTA = {
+  code: "QUOTA_EXHAUSTED",
+  detail: "quota: ActionRequiredError out of usage",
+};
 const TOOL_FAILURE_1 = { code: "TOOL_FAILURE", detail: "exit code 1" };
 
 describe("cursor out-of-usage mapping (T6.15, FR-CAP-11; SYNTHETIC tails from the capture line)", () => {
@@ -91,7 +110,13 @@ describe("cursor out-of-usage mapping (T6.15, FR-CAP-11; SYNTHETIC tails from th
     });
     // A login prompt's structured auth error stands: the tail alone never promotes it.
     expect(
-      with_([{ kind: "provider_error", category: "auth", message: "credential source env is not the native login" }]),
+      with_([
+        {
+          kind: "provider_error",
+          category: "auth",
+          message: "credential source env is not the native login",
+        },
+      ]),
     ).toEqual({
       code: "AUTH_REQUIRED",
       detail: "auth: credential source env is not the native login",
@@ -100,13 +125,22 @@ describe("cursor out-of-usage mapping (T6.15, FR-CAP-11; SYNTHETIC tails from th
       code: "PERMISSION_BLOCKED",
       detail: "denied: shellToolCall",
     });
-    expect(with_([{ kind: "rate_limit" }])).toEqual({ code: "RATE_LIMIT_TRANSIENT", detail: "rate limit reported" });
+    expect(with_([{ kind: "rate_limit" }])).toEqual({
+      code: "RATE_LIMIT_TRANSIENT",
+      detail: "rate limit reported",
+    });
     expect(adapter().classifyFailure(evidence([], tail, EXIT_1, { cancelled: true }))).toEqual({
       code: "CANCELLED",
       detail: "run cancelled",
     });
     expect(
-      adapter().classifyFailure(evidence([], tail, { ...EXIT_1, outcome: "timeout", timeoutKind: "idle" })),
+      adapter().classifyFailure(
+        evidence([], tail, {
+          ...EXIT_1,
+          outcome: "timeout",
+          timeoutKind: "idle",
+        }),
+      ),
     ).toEqual({
       code: "PROCESS_TIMEOUT",
       detail: "idle timeout",
@@ -118,13 +152,53 @@ describe("cursor out-of-usage mapping (T6.15, FR-CAP-11; SYNTHETIC tails from th
   });
 
   it("extractResult cannot see the tail: a quota-stop-shaped run still ends TOOL_FAILURE there (pinned gap)", () => {
-    // The adapter contract passes no stderr to extractResult (LLD §2), so the mapping is reached only by a caller
-    // that passes the tail to classifyFailure, as `startAdapterRun` captures it (src/adapters/run.ts).
+    // The adapter contract passes no stderr to extractResult (LLD §2); startAdapterRun closes the gap (next test).
     expect(adapter().extractResult([], EXIT_1)).toEqual({
       ok: false,
       failureCode: "TOOL_FAILURE",
       failureDetail: "exit code 1",
       unknownEventCount: 0,
     });
+  });
+
+  it("startAdapterRun: a run that exits 1 with the 2026-10-21 stderr ends QUOTA_EXHAUSTED, not TOOL_FAILURE", async () => {
+    const stderr =
+      "ActionRequiredError: Increase limits for faster responses You're out of usage. Switch to Auto, or ask your admin to increase your limit to continue.";
+    const dir = mkdtempSync(join(tmpdir(), "sb-cursor-quota-"));
+    const file = (code: string): string => {
+      const f = join(dir, `${Math.random().toString(36).slice(2)}.cjs`);
+      writeFileSync(f, code);
+      return f;
+    };
+    const script = `process.stderr.write(${JSON.stringify(stderr)}); process.exit(1);`;
+    const inv = {
+      transport: "subprocess-jsonl" as const,
+      argv: [process.execPath, file(script)],
+      env: {},
+      envAllowlist: [],
+      cwd: process.cwd(),
+      stdin: { kind: "none" as const },
+      outputFormat: "jsonl" as const,
+      timeouts: { wallClockMs: 20_000, idleMs: 20_000, killGraceMs: 1000 },
+      policyFlags: [],
+      expectedExitCodes: [0],
+      maxLineBytes: 65_536,
+    };
+    const out = await startAdapterRun(adapter(), inv).done;
+    expect(out.result).toMatchObject({
+      ok: false,
+      failureCode: "QUOTA_EXHAUSTED",
+      failureDetail: QUOTA.detail,
+    });
+    // The same exit without the usage text stays TOOL_FAILURE.
+    const plain = { ...inv, argv: [process.execPath, file("process.stderr.write('boom'); process.exit(1);")] };
+    try {
+      expect((await startAdapterRun(adapter(), plain).done).result).toMatchObject({
+        failureCode: "TOOL_FAILURE",
+        failureDetail: "exit code 1",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

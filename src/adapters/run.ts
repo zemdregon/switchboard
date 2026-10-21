@@ -28,6 +28,34 @@ import {
 const DEFAULT_PROBE_TIMEOUT_MS = 10_000; // Proposed
 const STDERR_TAIL_BYTES = 4096; // Proposed
 
+function tailOf(stderr: Buffer): string {
+  return stderr.subarray(Math.max(0, stderr.length - STDERR_TAIL_BYTES)).toString("utf8");
+}
+
+/**
+ * `extractResult` is not given the stderr tail (the adapter contract), so a provider that reports a usage-limit stop
+ * only on stderr (Cursor, T6.15) ends `TOOL_FAILURE` on its exit code. When the folded result is exactly that, the
+ * adapter's `classifyFailure` is asked again with the captured tail; only a `QUOTA_EXHAUSTED` verdict replaces it, so
+ * no other code, success included, changes (Assumption: quota is the one stderr-only verdict the adapters hold).
+ */
+function withStderrQuota(
+  adapter: ProviderAdapter,
+  result: RunResult,
+  events: readonly NormalizedEvent[],
+  exit: ExitInfo,
+  stderrTail: string,
+): RunResult {
+  if (result.ok || result.failureCode !== "TOOL_FAILURE" || stderrTail === "") return result;
+  const c = adapter.classifyFailure({
+    events,
+    exit,
+    stderrTail,
+    timedOut: exit.outcome === "timeout",
+    cancelled: exit.outcome === "cancelled",
+  });
+  return c.code === "QUOTA_EXHAUSTED" ? { ...result, failureCode: c.code, failureDetail: c.detail } : result;
+}
+
 /** ProbeRunner backed by the supervisor. Only PATH is inherited. */
 export function createProbeRunner(envAllowlist: readonly string[] = ["PATH"]): ProbeRunner {
   return async (argv, opts) => {
@@ -194,10 +222,10 @@ export function startAdapterRun(adapter: ProviderAdapter, inv: Invocation, opts:
       expectedExitCodes: inv.expectedExitCodes,
     };
     return {
-      result: adapter.extractResult(events, exit),
+      result: withStderrQuota(adapter, adapter.extractResult(events, exit), events, exit, tailOf(r.stderr)),
       events,
       exit,
-      stderrTail: r.stderr.subarray(Math.max(0, r.stderr.length - STDERR_TAIL_BYTES)).toString("utf8"),
+      stderrTail: tailOf(r.stderr),
       groupEmpty: r.groupEmpty,
       stdout: r.stdout,
       stderr: r.stderr,
@@ -269,10 +297,10 @@ function startAcpRun(
       expectedExitCodes: inv.expectedExitCodes,
     };
     return {
-      result: adapter.extractResult(events, exit),
+      result: withStderrQuota(adapter, adapter.extractResult(events, exit), events, exit, tailOf(r.stderr)),
       events,
       exit,
-      stderrTail: r.stderr.subarray(Math.max(0, r.stderr.length - STDERR_TAIL_BYTES)).toString("utf8"),
+      stderrTail: tailOf(r.stderr),
       groupEmpty: r.groupEmpty,
       stdout: r.stdout,
       stderr: r.stderr,

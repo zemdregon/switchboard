@@ -229,8 +229,8 @@ export const BUILTIN_PROVIDERS = [
     configId: "opencode",
     kind: "real",
     // TDD §4.6.2 ([D-cli], [D-perm]; `run --help` of v2.0.23 in the T4.51 live check lists it): `--auto` "Auto-approve
-    // permissions that are not explicitly denied", bypass-class (Proposed, fail closed; the adapter never emits it,
-    // Q-83). The inline `allow` permission travels in `OPENCODE_PERMISSION`/`OPENCODE_CONFIG_CONTENT`, which the argv
+    // permissions that are not explicitly denied", bypass-class (Proposed, fail closed). The adapter emits it in
+    // the approved privileged bypass cell only (ADR-0077, 2026-10-21; it was omitted under Q-83). The inline `allow` permission travels in `OPENCODE_PERMISSION`/`OPENCODE_CONFIG_CONTENT`, which the argv
     // audit does not see (ADR-0037 limits); the adapter sets neither. Active since the adapter (T4.52) added `create`.
     bypassFlags: ["--auto"],
     // TDD §4.10: `Unverified: T4.51` (`--session <id>` resumed from another directory in the 2026-10-14 live check).
