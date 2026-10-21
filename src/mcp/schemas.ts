@@ -151,6 +151,15 @@ export type PublishToolName = (typeof PUBLISH_TOOL_NAMES)[number];
 export const BASE_TOOL_NAMES = ["refresh_project_base", "rebase_session"] as const;
 export type BaseToolName = (typeof BASE_TOOL_NAMES)[number];
 
+/**
+ * `list_oauth_clients`: the HTTP transport's OAuth clients, read-only, as `switchboard mcp oauth clients|client` shows
+ * them (metadata, status, profile and its source, token counts; never a token, code or hash). Offered only on stdio (the
+ * operator's own session) and only when `serve` wires the OAuth admin view; an HTTP caller never sees it and is answered
+ * as for an unknown tool. Listed last.
+ */
+export const OAUTH_TOOL_NAMES = ["list_oauth_clients"] as const;
+export type OAuthToolName = (typeof OAUTH_TOOL_NAMES)[number];
+
 /** Delegated bounds for an MCP-supplied project definition (the configuration schema itself has none). */
 export const MAX_DEFINITION_STRING = 4096;
 export const MAX_DEFINITION_ITEMS = 32;
@@ -2082,6 +2091,82 @@ const BASE_OUTPUTS = {
   }),
 } as const;
 
+const OAUTH_CLIENT_ID = { type: "string", pattern: "^sbc_[A-Za-z0-9_-]{22}$" } as const;
+
+const OAUTH_INPUTS = {
+  list_oauth_clients: {
+    type: "object",
+    additionalProperties: false,
+    properties: { client_id: OAUTH_CLIENT_ID },
+  },
+} as const;
+
+const OAUTH_CLIENT_VIEW = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "client_id",
+    "client_name",
+    "cimd_url",
+    "status",
+    "created_at",
+    "decided_at",
+    "redirect_uris",
+    "grant_types",
+    "mcp_client",
+    "mcp_client_source",
+    "mcp_client_eligible",
+    "bound_mcp_client",
+    "bound_at",
+    "tokens",
+    "last_token_issued_at",
+  ],
+  properties: {
+    client_id: { type: "string" },
+    client_name: NULLABLE_STRING,
+    cimd_url: NULLABLE_STRING,
+    status: { enum: ["pending", "approved", "denied", "revoked"] },
+    created_at: { type: "string" },
+    decided_at: NULLABLE_STRING,
+    redirect_uris: { type: "array", items: { type: "string" } },
+    grant_types: { type: "array", items: { type: "string" } },
+    mcp_client: NULLABLE_STRING,
+    mcp_client_source: { enum: ["config_map", "ledger_binding", "default", null] },
+    mcp_client_eligible: { type: "boolean" },
+    bound_mcp_client: NULLABLE_STRING,
+    bound_at: NULLABLE_STRING,
+    tokens: {
+      type: "object",
+      additionalProperties: false,
+      required: ["active", "expired", "revoked"],
+      properties: {
+        active: { type: "integer", minimum: 0 },
+        expired: { type: "integer", minimum: 0 },
+        revoked: { type: "integer", minimum: 0 },
+      },
+    },
+    last_token_issued_at: NULLABLE_STRING,
+  },
+} as const;
+
+const OAUTH_OUTPUTS = {
+  list_oauth_clients: withError({
+    type: "object",
+    additionalProperties: false,
+    required: ["clients"],
+    properties: { clients: { type: "array", items: OAUTH_CLIENT_VIEW } },
+  }),
+} as const;
+
+const OAUTH_DESCRIPTIONS: Readonly<Record<OAuthToolName, string>> = {
+  list_oauth_clients:
+    "Operator view of the HTTP transport's OAuth clients, read-only (stdio only): per client its registration, " +
+    "status, the mcp_clients profile it acts as with the source (config_map, ledger_binding, default; " +
+    "mcp_client_eligible false means the MCP endpoint refuses it), the ledger binding a one-time code made, token " +
+    "counts (active, expired, revoked) and the newest token issue time. Never a token, code or hash. With client_id, " +
+    "that client only (an unknown id is INVALID_REQUEST).",
+};
+
 const BASE_DESCRIPTIONS: Readonly<Record<BaseToolName, string>> = {
   refresh_project_base:
     "Fetch the base branch of one of this client's remote-backed projects now (a dynamic project with clone_url, " +
@@ -2245,7 +2330,8 @@ export interface ToolDescriptor {
     | WorkQueueToolName
     | SkillToolName
     | PublishToolName
-    | BaseToolName;
+    | BaseToolName
+    | OAuthToolName;
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
@@ -2267,6 +2353,7 @@ export function toolDescriptors(
     updateRunBranch?: boolean;
     closePr?: boolean;
     baseTools?: boolean;
+    oauthClients?: boolean;
   } = {},
 ): ToolDescriptor[] {
   const base: ToolDescriptor[] = TOOL_NAMES.map((name) => ({
@@ -2334,16 +2421,27 @@ export function toolDescriptors(
       })),
     );
   }
-  if (opts.manageProjects !== true) return base;
-  return [
-    ...base,
-    ...PROJECT_TOOL_NAMES.map((name) => ({
-      name,
-      description: PROJECT_DESCRIPTIONS[name],
-      inputSchema: structuredClone(PROJECT_INPUTS[name]) as Record<string, unknown>,
-      outputSchema: structuredClone(PROJECT_OUTPUTS[name]) as Record<string, unknown>,
-    })),
-  ];
+  if (opts.manageProjects === true) {
+    base.push(
+      ...PROJECT_TOOL_NAMES.map((name) => ({
+        name,
+        description: PROJECT_DESCRIPTIONS[name],
+        inputSchema: structuredClone(PROJECT_INPUTS[name]) as Record<string, unknown>,
+        outputSchema: structuredClone(PROJECT_OUTPUTS[name]) as Record<string, unknown>,
+      })),
+    );
+  }
+  if (opts.oauthClients === true) {
+    base.push(
+      ...OAUTH_TOOL_NAMES.map((name) => ({
+        name,
+        description: OAUTH_DESCRIPTIONS[name],
+        inputSchema: structuredClone(OAUTH_INPUTS[name]) as Record<string, unknown>,
+        outputSchema: structuredClone(OAUTH_OUTPUTS[name]) as Record<string, unknown>,
+      })),
+    );
+  }
+  return base;
 }
 
 export function inputSchema(
@@ -2354,8 +2452,12 @@ export function inputSchema(
     | WorkQueueToolName
     | SkillToolName
     | PublishToolName
-    | BaseToolName,
+    | BaseToolName
+    | OAuthToolName,
 ): Record<string, unknown> {
+  if ((OAUTH_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(OAUTH_INPUTS[name as OAuthToolName]) as Record<string, unknown>;
+  }
   if ((BASE_TOOL_NAMES as readonly string[]).includes(name)) {
     return structuredClone(BASE_INPUTS[name as BaseToolName]) as Record<string, unknown>;
   }
@@ -2383,8 +2485,12 @@ export function outputSchema(
     | WorkQueueToolName
     | SkillToolName
     | PublishToolName
-    | BaseToolName,
+    | BaseToolName
+    | OAuthToolName,
 ): Record<string, unknown> {
+  if ((OAUTH_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(OAUTH_OUTPUTS[name as OAuthToolName]) as Record<string, unknown>;
+  }
   if ((BASE_TOOL_NAMES as readonly string[]).includes(name)) {
     return structuredClone(BASE_OUTPUTS[name as BaseToolName]) as Record<string, unknown>;
   }

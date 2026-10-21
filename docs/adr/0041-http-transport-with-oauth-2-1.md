@@ -5,7 +5,9 @@
   for clients the operator marks `approval_proxy` (Proposed, 2026-10-15); the SDK and protocol-era statements (the
   2025-11-25-only era in Context and the T13.1 answer mounting the v1 `StreamableHTTPServerTransport`) are superseded
   by [ADR-0062](0062-mcp-sdk-v2-dual-era-http.md) (2026-10-19), which keeps every numbered decision here, item 7 as
-  built included
+  built included; items 3 and 4 are extended (not superseded) by
+  [ADR-0085](0085-cli-issued-one-time-codes-for-mcp-oauth.md) (2026-10-21): profile-bound CLI codes, per-IP lockout,
+  a revocation endpoint and the operator OAuth CLI that item 4 records as not built
 - Date: 2026-10-14
 - Decided by: Delegated (Linus, 2026-10-14), recording the owner decision that Switchboard will be embedded in
   Grok Bot as a public-facing MCP server, so HTTP transport and OAuth are critical. Under [owner
@@ -54,7 +56,8 @@ on launch binding only ([ADR-0040](0040-mcp-caller-authentication-no-oauth-on-st
    and are revocable with `switchboard auth revoke`. Every issue, refresh and revocation is audit-logged with no token
    values.
    *As built (T13.8, Q-76):* access tokens last 15 minutes and refresh tokens 7 days (Assumptions); a reused refresh
-   token or authorization code revokes every token of its client. The operator revocation command is not built yet.
+   token or authorization code revokes every token of its client. The operator revocation command is not built yet
+   (*extended 2026-10-21: built as `switchboard mcp oauth revoke`, [ADR-0085](0085-cli-issued-one-time-codes-for-mcp-oauth.md)*).
 5. **Token checks.** On each MCP request the server verifies signature or introspection, expiry, issuer, and that the
    audience equals its own resource identifier. A token for any other resource is rejected. The server never forwards
    the inbound token to any upstream provider; provider credentials are untouched (ADR-0003).
