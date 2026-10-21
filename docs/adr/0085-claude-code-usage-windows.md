@@ -1,10 +1,10 @@
-# ADR-0081: Claude Code usage windows from the run's own `rate_limit_event`
+# ADR-0085: Claude Code usage windows from the run's own `rate_limit_event`
 
 - Status: Accepted (built 2026-10-21).
 - Date: 2026-10-21
 - Decided by: Delegated agent work on an operator task (2026-10-21), not owner-approved. The choice of source and the
   details marked **Delegated** were made while building it from the live capture.
-- Related: FR-CAP-14, FR-CAP-13, FR-CAP-09, FR-CAP-10, FR-CAP-11, FRD BR-50,
+- Related: FR-CAP-15, FR-CAP-13, FR-CAP-09, FR-CAP-10, FR-CAP-11, FRD BR-50,
   [ADR-0003](0003-no-credential-handling.md) (no credential handling),
   [ADR-0079](0079-provider-reported-usage-reader.md) (provider-reported usage reader; this ADR reuses its report shape
   and `provider_usage` field),
@@ -13,7 +13,7 @@
   [ADR-0058](0058-captured-limit-signatures.md) (captured limit signatures),
   [ADR-0063](0063-per-run-provider-otlp-metrics-receiver.md) (per-run OTLP metrics, the other usage source),
   [capture note](../research/claude-usage-capture-2026-10-21.md),
-  [LLD §16.11](../design/LLD.md#1611-claude-code-usage-windows-from-run-output-fr-cap-14-adr-0081),
+  [LLD §16.12](../design/LLD.md#1612-claude-code-usage-windows-from-run-output-fr-cap-15-adr-0085),
   [ROADMAP T6.18](../ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 
 ## Context

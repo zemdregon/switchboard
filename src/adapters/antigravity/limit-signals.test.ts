@@ -419,7 +419,7 @@ describe("USAGE_KEYS after T6.15 (FR-CAP-09, LLD §16.9): no captured key qualif
     return out[0]?.windows[0];
   };
 
-  it("USAGE_KEYS declares nothing for Antigravity (only Claude Code's captured keys, ADR-0081) and stays frozen", () => {
+  it("USAGE_KEYS declares nothing for Antigravity (only Claude Code's captured keys, ADR-0085) and stays frozen", () => {
     expect(Object.keys(USAGE_KEYS)).toEqual(["claude"]);
     expect(USAGE_KEYS.antigravity).toBeUndefined();
     expect(Object.isFrozen(USAGE_KEYS)).toBe(true);

@@ -6358,7 +6358,7 @@ per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surfa
 quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
 and `confidence`, labelled "estimate".
 
-T6.18 builds the provider's `provider_usage` report (§16.11) from recorded run output for Claude Code, absent when no
+T6.18 builds the provider's `provider_usage` report (§16.12) from recorded run output for Claude Code, absent when no
 windowed figure is current.
 
 T6.14 adds an optional top-level `pacing` array, one entry per subscription (§16.9). It is omitted when no subscription
@@ -6698,7 +6698,7 @@ including `privileged` and `require_provider` runs and runs admitted to an undef
 became deferred before dispatch. Nothing creates a run, a probe or a provider call. Tests:
 `src/lifecycle/pacing-gate.test.ts`, `src/routing/pacing-admission.test.ts`.
 
-*Update 2026-10-21 ([ADR-0081](../adr/0081-claude-code-usage-windows.md), ROADMAP T6.19, Delegated, not owner-approved):*
+*Update 2026-10-21 ([ADR-0085](../adr/0085-claude-code-usage-windows.md), ROADMAP T6.23, Delegated, not owner-approved):*
 `USAGE_KEYS` now declares Claude Code's `five_hour_used_fraction`, `five_hour_resets_at`, `seven_day_used_fraction` and
 `seven_day_resets_at` (the [capture](../research/claude-usage-capture-2026-10-21.md)). An entry may carry
 `window: { id, lengthSeconds }` (`five_hour` 18000 s, `seven_day` 604800 s). A windowed key feeds only a configured
@@ -6792,7 +6792,7 @@ changes `ok`). Text shows fractions, not percentages (FR-CAP-03 wording rule), a
 `src/capacity/provider-usage.test.ts`, and the block "provider_usage on get_capacity, capacity and doctor (ADR-0079,
 FR-CAP-13)" in `src/mcp/get-capacity.test.ts`.
 
-### 16.11 Claude Code usage windows from run output (FR-CAP-14, ADR-0081)
+### 16.12 Claude Code usage windows from run output (FR-CAP-15, ADR-0085)
 
 No migration, no new output field. The Claude figures reach the capacity surfaces as an ADR-0079 `ProviderUsageReport`
 (§16.10) built on read from `usage_observation` rows and the clock, set as the provider's `provider_usage`:

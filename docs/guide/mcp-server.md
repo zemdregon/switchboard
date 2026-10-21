@@ -278,7 +278,7 @@ observed. The figures are
 as fresh as the newest Claude Code run: Switchboard never starts a run or calls the provider to refresh them, and it
 reads no login token. A window whose reset time has passed is left out, and with no recent Claude Code run nothing is
 shown. A subscription window whose length is 5 hours or 7 days reads the matching figure as `provider_reported`
-([ADR-0081](../adr/0081-claude-code-usage-windows.md)).
+([ADR-0085](../adr/0085-claude-code-usage-windows.md)).
 
 **What pacing never claims.**
 

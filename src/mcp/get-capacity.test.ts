@@ -334,7 +334,7 @@ describe("get_capacity on the MCP server (T6.3; FR-MCP-02, LLD §16.3)", () => {
   });
 });
 
-describe("Claude Code provider_usage from recorded run output on get_capacity (ADR-0081; FR-CAP-14)", () => {
+describe("Claude Code provider_usage from recorded run output on get_capacity (ADR-0085; FR-CAP-15)", () => {
   it("shows Claude Code's own windows from the newest run's usage row, schema-valid and honest", async () => {
     withClaude = true;
     openData();
@@ -476,7 +476,7 @@ describe("one projection for get_capacity, switchboard capacity and doctor (T6.3
     expectHonestText(text.out);
   });
 
-  it("ADR-0081: doctor and capacity print Claude Code's provider-reported windows, labelled", async () => {
+  it("ADR-0085: doctor and capacity print Claude Code's provider-reported windows, labelled", async () => {
     withClaude = true;
     openData();
     const ms = ledger.createMetaSession({ objective: "o" });
