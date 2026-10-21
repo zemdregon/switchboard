@@ -6698,7 +6698,7 @@ including `privileged` and `require_provider` runs and runs admitted to an undef
 became deferred before dispatch. Nothing creates a run, a probe or a provider call. Tests:
 `src/lifecycle/pacing-gate.test.ts`, `src/routing/pacing-admission.test.ts`.
 
-*Update 2026-10-21 ([ADR-0085](../adr/0085-claude-code-usage-windows.md), ROADMAP T6.23, Delegated, not owner-approved):*
+*Update 2026-10-21 ([ADR-0088](../adr/0088-claude-code-usage-windows.md), ROADMAP T6.23, Delegated, not owner-approved):*
 `USAGE_KEYS` now declares Claude Code's `five_hour_used_fraction`, `five_hour_resets_at`, `seven_day_used_fraction` and
 `seven_day_resets_at` (the [capture](../research/claude-usage-capture-2026-10-21.md)). An entry may carry
 `window: { id, lengthSeconds }` (`five_hour` 18000 s, `seven_day` 604800 s). A windowed key feeds only a configured
@@ -6837,7 +6837,7 @@ Unrecognised text, a timeout or another dialog is `unknown`.
 Precision is a whole percent and a minute-level reset. Side effects: the probe directory appears once in Kimi's
 workspace list and each read adds a `/usage` line to its input history. Tests: `src/adapters/kimi/usage.test.ts`.
 
-### 16.12 Claude Code usage windows from run output (FR-CAP-15, ADR-0085)
+### 16.12 Claude Code usage windows from run output (FR-CAP-15, ADR-0088)
 
 No migration, no new output field. The Claude figures reach the capacity surfaces as an ADR-0079 `ProviderUsageReport`
 (§16.10) built on read from `usage_observation` rows and the clock, set as the provider's `provider_usage`:

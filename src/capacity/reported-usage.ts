@@ -1,5 +1,5 @@
 /**
- * Provider-reported usage windows per provider (ADR-0085; FR-CAP-15, BR-50, LLD §16.12).
+ * Provider-reported usage windows per provider (ADR-0088; FR-CAP-15, BR-50, LLD §16.12).
  *
  * A pure function of the rows the collector read and a clock. It works for any provider from its declarations in
  * {@link USAGE_KEYS} that name a window: for each such window it reads the rows that hold the declared used (or

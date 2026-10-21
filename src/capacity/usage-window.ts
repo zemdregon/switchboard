@@ -6,7 +6,7 @@
  * a declared provider key or from the operator. Every figure carries its source (BR-50):
  *
  * - `provider_reported` only from a key declared in {@link USAGE_KEYS} (frozen; a key enters only with the capture that
- *   shows it, T6.15; Claude Code's window keys since ADR-0085);
+ *   shows it, T6.15; Claude Code's window keys since ADR-0088);
  * - `operator_declared` for a `fixed` reset (the budget is the operator's too, but the used share against it is an
  *   estimate);
  * - `controller_estimated` for a budget against Switchboard-observed usage, always `lower_bound: true`;
@@ -26,7 +26,7 @@ export type UsageKeyCarries = "used_fraction" | "remaining_fraction" | "reset_at
 
 /**
  * One declared key: where it is read (`usage_observation.metrics_json` or a `rate_limit` provider event's payload), the
- * key name, what it carries and the source document that shows it. ADR-0085: a key that names one of the provider's
+ * key name, what it carries and the source document that shows it. ADR-0088: a key that names one of the provider's
  * own windows carries `window`; it then feeds only a configured window of the same length, and the per-provider
  * `provider_usage` report of the capacity projection (`./reported-usage.ts`, ADR-0079 shape).
  */
@@ -43,7 +43,7 @@ const CLAUDE_CAPTURE = "docs/research/claude-usage-capture-2026-10-21.md";
 /**
  * Declared usage keys per adapter provider id. An entry is added here only with the capture note that shows the key.
  * T6.15 (2026-10-17) found none in the T6.11 captures (`docs/research/limit-captures-2026-10-17.md`): Antigravity's
- * `AGY_ERROR` reset is free text (Q-100), and its separate `/usage` call (Q-101) is unwired. ADR-0085 (2026-10-21)
+ * `AGY_ERROR` reset is free text (Q-100), and its separate `/usage` call (Q-101) is unwired. ADR-0088 (2026-10-21)
  * declares Claude Code's `rate_limit_event` window figures, recorded as `usage` metrics by the Claude parser.
  */
 export const USAGE_KEYS: Readonly<Record<string, readonly UsageKeyDeclaration[]>> = Object.freeze({

@@ -3,7 +3,7 @@
 *Delegated agent work, documentation only; not owner-approved.* Answers the question left open in the
 [T6.0 note](capacity-signals-2026-10-14.md) and the [limit captures](limit-captures-2026-10-18.md): does Claude Code
 print a structured used share and reset time for its 5-hour and 7-day windows, and can Switchboard read it without a
-credential? Mechanism: [ADR-0085](../adr/0085-claude-code-usage-windows.md); requirement FR-CAP-15.
+credential? Mechanism: [ADR-0088](../adr/0088-claude-code-usage-windows.md); requirement FR-CAP-15.
 
 ## Method and sources
 

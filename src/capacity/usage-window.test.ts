@@ -49,7 +49,7 @@ describe("usage windows (T6.13, LLD §16.9)", () => {
     expect(usageWindows([], PACING, EMPTY, NOW)).toBeUndefined();
   });
 
-  it("USAGE_KEYS declares only Claude Code's captured window keys (ADR-0085) and is frozen", () => {
+  it("USAGE_KEYS declares only Claude Code's captured window keys (ADR-0088) and is frozen", () => {
     expect(Object.keys(USAGE_KEYS)).toEqual(["claude"]);
     expect(USAGE_KEYS.claude?.map((d) => [d.key, d.carries, d.window?.lengthSeconds])).toEqual([
       ["five_hour_used_fraction", "used_fraction", 18000],

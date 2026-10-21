@@ -908,7 +908,7 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, De
   /** `provider_reported` usage rows of `provider` observed at or after `sinceIso`, oldest first (never `inner_agent`). */
   listProviderReportedUsageSince(provider: string, sinceIso: string): ProviderUsageRow[];
   /**
-   * ADR-0085: the newest `limit` `provider_reported` usage rows of `provider` observed at or after `sinceIso` whose
+   * ADR-0088: the newest `limit` `provider_reported` usage rows of `provider` observed at or after `sinceIso` whose
    * metrics hold `key` (a declared usage key), newest first.
    */
   listLatestProviderReportedUsageWithKey(
