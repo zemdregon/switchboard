@@ -6,6 +6,7 @@
 import type { PrivilegedScopeBinding } from "../policy/types.js";
 import type { FailureCode } from "./failure.js";
 import type { PromptSkill } from "./prompt.js";
+import type { ProviderUsageResult } from "./provider-usage.js";
 import type { BuiltinProviderId } from "./providers.js";
 
 /** Adapter ids, derived from the provider registry table `BUILTIN_PROVIDERS` (`./providers.ts`, T4.1, LLD §2). */
@@ -559,6 +560,11 @@ export interface ProviderAdapter {
   probe(runner: ProbeRunner): Promise<ProbeResult>;
   /** Provider's own status command or a harmless headless call; never reads credentials (FR-AUTH-02). */
   authPreflight(runner: ProbeRunner): Promise<AuthResult>;
+  /**
+   * ADR-0079 (FR-CAP-13): optional. The account's quota windows as the provider's own CLI reports them, read through
+   * the runner with no model call and no credential read by Switchboard. Absent means the provider has no such reader.
+   */
+  readProviderUsage?(runner: ProbeRunner, now?: Date): Promise<ProviderUsageResult>;
   /** Pure. Returns Ineligible (never a downgraded profile) when the profile cannot be satisfied (FR-POL-02). */
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible;
   /** One stdout line (JSONL) or one ACP message -> zero or more events. Stateful via ParseState. */

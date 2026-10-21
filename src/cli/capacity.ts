@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { acceptedProviderNames, canonicalProviderId } from "../adapters/providers.js";
+import { createProbeRunner } from "../adapters/run.js";
 import {
   bindingPacingWindow,
   type CapacityProjection,
@@ -13,11 +14,15 @@ import {
   capacityProviders,
   type PacingSubscriptionView,
   type PacingWindowView,
+  providerUsageLines,
+  readProviderUsage,
+  usageReadTargets,
+  withProviderUsage,
 } from "../capacity/index.js";
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
 import { createLedger, LEDGER_FILE_NAME, migrate } from "../ledger/index.js";
 import { defaultAdapters } from "./doctor.js";
-import { type CliIo, UsageError } from "./io.js";
+import { type CliIo, PROBE_ENV_ALLOWLIST, UsageError } from "./io.js";
 
 export function runCapacity(io: CliIo, argv: readonly string[], provider?: string): CapacityProjection {
   const cfg = loadConfig({ argv, env: io.env, ...(io.homedir !== undefined ? { homedir: io.homedir } : {}) });
@@ -30,6 +35,33 @@ export function runCapacity(io: CliIo, argv: readonly string[], provider?: strin
     );
   }
   return projectCapacity(cfg, named === undefined ? ids : [named], (io.now ?? (() => new Date()))());
+}
+
+/** `runCapacity` plus the provider-reported usage of each enabled provider with a reader (ADR-0079, FR-CAP-13). */
+export async function runCapacityWithUsage(
+  io: CliIo,
+  argv: readonly string[],
+  provider?: string,
+): Promise<CapacityProjection> {
+  const projection = runCapacity(io, argv, provider);
+  return addProviderUsage(io, projection, new Date(projection.as_of));
+}
+
+/**
+ * ADR-0079 (FR-CAP-13): lays the provider-reported usage over a projection (shared by `capacity` and `doctor`). Only
+ * enabled providers in the projection whose adapter has a reader are asked; the rest are unchanged.
+ */
+export async function addProviderUsage(
+  io: CliIo,
+  projection: CapacityProjection,
+  now: Date,
+): Promise<CapacityProjection> {
+  const named = new Set(projection.providers.map((p) => p.provider));
+  const adapters = (io.adapters ?? defaultAdapters()).list().filter((a) => named.has(a.id));
+  const targets = usageReadTargets(adapters, projection);
+  if (targets.length === 0) return projection;
+  const runner = io.providerUsageRunner ?? createProbeRunner(PROBE_ENV_ALLOWLIST);
+  return withProviderUsage(projection, await readProviderUsage(targets, { runner }, now));
 }
 
 /** The projection for `ids` from the configured data directory (shared by `capacity` and `doctor`). */
@@ -107,6 +139,8 @@ export function renderCapacity(p: CapacityProjection): string {
       }`,
     );
     lines.push(`  provider-reported reset: ${c.reset_at === null ? "none" : c.reset_at.at}`);
+    // ADR-0079 (FR-CAP-13): the provider's own report, read live through its CLI.
+    if (c.provider_usage !== undefined) lines.push(...providerUsageLines(c.provider_usage, "  "));
     if (c.cache !== undefined) {
       // FR-CAP-08: reported counts with their source; never read as cache use.
       lines.push(

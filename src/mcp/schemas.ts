@@ -1057,6 +1057,79 @@ const CAPABILITIES = {
 /** `list_projects` (LLD §3 project additions): no paths, remotes, identities or image references (FR-MCP-04). */
 /** T6.3 (LLD §16.3, ADR-0043 item 6): the capacity projection; estimates and provider-reported values kept apart. */
 const NULLABLE_NUMBER = { type: ["number", "null"] } as const;
+/** ADR-0079 (FR-CAP-13, LLD §16.10): one provider's usage report, or `unknown` with a reason. */
+const PROVIDER_USAGE = {
+  anyOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "provider",
+        "source",
+        "observed_at",
+        "method",
+        "plan",
+        "limit_reached",
+        "limit_reached_type",
+        "windows",
+        "credits",
+      ],
+      properties: {
+        provider: { type: "string" },
+        source: { const: "provider_reported" },
+        observed_at: { type: "string" },
+        method: { type: "string" },
+        plan: { type: ["string", "null"] },
+        limit_reached: { type: ["boolean", "null"] },
+        limit_reached_type: { type: ["string", "null"] },
+        windows: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "limit_id", "window_seconds", "used_fraction", "remaining_fraction", "resets_at"],
+            properties: {
+              id: { type: "string" },
+              limit_id: { type: ["string", "null"] },
+              window_seconds: { type: ["integer", "null"], minimum: 1 },
+              used_fraction: { type: "number", minimum: 0, maximum: 1 },
+              remaining_fraction: { type: "number", minimum: 0, maximum: 1 },
+              resets_at: { type: ["string", "null"] },
+            },
+          },
+        },
+        credits: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["has_credits", "unlimited", "balance"],
+              properties: {
+                has_credits: { type: "boolean" },
+                unlimited: { type: "boolean" },
+                balance: { type: ["string", "null"] },
+              },
+            },
+          ],
+        },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["provider", "source", "observed_at", "method", "error"],
+      properties: {
+        provider: { type: "string" },
+        source: { const: "unknown" },
+        observed_at: { type: "string" },
+        method: { type: "string" },
+        error: { type: "string" },
+      },
+    },
+  ],
+} as const;
+
 const CAPACITY = {
   type: "object",
   additionalProperties: false,
@@ -1159,6 +1232,8 @@ const CAPACITY = {
               key_source: { type: "string" },
             },
           },
+          // ADR-0079 (FR-CAP-13): the provider's own report, read live through its CLI; absent without a reader.
+          provider_usage: PROVIDER_USAGE,
           concurrency_available: { type: "integer", minimum: 0 },
           concurrency_limit: { type: "integer", minimum: 1 },
           breaker: {
@@ -2043,7 +2118,10 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "with no recent evidence they read unknown (score null, confidence 0). explicit_remaining and reset_at are set " +
     "only when the provider itself reported them. Optional provider narrows the answer to one provider. When " +
     "subscriptions are configured, pacing lists one entry per subscription with each window's figures, " +
-    "deferred_until and the gate verdict; that hold is not applied here.",
+    "deferred_until and the gate verdict; that hold is not applied here. provider_usage, where present, is the " +
+    "provider's own report read live through its CLI with no model call (Codex: account/rateLimits/read): each " +
+    "quota window's used_fraction, remaining_fraction and resets_at, the plan, credits and whether a limit is " +
+    "reached, all source provider_reported; source unknown carries the reason the read failed.",
   explain_route:
     "Why a run went to its provider, read-only, from Switchboard's stored route decision: candidates with eligibility " +
     "reasons, the recorded task features, weights and per-candidate scores, the selection rule, the project's " +
