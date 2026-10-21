@@ -1447,6 +1447,13 @@ async function runDaemon(
       useCheckRunsFallback: config.ciTrigger.useCheckRunsFallback,
     });
 
+  // ADR-0081: one Copilot quota reader (cache and single flight shared by stdio and every HTTP session), on the same
+  // `gh` binary as the CI port. Only when `capacity.copilot_quota` is on and the process entry supplied the reader.
+  const copilotQuota =
+    config.capacity.copilotQuota && io.copilotQuota !== undefined
+      ? io.copilotQuota({ binary: config.ciTrigger.ghBinary, sourceEnv: io.env })
+      : undefined;
+
   let code = 0;
   try {
     const mcpDeps = {
@@ -1474,6 +1481,7 @@ async function runDaemon(
         modelGroups: config.modelGroups,
       },
       ...(now ? { now } : {}),
+      ...(copilotQuota !== undefined ? { copilotQuota } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
       // T14.8 (FR-CTL-08, ADR-0047 2f): proxied decisions the transition hook does not announce reach the same sinks.
       ...(sinks !== undefined

@@ -3,7 +3,7 @@
  * LLD §16.3). One projection behind the three surfaces. Fake adapter only; no provider CLI, login or network; the
  * ledger rows are written directly so that the estimate has inputs without running anything.
  */
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
@@ -20,6 +20,7 @@ import { type CapacitySettings, loadConfig } from "../config/index.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createLedger, LEDGER_FILE_NAME, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle } from "../lifecycle/index.js";
+import type { CopilotQuotaReader, ProviderQuotaReport } from "../usage/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import { createSwitchboardServer, type SwitchboardMcpServer, TOOL_NAMES, WORK_QUEUE_TOOL_NAMES } from "./index.js";
 import {
@@ -115,7 +116,7 @@ function finished(state: "SUCCEEDED" | "FAILED", code: string | null = null, fin
 
 async function connect(
   capacity?: Pick<CapacitySettings, "windowSeconds" | "confidenceRuns" | "subscriptions" | "pacing">,
-  opts?: { candidateOrder?: readonly ProviderId[] },
+  opts?: { candidateOrder?: readonly ProviderId[]; copilotQuota?: CopilotQuotaReader },
 ): Promise<Client> {
   if (!db) openData();
   const reg = registry();
@@ -149,6 +150,7 @@ async function connect(
     artifacts,
     registry: reg,
     ...(opts?.candidateOrder !== undefined ? { candidateOrder: opts.candidateOrder } : {}),
+    ...(opts?.copilotQuota !== undefined ? { copilotQuota: opts.copilotQuota } : {}),
     config: {
       allowedRoots: [root],
       mcpClients: new Map([["c1", { id: "c1", maxTrustProfile: "edit-untrusted" as TrustProfile }]]),
@@ -559,5 +561,190 @@ describe("pacing block on get_capacity, capacity and doctor (T6.14, LLD §16.9)"
     expect(Object.keys((inputSchema("get_capacity").properties ?? {}) as object)).toEqual(["provider"]);
     const success = (outputSchema("get_capacity") as { anyOf: { required?: string[] }[] }).anyOf[0];
     expect(success?.required).not.toContain("pacing");
+  });
+});
+
+describe("usage-only copilot quota on get_capacity and capacity (ADR-0081)", () => {
+  const OK: ProviderQuotaReport = {
+    provider: "copilot",
+    usage_only: true,
+    status: "ok",
+    source: "provider_reported",
+    via: "gh api /copilot_internal/user",
+    observed_at: "2026-10-14T11:59:00.000Z",
+    plan: "individual",
+    sku: "free_limited_copilot",
+    reset_at: { at: "2026-11-01T00:00:00.000Z", source: "provider_reported" },
+    quotas: [
+      {
+        id: "premium_interactions",
+        unit: "premium_requests",
+        unlimited: false,
+        entitlement: 0,
+        remaining: 0,
+        used: 0,
+        percent_remaining: 0,
+        overage_count: 0,
+        overage_permitted: false,
+        reset_at: "2026-11-01T00:00:00.000Z",
+      },
+      {
+        id: "chat",
+        unit: "chat_requests",
+        unlimited: false,
+        entitlement: 200,
+        remaining: 27.7,
+        used: 172.3,
+        percent_remaining: 13.8,
+        overage_count: 0,
+        overage_permitted: false,
+        reset_at: "2026-11-01T00:00:00.000Z",
+      },
+      {
+        id: "completions",
+        unit: "code_completions",
+        unlimited: true,
+        entitlement: null,
+        remaining: null,
+        used: null,
+        percent_remaining: null,
+        overage_count: 0,
+        overage_permitted: true,
+        reset_at: null,
+      },
+    ],
+  };
+  const reader = (report: ProviderQuotaReport = OK) => {
+    let calls = 0;
+    const read: CopilotQuotaReader = () => {
+      calls += 1;
+      return Promise.resolve(report);
+    };
+    return { read, calls: () => calls };
+  };
+
+  it("get_capacity: provider copilot answers only the quota; no provider adds it; another provider is unchanged", async () => {
+    const plain = await connect();
+    const baseline = (await capacityTool(plain)).body;
+    const baselineFake = (await capacityTool(plain, { provider: "fake" })).body;
+    const r = reader();
+    const client = await connect(undefined, { copilotQuota: r.read });
+
+    const only = await capacityTool(client, { provider: "copilot" });
+    expect(only.isError).toBe(false);
+    expect(only.body.providers).toEqual([]);
+    expect(only.body.provider_quota).toEqual([OK]);
+
+    const all = await capacityTool(client);
+    expect(all.isError).toBe(false);
+    expect(all.body).toEqual({ ...baseline, provider_quota: [OK] });
+
+    const fake = await capacityTool(client, { provider: "fake" });
+    expect(fake.body).toEqual(baselineFake);
+    expect(fake.body).not.toHaveProperty("provider_quota");
+    expect(r.calls()).toBe(2);
+
+    const unknown = await capacityTool(client, { provider: "nope" });
+    expect(unknown.body.error.message).toMatch(/accepted names: .*\bcopilot\b/);
+  });
+
+  it("get_capacity: an unavailable report validates against the output schema", async () => {
+    const down: ProviderQuotaReport = {
+      provider: "copilot",
+      usage_only: true,
+      status: "unavailable",
+      source: "unknown",
+      via: "gh api /copilot_internal/user",
+      observed_at: NOW.toISOString(),
+      reason: "auth_required",
+    };
+    const client = await connect(undefined, { copilotQuota: reader(down).read });
+    const r = await capacityTool(client, { provider: "copilot" });
+    expect(r.isError).toBe(false);
+    expect(r.body.provider_quota).toEqual([down]);
+    const ajv = new Ajv2020({ strict: false });
+    expect(ajv.validate(outputSchema("get_capacity"), r.body)).toBe(true);
+    expect(ajv.validate(outputSchema("get_capacity"), (await capacityTool(client)).body)).toBe(true);
+  });
+
+  it("without the reader copilot is an unknown provider and no provider_quota appears", async () => {
+    const client = await connect();
+    const unknown = await capacityTool(client, { provider: "copilot" });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.body.error.code).toBe("INVALID_REQUEST");
+    expect(unknown.body.error.message).not.toMatch(/accepted names: .*\bcopilot\b/);
+    expect((await capacityTool(client)).body).not.toHaveProperty("provider_quota");
+  });
+
+  it("capacity: --provider copilot, the text section and --json; off without the reader or with copilot_quota false", async () => {
+    const r = reader();
+    const extra = { copilotQuota: () => r.read };
+    const json = await cli(["capacity", "--json", "--provider", "copilot"], extra);
+    expect(json.code).toBe(0);
+    const body = JSON.parse(json.out) as Json;
+    expect(body.providers).toEqual([]);
+    expect(body.provider_quota).toEqual([OK]);
+    const all = JSON.parse((await cli(["capacity", "--json"], extra)).out) as Json;
+    expect(all.providers.map((p: Json) => p.provider)).toEqual(["fake"]);
+    expect(all.provider_quota).toEqual([OK]);
+    expect(JSON.parse((await cli(["capacity", "--json", "--provider", "fake"], extra)).out)).not.toHaveProperty(
+      "provider_quota",
+    );
+
+    const text = await cli(["capacity"], extra);
+    expect(text.code).toBe(0);
+    expect(text.out).toContain(
+      "copilot (usage-only, no run adapter; provider_reported via gh api /copilot_internal/user, " +
+        "observed 2026-10-14T11:59:00.000Z)\n" +
+        "  plan individual (free_limited_copilot); resets 2026-11-01T00:00:00.000Z\n" +
+        "  premium_interactions (provider-reported): remaining 0 of 0 premium_requests (used 0, 0% remaining), " +
+        "overage not permitted\n" +
+        "  chat (provider-reported): remaining 27.7 of 200 chat_requests (used 172.3, 13.8% remaining), " +
+        "overage not permitted\n" +
+        "  completions (provider-reported): unlimited code_completions, overage permitted (0 used)\n",
+    );
+    for (const line of text.out.split("\n")) {
+      if (/remaining/i.test(line)) expect(line).toMatch(/provider-reported|provider_reported/);
+    }
+
+    const down = reader({
+      provider: "copilot",
+      usage_only: true,
+      status: "unavailable",
+      source: "unknown",
+      via: "gh api /copilot_internal/user",
+      observed_at: NOW.toISOString(),
+      reason: "gh_missing",
+    });
+    const downText = await cli(["capacity"], { copilotQuota: () => down.read });
+    expect(downText.out).toContain("copilot (usage-only): quota unavailable (gh_missing)\n");
+
+    // Without the process entry's reader, or with the operator's opt-out, nothing is read and copilot is unknown.
+    expect((await cli(["capacity", "--provider", "copilot"])).code).toBe(2);
+    expect(JSON.parse((await cli(["capacity", "--json"])).out)).not.toHaveProperty("provider_quota");
+    const calls = r.calls();
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as Json;
+    writeFileSync(configPath, JSON.stringify({ ...config, capacity: { ...config.capacity, copilot_quota: false } }));
+    const off = await cli(["capacity", "--provider", "copilot"], extra);
+    expect(off.code).toBe(2);
+    expect(off.err).toMatch(/unknown provider/);
+    expect(off.err.split("expected one of")[1]).not.toMatch(/copilot/);
+    expect(JSON.parse((await cli(["capacity", "--json"], extra)).out)).not.toHaveProperty("provider_quota");
+    expect(r.calls()).toBe(calls);
+  });
+
+  it("the reader gets ci_trigger.gh_binary and the caller's environment", async () => {
+    const seen: unknown[] = [];
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as Json;
+    writeFileSync(configPath, JSON.stringify({ ...config, ci_trigger: { gh_binary: "/opt/gh/bin/gh" } }));
+    const env = { PATH: "/usr/bin" };
+    await cli(["capacity", "--json"], {
+      env,
+      copilotQuota: (opts) => {
+        seen.push(opts);
+        return reader().read;
+      },
+    });
+    expect(seen).toEqual([{ binary: "/opt/gh/bin/gh", sourceEnv: env }]);
   });
 });

@@ -2,6 +2,11 @@
 
 Per-provider login, trust profile, parser and Git notes for the milestone 4 adapters. Part of the [Switchboard guide](README.md).
 
+**GitHub Copilot is usage-only.** Switchboard has no run adapter for Copilot and never delegates work to it. It only
+shows your Copilot quota (as `provider_quota` in `get_capacity` and in `switchboard capacity`) by reading it through
+your own logged-in `gh`; see [capacity](mcp-server.md#capacity-retries-and-failover) and the `capacity.copilot_quota`
+key in [getting started](getting-started.md).
+
 ## Grok Build CLI (milestone 4)
 
 Config id `grok-build`; routing and `list_capabilities` id `grok-build`. Switchboard runs the **`grok`** binary with

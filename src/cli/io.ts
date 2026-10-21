@@ -5,6 +5,7 @@ import type { GraderExec } from "../eval/grader.js";
 import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import type { InnerBackend } from "../inner/port.js";
 import type { EmbeddingBackend } from "../retrieval/embedding.js";
+import type { CopilotQuotaReader, CopilotQuotaReaderOptions } from "../usage/copilot-quota.js";
 import type { DiskProbe } from "../workspace/disk.js";
 
 /** Injectable process surface so tests call `main` directly (no spawn). */
@@ -40,6 +41,12 @@ export interface CliIo {
   readonly graderExec?: GraderExec;
   /** Test seam (T3.24): the load reader `doctor` uses for `host.max_load1` instead of `os.loadavg()`. */
   readonly loadReader?: LoadReader;
+  /**
+   * ADR-0081: builds the usage-only `copilot` quota reader (`capacity` and `serve`, when `capacity.copilot_quota` is
+   * on). The process entry (`bin.ts`) passes the real `gh` reader; absent, no quota is read, so tests stay hermetic
+   * and never run the operator's `gh`.
+   */
+  readonly copilotQuota?: (opts: CopilotQuotaReaderOptions) => CopilotQuotaReader;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */

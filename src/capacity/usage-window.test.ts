@@ -475,6 +475,7 @@ describe("capacity.subscriptions and capacity.pacing configuration (T6.13, LLD Â
         queueHorizonSeconds: 0,
         breaker: { failureThreshold: 3, openSeconds: 300 },
         retry: { maxAttempts: 3, baseMs: 2000, capMs: 120000 },
+        copilotQuota: true,
       };
       const providers = [{ id: "fake", enabled: true, weight: null, concurrencyLimit: 1 }];
       const main = capacityJson(capacityProjection(ledger, providers, MAIN_SETTINGS, NOW));

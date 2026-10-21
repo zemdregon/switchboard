@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import os from "node:os";
+import { createCopilotQuotaReader } from "../usage/copilot-quota.js";
 import { runCli } from "./main.js";
 
 // Anything escaping main (import/init failure) is caught in runCli: `switchboard: <message>` on
@@ -9,4 +10,6 @@ process.exitCode = await runCli(process.argv.slice(2), {
   stderr: process.stderr,
   env: process.env,
   homedir: os.homedir(),
+  // ADR-0081: the operator's own `gh` reads the Copilot quota (only while `capacity.copilot_quota` is on).
+  copilotQuota: createCopilotQuotaReader,
 });

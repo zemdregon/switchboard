@@ -219,7 +219,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       }
       case "capacity": {
         if (sub !== undefined) throw new UsageError("capacity takes no positional arguments");
-        const projection = runCapacity(io, loaderArgv, values.provider);
+        const projection = await runCapacity(io, loaderArgv, values.provider);
         emit({ schema_version: JSON_SCHEMA_VERSION, ...projection }, renderCapacity(projection));
         return 0;
       }

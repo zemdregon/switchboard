@@ -1057,6 +1057,96 @@ const CAPABILITIES = {
 /** `list_projects` (LLD §3 project additions): no paths, remotes, identities or image references (FR-MCP-04). */
 /** T6.3 (LLD §16.3, ADR-0043 item 6): the capacity projection; estimates and provider-reported values kept apart. */
 const NULLABLE_NUMBER = { type: ["number", "null"] } as const;
+/** ADR-0081: one usage-only provider's quota as the provider reported it (`src/usage/copilot-quota.ts`). */
+const PROVIDER_QUOTA_COMMON = {
+  provider: { const: "copilot" },
+  usage_only: { const: true },
+  via: { const: "gh api /copilot_internal/user" },
+  observed_at: { type: "string" },
+} as const;
+const PROVIDER_QUOTA = {
+  anyOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "provider",
+        "usage_only",
+        "status",
+        "source",
+        "via",
+        "observed_at",
+        "plan",
+        "sku",
+        "reset_at",
+        "quotas",
+      ],
+      properties: {
+        ...PROVIDER_QUOTA_COMMON,
+        status: { const: "ok" },
+        source: { const: "provider_reported" },
+        plan: { type: ["string", "null"] },
+        sku: { type: ["string", "null"] },
+        reset_at: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["at", "source"],
+              properties: { at: { type: "string" }, source: { const: "provider_reported" } },
+            },
+          ],
+        },
+        quotas: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "id",
+              "unit",
+              "unlimited",
+              "entitlement",
+              "remaining",
+              "used",
+              "percent_remaining",
+              "overage_count",
+              "overage_permitted",
+              "reset_at",
+            ],
+            properties: {
+              id: { type: "string", enum: ["premium_interactions", "chat", "completions"] },
+              unit: { type: "string", enum: ["premium_requests", "chat_requests", "code_completions"] },
+              unlimited: { type: "boolean" },
+              entitlement: NULLABLE_NUMBER,
+              remaining: NULLABLE_NUMBER,
+              used: NULLABLE_NUMBER,
+              percent_remaining: NULLABLE_NUMBER,
+              overage_count: { type: "integer", minimum: 0 },
+              overage_permitted: { type: "boolean" },
+              reset_at: { type: ["string", "null"] },
+            },
+          },
+        },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["provider", "usage_only", "status", "source", "via", "observed_at", "reason"],
+      properties: {
+        ...PROVIDER_QUOTA_COMMON,
+        status: { const: "unavailable" },
+        source: { const: "unknown" },
+        reason: {
+          type: "string",
+          enum: ["gh_missing", "auth_required", "gh_failed", "timeout", "unparseable", "no_quota"],
+        },
+      },
+    },
+  ],
+} as const;
 const CAPACITY = {
   type: "object",
   additionalProperties: false,
@@ -1192,6 +1282,8 @@ const CAPACITY = {
         },
       },
     },
+    // ADR-0081: optional. Usage-only providers' own quota reports; omitted unless the quota reader is configured.
+    provider_quota: { type: "array", items: PROVIDER_QUOTA },
     // T6.14 (LLD §16.9): optional. Omitted from the object when no subscription is configured, so it is not required.
     pacing: {
       type: "array",
@@ -2043,7 +2135,9 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "with no recent evidence they read unknown (score null, confidence 0). explicit_remaining and reset_at are set " +
     "only when the provider itself reported them. Optional provider narrows the answer to one provider. When " +
     "subscriptions are configured, pacing lists one entry per subscription with each window's figures, " +
-    "deferred_until and the gate verdict; that hold is not applied here.",
+    "deferred_until and the gate verdict; that hold is not applied here. When the operator's Copilot quota reader " +
+    "is on, provider_quota carries GitHub Copilot's own reported quota (provider copilot, usage-only, no run " +
+    "adapter); provider copilot returns only that.",
   explain_route:
     "Why a run went to its provider, read-only, from Switchboard's stored route decision: candidates with eligibility " +
     "reasons, the recorded task features, weights and per-candidate scores, the selection rule, the project's " +
