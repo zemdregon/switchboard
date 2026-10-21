@@ -452,6 +452,10 @@ class StepMachine {
     const changed = [...wanted].filter(([p, sha]) => gitlinks?.get(p) !== sha);
     const newest = this.newestPr();
     const record = (tip: string) => {
+      const known = this.steps.some(
+        (s) => s.step === "gitlinks_repointed" && s.head_sha === preTip && s.merged_sha === tip,
+      );
+      if (known) return;
       const row = insertSubmoduleMerge(
         this.deps.db,
         {
