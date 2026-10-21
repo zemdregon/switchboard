@@ -133,6 +133,29 @@ export function checkpointSkippedEventPayload(result: SubmoduleCheckpointResult)
   return { stage: "checkpoint", paths: result.skipped.map((s) => ({ path: s.path, reason: s.reason })) };
 }
 
+/**
+ * Delete the `refs/switchboard/checkpoints/<run>/*` refs of `store` whose run `drop` accepts (best effort; never
+ * throws). The caller decides which runs can no longer be resumed from; objects are left to Git's own gc.
+ */
+export async function dropCheckpointRefs(store: string, drop: (runId: string) => boolean): Promise<string[]> {
+  const dropped: string[] = [];
+  try {
+    const listed = await git(
+      [...WORKTREE_CONFIG, "for-each-ref", "--format=%(refname)", SUBMODULE_CHECKPOINT_REF_PREFIX],
+      { cwd: store },
+    );
+    for (const ref of listed.stdout.toString("utf8").split("\n")) {
+      const m = /^refs\/switchboard\/checkpoints\/(run_[0-9A-Z]{26})\/[0-9a-f]{40,64}$/u.exec(ref);
+      if (m === null || !drop(m[1] as string)) continue;
+      await git([...WORKTREE_CONFIG, "update-ref", "-d", ref], { cwd: store });
+      dropped.push(ref);
+    }
+  } catch {
+    // A store that cannot be read keeps its refs; the next pass tries again.
+  }
+  return dropped;
+}
+
 async function commitCheckpoint(
   e: AttachedSubmodule,
   tree: string,

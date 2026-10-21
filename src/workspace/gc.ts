@@ -154,6 +154,7 @@ async function collectUnit(
     targets.worktreePaths,
     warnings,
     o.cloneRoot,
+    new Set(targets.runIds),
   );
   await removeUnitNativeSkills({ db: o.db }, targets.runIds);
   await hook("worktrees");
@@ -232,6 +233,8 @@ async function removeWorktrees(
   recorded: readonly string[],
   warnings: string[],
   cloneRoot?: string,
+  /** The unit's runs: the whole meta-session is archived, so none can be resumed from its submodule checkpoints. */
+  runIds: ReadonlySet<string> = new Set(),
 ): Promise<number> {
   const base = path.join(await realpath(dataDir).catch(() => path.resolve(dataDir)), "worktrees", sessionId);
   const repoOk = await isRepo(repoRoot);
@@ -260,7 +263,7 @@ async function removeWorktrees(
       continue;
     }
     // ADR-0079 item 3: its submodule worktrees are detached through the record first, so the stores keep no stale entry.
-    if (cloneRoot !== undefined) await detachRunSubmodules(wt, cloneRoot);
+    if (cloneRoot !== undefined) await detachRunSubmodules(wt, cloneRoot, (id) => runIds.has(id));
     if (repoOk)
       await git(["worktree", "remove", "--force", "--force", wt], { cwd: repoRoot as string }).catch(() => undefined);
     if (await exists(wt)) await rm(wt, { recursive: true, force: true });
@@ -582,7 +585,7 @@ export async function collectOrphans(options: OrphanGcOptions): Promise<OrphanGc
     }
   };
   for (const k of due.filter((d) => d.kind === "worktree")) {
-    if (await collect(k, () => removeOrphanWorktree(base, k.target, options.cloneRoot))) {
+    if (await collect(k, () => removeOrphanWorktree(base, k.target, options.cloneRoot, db))) {
       removedWorktrees.push(k.target);
     }
   }
@@ -637,7 +640,12 @@ function orphanRecheck(db: Database.Database, base: string, publishPrefix: strin
  * directory is a symlink or not a directory, so nothing outside the data directory is reached through a link; the
  * orphan itself, if a symlink, is unlinked and its target left alone (`fs.rm` never follows links inside the tree).
  */
-async function removeOrphanWorktree(base: string, target: string, cloneRoot?: string): Promise<void> {
+async function removeOrphanWorktree(
+  base: string,
+  target: string,
+  cloneRoot?: string,
+  db?: Database.Database,
+): Promise<void> {
   const rel = path.relative(base, target);
   const parts = rel.split(path.sep);
   if (rel === "" || path.isAbsolute(rel) || parts.length > 2 || parts.some((p) => p === "" || p === "..")) {
@@ -662,12 +670,19 @@ async function removeOrphanWorktree(base: string, target: string, cloneRoot?: st
             .filter(isAttachRecordName)
             .map((n) => path.join(target, n.slice(0, -ATTACH_RECORD_SUFFIX.length)))
         : [target];
-    if (cloneRoot !== undefined) for (const wt of worktrees) await detachRunSubmodules(wt, cloneRoot);
+    // Checkpoint refs of runs the ledger no longer has are dropped with it; a known run's refs stay.
+    const drop = db === undefined ? undefined : (id: string) => !runKnown(db, id);
+    if (cloneRoot !== undefined) for (const wt of worktrees) await detachRunSubmodules(wt, cloneRoot, drop);
   }
   await rm(target, { recursive: !st.isSymbolicLink(), force: true });
   if (parts.length === 2 && !isAttachRecordName(parts[1] as string)) {
     await rm(attachRecordFile(target), { force: true }).catch(() => undefined);
   }
+}
+
+/** Whether the ledger still has a run row `runId`; a submodule checkpoint ref of a run it lacks can never be resumed from. */
+function runKnown(db: Database.Database, runId: string): boolean {
+  return db.prepare("SELECT 1 FROM run WHERE id = ?").get(runId) !== undefined;
 }
 
 async function branchExists(repoRoot: string, branch: string): Promise<boolean> {

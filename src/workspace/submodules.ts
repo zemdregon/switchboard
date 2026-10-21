@@ -25,6 +25,7 @@ import {
   attachSubmodules,
   type DetachResult,
   detachSubmodules,
+  dropCheckpointRefs,
   type PreparedStore,
   prepareStores,
   readAttachRecord,
@@ -229,6 +230,11 @@ export async function attachRunSubmodules(
 export async function detachRunSubmodules(
   worktreePath: string,
   cloneRoot: string | undefined,
+  /**
+   * Collection (`gc`) only: runs whose `refs/switchboard/checkpoints/<run>/*` refs are dropped from the record's stores
+   * first, because nothing can resume from them any more. Absent (repair, rollback): every checkpoint ref is kept.
+   */
+  dropCheckpointsOf?: (runId: string) => boolean,
 ): Promise<DetachResult | undefined> {
   const file = attachRecordFile(worktreePath);
   if (cloneRoot === undefined) return undefined;
@@ -241,6 +247,9 @@ export async function detachRunSubmodules(
     return undefined;
   }
   if (rec === undefined) return undefined;
+  if (dropCheckpointsOf !== undefined) {
+    for (const store of new Set(rec.entries.map((e) => e.store))) await dropCheckpointRefs(store, dropCheckpointsOf);
+  }
   const result = await detachSubmodules(rec);
   await rm(file, { force: true }).catch(() => undefined);
   return result;
