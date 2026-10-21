@@ -34,6 +34,10 @@
  * newest `pull_request` row of that branch when `publish_run` opened or reused one. Deliberate exception to "no branch
  * names" above: the remote branch is what the caller publishes and reviews; it is the controller's
  * `<branch_prefix><meta-session id>`, never a run branch or a worktree path.
+ *
+ * ADR-0079 items 6 and 7 (LLD §3.4.16): a publication of an umbrella project carries `linked_pull_requests`, the
+ * submodule pull requests `publish_run` linked to the branch (newest per repository, with the pushed paths) and, once
+ * the ordered merge reached one, its `merge_state` read from the `submodule_merge` steps.
  */
 
 import { RUN_WARNING_CODES, type RunWarning } from "../adapters/types.js";

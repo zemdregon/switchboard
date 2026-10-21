@@ -2606,11 +2606,18 @@ owner joins the effective `allowed_owners` at once. CLI: `switchboard projects s
 `merge_policy` adds `checks`. Never a path or a secret.
 
 **`refresh_project_base`** result adds `submodules: { total, present, fetched, missing }` for a project with
-`mode: "recursive"`. **`publish_run`** result keeps every existing field and adds `submodules: [{ repo, paths,
-branch, head_sha, default_branch, publication, pull_request, pull_request_error? }]`; the publications of `get_run`,
-`list_runs` and `get_digest` add `linked_pull_requests` (each with `repo`, `number`, `url`, `merge_state`), and each is
-a `pull_request_opened` run event with its `repo`. `get_digest` `ref_events` add the kinds `submodule_merged` and
-`gitlinks_repointed`.
+`mode: "recursive"`. **`publish_run`** result keeps every existing field and, for such a project, adds `submodules:
+[{ repo, paths, branch, head_sha, default_branch, publication: { push_id, pushed_at, reused }, pull_request,
+pull_request_error? }]` (`repo` is `host/owner/repo`, `default_branch` may be null, `pull_request` is null when none
+was opened). Before any push it refuses `PERMISSION_BLOCKED` `SUBMODULE_HISTORY_UNVERIFIED` (`details.path`) or
+`SECRET_SCAN_BLOCKED` (the ADR-0075 shape plus `details.repos`: `host/owner/repo` keys, `umbrella` for the umbrella;
+submodule finding paths prefixed with the submodule path); a submodule push that is not accepted refuses
+`SUBMODULE_PUSH_FAILED` with `details.submodules: [{ repo, paths, branch, head_sha, outcome, reason, push_id, reused
+}]` and no umbrella push. The publications of `get_run`, `list_runs` and `get_digest` add `linked_pull_requests: [{
+repo, paths, number, url, base_ref, head_sha, merge_state? }]` (`merge_state` is `{ state: "merged", merged_sha }` or
+`{ state: "refused", reason }`, from the `submodule_merge` steps), and each linked pull request is a
+`pull_request_opened` run event with its `repo` (`owner/repo`). `get_digest` `ref_events` add entries of type
+`submodule_merge` with `code` `submodule_merged` or `gitlinks_repointed`, `repo` and `merged_sha`.
 
 **`merge_run_pr` and the policy poller.** A refusal adds `details.submodule_merge: { phase, repos: [{ repo, state }] }`.
 `merge_event.reason` gains `no_checks_reported`. The step machine is persisted in `submodule_merge` (steps
