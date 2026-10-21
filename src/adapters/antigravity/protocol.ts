@@ -71,8 +71,9 @@ export const AGY_LOGIN_COMMAND = "agy";
  * so the preflight is `agy models`: logged in it exits 0 and prints one `<slug>\t<display name>` line per model on
  * stdout (stderr `Fetching available models...`); logged out it exits 1 in under 1 s with stderr `Error: Please sign
  * in to view available models. Launch the CLI without arguments to sign in.` (`agy` 1.3.4). Cost: one process that
- * fetches the model list from Google; no model turn, no quota and no conversation. `-p "/usage"` is not used: logged
- * out it waits about 61 s for a sign-in ([LIVE] C6, C13). The text is an observation of one version, not a documented
+ * fetches the model list from Google; no model turn, no quota and no conversation. `-p "/usage"` is not the preflight:
+ * logged out it waits about 61 s for a sign-in ([LIVE] C6, C13), so `usage.ts` (T6.20) runs it only after this
+ * preflight reports `OK`. The text is an observation of one version, not a documented
  * contract: anything else is `UNKNOWN` (fail closed).
  */
 export const AUTH_STATUS_ARGS: readonly string[] = ["models"];
