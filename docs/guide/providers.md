@@ -1036,7 +1036,7 @@ Plan usage: `get_capacity` and `switchboard capacity` show Kimi's own `/usage` f
 (`source: "provider_reported"`; windows `5h`, `weekly`, `monthly`, plus `kimi:monthly` and `code:monthly`, and the
 "Extra Usage" wallet as `credits`), or `source: "unknown"` with a reason when the read fails. Switchboard types `/usage`
 into the TUI under a pseudo-terminal and reads no Kimi credential
-([ADR-0080](../adr/0080-kimi-usage-via-cli-usage-display.md), shape in
+([ADR-0081](../adr/0081-kimi-usage-via-cli-usage-display.md), shape in
 [ADR-0079](../adr/0079-provider-reported-usage-reader.md)).
 
 ### Login

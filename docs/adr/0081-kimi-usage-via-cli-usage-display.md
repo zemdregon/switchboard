@@ -1,4 +1,4 @@
-# ADR-0080: Kimi Code provider usage read from the CLI's own `/usage` display
+# ADR-0081: Kimi Code provider usage read from the CLI's own `/usage` display
 
 - Status: Accepted (built 2026-10-21).
 - Date: 2026-10-21
@@ -10,7 +10,7 @@
   [ADR-0003](0003-no-credential-handling.md) (no credential handling, holds),
   [LLD §16.10](../design/LLD.md#1610-provider-reported-usage-reader-fr-cap-13-adr-0079),
   [research note](../research/kimi-usage-2026-10-21.md),
-  [ROADMAP T6.18](../ROADMAP.md#611-m6-capacity-and-resilience-tasks).
+  [ROADMAP T6.19](../ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 
 ## Context
 
