@@ -740,9 +740,8 @@ export class CursorAdapter implements ProviderAdapter {
    * closed, as Grok Build; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_call`
    * after the `result` line. The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS} characters. A
    * failed run prints no stream at all ([LIVE] 4, 14), so it ends `TOOL_FAILURE` on its exit code; the stderr text is
-   * not read (the adapter contract passes none). The T6.15 `ActionRequiredError` quota mapping is not reached on this
-   * path either: it lives in `classifyFailure`, which a caller reaches with the stderr tail `startAdapterRun`
-   * (`src/adapters/run.ts`) already captures.
+   * not read (the adapter contract passes none). The T6.15 `ActionRequiredError` quota mapping lives in `classifyFailure`;
+   * `startAdapterRun` (`src/adapters/run.ts`) applies it to this result with the stderr tail it captured.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -812,7 +811,8 @@ export class CursorAdapter implements ProviderAdapter {
  * account identifier is matched. Requires an unexpected exit, so exit 0 never maps; a cancelled run never maps.
  * Replaces the common verdict only when it is `TOOL_FAILURE`: every more specific verdict (cancel, timeout, crash,
  * the tool-call guard, a denial, an auth or model error, a protocol anomaly) stands, as Antigravity's
- * `agyErrorClassification`. Reached only through `FailureEvidence.stderrTail`, which `extractResult` cannot supply.
+ * `agyErrorClassification`. Reached through `FailureEvidence.stderrTail`, which `extractResult` cannot supply: `startAdapterRun` re-asks
+ * `classifyFailure` with the captured tail when the folded result is `TOOL_FAILURE` (2026-10-21 fix).
  */
 export function cursorQuotaClassification(evidence: FailureEvidence): FailureClassification | undefined {
   const { exit } = evidence;

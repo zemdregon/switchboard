@@ -2,6 +2,11 @@
 
 Per-provider login, trust profile, parser and Git notes for the milestone 4 adapters. Part of the [Switchboard guide](README.md).
 
+**GitHub Copilot is usage-only.** Switchboard has no run adapter for Copilot and never delegates work to it. It only
+shows your Copilot quota (as `provider_quota` in `get_capacity` and in `switchboard capacity`) by reading it through
+your own logged-in `gh`; see [capacity](mcp-server.md#capacity-retries-and-failover) and the `capacity.copilot_quota`
+key in [getting started](getting-started.md).
+
 ## Grok Build CLI (milestone 4)
 
 Config id `grok-build`; routing and `list_capabilities` id `grok-build`. Switchboard runs the **`grok`** binary with
@@ -776,7 +781,7 @@ writes, no sandbox is documented and a repository's `opencode.json` and `AGENTS.
 | `edit-untrusted` | no | As `inspect-untrusted` |
 | `test-sandboxed` | no | As `inspect-untrusted` |
 | `trusted-development` | no | As `inspect-untrusted` |
-| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `opencode run --format json --standalone -- <prompt>` with worktree file access, shell `broad`, network `on` and repository configuration `enabled`, and **no** `--auto` (owner decision 46, Q-83). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--auto` are never compiled outside that case (and are not emitted even inside it). Never emits `--continue`, `--fork`, `--server`, `--attach`, `--share`, `--dir` or `--model` (the compile test pins the exact argv and an env of only `OPENCODE_DISABLE_AUTOUPDATE=1`; the malicious leg checks these, plus `--auto` and the bypass flags, as `neverEnabledFlags`). |
+| `privileged` | only an approved bypass scope | Above the client's ceiling: `PERMISSION_BLOCKED`. Otherwise the run waits for `switchboard approve` or `deny` (or starts at once when the client's `privileged_approval` is `not_required`). An approved scope with `bypass` compiles one argv shape: `opencode run --format json --standalone --auto -- <prompt>` with worktree file access, shell `broad`, network `on` and repository configuration `enabled`; `--auto` ("Auto-approve permissions that are not explicitly denied") lets the run read and write outside the worktree, which an approved bypass run may do (owner decision 46, ADR-0077; it was omitted until 2026-10-21, Q-83). A scope without `bypass`, or any narrowing Switchboard can express, is refused before spawn. Bypass-class flags such as `--auto` are never compiled outside that case, and the argv audit refuses them in any other run. Never emits `--continue`, `--fork`, `--server`, `--attach`, `--share` or `--dir`, and `--model` only in that cell (the compile test pins the exact argv and an env of only `OPENCODE_DISABLE_AUTOUPDATE=1`; the malicious leg checks these, plus the other bypass flags, as `neverEnabledFlags`). |
 
 Resume continues the native session with `--session <session_id>` through the same matrix when the provider is eligible
 (synthetic fixtures in `src/adapters/opencode/opencode.test.ts`, T4.53). `resumeArgs` mirrors `compile` across every

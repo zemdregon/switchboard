@@ -963,11 +963,11 @@ const opencodeCase: AdapterLegCase = {
   // `--standalone` keeps the run's tools in the run's process group, not the host's shared service (live check 2d);
   // `--format json` is the parsed surface; `--` keeps a hostile objective from being read as a flag.
   isolationFlags: ["--standalone", "--format", "--"],
-  // Never emitted by the adapter (src/adapters/opencode/adapter.ts header; FR-POL-03, ADR-0017, Q-83): `--auto`
-  // approves what the default refuses, `--continue`/`--fork` pick another session, `--server`/`--attach` leave the
+  // Never emitted by the adapter (src/adapters/opencode/adapter.ts header; FR-POL-03, ADR-0017): `--auto` is not
+  // listed because the approved bypass cell emits it since 2026-10-21 (ADR-0077; the argv audit still refuses it
+  // elsewhere), `--continue`/`--fork` pick another session, `--server`/`--attach` leave the
   // run's process group, `--share` publishes the session, `--dir` changes the working directory; plus the bypass flags.
   neverEnabledFlags: [
-    "--auto",
     "--continue",
     "--fork",
     "--server",

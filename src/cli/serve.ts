@@ -1451,6 +1451,12 @@ async function runDaemon(
       useCheckRunsFallback: config.ciTrigger.useCheckRunsFallback,
     });
 
+  // ADR-0081: one Copilot quota reader (cache and single flight shared by stdio and every HTTP session), on the same
+  // `gh` binary as the CI port. Only when `capacity.copilot_quota` is on and the process entry supplied the reader.
+  const copilotQuota =
+    config.capacity.copilotQuota && io.copilotQuota !== undefined
+      ? io.copilotQuota({ binary: config.ciTrigger.ghBinary, sourceEnv: io.env })
+      : undefined;
   const usageTerminal = fake.enabled ? undefined : io.providerUsageTerminal?.(probeRootFor(config.dataDir));
 
   let code = 0;
@@ -1480,6 +1486,7 @@ async function runDaemon(
         modelGroups: config.modelGroups,
       },
       ...(now ? { now } : {}),
+      ...(copilotQuota !== undefined ? { copilotQuota } : {}),
       // ADR-0079 (FR-CAP-13): `get_capacity` reads provider-reported usage through each provider's own CLI.
       providerUsage: {
         runner: createProbeRunner(PROBE_ENV_ALLOWLIST),

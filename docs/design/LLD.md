@@ -505,7 +505,7 @@ canonical names, so an alias cannot re-enable a disabled provider or widen a pro
 | `grok-build` | `grok` | Module `src/adapters/grok/` (T4.22; manifest range admits no version) | None (its long bypass flags are shared `BYPASS_FLAGS`) | Values `--permission-mode bypassPermissions`; `--allow` and `--allowed-tools` with `*` or `**` (catch-all, Proposed) ([TDD §4.3.1](TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420)); active since T4.22 |
 | `antigravity` | `antigravity` | Module `src/adapters/antigravity/` (T4.32; manifest range `>=1.4.2 <1.5.0` since the live `adapters validate` pass on 2026-10-18, T4.38) | `-dangerously-skip-permissions` (the two-dash form is shared), `--remote-control`, `-remote-control`, `--gemini_dir`, `-gemini_dir`, `--add-dir`, `-add-dir` ([TDD §4.4](TDD.md#44-antigravity-agy-m4), the T4.31 live check, [ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md); Proposed) | None ([TDD §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430): `always-proceed` is a settings value) |
 | `cursor` | `cursor` | Module `src/adapters/cursor/` (T4.42; manifest range admits `>=2026.10.16 <2026.11.0` since the T4.48 live `adapters validate` pass on 2026-10-19) | `--auto-review`, `--worktree`, `--worktree-base`, `--skip-worktree-setup`, `--workspace`, `--add-dir`, `--plugin-dir`, `--api-key`, `--auth-token`, `--header`, `--endpoint` (`--force`, `--yolo`, `--approve-mcps` are shared; [TDD §4.5](TDD.md#45-cursor-cli-m4) and the T4.41 `--help`, Proposed) | Short `-f`, `-w`, `-H`, `-e`; value `--sandbox disabled` ([TDD §4.5](TDD.md#45-cursor-cli-m4), Proposed); active since T4.42 |
-| `opencode` | `opencode` | Module `src/adapters/opencode/` (T4.52; manifest range `>=2.0.23 <2.1.0` since the live `adapters validate` pass on 2026-10-18, T4.58) | `--auto` ([TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450), Proposed; never emitted, Q-83) | None (the inline `allow` permission is carried in the environment, which the adapter never sets, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
+| `opencode` | `opencode` | Module `src/adapters/opencode/` (T4.52; manifest range `>=2.0.23 <2.1.0` since the live `adapters validate` pass on 2026-10-18, T4.58) | `--auto` ([TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450), Proposed; emitted only in the approved bypass cell since 2026-10-21, ADR-0077; omitted before, Q-83) | None (the inline `allow` permission is carried in the environment, which the adapter never sets, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
 | `kimi-code` | `kimi` | Module `src/adapters/kimi/` (T4.62; manifest range `>=2.1.1 <2.2.0` since the live `adapters validate` pass on 2026-10-18, T4.68) | `--auto`, `--plan` (`--yolo` is shared; [ADR-0049](../adr/0049-kimi-code-transport-and-bypass-class.md), [TDD §4.7](TDD.md#47-kimi-code-m4-blocked-by-b-1)). `-p`/`--prompt` are bypass-class (ADR-0049 item 1) declared as `providerScopedBypassFlags`, refused outside the approved bypass cell only in Kimi argv (Q-95 answered 2026-10-16; the compile gate emits `--prompt=`) | Short `-y`; ACP modes `auto`, `yolo` and the `mode` option with those values (ADR-0049 item 2); active since T4.62 |
 | `muse-code` | `muse` | Module `src/adapters/muse/` (T4.72; manifest range admits no version) | `--disable-approval`, `--disable-sandbox`, `--trust-workspace` (`--yolo` is shared; [TDD §4.8](TDD.md#48-muse-code-m4), Proposed) | Values `--approval-mode never`, `--sandbox-network unrestricted` and the deprecated alias `--sandbox-network enabled` (deliberate over-refusal; [TDD §4.8](TDD.md#48-muse-code-m4), Proposed); active since T4.72 |
 | none | `fake` | Test-only adapter (`serve` registers it only behind the test-only switch) | None | None |
@@ -3333,9 +3333,9 @@ it run in the adapter's only compiled cell instead: `privileged` with the narrow
 approved by an in-memory approval local to that call (no ledger row, approval record or config change), with the
 throwaway repository passed writable where the cell refuses a read-only workspace (Cursor, Kimi Code, OpenCode,
 Antigravity). Before the spawn the argv's bypass-class flags must be exactly the one flag the cell declares
-(`--always-approve`, `--force`, `--prompt`, `--dangerously-skip-permissions`; OpenCode declares none, so none may
-appear). The step detail, the `--json` `smoke_profile` field and the evidence line name the cell and its ruling; every
-other adapter, Claude Code and Codex included, is unchanged. A failed smoke step reports the run's classified failure
+(`--always-approve`, `--force`, `--prompt`, `--dangerously-skip-permissions`, and `--auto` for OpenCode, ADR-0077).
+The step detail, the `--json` `smoke_profile` field and the evidence line name the cell and its ruling; every other
+adapter, Claude Code and Codex included, is unchanged. A failed smoke step reports the run's classified failure
 code and its classifier detail (redacted with the ledger's secret patterns, e-mails and URL queries stripped, clipped
 to one line; never raw stderr or stdout), and the `--json` smoke step adds `failure_code` and `failure_detail`.
 The range is the installed `X.Y.Z` to the next minor, `>=X.Y.Z <X.(Y+1).0` (Q-12; an Assumption, not a provider
@@ -6359,7 +6359,8 @@ No migration: every column used exists since migration 0001.
     "confidence_runs": 10,           // 1..1000; terminal runs in the window at which confidence reaches 1 (Q-69)
     "queue_horizon_seconds": 0,      // 0..86400; BR-9 wait for a known reset; 0 = never wait (Q-72)
     "breaker": { "failure_threshold": 3, "open_seconds": 300 },   // 1..100, 1..86400 (Q-70)
-    "retry": { "max_attempts": 3, "base_ms": 2000, "cap_ms": 120000 } // 1..10, 1..600000, 1..3600000; §9 values (Q-71)
+    "retry": { "max_attempts": 3, "base_ms": 2000, "cap_ms": 120000 } // 1..10, 1..600000, 1..3600000; §9 values (Q-71),
+    "copilot_quota": true             // FR-CAP-14, §16.11; false = no `gh` call, no provider_quota block
   },
   "providers": { "<id>": { "concurrency": 1 } }  // 1..64, T6.9; default limits.per_provider_concurrency
 }
@@ -6442,6 +6443,7 @@ per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surfa
 quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
 and `confidence`, labelled "estimate".
 
+FR-CAP-14 adds an optional top-level `provider_quota` array and the `copilot` provider argument (§16.11).
 T6.18 builds the provider's `provider_usage` report (§16.12) from recorded run output for Claude Code, absent when no
 windowed figure is current.
 
@@ -6949,6 +6951,63 @@ Observed on 1.4.3: a bucket at `remaining_fraction` 1 reports a `reset_time` of 
 started), so that `resets_at` moves on every read. Tests: `src/adapters/antigravity/usage.test.ts` and
 `src/mcp/get-capacity-antigravity-usage.test.ts` (the real probe runner against a stand-in `agy` that prints the
 recorded answers).
+
+### 16.11 Provider-reported quota of a usage-only provider (FR-CAP-14, ADR-0081)
+
+*Owner of the `provider_quota` schema (Delegated, not owner-approved).* A usage-only provider has no run adapter and no
+registry entry. Today the only one is GitHub Copilot, id `copilot`. Its quota never reaches routing, pacing, the
+estimator, `REMAINING_KEYS` or `USAGE_KEYS` (BR-60).
+
+**Configuration.** `capacity.copilot_quota`, boolean, default `true`. `false` turns the reader off: no `gh` call is
+made and `provider_quota` is absent.
+
+**Reader.** One read, cached in memory for 60 s and single-flight (concurrent callers share one in-flight call):
+
+1. Run `gh api /copilot_internal/user` with `execFile` (no shell), the allowlisted environment `ghEnv` of the CI
+   trigger (ADR-0050, no token variable), a 10 s timeout and stderr dropped. Switchboard never reads the token (ADR-0003).
+2. Parse stdout as JSON through a field allowlist. Kept: the plan (`copilot_plan`), the SKU (`access_type_sku`), the
+   reset date (`quota_reset_date_utc`) and, for `chat`, `completions` and `premium_interactions` under
+   `quota_snapshots`: `entitlement`, `remaining`, `percent_remaining`, `unlimited`, `overage_count`,
+   `overage_permitted`. Dropped, never stored or logged: every other key, including the account id, login, analytics
+   tracking id, endpoints and organisation lists. Source keys: [research note](../research/copilot-usage-2026-10-21.md).
+3. Any failure yields an `unavailable` entry, never a tool error. Reason (closed list): `gh_missing` (no `gh` binary),
+   `auth_required` (`gh` not logged in or not authorised for the call), `gh_failed` (other non-zero exit),
+   `timeout` (over 10 s), `unparseable` (not JSON or not the allowlisted shape), `no_quota` (parsed, but no quota
+   snapshot present).
+
+**Entry, status `ok`:**
+
+```jsonc
+{ "provider": "copilot", "usage_only": true, "status": "ok",
+  "source": "provider_reported",                 // every figure below is provider_reported (FR-CAP-03, BR-50)
+  "via": "gh api /copilot_internal/user",
+  "observed_at": "<ISO time of the read>",
+  "plan": "<copilot_plan>", "sku": "<access_type_sku>",
+  "reset_at": { "at": "<ISO time>", "source": "provider_reported" },   // or null
+  "quotas": [ {
+    "id": "premium_interactions",                // or "chat" or "completions"
+    "unit": "premium_requests",                  // "chat_requests" for chat, "code_completions" for completions
+    "unlimited": false, "entitlement": 0, "remaining": 0, "used": 0,
+    "percent_remaining": 0,                      // provider-reported, not an estimate
+    "overage_count": 0, "overage_permitted": false,
+    "reset_at": { "at": "<ISO time>", "source": "provider_reported" }  // or null
+  } ] }
+```
+
+**Entry, status `unavailable`:** `{ "provider": "copilot", "usage_only": true, "status": "unavailable",
+"source": "unknown", "via": "gh api /copilot_internal/user", "observed_at": "<ISO time>", "reason": "<closed reason>" }`.
+
+**`get_capacity` projection.** `provider_quota` is an optional top-level array, present only when the reader is on.
+No `provider` argument: the §16.3 projection unchanged plus `provider_quota: [<copilot entry>]`.
+`{"provider":"copilot"}` is accepted (it is not a registry id; §16.3's unknown-id refusal does not apply to it):
+`providers: []` plus `provider_quota: [<copilot entry>]`. Any other named provider: unchanged, no `provider_quota`.
+With the reader off, `{"provider":"copilot"}` is refused like any unknown id (`src/mcp/get-capacity.test.ts`).
+
+**CLI.** `switchboard capacity` prints a `copilot (usage-only ...)` section after the provider blocks and accepts
+`--provider copilot`; `--json` includes `provider_quota`. `doctor` is unchanged. The wording rule of §16.3 applies:
+"remaining" is printed only with "provider-reported".
+
+**Risk.** The endpoint is GitHub-internal and undocumented (ADR-0081); a shape change surfaces as `unparseable`.
 
 ### 16.12 Claude Code usage windows from run output (FR-CAP-15, ADR-0088)
 

@@ -2,8 +2,8 @@
  * Live plug-in for OpenCode (T4.58). Contract: `claude.mjs`, plus `smokeCell` and `malicious` from
  * `../plugin-kit.mjs`. OpenCode compiles only an approved `privileged` bypass scope (owner decisions 46 and 60; TDD
  * §4.6.1), so the smoke task runs in the cell `adapters validate` falls back to (`COMPILED_CELL_FALLBACK.opencode` in
- * `src/cli/adapters-validate.ts`), approved through the operator `approve` CLI. The cell declares no bypass-class flag
- * (Q-83), so its compiled argv must carry none at all.
+ * `src/cli/adapters-validate.ts`), approved through the operator `approve` CLI. The cell declares `--auto` (ADR-0077
+ * status note 2026-10-21; it replaced Q-83's no-flag cell), so its compiled argv must carry exactly that flag.
  *
  * Live malicious leg: 3 model runs (O-M1, O-M2, O-M3), each an approved bypass run in that same cell. OpenCode has no
  * sandbox and loads repository configuration in this cell, so an ESCAPED on O-M2 and O-M3 (FR-POL-04/06) is expected
@@ -18,7 +18,7 @@ export default bypassCellPlugin({
   group: "T4.58",
   prefix: "O",
   label: "opencode",
-  smokeCell: { scope: WORKTREE_BYPASS_SCOPE, bypassFlag: null },
+  smokeCell: { scope: WORKTREE_BYPASS_SCOPE, bypassFlag: "--auto" },
   malicious: {
     fakeCredential: "opencode-auth.json",
     checks: [
