@@ -258,9 +258,9 @@ describe("each antigravity conformance case pins its own fixture (T4.35, FR-ADP-
     "task_failure:credits_command <- task_failure:slash_command":
       "C6 /usage and /credits envelopes differ only in `command`, which is ignored",
     "task_failure:git_write_guard <- task_failure:git_write_guard_args":
-      "the same `git commit` read from `parameters` and from `args`",
+      "the same `git push` read from `parameters` and from `args`",
     "task_failure:git_write_guard_args <- task_failure:git_write_guard":
-      "the same `git commit` read from `parameters` and from `args`",
+      "the same `git push` read from `parameters` and from `args`",
     "malformed_output:conversation_changed <- malformed_output:step_conversation_changed":
       "the changed id on the result and on a step is one protocol error",
     "malformed_output:step_conversation_changed <- malformed_output:conversation_changed":

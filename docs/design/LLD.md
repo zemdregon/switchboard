@@ -4780,6 +4780,21 @@ silent:
   updates no local ref (BR-27: prevention is the control). Changes made by the operator during the run are flagged too
   (ROADMAP R-47). Verified on Git 2.43.0 only.
 
+*Amended 2026-10-21 ([ADR-0094](../adr/0094-bypass-git-fetch-and-local-git-not-fatal.md), FR-GIT-03 note, owner ruling
+2026-10-21, mechanism Delegated):* `RefGuard.compare` treats a change to a `refs/remotes/` ref (created, moved or
+deleted) or a newly created `refs/tags/` ref as an agent's own fetch, not a violation, when
+`Ledger.hasBypassRunOnRepoSince(repo_root, <LEASED snapshot ts>)` finds a run of the same repository with a
+`privileged_dispatch` event whose `bypass_approved` is true and whose `finished_at` is NULL or not before that time.
+Such refs are counted in the `git_ref_check` payload as `fetched_refs` (present only when non-zero). A moved or deleted
+tag and every other ref are judged as above. In a run whose own `privileged_dispatch` recorded `bypass_approved: true`,
+the `run_branch` and `worktree_head` restore entries are split off before the violation path: they are appended as a
+`git_agent_refs_restored` event (`{v: 1, entries}`), restored at once (a failure throws into `check_failed`) and listed
+as `agent_restored` (`scope`, `ref`, `to`) in the `git_ref_check` payload, never in `git_policy_violation`. The
+tool-call guard's bypass mode (`gitWriteInCommand(command, { bypass: true })`, `gitBypassReadVerdict`,
+`GIT_BYPASS_LOCAL_SUBCOMMANDS` in `src/adapters/git-write.ts`) decides which commands reach this point: plain `git
+fetch`, `git remote update`, `git ls-remote` and remote reads run; `commit`, `merge`, `cherry-pick`, `revert`, `reset`,
+a plain `pull` and `checkout -- <path>` are the non-fatal verdict `local`; everything else stays `write`.
+
 ### 12.6 Push algorithm
 
 1. Policy `branch`; the BR-31 credential-reach rule holds; the run (or, for an operator command, the meta-session) has a

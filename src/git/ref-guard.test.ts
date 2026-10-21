@@ -17,6 +17,7 @@ import { compactEvents } from "../mcp/envelope.js";
 import { WorkspaceManager } from "../workspace/index.js";
 import {
   DEFAULT_REF_GUARD_LIMITS,
+  GIT_AGENT_REFS_RESTORED_EVENT,
   GIT_POLICY_VIOLATION_EVENT,
   GIT_REF_CHECK_EVENT,
   GIT_REF_SNAPSHOT_EVENT,
@@ -278,5 +279,116 @@ describe("RefGuard (T9.5)", () => {
     g(worktree, "tag", "bypass-tag");
     expect(await guard.checkAtFinalizing(run.id)).toMatchObject({ result: "violation", violations: 2 });
     expect(g(repo, "rev-parse", branch)).toBe(ledger.getRunCheckpointCommit(run.id, "pre"));
+  });
+});
+
+describe("ADR-0094: refs an agent's own fetch updates in an approved bypass run", () => {
+  const dispatched = (runId: string) =>
+    ledger.appendRunEvent({
+      runId,
+      type: "privileged_dispatch",
+      payload: { approval_id: "apv_t", bypass_approved: true },
+    });
+
+  it("remote-tracking refs and new tags are counted as fetched_refs, not violations", async () => {
+    const guard = new RefGuard({ ledger });
+    const head = g(repo, "rev-parse", "HEAD");
+    g(repo, "update-ref", "refs/remotes/origin/gone", head);
+    const { run, worktree } = await preparedRun({ trust: "privileged" });
+    dispatched(run.id);
+    await guard.snapshotAtLeased(run.id);
+    // What `git fetch --prune origin` does: tracking refs created and pruned, a followed tag created.
+    g(worktree, "update-ref", "refs/remotes/origin/main", head);
+    g(worktree, "update-ref", "-d", "refs/remotes/origin/gone");
+    g(worktree, "tag", "v1.0.0");
+    expect(await guard.checkAtFinalizing(run.id)).toEqual({ result: "clean", violations: 0 });
+    expect(events(run.id).find((e) => e.type === GIT_REF_CHECK_EVENT)?.p).toMatchObject({
+      result: "clean",
+      fetched_refs: 3,
+    });
+    expect(violationsOf(run.id)).toEqual([]);
+  });
+
+  it("a moved tag and a local branch are still violations in a bypass run", async () => {
+    const guard = new RefGuard({ ledger });
+    g(repo, "tag", "v0");
+    const { run, branch, worktree } = await preparedRun({ trust: "privileged" });
+    dispatched(run.id);
+    await guard.snapshotAtLeased(run.id);
+    writeFileSync(path.join(worktree, "x.txt"), "x\n");
+    g(worktree, "add", "-A");
+    g(worktree, "commit", "-q", "-m", "agent");
+    const moved = g(worktree, "rev-parse", "HEAD");
+    g(worktree, "tag", "-f", "v0", moved);
+    g(worktree, "update-ref", "refs/heads/main", moved);
+    g(worktree, "update-ref", "refs/remotes/origin/main", moved);
+    expect(await guard.checkAtFinalizing(run.id)).toMatchObject({ result: "violation", violations: 2 });
+    expect(violationsOf(run.id).map((v) => v.ref)).toEqual(["refs/heads/main", "refs/tags/v0"]);
+    expect(g(repo, "rev-parse", branch)).toBe(ledger.getRunCheckpointCommit(run.id, "pre"));
+    expect(events(run.id).find((e) => e.type === GIT_REF_CHECK_EVENT)?.p).toMatchObject({
+      result: "violation",
+      fetched_refs: 1,
+    });
+  });
+
+  it("without an approved bypass run on the repository a tracking ref change stays a violation", async () => {
+    const guard = new RefGuard({ ledger });
+    const { run, worktree } = await preparedRun({ trust: "privileged" });
+    await guard.snapshotAtLeased(run.id);
+    g(worktree, "update-ref", "refs/remotes/origin/main", g(repo, "rev-parse", "HEAD"));
+    expect(await guard.checkAtFinalizing(run.id)).toMatchObject({ result: "violation", violations: 1 });
+    expect(violationsOf(run.id).map((v) => v.ref)).toEqual(["refs/remotes/origin/main"]);
+  });
+
+  it("a concurrent unfinished bypass run of the same repository covers another run's check", async () => {
+    const guard = new RefGuard({ ledger });
+    const other = await preparedRun({ trust: "privileged" });
+    dispatched(other.run.id);
+    const { run } = await preparedRun();
+    await guard.snapshotAtLeased(run.id);
+    g(repo, "update-ref", "refs/remotes/origin/main", g(repo, "rev-parse", "HEAD"));
+    expect(await guard.checkAtFinalizing(run.id)).toEqual({ result: "clean", violations: 0 });
+  });
+});
+
+describe("ADR-0094: an approved bypass run's own run-branch and HEAD changes", () => {
+  it("are put back without a violation and recorded as agent_restored", async () => {
+    const guard = new RefGuard({ ledger });
+    const { run, branch, worktree } = await preparedRun({ trust: "privileged" });
+    ledger.appendRunEvent({
+      runId: run.id,
+      type: "privileged_dispatch",
+      payload: { approval_id: "apv_t", bypass_approved: true },
+    });
+    await guard.snapshotAtLeased(run.id);
+    writeFileSync(path.join(worktree, "x.txt"), "x\n");
+    g(worktree, "add", "-A");
+    g(worktree, "commit", "-q", "-m", "agent");
+    g(worktree, "checkout", "-q", "--detach");
+    expect(await guard.checkAtFinalizing(run.id)).toEqual({ result: "clean", violations: 0 });
+    const pre = ledger.getRunCheckpointCommit(run.id, "pre");
+    expect(g(repo, "rev-parse", branch)).toBe(pre);
+    expect(g(worktree, "symbolic-ref", "HEAD")).toBe(branch);
+    expect(g(worktree, "status", "--porcelain")).toContain("x.txt");
+    expect(violationsOf(run.id)).toEqual([]);
+    expect(events(run.id).find((e) => e.type === GIT_AGENT_REFS_RESTORED_EVENT)?.p.entries).toHaveLength(2);
+    expect(events(run.id).find((e) => e.type === GIT_REF_CHECK_EVENT)?.p.agent_restored).toEqual([
+      { scope: "worktree_head", ref: branch, to: null },
+      { scope: "run_branch", ref: branch, to: pre },
+    ]);
+  });
+
+  it("a new local branch the agent created is still a violation beside the restored run branch", async () => {
+    const guard = new RefGuard({ ledger });
+    const { run, worktree } = await preparedRun({ trust: "privileged" });
+    ledger.appendRunEvent({
+      runId: run.id,
+      type: "privileged_dispatch",
+      payload: { approval_id: "apv_t", bypass_approved: true },
+    });
+    await guard.snapshotAtLeased(run.id);
+    g(worktree, "branch", "agent-side");
+    expect(await guard.checkAtFinalizing(run.id)).toMatchObject({ result: "violation", violations: 1 });
+    expect(violationsOf(run.id).map((v) => v.ref)).toEqual(["refs/heads/agent-side"]);
   });
 });

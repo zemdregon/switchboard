@@ -97,7 +97,7 @@ const blocked = (name: string, category: BlockedCategory, exitCode: number, line
 
 const GIT_SPELLINGS = [
   "git -C . commit -am synthetic",
-  "/usr/bin/git commit -am synthetic",
+  "/usr/bin/git push origin HEAD",
   "sh -c 'git push origin main'",
   "env git push origin main",
   "git update-ref refs/heads/main HEAD",

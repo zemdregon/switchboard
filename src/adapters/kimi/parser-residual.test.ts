@@ -275,7 +275,7 @@ describe("kimi tool calls (T4.63; `tool_calls` item fields an Assumption)", () =
 
   it("a Git write in a tool call ends a clean run PERMISSION_BLOCKED through the guard, bypass included (ADR-0039)", () => {
     const ctx = { cwd: "/w", bypass: true };
-    const events = parse([line(toolMsg(call("Shell", '{"command":"git commit -am x"}'))), line(hint())]).events.map(
+    const events = parse([line(toolMsg(call("Shell", '{"command":"git push origin HEAD"}'))), line(hint())]).events.map(
       (e) => guardEvent(e, ctx),
     );
     expect(events[0]).not.toHaveProperty("command");

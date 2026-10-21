@@ -181,6 +181,21 @@ export const CLAUDE_GIT_DENY_RULES: readonly string[] = [
   ...GIT_PUBLISHING_PROGRAMS.flatMap((p) => [`Bash(${p})`, `Bash(${p} *)`]),
 ];
 
+/**
+ * ADR-0094: the Git deny rules of an approved privileged bypass run: {@link CLAUDE_GIT_DENY_RULES} without the
+ * `git fetch` rules, with the `git remote` rules narrowed to the forms that change a remote (add, remove, rm, rename,
+ * set-url, set-head, set-branches, prune), so `git fetch`, `git remote update`, `git remote -v`, `git remote show` and
+ * `git remote get-url` run (`git ls-remote` was never denied). `git pull`, `git push` and every other write stay
+ * denied; the tool-call guard (bypass mode) still fails the run on a fetch into a local branch or a remote change.
+ */
+export const CLAUDE_BYPASS_GIT_DENY_RULES: readonly string[] = [
+  ...CLAUDE_GIT_DENY_RULES.filter((r) => !/^Bash\(git (fetch|remote)( \*)?\)$/.test(r)),
+  ...["add", "remove", "rm", "rename", "set-url", "set-head", "set-branches", "prune"].flatMap((v) => [
+    `Bash(git remote ${v})`,
+    `Bash(git remote ${v} *)`,
+  ]),
+];
+
 /** FR-GIT-01 declaration for `list_capabilities` and the manifest notes. */
 export const CLAUDE_GIT_WRITE_CONTROL: GitWriteControl = {
   kind: "provider-deny-rules",
@@ -195,7 +210,8 @@ export const CLAUDE_GIT_WRITE_CONTROL: GitWriteControl = {
     "(`*` semantics, deny-over-allow) is an Assumption; deny rules are lexical and cannot see aliases, scripts run by " +
     "an allowlisted build tool, or absolute paths to git; no flag disables Claude's own commit attribution (only " +
     "--bare, unusable). An approved privileged bypass run (--dangerously-skip-permissions) keeps (2) and drops (3) " +
-    "(--restricted refuses bypass); whether deny rules hold under bypass is an Assumption (R-26). Live behaviour " +
+    "(--restricted refuses bypass) and, since ADR-0094, omits the `git fetch` rules and narrows the `git remote` " +
+    "rules to remote changes; whether deny rules hold under bypass is an Assumption (R-26). Live behaviour " +
     "unverified (live smoke test).",
   remainingControls: ["FR-GIT-03", "FR-GIT-06"],
 };
@@ -815,8 +831,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       "--allowedTools",
       ...plan.allow,
       // FR-GIT-01: on every invocation, bypass included (whether Claude honours them under bypass: Assumption, R-26).
+      // ADR-0094: an approved bypass run gets the narrower set that lets `git fetch` and remote reads run.
       "--disallowedTools",
-      ...CLAUDE_GIT_DENY_RULES,
+      ...(plan.bypass ? CLAUDE_BYPASS_GIT_DENY_RULES : CLAUDE_GIT_DENY_RULES),
     ];
     const argv = [
       this.#resolved,
