@@ -1,7 +1,8 @@
 /**
  * Grok Build provider-reported usage (ADR-0079, FR-CAP-13, LLD §16.10).
  *
- * Observed 2026-10-21 on grok 1.0.50: `grok agent --no-leader stdio` speaks ACP (JSON-RPC 2.0, one message per line).
+ * Observed 2026-10-21 on Grok Build CLI version 1.0.50: `grok agent --no-leader stdio` speaks ACP (JSON-RPC 2.0,
+ * one message per line).
  * After `initialize`, the `_x.ai/billing` request answers with the signed-in account's billing period
  * (`config.currentPeriod`, `onDemandCap`, `onDemandUsed`, `prepaidBalance` and so on) and `subscription_tier`. No model
  * is called. The CLI exits at stdin EOF before answering, so the probe runner holds stdin open until the answer. The
