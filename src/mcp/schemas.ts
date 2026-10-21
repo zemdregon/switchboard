@@ -1122,6 +1122,8 @@ const CAPABILITIES = {
           validated_range: NULLABLE_STRING,
           auth_state: { type: "string", enum: ["OK", "AUTH_REQUIRED", "UNKNOWN", "NOT_CHECKED"] },
           supported_profiles: { type: "array", items: TRUST_PROFILE },
+          // ADR-0092: present exactly when `privileged` is listed; true when only an approved bypass cell compiled.
+          privileged_bypass_only: { type: "boolean" },
           transports: { type: "array", items: { type: "string" } },
           models: { type: "array", items: { type: "string" } },
           sandbox_features: { type: "array", items: { type: "string" } },
