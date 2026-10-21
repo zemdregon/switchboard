@@ -16,7 +16,7 @@
  * (`head_kind: base_merge`). MCP `update_run_branch` ({@link updateRunBranch}) asks GitHub for that update, under the
  * same scope and only for a project whose merge policy is in force and on.
  *
- * ADR-0080 item 7 (LLD §3.4.17): for a publication with linked submodule pull requests, the same request runs the
+ * ADR-0087 item 7 (LLD §3.4.17): for a publication with linked submodule pull requests, the same request runs the
  * ordered merge (`src/ci/submodule-merge.ts`, wired as `linkedMerge`): the submodule pull requests, the gitlink repoint
  * commit and its push, then the umbrella's gate. Each call advances as far as it can; the result and every refusal carry
  * `submodule_merge: { phase, repos }`. `expected_head_sha` may name the published tip or, after the repoint, the new
@@ -54,7 +54,7 @@ export interface MergeRunResult {
   /** ADR-0073: `published` (the published tip) or `base_merge` (pure base merges on it). */
   head_kind: HeadKind;
   method: "squash" | "merge" | "rebase";
-  /** ADR-0080 item 7: present only for a publication with linked submodule pull requests (phase `merged`). */
+  /** ADR-0087 item 7: present only for a publication with linked submodule pull requests (phase `merged`). */
   submodule_merge?: SubmoduleMergeView;
 }
 
@@ -119,7 +119,7 @@ export async function mergeRunPr(
 }
 
 /**
- * ADR-0080 item 7: refusals of the ordered merge that a retry may clear (a `gh`, fetch, Git or push failure): like
+ * ADR-0087 item 7: refusals of the ordered merge that a retry may clear (a `gh`, fetch, Git or push failure): like
  * `gh_error`, `TOOL_FAILURE` and retryable.
  */
 const RETRYABLE_SUBMODULE_REASONS: ReadonlySet<string> = new Set([

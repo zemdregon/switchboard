@@ -90,11 +90,11 @@ export interface ProjectToolsDeps {
   /** ADR-0068: where a `clone_url` may be cloned. Absent: every `clone_url` is refused (`CLONE_NOT_CONFIGURED`). */
   readonly projectSources?: ProjectSourcesSettings | ProjectSourcesGetter;
   /**
-   * ADR-0080 item 8: runtime owner grants. Absent: `request_project_source` is refused (`NOT_CONFIGURED`); the server
+   * ADR-0087 item 8: runtime owner grants. Absent: `request_project_source` is refused (`NOT_CONFIGURED`); the server
    * offers the tool only when this and `projectSources` are both present.
    */
   readonly sourceGrants?: ProjectSourceGrantStore;
-  /** ADR-0080: called after a new owner request was written (serve announces `approval_pending`). Must not throw. */
+  /** ADR-0087: called after a new owner request was written (serve announces `approval_pending`). Must not throw. */
   readonly onPendingSource?: (a: PendingSourceAnnouncement) => void;
   /** ADR-0068: the Git runner for clones (tests inject one; default `git` from `PATH`, no shell). */
   readonly git?: GitRunner;
@@ -129,7 +129,7 @@ export interface PendingRevisionAnnouncement {
   readonly kind: "dynamic_project" | "push_revision";
 }
 
-/** ADR-0080: what {@link ProjectToolsDeps.onPendingSource} receives. Ids and the closed kind only. */
+/** ADR-0087: what {@link ProjectToolsDeps.onPendingSource} receives. Ids and the closed kind only. */
 export interface PendingSourceAnnouncement {
   readonly requestId: string;
   readonly kind: "project_source";
@@ -183,7 +183,7 @@ const ID_RE = new RegExp(PROJECT_ID_PATTERN, "u");
 
 export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
   const { store, clientId, client } = deps;
-  /** ADR-0080: the live `project_sources` (configured owners plus approved grants), read at each check. */
+  /** ADR-0087: the live `project_sources` (configured owners plus approved grants), read at each check. */
   const sources = (): ProjectSourcesSettings | undefined =>
     typeof deps.projectSources === "function" ? deps.projectSources() : deps.projectSources;
   const clientMax: TrustProfile = client.maxTrustProfile;
@@ -261,7 +261,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
   };
 
   /**
-   * ADR-0080 item 1 (**Delegated**): a recursive context's explicit `writable_paths` are checked against the umbrella's
+   * ADR-0087 item 1 (**Delegated**): a recursive context's explicit `writable_paths` are checked against the umbrella's
    * manifest at `base_ref` (after the filesystem checks, so the repository and the commit exist): an entry naming no
    * declared submodule is `SUBMODULE_PATH_UNKNOWN`, one naming a wiki `SUBMODULE_WIKI_READ_ONLY`, and a manifest the
    * library refuses (URL syntax, source not allowed, undeclared or unsafe path, too large) is refused with its reason
@@ -524,7 +524,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
     return { id, revision: row.revision, status: "DELETED" };
   };
 
-  /** ADR-0080 item 8: ask for an owner to be added to `project_sources.allowed_owners` (decided elsewhere). */
+  /** ADR-0087 item 8: ask for an owner to be added to `project_sources.allowed_owners` (decided elsewhere). */
   const requestProjectSource = async (a: Record<string, unknown>): Promise<object> => {
     const grants = deps.sourceGrants;
     if (grants === undefined || sources() === undefined) {
@@ -722,7 +722,7 @@ export function mergePolicyItem(p: Pick<ResolvedProject, "mergePolicy">) {
 }
 
 /**
- * ADR-0080 item 8 (G2): one `list_projects` context item, shared by configured and dynamic projects: the effective
+ * ADR-0087 item 8 (G2): one `list_projects` context item, shared by configured and dynamic projects: the effective
  * definition a client can read back. A remote is its NAME, never a URL or path; no secret is held in any field.
  */
 export function contextListItem(c: ResolvedContext) {

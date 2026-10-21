@@ -1,5 +1,5 @@
 /**
- * `switchboard projects sources list|approve <id>|reject <id>` (ADR-0080 item 8): the operator's path for the owner
+ * `switchboard projects sources list|approve <id>|reject <id>` (ADR-0087 item 8): the operator's path for the owner
  * requests that `request_project_source` writes. An approved owner joins `project_sources.allowed_owners` at once: a
  * running `serve` reads the decision row at its next check. Locking follows `projects approve` (ADR-0005): the
  * data-directory lock is taken when free; while a daemon holds it the decision is still written as one append-only row.

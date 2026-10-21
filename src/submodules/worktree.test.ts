@@ -1,5 +1,5 @@
 /**
- * ADR-0080 item 3: per-run submodule worktrees attached from shared stores, their `.git` link check, rollback, status,
+ * ADR-0087 item 3: per-run submodule worktrees attached from shared stores, their `.git` link check, rollback, status,
  * tree writing and detach. Repository-configured filters and hooks in a store never run.
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -225,7 +225,7 @@ describe("repository filter drivers and hooks in a store (TDD §3.4)", () => {
   });
 });
 
-describe("writeWorktreeTree with a path subset (ADR-0080 item 4)", () => {
+describe("writeWorktreeTree with a path subset (ADR-0087 item 4)", () => {
   it("adds only the named paths and puts restored paths back to the parent's entries", async () => {
     const s = await setup({ "a.txt": "a\n", "keep.txt": "keep\n" });
     const storeA = s.stores.get("github.test/acme/lib-a") as string;

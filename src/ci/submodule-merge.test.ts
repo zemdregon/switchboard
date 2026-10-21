@@ -1,5 +1,5 @@
 /**
- * The ordered merge (ADR-0080 item 7, LLD §3.4.17) through the policy poller and the hook: linked submodule pull
+ * The ordered merge (ADR-0087 item 7, LLD §3.4.17) through the policy poller and the hook: linked submodule pull
  * requests in path order through the gate's checks and G12 pinned to the pushed head, G19 merge commits recorded, one
  * gitlinks-only repoint commit on the published umbrella tip (provenance row, secret scan, fast-forward push through the
  * controller pusher), then the umbrella gate at the new head with verification read at the pre-repoint tip. Local
@@ -42,7 +42,7 @@ const pr = (world: World, repo: string) => world.gh.prs.get(repo) as FakePr;
 const lsTree = (dir: string, rev: string) => g(dir, "ls-tree", rev, "--", "libs/a", "libs/b", "vendor/a");
 const linkOf = (dir: string, rev: string, p: string) => g(dir, "rev-parse", `${rev}:${p}`);
 
-describe("ordered merge (ADR-0080 item 7)", () => {
+describe("ordered merge (ADR-0087 item 7)", () => {
   it("lists the linked repositories in path order with their duplicate paths", async () => {
     w = await makeWorld();
     const repos = linkedRepositories(w.db, PROJECT, w.publishRef);
@@ -395,7 +395,7 @@ describe("ordered merge (ADR-0080 item 7)", () => {
   });
 });
 
-describe("umbrella pre-check before any submodule merge (ADR-0080 item 7 step 0)", () => {
+describe("umbrella pre-check before any submodule merge (ADR-0087 item 7 step 0)", () => {
   const request = (world: World, sub?: SubmoduleMergeDeps) =>
     mergeOnRequest(
       { ...deps(world, sub), ledger: world.ledger },

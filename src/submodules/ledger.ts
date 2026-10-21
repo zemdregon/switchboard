@@ -1,10 +1,10 @@
 /**
- * Typed rows of migration 0037's submodule tables (ADR-0080 items 4, 6, 7 and 9): `submodule_commit`,
+ * Typed rows of migration 0037's submodule tables (ADR-0087 items 4, 6, 7 and 9): `submodule_commit`,
  * `submodule_push`, `submodule_pull_request` and `submodule_merge`. Plain inserts and reads on the caller's database
  * handle, so an insert joins the caller's transaction (the commit path writes `submodule_commit` rows in the same
  * transaction as the umbrella's `git_commit` row). No run event is appended here: the caller decides what to announce.
  *
- * Controller facts only (ADR-0080 item 9): ids, SHAs, closed codes, `host/owner/repo` keys and umbrella-relative paths.
+ * Controller facts only (ADR-0087 item 9): ids, SHAs, closed codes, `host/owner/repo` keys and umbrella-relative paths.
  * The insert helpers check SHAs and paths before writing; the tables' own CHECKs and append-only triggers are the
  * second line.
  */
@@ -199,7 +199,7 @@ export function findAcceptedSubmodulePush(
 
 /**
  * The meta-session's latest accepted push of `repo` to `ref`, whatever its head (the start of the next secret-scan
- * range, ADR-0080 item 5), or undefined.
+ * range, ADR-0087 item 5), or undefined.
  */
 export function latestAcceptedSubmodulePush(
   db: Database.Database,

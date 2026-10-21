@@ -122,7 +122,7 @@ you control. `approve` and `deny` keep working for clients left at `"required"`.
   Agents still cannot run `git submodule`; the controller commits and pushes submodules itself, only for paths you
   approved as writable, scans every changed repository for secrets before any push, and never makes a wiki writable. A
   `project_source` grant widens the owner allowlist, so it is opt-in per approver client
-  ([ADR-0080](../adr/0080-submodule-projects.md)).
+  ([ADR-0087](../adr/0087-submodule-projects.md)).
 - **Inner-agent privacy.** The inner agent is off by default and is the one place the controller process itself calls
   out. A backend is `local` only if every address it resolves to is loopback; a `remote` backend is unused until you set
   `allow_remote`, and a task that sends repository content (diffs, log excerpts) to a remote backend needs its own

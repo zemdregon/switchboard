@@ -699,7 +699,7 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   let capacity = cfg ? capacitySection(cfg, registry, capacityNow) : undefined;
   if (capacity !== undefined) {
     // ADR-0079 (FR-CAP-13): informational, never changes `ok`; a failed read is an `unknown` entry, not an error.
-    capacity = await addProviderUsage({ ...io, adapters: registry }, capacity, capacityNow);
+    capacity = await addProviderUsage({ ...io, adapters: registry }, capacity, capacityNow, cfg?.dataDir);
   }
   const modelGroups = cfg ? modelGroupsSection(cfg, registry, models) : undefined;
   const ok = checks.every((c) => c.status !== "fail") && adapters.every((a) => a.status !== "fail");
@@ -767,8 +767,10 @@ export function resolveGroupMemberForDoctor(
     };
   }
 
-  // 3. Does adapter accept models?
-  if (adapter.reportedModelFlag !== undefined && !acceptsReportedModel(adapter)) {
+  // 3. Does adapter accept models? ADR-0077: a `requestedModelFlag` declaration decides when present (the reported-model
+  // pin flag is about remembered models, not requested ones); otherwise the pre-ADR-0077 check stands.
+  const requested = adapter.requestedModelFlag;
+  if (requested === undefined && adapter.reportedModelFlag !== undefined && !acceptsReportedModel(adapter)) {
     const detail = adapter.reportedModelFlag.detail;
     return {
       provider: member.provider,
@@ -804,7 +806,7 @@ export function resolveGroupMemberForDoctor(
       resolved_id: resolved.model,
       alias: member.model,
       code: null,
-      resolution: `alias -> ${resolved.model}`,
+      resolution: `alias -> ${resolved.model}${requested?.cells === "bypass" ? " (approved bypass cell only)" : ""}`,
     };
   }
 
@@ -814,7 +816,7 @@ export function resolveGroupMemberForDoctor(
     status: "resolved",
     resolved_id: resolved.model,
     code: null,
-    resolution: resolved.model,
+    resolution: requested?.cells === "bypass" ? `${resolved.model} (approved bypass cell only)` : resolved.model,
   };
 }
 

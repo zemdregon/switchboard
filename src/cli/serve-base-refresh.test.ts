@@ -217,7 +217,7 @@ describe("serveBaseRefresh (ADR-0074)", () => {
   });
 });
 
-describe("serveSubmodulePlan (ADR-0080 item 3)", () => {
+describe("serveSubmodulePlan (ADR-0087 item 3)", () => {
   const def = (id: string, ctx: Partial<ProjectConfig["contexts"][number]> = {}): ProjectConfig => ({
     id,
     name: id,

@@ -1,5 +1,5 @@
 /**
- * `projects sources list|approve|reject` (ADR-0080 item 8). The ledger is written through the same store the MCP tool
+ * `projects sources list|approve|reject` (ADR-0087 item 8). The ledger is written through the same store the MCP tool
  * uses; no provider CLI.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";

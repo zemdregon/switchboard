@@ -1,5 +1,5 @@
 /**
- * ADR-0080 item 3 "Checkpoints": a run checkpoint also checkpoints each changed writable submodule worktree in its
+ * ADR-0087 item 3 "Checkpoints": a run checkpoint also checkpoints each changed writable submodule worktree in its
  * store and records the new gitlink in the umbrella checkpoint; read-only changes are not carried. The umbrella side
  * is driven here as `WorkspaceManager.finalize` would (add, gitlinks, commit), with plain local fixture repositories.
  */

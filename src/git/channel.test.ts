@@ -284,7 +284,7 @@ describe("per-call checks (FR-GIT-02; stale, foreign, malformed calls refused wi
     });
   });
 
-  it("ADR-0080 item 4: a run with an attach record gets submodules and submodules_skipped in the result", async () => {
+  it("ADR-0087 item 4: a run with an attach record gets submodules and submodules_skipped in the result", async () => {
     const r = await running();
     writeFileSync(path.join(r.wt, "b.txt"), "b\n");
     writeFileSync(attachRecordFile(r.wt), JSON.stringify({ version: 1, worktree: realpathSync(r.wt), entries: [] }));

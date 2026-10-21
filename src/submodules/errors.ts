@@ -1,5 +1,5 @@
 /**
- * Closed refusal vocabulary of the submodule library (ADR-0080 items 2 and 3). Every message is fixed per reason: no
+ * Closed refusal vocabulary of the submodule library (ADR-0087 items 2 and 3). Every message is fixed per reason: no
  * URL text, no `.gitmodules` value other than the offending umbrella-relative path (kept in {@link SubmoduleError.path},
  * never in the message) and nothing Git printed is ever repeated, because any of them could carry a credential.
  */
@@ -26,7 +26,7 @@ export type SubmoduleReason =
   /** An attach record on disk is not one this library wrote (shape, path or store outside `clone_root`). */
   | "SUBMODULE_RECORD_INVALID";
 
-/** **Delegated** (ADR-0080 item 2): the most submodules one umbrella commit may declare. */
+/** **Delegated** (ADR-0087 item 2): the most submodules one umbrella commit may declare. */
 export const MAX_SUBMODULES = 1024;
 
 const FIXED_TEXT: Readonly<Record<SubmoduleReason, string>> = {
@@ -73,7 +73,7 @@ export class SubmoduleError extends Error {
 }
 
 /**
- * Whether `p` is a safe worktree-relative POSIX path (ADR-0080 items 1 and 2): non-empty, no leading `/`, no empty,
+ * Whether `p` is a safe worktree-relative POSIX path (ADR-0087 items 1 and 2): non-empty, no leading `/`, no empty,
  * `.` or `..` segment, no `.git` segment (case-insensitive, as a case-insensitive file system would treat it), no
  * control character and no backslash.
  */

@@ -125,7 +125,7 @@ export function checkStructure(def: ProjectConfig): void {
   if (first !== undefined) {
     const rewritten = first.replace("$.projects[0]", "$.project");
     const colon = rewritten.indexOf(": ");
-    // ADR-0080 item 1: submodule rules carry their own reason code as `<path>: <CODE>: <message>`.
+    // ADR-0087 item 1: submodule rules carry their own reason code as `<path>: <CODE>: <message>`.
     const code = SUBMODULE_RULE_CODES.find((k) => rewritten.slice(colon + 2).startsWith(`${k}: `));
     throw new ProjectRuleError(
       "INVALID_REQUEST",
@@ -291,10 +291,10 @@ export function approvalReasons(
     if (c.base_remote !== undefined && c.clone_url !== undefined && c.base_remote !== defaultBaseRemote(c)) {
       out.add("base_remote");
     }
-    // ADR-0080 item 1: writing into submodules publishes to other repositories, so it waits like a push policy.
+    // ADR-0087 item 1: writing into submodules publishes to other repositories, so it waits like a push policy.
     if ((c.submodules?.writable_paths?.length ?? 0) > 0) out.add("submodule_write");
   }
-  // ADR-0080 item 7: `all_reported` changes which checks gate a merge, so it waits for the operator.
+  // ADR-0087 item 7: `all_reported` changes which checks gate a merge, so it waits for the operator.
   if (def.merge_policy?.checks === "all_reported") out.add("merge_checks");
   // T15.8 (FR-SUB-02, ADR-0060 item 1): an orchestrator that turns the merge policy on waits for the operator, on
   // every revision that keeps it on (Delegated: an approval is per revision, like a push policy other than `none`).

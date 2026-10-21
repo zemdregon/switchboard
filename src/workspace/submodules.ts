@@ -1,5 +1,5 @@
 /**
- * Run worktree wiring of the submodule library (ADR-0080 item 3). The workspace manager calls these after the umbrella's
+ * Run worktree wiring of the submodule library (ADR-0087 item 3). The workspace manager calls these after the umbrella's
  * own `git worktree add` when the run's project has a primary context with `submodules.mode: "recursive"`; `gc`,
  * rollback and the partial-worktree repair call the removal half. A context without recursive mode never reaches this
  * module, so its worktrees are exactly as before.
@@ -38,7 +38,7 @@ import {
 } from "../submodules/index.js";
 import { git } from "./git.js";
 
-/** The parts of a primary context's `submodules` setting a run worktree needs (ADR-0080 item 1). */
+/** The parts of a primary context's `submodules` setting a run worktree needs (ADR-0087 item 1). */
 export interface SubmodulePlan {
   /** Worktree-relative POSIX paths, or exactly `["*"]`. */
   readonly writablePaths: readonly string[];

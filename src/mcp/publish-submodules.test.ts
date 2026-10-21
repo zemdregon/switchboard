@@ -1,5 +1,5 @@
 /**
- * ADR-0080 items 5 and 6 (FR-GIT-15, LLD §3.4.17): `publish_run` on an umbrella run whose head changes gitlinks of
+ * ADR-0087 items 5 and 6 (FR-GIT-15, LLD §3.4.17): `publish_run` on an umbrella run whose head changes gitlinks of
  * writable submodules, through the server as an orchestrating client calls it. Local fixture repositories only
  * (`src/submodules/fixtures/repos.ts`): every submodule "remote" is a local repository behind an https URL that the
  * injected push port and store runner map with command-scope `url.<local>.insteadOf` (production argv stays
@@ -323,7 +323,7 @@ const gitPushRows = (db: Database.Database) =>
 
 const CHANGES = { "README.md": "umbrella changed\n", "mods/a/a.txt": "A\n", "mods/b/b.txt": "B\n" };
 
-describe("publish_run with linked submodule publication (ADR-0080 items 5 and 6)", () => {
+describe("publish_run with linked submodule publication (ADR-0087 items 5 and 6)", () => {
   it("pushes each changed submodule repository once, opens one pull request per repository, then the umbrella's", async () => {
     f = await start();
     const { runId, sessionId } = await f.seedRun(CHANGES);

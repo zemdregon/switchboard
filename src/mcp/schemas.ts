@@ -120,7 +120,7 @@ export type ToolName = (typeof TOOL_NAMES)[number];
 
 /**
  * T9.9: offered only to a client with `manage_projects` (FR-PRJ-10); absent from every other client's tool list.
- * ADR-0080: `request_project_source` is offered only when the server also has `project_sources` (`toolDescriptors`
+ * ADR-0087: `request_project_source` is offered only when the server also has `project_sources` (`toolDescriptors`
  * option `projectSources`).
  */
 export const PROJECT_TOOL_NAMES = [
@@ -565,7 +565,7 @@ const ENVELOPE = {
           pushed_at: { type: "string" },
           pull_request_url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
           pull_request_number: { type: "integer", minimum: 1 },
-          // ADR-0080 items 6 and 7 (LLD §3.4.17): the submodule pull requests publish_run linked to this branch, with
+          // ADR-0087 items 6 and 7 (LLD §3.4.17): the submodule pull requests publish_run linked to this branch, with
           // the ordered merge's state once it reached each; present only when there is one.
           linked_pull_requests: {
             type: "array",
@@ -782,7 +782,7 @@ const DIGEST = {
                 event_id: { type: "string" },
                 run_id: RUN_ID,
                 ts: { type: "string" },
-                // ADR-0080 item 7: `submodule_merge` entries are the ordered merge's steps (`code` is the step).
+                // ADR-0087 item 7: `submodule_merge` entries are the ordered merge's steps (`code` is the step).
                 type: { enum: [REF_EVENT_TYPE, MERGE_EVENT_TYPE, "submodule_merge"] },
                 // `merged` is already a ref_event kind: list it once. A duplicate enum item makes get_digest's output
                 // schema invalid to a draft-07 meta-schema check (enum `uniqueItems`), which a strict MCP client can
@@ -1190,6 +1190,63 @@ const PROVIDER_USAGE = {
             },
           ],
         },
+        // ADR-0083 (Grok Build): optional period, amounts and unreported keys.
+        period: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "starts_at", "resets_at"],
+          properties: {
+            kind: { enum: ["weekly", "monthly", "daily", "unknown"] },
+            starts_at: { type: ["string", "null"] },
+            resets_at: { type: ["string", "null"] },
+          },
+        },
+        amounts: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "value", "unit", "key"],
+            properties: {
+              id: { type: "string" },
+              value: { type: "number" },
+              unit: { const: "unspecified" },
+              key: { type: "string" },
+            },
+          },
+        },
+        unreported: { type: "array", items: { type: "string" } },
+        // ADR-0080 (Cursor): optional, as shown by the provider.
+        reset_label: { type: ["string", "null"] },
+        reset_precision: { enum: ["day", null] },
+        on_demand: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["state", "used_usd", "limit_usd", "remaining_usd", "detail"],
+              properties: {
+                state: { enum: ["fixed", "unlimited", "disabled", "unavailable"] },
+                used_usd: NULLABLE_NUMBER,
+                limit_usd: NULLABLE_NUMBER,
+                remaining_usd: NULLABLE_NUMBER,
+                detail: { type: ["string", "null"] },
+              },
+            },
+          ],
+        },
+        spend: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["current_cycle_usd", "previous_period_usd"],
+              properties: { current_cycle_usd: NULLABLE_NUMBER, previous_period_usd: NULLABLE_NUMBER },
+            },
+          ],
+        },
       },
     },
     {
@@ -1537,7 +1594,7 @@ const PROJECTS = {
                 kind: { type: "string", enum: ["repository"] },
                 primary: { type: "boolean" },
                 push_policy: { type: "string", enum: ["none", "branch"] },
-                // ADR-0080 item 8 (G2): the effective definition, so a client can read back what it set. Never a path
+                // ADR-0087 item 8 (G2): the effective definition, so a client can read back what it set. Never a path
                 // or a secret.
                 base_ref: { type: "string" },
                 push_remote: { type: "string" },
@@ -1580,7 +1637,7 @@ const PROJECTS = {
               method: { enum: [...MERGE_POLICY_METHODS] },
               required_reports: { type: "array", items: { enum: [...MERGE_POLICY_REPORTS] } },
               require_verification: { type: "boolean" },
-              // ADR-0080 item 7.
+              // ADR-0087 item 7.
               checks: { enum: [...MERGE_POLICY_CHECKS] },
             },
           },
@@ -1945,7 +2002,7 @@ const PUBLISH_RESULT = {
       ],
     },
     pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
-    // ADR-0080 item 6 (LLD §3.4.17): one entry per changed submodule repository of an umbrella project (`repo` is
+    // ADR-0087 item 6 (LLD §3.4.17): one entry per changed submodule repository of an umbrella project (`repo` is
     // `host/owner/repo`); present only for a project whose primary context sets `submodules.mode: "recursive"`.
     submodules: {
       type: "array",
@@ -2012,7 +2069,7 @@ const MERGE_RUN_PR_RESULT = {
     head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
     head_kind: { enum: ["published", "base_merge"] },
     method: { enum: [...MERGE_POLICY_METHODS] },
-    // ADR-0080 item 7: only for a publication with linked submodule pull requests (the same object a refusal's
+    // ADR-0087 item 7: only for a publication with linked submodule pull requests (the same object a refusal's
     // details.submodule_merge carries).
     submodule_merge: {
       type: "object",
@@ -2206,7 +2263,7 @@ const BASE_OUTPUTS = {
       previous_commit: { oneOf: [{ type: "null" }, SHA] },
       remote_commit: SHA,
       reason: { enum: [...BASE_REFRESH_REASONS] },
-      // ADR-0080 item 3: only for a context with submodules.mode recursive.
+      // ADR-0087 item 3: only for a context with submodules.mode recursive.
       submodules: {
         type: "object",
         additionalProperties: false,
@@ -2342,9 +2399,11 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "only when the provider itself reported them. Optional provider narrows the answer to one provider. When " +
     "subscriptions are configured, pacing lists one entry per subscription with each window's figures, " +
     "deferred_until and the gate verdict; that hold is not applied here. provider_usage, where present, is the " +
-    "provider's own report read live through its CLI with no model call (Codex: account/rateLimits/read): each " +
+    "provider's own report read live through its CLI with no model call (Codex: account/rateLimits/read; Cursor: " +
+    "the CLI's /usage command): each " +
     "quota window's used_fraction, remaining_fraction and resets_at, the plan, credits and whether a limit is " +
-    "reached, all source provider_reported; source unknown carries the reason the read failed.",
+    "reached, all source provider_reported (Cursor adds reset_label, reset_precision day, on_demand dollars and " +
+    "spend); source unknown carries the reason the read failed.",
   explain_route:
     "Why a run went to its provider, read-only, from Switchboard's stored route decision: candidates with eligibility " +
     "reasons, the recorded task features, weights and per-candidate scores, the selection rule, the project's " +
@@ -2431,7 +2490,7 @@ export interface ToolDescriptor {
 export function toolDescriptors(
   opts: {
     manageProjects?: boolean;
-    /** ADR-0080: the server has `project_sources` and a grant store, so `request_project_source` exists. */
+    /** ADR-0087: the server has `project_sources` and a grant store, so `request_project_source` exists. */
     projectSources?: boolean;
     searchContext?: boolean;
     workQueue?: boolean;

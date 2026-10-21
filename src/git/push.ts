@@ -338,7 +338,7 @@ export function pushArgs(remote: string, sha: string, ref: string): string[] {
 }
 
 /**
- * ADR-0080 item 6: command-scope configuration of a submodule repository push. {@link PUSH_CONFIG} with the `https`
+ * ADR-0087 item 6: command-scope configuration of a submodule repository push. {@link PUSH_CONFIG} with the `https`
  * transport only: a store's `origin` is its ADR-0068 https source, so `ssh` and `file` are never needed there.
  */
 export const SUBMODULE_PUSH_CONFIG: readonly string[] = [
@@ -350,7 +350,7 @@ export const SUBMODULE_PUSH_CONFIG: readonly string[] = [
 ];
 
 /**
- * ADR-0080 item 6: argv (after `git`) of one submodule repository push from its store: `<sha>:<ref>` to the store's
+ * ADR-0087 item 6: argv (after `git`) of one submodule repository push from its store: `<sha>:<ref>` to the store's
  * `origin`, never forced, with the {@link pushArgs} flags. Throws on anything that is not a plain branch update.
  */
 export function submodulePushArgs(sha: string, ref: string): string[] {
@@ -437,7 +437,7 @@ export class GitPusher {
   }
 
   /**
-   * ADR-0080 item 6: the push's policy and repository checks (step 1 and 2: everything before the secret scan and the
+   * ADR-0087 item 6: the push's policy and repository checks (step 1 and 2: everything before the secret scan and the
    * remote write) without pushing, so a caller can refuse before writing anything elsewhere (the linked submodule
    * pushes). A refusal is recorded and returned exactly as {@link push} would record and return it; undefined when the
    * push would go on to its scan. Serialised with the meta-session's pushes.

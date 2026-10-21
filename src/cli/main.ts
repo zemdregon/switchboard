@@ -354,7 +354,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           return 0;
         }
         if (sub === "sources") {
-          // ADR-0080 item 8: the operator's side of `request_project_source`.
+          // ADR-0087 item 8: the operator's side of `request_project_source`.
           const action = rest[0];
           if (action === "list") {
             if (rest.length > 1) throw new UsageError("projects sources list takes no arguments");

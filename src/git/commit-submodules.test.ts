@@ -1,5 +1,5 @@
 /**
- * ADR-0080 item 4 (FR-GIT-14): controller-made submodule commits in the commit tool path and `finalize_commit`.
+ * ADR-0087 item 4 (FR-GIT-14): controller-made submodule commits in the commit tool path and `finalize_commit`.
  * Local fixture repositories only (`src/submodules/fixtures/repos.ts`); the submodules are attached with the library
  * itself (`attachSubmodules` + `writeAttachRecord`), as the workspace manager does for a `mode: "recursive"` context.
  */
@@ -171,7 +171,7 @@ const write = (s: Setup, rel: string, text: string) => {
   writeFileSync(path.join(s.wt, rel), text);
 };
 
-describe("commit tool: all changes (ADR-0080 item 4)", () => {
+describe("commit tool: all changes (ADR-0087 item 4)", () => {
   it("commits a changed writable submodule in its store, bumps every path of the repository and records it", async () => {
     const s = await setup({ writable: ["mods/a", "dup/a"] });
     const storeA = s.stores.get(KEY_A) as string;
@@ -335,7 +335,7 @@ describe("commit tool: all changes (ADR-0080 item 4)", () => {
   });
 });
 
-describe("commit tool: explicit paths (ADR-0080 item 4)", () => {
+describe("commit tool: explicit paths (ADR-0087 item 4)", () => {
   it("commits an explicit path inside a writable submodule in that submodule only", async () => {
     const s = await setup();
     write(s, "mods/a/a.txt", "A\n");

@@ -1094,12 +1094,12 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, De
   /** ADR-0069: the `pull_request` rows of every run of a meta-session, oldest first. */
   listPullRequestsForMetaSession(metaSessionId: string): PullRequestRow[];
   /**
-   * ADR-0080 item 6 (read side of `src/submodules/ledger.ts`): one run's linked pull requests (`submodule_pull_request`),
+   * ADR-0087 item 6 (read side of `src/submodules/ledger.ts`): one run's linked pull requests (`submodule_pull_request`),
    * each with the `submodule_push` row it was opened for, and the run's `submodule_merge` steps; oldest first.
    */
   listSubmodulePullRequestsForRun(runId: string): (SubmodulePullRequestRow & { push: SubmodulePushRow | undefined })[];
   listSubmoduleMergeStepsForRun(runId: string): SubmoduleMergeRow[];
-  /** ADR-0080 item 7: every step of the ordered merge of one umbrella publish ref of a project, oldest first. */
+  /** ADR-0087 item 7: every step of the ordered merge of one umbrella publish ref of a project, oldest first. */
   listSubmoduleMergeSteps(projectId: string, umbrellaRef: string): SubmoduleMergeRow[];
   /**
    * ADR-0078: the `pull_request` rows `publish_run` CREATED (never `reused`) as pull request `number` of `repo`

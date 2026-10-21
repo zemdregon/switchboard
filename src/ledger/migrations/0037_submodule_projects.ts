@@ -1,5 +1,5 @@
 /**
- * Migration 0037 (ADR-0080; FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15, FR-SUB-03, LLD §3.4.17): umbrella projects
+ * Migration 0037 (ADR-0087; FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15, FR-SUB-03, LLD §3.4.17): umbrella projects
  * with Git submodules, linked publication, the ordered merge and project source grants.
  *
  * - `submodule_commit`: one row per controller-made commit in a submodule repository (`kind = 'publish'`), written in
@@ -11,7 +11,7 @@
  * - `submodule_pull_request`: one row per pull request opened (`created`) or found open and reused (`reused`) in a
  *   submodule repository, linked to the umbrella publish ref (`umbrella_ref`, a `refs/heads/...` name on the umbrella
  *   remote). `repo` is `owner/repo` as `gh` takes it.
- * - `submodule_merge`: the persisted steps of the ordered merge (ADR-0080 item 7): `submodule_merged` (a linked pull
+ * - `submodule_merge`: the persisted steps of the ordered merge (ADR-0087 item 7): `submodule_merged` (a linked pull
  *   request merged, `merged_sha` its merge commit on the default branch), `submodule_refused` (closed `reason`),
  *   `gitlinks_repointed` (the umbrella commit `merged_sha` on the published umbrella tip `head_sha` that sets the
  *   gitlinks to the merged commits). The umbrella's own merge stays in `merge_event`.

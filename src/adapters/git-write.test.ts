@@ -270,7 +270,7 @@ describe("gitDenyRuleSecurityReason: which Git deny-rule hits are security-class
   });
 });
 
-describe("ADR-0080 item 4: submodule commands stay agent-blocked (only the controller commits in submodules)", () => {
+describe("ADR-0087 item 4: submodule commands stay agent-blocked (only the controller commits in submodules)", () => {
   it.each([
     "git submodule",
     "git submodule status",

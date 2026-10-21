@@ -132,10 +132,10 @@ export type CiRequiredChecks =
   | { readonly kind: "none" }
   | { readonly kind: "checks"; readonly buckets: readonly string[] };
 
-/** ADR-0080 item 7: every reported check of a head (G18); same shape, `none` meaning nothing was reported. */
+/** ADR-0087 item 7: every reported check of a head (G18); same shape, `none` meaning nothing was reported. */
 export type CiReportedChecks = CiRequiredChecks;
 
-/** ADR-0080 item 7: a pull request's state and, once merged, its merge commit (G19). */
+/** ADR-0087 item 7: a pull request's state and, once merged, its merge commit (G19). */
 export interface CiPullRequestMergeState {
   readonly state: "OPEN" | "CLOSED" | "MERGED";
   readonly mergeCommitSha?: string;
@@ -151,7 +151,7 @@ export interface CiMergePort {
   /** G11. */
   requiredChecks(q: { owner: string; repo: string; prNumber: number }): Promise<CiRequiredChecks>;
   /**
-   * G18 (ADR-0080 item 7), read only for `merge_policy.checks: all_reported`. Optional so existing ports stay valid; the
+   * G18 (ADR-0087 item 7), read only for `merge_policy.checks: all_reported`. Optional so existing ports stay valid; the
    * gate refuses `gh_error` for an `all_reported` policy when a port lacks it (fail closed).
    */
   reportedChecks?(q: { owner: string; repo: string; prNumber: number }): Promise<CiReportedChecks>;
@@ -165,7 +165,7 @@ export interface CiMergePort {
   }): Promise<void>;
 }
 
-/** ADR-0080 item 7: G19, any repository `owner/repo`. Throws {@link CiStatusError}. */
+/** ADR-0087 item 7: G19, any repository `owner/repo`. Throws {@link CiStatusError}. */
 export interface CiPullRequestMergeStatePort {
   pullRequestMergeState(q: { owner: string; repo: string; prNumber: number }): Promise<CiPullRequestMergeState>;
 }

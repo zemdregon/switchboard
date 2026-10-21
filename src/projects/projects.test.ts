@@ -295,7 +295,7 @@ describe("definition rules", () => {
     expect(() => checkClientLimits(def({ max_trust_profile: "inspect-untrusted" }), client, new Set())).not.toThrow();
   });
 
-  it("submodule_write and merge_checks are approval reasons (ADR-0080 items 1 and 7)", () => {
+  it("submodule_write and merge_checks are approval reasons (ADR-0087 items 1 and 7)", () => {
     const rec = { mode: "recursive" as const };
     const reasons = (c: Record<string, unknown>, over: Record<string, unknown> = {}) =>
       approvalReasons(def(over, c), undefined, "trusted-development");

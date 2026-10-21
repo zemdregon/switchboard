@@ -1182,7 +1182,7 @@ in_force_revision?, message? }` (`in_force_revision` and `message` Proposed). `a
 `container_environment`, `push_policy`, `commit_identity`, `commit_signing`, `widened_trust_ceiling`,
 `widened_providers` (widening is measured against the revision in force), `merge_policy` (T15.8: the definition sets
 `merge_policy.enabled: true`, on every revision that keeps it on, §20.7), `project_setup` (ADR-0071: a `setup` that is
-new or differs from the revision in force, §5.3), `submodule_write` and `merge_checks` (ADR-0080, §3.4.17). Errors,
+new or differs from the revision in force, §5.3), `submodule_write` and `merge_checks` (ADR-0087, §3.4.17). Errors,
 in check order: schema `INVALID_REQUEST`; a control, separator or bidirectional character in any string `INVALID_REQUEST`
 (`CONTROL_CHARACTER`); a configured id or another client's project `PERMISSION_BLOCKED` with one message for both
 (`NOT_MANAGEABLE`); unknown id for update/delete, deleted id, or an existing id for create `INVALID_REQUEST` (ids are
@@ -2208,7 +2208,7 @@ Delegated, not owner-approved):**
   Without it a proxy targets only itself. `tool_profile` is not consulted.
 - `approval_proxy_kinds` ([ADR-0068](../adr/0068-mcp-only-project-onboarding.md), Delegated detail): a non-empty list
   of unique values from `privileged_scope | dynamic_project | push_revision | project_source`, default the
-  first three (`project_source` only when listed, [ADR-0080](../adr/0080-submodule-projects.md), §3.4.17), refused at
+  first three (`project_source` only when listed, [ADR-0087](../adr/0087-submodule-projects.md), §3.4.17), refused at
   load without `approval_proxy: true`. `list_pending_approvals` lists and `decide_approval` decides only those kinds; any
   other kind gets the same single refusal as an unknown id (no oracle). Implementation: `proxyKinds` in
   `src/control/approval-proxy.ts`. The orchestrator profile offers both tools whenever `approval_proxy` is true.
@@ -2599,11 +2599,11 @@ too: `TOOL_NOT_OFFERED` (not offered to this client, or outside its tool profile
 also appends a `pull_request_close` run event on that run with the same facts. Never a comment, title or body. Tests:
 `src/mcp/publish-run.test.ts` ("close_pr (ADR-0078)"), `src/ci/gh-pr.test.ts`, `src/mcp/tools-list-callable.test.ts`.
 
-#### 3.4.17 Submodule projects (ADR-0080)
+#### 3.4.17 Submodule projects (ADR-0087)
 
 *Added 2026-10-21 (Delegated agent work for an operator task for zemdregon, owner decision 25; not owner-approved).*
 Realizes FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15 and FR-SUB-03. Decision record and rationale:
-[ADR-0080](../adr/0080-submodule-projects.md); this section holds only the contracts. Code: `src/submodules/`
+[ADR-0087](../adr/0087-submodule-projects.md); this section holds only the contracts. Code: `src/submodules/`
 (manifest, store, worktree, errors), `src/ci/submodule-merge.ts`, `src/projects/source-grants.ts`, `src/mcp/project-tools.ts`,
 `src/mcp/schemas.ts`, `src/config/schema.ts`, `src/control/approval-proxy.ts`, `src/cli/projects-sources.ts`;
 migration `src/ledger/migrations/0037_submodule_projects.ts`.
@@ -6813,7 +6813,8 @@ run output carries one. Where a provider's CLI can report the signed-in account'
 optional adapter method reads them, and the result is shown beside the projection.
 
 **Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
-(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; only Codex implements it.
+(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex, Cursor and Grok
+Build implement it.
 
 ```jsonc
 // ProviderUsageReport
@@ -6846,8 +6847,57 @@ under `~/.codex` (ADR-0003).
 
 `accountId` and every other field are dropped.
 
+**Optional report fields** (ADR-0083). A report may also carry `period` (`kind`: `weekly`, `monthly`, `daily` or
+`unknown`; `starts_at`; `resets_at`), the provider's current usage period even when no used share is reported;
+`amounts[]` (`id`, `value`, `unit: "unspecified"`, `key`), reported amounts whose unit the provider does not state; and
+`unreported[]`, keys the reader knows but the answer omitted (unreported, never 0). Codex sets none of them.
+
+**Grok Build wire exchange** (`src/adapters/grok/usage.ts`, ADR-0083). The adapter runs `grok agent --no-leader stdio`
+through the same `ProbeRunner` (`PATH` and `HOME`, 20 s timeout, **Proposed**). It writes two JSON-RPC lines:
+`initialize` (id 1, `protocolVersion: 1`) and `_x.ai/billing` (id 2, `{}`), and holds stdin open until the id-2 answer,
+because the agent exits at stdin end-of-file before answering. The `initialize` answer (agent id, hostname) is
+discarded. Grok fetches the figures from xAI with its own login; Switchboard reads no file under `~/.grok`.
+
+| Provider field (`_x.ai/billing` result) | Report field |
+| --- | --- |
+| `subscription_tier` | `plan` |
+| `config.currentPeriod.type` (`USAGE_PERIOD_TYPE_WEEKLY`, `_MONTHLY`, `_DAILY`) | `period.kind` (`weekly`, `monthly`, `daily`, else `unknown`) |
+| `config.currentPeriod.start`, `end` (fallback `config.billingPeriodStart`, `billingPeriodEnd`) | `period.starts_at`, `period.resets_at` (ISO) |
+| `config.creditUsagePercent` (**Assumption:** 0 to 100) | window `credit_period`: `used_fraction` = percent / 100, `window_seconds` = period length, `resets_at` = period end; absent → no window, key in `unreported` |
+| `config.prepaidBalance.val`, `onDemandCap.val`, `onDemandUsed.val`, `monthlyLimit.val` | `amounts[]` `prepaid_balance`, `on_demand_cap`, `on_demand_used`, `monthly_limit` (unit `unspecified`); absent → `unreported` |
+
+`limit_reached` and `limit_reached_type` are null and `credits` is null: Grok's answer has no such flag. Every other
+field is dropped. An answer without `config` is `unknown` ("`_x.ai/billing` answered without config").
+
 **Failure rules.** A spawn failure, a timeout, a missing answer or a JSON-RPC error returns `ProviderUsageUnavailable`
 with a short reason. An unknown figure is never headroom (BR-50).
+
+**Cursor `/usage` screen read** (`src/adapters/cursor/usage.ts`,
+[ADR-0080](../adr/0080-cursor-usage-from-the-cli-usage-command.md)). Cursor CLI has no non-interactive usage command
+(print mode sends `/usage` to the model). The adapter runs
+`script -qfec "stty cols 160 rows 50; exec cursor-agent --mode ask --trust" /dev/null` (BSD `script -q /dev/null sh -c`
+on macOS, **Assumption**). It uses the environment allowlist `PATH`, `HOME`, `USER`, `LOGNAME` and `TMPDIR`, plus a
+fixed `TERM` and an English UTF-8 locale. The working directory is the one owner-checked 0700 directory
+`<tmpdir>/switchboard-cursor-usage-<uid>`, kept between reads because Cursor records a project entry per directory. The
+reader types `/usage` once the prompt box is up, presses Enter only once the slash menu highlights `/usage` (so the
+text can never be sent as a prompt), parses the last panel, then sends Escape and Ctrl-C (SIGTERM after 1 s, SIGKILL
+after 3 s). The whole read times out after 30 s (**Proposed**). The CLI calls its own dashboard service with its own
+login. Switchboard reads only the screen, never stores it, and reads no Cursor file.
+
+| Panel text (CLI 2026.10.19) | Report field |
+| --- | --- |
+| `Usage • <plan>` | `plan` |
+| `Included` / `Auto` / `API` `<n>% used` | `windows[]` `included`, `included:auto`, `included:api`: `used_fraction` = n / 100, `remaining_fraction` = 1 − used, `window_seconds` null |
+| `Resets <Mon> <d>` (UTC date of the cycle end) or `Current period` | `reset_label` verbatim; `resets_at` = start of that UTC day (next on or after today), `reset_precision: "day"`; null for `Current period` |
+| `On-Demand` row and its detail line | `on_demand` {`state` `fixed` / `unlimited` / `disabled` / `unavailable`, `used_usd`, `limit_usd`, `remaining_usd`, `detail` verbatim} |
+| Enterprise `Current cycle $X`, `Previous period $Y` | `spend` {`current_cycle_usd`, `previous_period_usd`} |
+| Included at 100% and on-demand `disabled` or `fixed` with $0 remaining | `limit_reached: true`; below 100% or `unlimited` → false; otherwise null (Delegated) |
+
+The CLI's own messages (`Not logged in`, `not available for this plan`, `Failed to load usage data`), an exit before the
+panel, a menu that never shows `/usage` and the timeout all return `ProviderUsageUnavailable`. The four Cursor fields
+are optional in the shared report and in the output schema. Tests: `src/adapters/cursor/usage.test.ts` (recorded
+redacted capture `src/adapters/cursor/fixtures/usage_pro_exhausted.pty.txt` and synthetic panels built from the CLI's
+renderer strings), and the Cursor case in `src/mcp/get-capacity.test.ts`.
 
 **Reader and cache** (`src/capacity/provider-usage.ts`). `readProviderUsage` runs the readers of enabled providers that
 have one, in parallel. `ProviderUsageCache` is per process with a one-minute TTL (**Proposed**, Delegated).
@@ -6859,10 +6909,33 @@ into pacing is possible follow-up work and is not done.
 **Surfaces.** `get_capacity` (the output schema gains an optional `provider_usage` per provider), `switchboard capacity`
 (text and `--json`) and `switchboard doctor` (a separate "Provider-reported usage" section, informational, never
 changes `ok`). Text shows fractions, not percentages (FR-CAP-03 wording rule), and "remaining" appears only on
-`provider_reported` lines. Tests: `src/adapters/codex/usage.test.ts` (recorded redacted fixture
+`provider_reported` lines. Tests: `src/adapters/grok/usage.test.ts` (recorded fixture
+`src/adapters/grok/fixtures/billing-supergrok-weekly.json` and a synthetic one),
+`src/adapters/codex/usage.test.ts` (recorded redacted fixture
 `src/adapters/codex/fixtures/usage/app-server-rate-limits.jsonl` and two synthetic ones),
 `src/capacity/provider-usage.test.ts`, and the block "provider_usage on get_capacity, capacity and doctor (ADR-0079,
 FR-CAP-13)" in `src/mcp/get-capacity.test.ts`.
+
+**Kimi Code** ([ADR-0084](../adr/0084-kimi-usage-via-cli-usage-display.md), T6.19; `src/adapters/kimi/usage.ts`).
+Kimi implements the same method over the interactive TUI, because its other surfaces carry no plan quota. The reader
+takes an injected `TerminalRunner`; production wiring builds one on `<data_dir>/probes`, and without it (as in tests) the
+reader returns `ProviderUsageUnavailable` and spawns nothing. Each read runs `kimi` under util-linux or BSD `script` in
+`<data_dir>/probes/kimi-usage` (empty real directory owned by the user, mode 0700, checked every time) with `PATH`,
+`HOME`, `TERM`, `COLUMNS` and `LINES` only, answers the trust dialog only when it names that directory with "Trust and
+continue" selected, types `/usage`, parses the "Plan usage" panel with `parseKimiUsagePanel`, and exits with Ctrl-C.
+Unrecognised text, a timeout or another dialog is `unknown`.
+
+| Panel text | Report field |
+| --- | --- |
+| `5h limit`, `N% used`, `resets in 1d 2h 3m` | window `5h`, `window_seconds` 18000, `used_fraction` = N / 100, `resets_at` = observation time plus the offset |
+| `Weekly limit` | window `weekly`, `window_seconds` 604800 |
+| `Monthly limit` | window `monthly`, `window_seconds` null |
+| `kimi N% · code M%` on the monthly row | windows `kimi:monthly` and `code:monthly`, `limit_id` `kimi` and `code` |
+| "Extra Usage" booster wallet | `credits` |
+| (not displayed) | `plan` and `limit_reached` are null; `method` is `kimi TUI /usage (pseudo-terminal)` |
+
+Precision is a whole percent and a minute-level reset. Side effects: the probe directory appears once in Kimi's
+workspace list and each read adds a `/usage` line to its input history. Tests: `src/adapters/kimi/usage.test.ts`.
 
 ## 17. Routing (M7)
 
@@ -8377,7 +8450,7 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
    expected_head_sha=<sha> --silent` is the only write besides G12 and the publish templates, used by
    `update_run_branch` only. G16 `pr close <n> --repo <o>/<r> --comment <comment> [--delete-branch]` and G17 `pr view
    <n> --repo <o>/<r> --json number,state,url,headRefName` (ADR-0078, §3.4.16) are used by `close_pr` only. G18 `pr
-   checks <n> --json bucket` and G19 `pr view <n> --json state,mergeCommit` (ADR-0080, §3.4.17) are reads of the ordered
+   checks <n> --json bucket` and G19 `pr view <n> --json state,mergeCommit` (ADR-0087, §3.4.17) are reads of the ordered
    submodule merge. The flags and fields were checked against the `gh` manual pages (`gh_pr_merge`, `gh_pr_checks`,
    `gh_pr_view` on cli.github.com, 2026-10-20); `gh --help` could not be run on the build host, so the check against
    the installed `gh` that ADR-0050 asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from the manual's

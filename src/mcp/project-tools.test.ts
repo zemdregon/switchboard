@@ -299,7 +299,7 @@ beforeEach(() => {
 });
 
 /**
- * ADR-0080: give `repo` gitlinks (path → repository name under github.test/acme, `.wiki` for a wiki) declared in its
+ * ADR-0087: give `repo` gitlinks (path → repository name under github.test/acme, `.wiki` for a wiki) declared in its
  * `.gitmodules` on `main`, and allow that source. The commits need not exist: only the manifest is read.
  */
 function umbrellaRepo(links: Record<string, string>, url = (name: string) => `https://github.test/Acme/${name}.git`) {
@@ -338,7 +338,7 @@ describe("tool surface (FR-PRJ-10: only with manage_projects)", () => {
     const plain = await servers[0]?.client.listTools();
     expect(plain?.tools.map((t) => t.name)).toEqual([...TOOL_NAMES, ...WORK_QUEUE_TOOL_NAMES]);
     const mgr = await servers[1]?.client.listTools();
-    // ADR-0080: no project_sources here, so request_project_source is not offered.
+    // ADR-0087: no project_sources here, so request_project_source is not offered.
     expect(mgr?.tools.map((t) => t.name)).toEqual([
       ...TOOL_NAMES,
       ...WORK_QUEUE_TOOL_NAMES,
@@ -712,7 +712,7 @@ describe("approval (BR-32): container, push and widening wait for the operator",
     expect(bad.body.error.code).toBe("INVALID_REQUEST");
   });
 
-  it("submodules: recursive alone is ACTIVE, writable_paths wait as submodule_write; list_projects reads them back (ADR-0080)", async () => {
+  it("submodules: recursive alone is ACTIVE, writable_paths wait as submodule_write; list_projects reads them back (ADR-0087)", async () => {
     umbrellaRepo({ "libs/a": "lib-a" });
     await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
     const rec = await call("create_project", {
@@ -758,7 +758,7 @@ describe("approval (BR-32): container, push and widening wait for the operator",
     });
   });
 
-  it("submodules: writable_paths are checked against the manifest at base_ref (ADR-0080 item 1, Delegated)", async () => {
+  it("submodules: writable_paths are checked against the manifest at base_ref (ADR-0087 item 1, Delegated)", async () => {
     umbrellaRepo({ "libs/a": "lib-a", "docs/core": "core.wiki" });
     await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
     const refusals: [string, string, string, string, Json][] = [
@@ -848,7 +848,7 @@ describe("approval (BR-32): container, push and widening wait for the operator",
     });
   });
 
-  it("submodules: structural refusals carry their reason code and write no revision (ADR-0080 item 1)", async () => {
+  it("submodules: structural refusals carry their reason code and write no revision (ADR-0087 item 1)", async () => {
     await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
     const second = { id: "docs", kind: "repository", path: repo, base_ref: "main" };
     const cases: [string, string, Json][] = [
@@ -913,7 +913,7 @@ describe("approval (BR-32): container, push and widening wait for the operator",
     expect(count("project_revision")).toBe(0);
   });
 
-  it("merge_policy.checks all_reported waits for the operator as merge_checks; list_projects shows checks (ADR-0080 item 7)", async () => {
+  it("merge_policy.checks all_reported waits for the operator as merge_checks; list_projects shows checks (ADR-0087 item 7)", async () => {
     await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
     const required = await call("create_project", { project: definition({ merge_policy: { enabled: false } }) });
     expect(required.body).toMatchObject({ status: "ACTIVE" });

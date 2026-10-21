@@ -23,7 +23,7 @@ by milestone (one line per `Done` milestone; evidence in roadmap §6):
   schedules, and published-branch CI triggers.
 - M16 Switchboard-controlled skills (`Done`, on fakes): skill store, admission, prompt-prefix delivery,
   and native-delivery leak guards.
-- M9 umbrella projects with Git submodules over MCP (ADR-0080, ROADMAP T9.22, in progress): opt-in
+- M9 umbrella projects with Git submodules over MCP (ADR-0087, ROADMAP T9.22, in progress): opt-in
   `submodules` per project, `request_project_source`, the effective definition in `list_projects`,
   controller-made submodule commits, linked publication, ordered merge and `merge_policy.checks: all_reported`.
 

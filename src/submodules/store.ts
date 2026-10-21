@@ -1,5 +1,5 @@
 /**
- * Shared submodule object stores (ADR-0080 item 3, G3, G9). Each distinct submodule repository has one clone at its
+ * Shared submodule object stores (ADR-0087 item 3, G3, G9). Each distinct submodule repository has one clone at its
  * ADR-0068 clone target `<clone_root>/<host>/<owner>/<repo>`, made by {@link ensureClone} with `--no-checkout` and the
  * store hardening ({@link STORE_CLONE_CONFIG}); two paths that reference one repository share it, and stores persist
  * between runs (the cache).
@@ -41,7 +41,7 @@ import { git } from "../workspace/git.js";
 import { isFullSha } from "./errors.js";
 import type { SubmoduleManifest } from "./manifest.js";
 
-/** **Delegated** (ADR-0080 item 3): stores prepared (cloned or fetched) at once. */
+/** **Delegated** (ADR-0087 item 3): stores prepared (cloned or fetched) at once. */
 export const SUBMODULE_FETCH_CONCURRENCY = 8;
 
 /** Command-scope settings added to the ADR-0068 clone (and its reuse fetch, which stores turn off). */

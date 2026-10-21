@@ -150,7 +150,7 @@ export const COMMAND_HELP: readonly CommandHelpEntry[] = [
       "                      Approve (or reject) the revision of a dynamic project that waits for approval; --revision is",
       "                      required once the project has more than one revision (review it with projects show first)",
       "  projects sources list|approve <id>|reject <id>",
-      "                      List, approve or reject the owner requests of request_project_source (ADR-0080); an",
+      "                      List, approve or reject the owner requests of request_project_source (ADR-0087); an",
       "                      approved owner joins project_sources.allowed_owners at once",
       "  projects validate [<id>]",
       "                      Check project configuration and repository paths; exit 1 if any check fails",

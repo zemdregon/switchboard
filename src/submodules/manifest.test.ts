@@ -1,5 +1,5 @@
 /**
- * ADR-0080 item 2: the submodule manifest is read from the umbrella commit by the controller, every used URL passes
+ * ADR-0087 item 2: the submodule manifest is read from the umbrella commit by the controller, every used URL passes
  * the ADR-0068 rules and `project_sources`, and every refusal is a fixed reason naming only the path.
  */
 import { rmSync } from "node:fs";

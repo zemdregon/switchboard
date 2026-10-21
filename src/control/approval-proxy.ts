@@ -107,7 +107,7 @@ export interface ApprovalProxyDeps {
   readonly client: ResolvedMcpClient;
   /** Dynamic projects; absent means no revision is listed or decided. */
   readonly projectStore?: DynamicProjectStore;
-  /** ADR-0080: runtime owner grants; absent means no `project_source` approval is listed or decided. */
+  /** ADR-0087: runtime owner grants; absent means no `project_source` approval is listed or decided. */
   readonly sourceGrants?: ProjectSourceGrantStore;
   /** The lifecycle's `applyApprovalDecision` (T3 to QUEUED, T19 to CANCELLED, then dispatch). Runs in our transaction. */
   readonly applyDecision: (req: DecisionToApply) => RunState;
@@ -312,7 +312,7 @@ export function createApprovalProxy(deps: ApprovalProxyDeps): ApprovalProxy {
     return { kind, item, row };
   };
 
-  /** ADR-0080: an undecided owner request of a target client, served only to a proxy that lists `project_source`. */
+  /** ADR-0087: an undecided owner request of a target client, served only to a proxy that lists `project_source`. */
   const sourceCandidate = (row: ProjectSourceRequestRow): SourceCandidate | undefined => {
     if (!kinds.has("project_source") || row.status !== "PENDING" || !targets.has(row.client_id)) return undefined;
     const item: ApprovalProxyItem = {

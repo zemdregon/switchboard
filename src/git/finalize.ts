@@ -54,7 +54,7 @@ export type FinalizeCommitOutcome =
       readonly commitSha: string;
       readonly provenanceId: string;
       readonly filesChanged: number;
-      /** ADR-0080 item 4: submodule commits made with it and submodule paths not committed (present when attached). */
+      /** ADR-0087 item 4: submodule commits made with it and submodule paths not committed (present when attached). */
       readonly submoduleCommits?: number;
       readonly submodulesSkipped?: number;
     }
@@ -134,7 +134,7 @@ export async function makeFinalizeCommit(
   if (req.gitPolicyViolation) return skip("git_policy_violation");
   if (publisher === undefined) return skip("service_unavailable");
   const paths = [...new Set(req.changedPaths)];
-  // ADR-0080 item 4: the run's changed paths cannot see inside an attached submodule, so a run whose only changes are
+  // ADR-0087 item 4: the run's changed paths cannot see inside an attached submodule, so a run whose only changes are
   // in submodules still commits (the publisher takes every writable submodule and reports the read-only ones).
   if (paths.length === 0 && !(await publisher.hasAttachedSubmodules(req.runId))) return skip("no_changes");
   const bypass = req.approvedBypass === true;

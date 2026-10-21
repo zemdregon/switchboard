@@ -771,7 +771,7 @@ describe("ref events (FR-SUB-01 first delivery)", () => {
   });
 });
 
-describe("G18 and G19 gh argv and the all_reported check policy (ADR-0080 item 7)", () => {
+describe("G18 and G19 gh argv and the all_reported check policy (ADR-0087 item 7)", () => {
   const ALL: ProjectMergePolicy = { ...POLICY, checks: "all_reported" };
   const allDeps = (fx: Fixture, merge: CiMergePort) =>
     deps(fx, merge, { targets: (): MergeTarget[] => [{ projectId: "app", policy: ALL, baseRef: "main" }] });

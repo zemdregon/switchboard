@@ -134,7 +134,7 @@ export async function runGcCommand(
         else runtimeSkipped = `skipped, no container runtime answered: ${info.detail}`;
       }
       const plan = planRetentionGc({ db, days, now });
-      // ADR-0080 item 3: submodule worktrees are detached through their attach records (stores under clone_root).
+      // ADR-0087 item 3: submodule worktrees are detached through their attach records (stores under clone_root).
       const cloneRoot = config.projectSources?.cloneRoot;
       const result: GcResult = await runRetentionGc({
         ...(containerRuntime !== undefined ? { containerRuntime } : {}),

@@ -42,7 +42,7 @@ export interface BaseToolDeps {
   /** Test seam of {@link refreshBase}. */
   readonly runFetch?: BaseRefreshOptions["runFetch"];
   /**
-   * ADR-0080 item 3: the submodule stores of a recursive context (live `project_sources`, store runner). Absent: a
+   * ADR-0087 item 3: the submodule stores of a recursive context (live `project_sources`, store runner). Absent: a
    * recursive context's sources are empty, so every submodule URL is refused.
    */
   readonly submodules?: SubmoduleDeps;
@@ -56,7 +56,7 @@ export interface RefreshProjectBaseResult {
   previous_commit: string | null;
   remote_commit: string;
   reason: BaseRefreshReason;
-  /** ADR-0080 item 3: only for a recursive context; distinct gitlink commits of `base_commit` and their presence. */
+  /** ADR-0087 item 3: only for a recursive context; distinct gitlink commits of `base_commit` and their presence. */
   submodules?: SubmodulePresence;
 }
 
@@ -92,7 +92,7 @@ async function repoRootOf(contextPath: string): Promise<string> {
   }
 }
 
-/** ADR-0080 item 3: the context's submodule plan, or undefined unless it sets `submodules.mode: "recursive"`. */
+/** ADR-0087 item 3: the context's submodule plan, or undefined unless it sets `submodules.mode: "recursive"`. */
 function submodulePlan(ctx: ResolvedContext): SubmodulePlan | undefined {
   if (!submodulesEnabled(ctx) || ctx.submodules === undefined) return undefined;
   return {
@@ -105,7 +105,7 @@ function submodulePlan(ctx: ResolvedContext): SubmodulePlan | undefined {
 const submoduleDeps = (deps: BaseToolDeps): SubmoduleDeps => deps.submodules ?? { sources: () => undefined };
 
 /**
- * ADR-0080 item 3: make every gitlink commit of `commits` present in its store (bounded parallel; only missing commits
+ * ADR-0087 item 3: make every gitlink commit of `commits` present in its store (bounded parallel; only missing commits
  * are fetched) and count them. Never fails for a missing commit; a manifest refusal is a ToolError with the library's
  * reason and path (never the URL), after the umbrella refresh already happened.
  */
@@ -183,7 +183,7 @@ export async function refreshProjectBase(
     if (RETRYABLE_FETCH.has(r.reason)) te.retryable = true;
     throw te;
   }
-  // ADR-0080 item 3: the stores are warmed after the refresh, which a missing commit never undoes.
+  // ADR-0087 item 3: the stores are warmed after the refresh, which a missing commit never undoes.
   const plan = submodulePlan(ctx);
   const submodules = plan !== undefined ? await ensureSubmoduleCommits(deps, repoRoot, [start], plan) : undefined;
   return {
@@ -247,7 +247,7 @@ export async function rebaseSessionTool(
       },
       { ...options(deps), serialise: serialisedWorktreeCreate },
     );
-    // ADR-0080 item 3: the new base's (and the rebased head's) gitlinks are made present in their stores, best effort:
+    // ADR-0087 item 3: the new base's (and the rebased head's) gitlinks are made present in their stores, best effort:
     // the rebase is already recorded, and the next run's worktree re-points its attached submodules from its record.
     if (plan !== undefined && r.newHead !== r.previousHead) {
       await ensureSubmoduleCommits(deps, repoRoot, [r.baseCommit, r.newHead], plan).catch(() => undefined);

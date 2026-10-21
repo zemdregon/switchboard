@@ -106,7 +106,7 @@ export class ResumeDirectoryUnavailableError extends WorkspaceError {
 }
 
 /**
- * ADR-0080 item 3: a run worktree's submodules could not be attached. Carries the library's closed reason, its taxonomy
+ * ADR-0087 item 3: a run worktree's submodules could not be attached. Carries the library's closed reason, its taxonomy
  * code and the umbrella-relative path (untrusted text, JSON-quoted in the message; never a URL). Nothing stays attached.
  */
 export class SubmodulePreparationError extends WorkspaceError {
@@ -157,7 +157,7 @@ export interface WorkspaceManagerOptions {
   /** T16.6 test seam: the unlink the native-skill cleaner uses (fault injection, TDD §3.16.2 property 5). */
   readonly nativeSkillFs?: NativeSkillFs;
   /**
-   * ADR-0080 item 3: submodule worktrees of a recursive context. `plan` gives the run project's primary-context
+   * ADR-0087 item 3: submodule worktrees of a recursive context. `plan` gives the run project's primary-context
    * setting, or undefined when it does not set `submodules.mode: "recursive"`. Absent (or no plan): no call, no record,
    * and the worktree is exactly as before.
    */
@@ -491,7 +491,7 @@ export class WorkspaceManager {
     await this.ensureGitLink(ws);
     const nested = await findNestedRepositories(ws.worktreePath);
     const scope = this.scanScope(runId, nested);
-    // ADR-0080 item 3: changed writable submodule worktrees are checkpointed in their stores first; their gitlinks are
+    // ADR-0087 item 3: changed writable submodule worktrees are checkpointed in their stores first; their gitlinks are
     // set in the umbrella index after its own `add -A` (the scan scope excludes the submodule paths).
     const subCheckpoint = await this.checkpointSubmodules(runId, ws.worktreePath);
     await git(["add", "-A", ...scope], { cwd: ws.worktreePath });
@@ -564,7 +564,7 @@ export class WorkspaceManager {
     const diffArtifactId = await this.putArtifact(runId, ws.metaSessionId, "diff", "text/x-diff", diff.stdout);
     await git(["reset", "--hard", ws.preCommit], { cwd: ws.worktreePath });
     await git(["clean", "-fd"], { cwd: ws.worktreePath });
-    // ADR-0080 item 3: attached submodule worktrees go back to their recorded commits too.
+    // ADR-0087 item 3: attached submodule worktrees go back to their recorded commits too.
     if (this.options.submodules !== undefined) {
       await resetRunSubmodules(ws.worktreePath, this.options.submodules.sources()?.cloneRoot);
     }
@@ -639,7 +639,7 @@ export class WorkspaceManager {
   }
 
   /**
-   * ADR-0080 item 3 "Checkpoints", step 1 for a worktree that has an attach record; undefined otherwise (no
+   * ADR-0087 item 3 "Checkpoints", step 1 for a worktree that has an attach record; undefined otherwise (no
    * `project_sources`, no record: nothing is read or run).
    */
   private async checkpointSubmodules(
@@ -659,7 +659,7 @@ export class WorkspaceManager {
     });
   }
 
-  /** ADR-0080 item 3: the run project's recursive submodule plan, or undefined (no option, no project, not recursive). */
+  /** ADR-0087 item 3: the run project's recursive submodule plan, or undefined (no option, no project, not recursive). */
   private submodulePlan(
     runId: string,
   ): { plan: SubmodulePlan; deps: NonNullable<WorkspaceManagerOptions["submodules"]> } | undefined {
@@ -673,7 +673,7 @@ export class WorkspaceManager {
     return plan === undefined ? undefined : { plan, deps };
   }
 
-  /** ADR-0080 item 3: attach (or, in a reused worktree, refresh); a SubmoduleError fails `prepare` with its reason. */
+  /** ADR-0087 item 3: attach (or, in a reused worktree, refresh); a SubmoduleError fails `prepare` with its reason. */
   private async attachSubmodules(
     deps: SubmoduleDeps,
     input: Parameters<typeof attachRunSubmodules>[0],
@@ -863,7 +863,7 @@ export class WorkspaceManager {
 
   /** A `git worktree add` interrupted mid-way leaves a registration or directory: remove and recreate (LLD §5). */
   private async repairPartialWorktree(repoRoot: string, worktreePath: string, branch: string): Promise<void> {
-    // ADR-0080 item 3: submodule worktrees an earlier attempt attached are detached first (their stores pruned).
+    // ADR-0087 item 3: submodule worktrees an earlier attempt attached are detached first (their stores pruned).
     if (this.options.submodules !== undefined) {
       await detachRunSubmodules(worktreePath, this.options.submodules.sources()?.cloneRoot);
     }

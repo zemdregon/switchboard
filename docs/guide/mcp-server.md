@@ -31,7 +31,7 @@ Only one `serve` can hold a data directory at a time.
 | `cancel_run` | run | Requests cancellation of a run (asynchronous; poll `get_run`). | Always (orchestrator only) |
 | `get_artifacts` | run | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. | Always (orchestrator only) |
 | `list_capabilities` | capability | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. | Always (orchestrator only) |
-| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription; and, for Codex, `provider_usage` (the signed-in account's quota windows, plan and credits, `provider_reported`, read through `codex app-server`, cached for a minute, `unknown` when the read fails). Read-only; it makes no model call and reads no credential. | Always (orchestrator only) |
+| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription; and, for Codex and Cursor, `provider_usage` (the signed-in account's quota windows, plan and credits, `provider_reported`, read through `codex app-server` or Cursor's own `/usage` command, cached for a minute, `unknown` when the read fails). Read-only; it makes no model call and reads no credential. | Always (orchestrator only) |
 | `explain_route` | capability | Why a run went to its provider, from Switchboard's stored route decision: candidates with eligibility reasons, the recorded task features, weights and per-candidate scores, the selection rule and short deciding factors. Price, model quality and sandbox strength are not sourced, so those terms are equal for every provider. Read-only; no model is asked. | Always (orchestrator only) |
 | `list_runs` | control | Runs visible to this client, newest first, with optional project, status and time filters. | Always; `console` sees it |
 | `get_digest` | control | A per-project digest since a cursor: paused state, budgets, needs-attention runs, finished and failed runs, pending approvals and untrusted summaries. | Always; `console` sees it |
@@ -42,12 +42,12 @@ Only one `serve` can hold a data directory at a time.
 | `enqueue_work` | queue | Queue a `delegate_task` request on one project this client may use; the controller admits it later under the creating client's ceiling. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `list_work` | queue | Work items this client queued, highest priority first, then oldest, with optional project and state filters. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `cancel_work` | queue | Cancel a `PENDING` or `READY` item this client queued; an admitted item stops with `cancel_run` on its run. | Orchestrator profile only (stdio and network transport); `console` sees none |
-| `publish_run` | publication | Push one of this client's SUCCEEDED runs' branch with the operator-push rules and the pre-push secret scan, then open (or reuse) a pull request with the operator's `gh` login. Idempotent. For a project with writable submodules (ADR-0080) it first scans every changed repository, pushes each submodule branch to its own repository, then the umbrella, and opens one pull request per repository (the umbrella's lists the others); the result adds `submodules[]` and the run envelopes list `linked_pull_requests`. See [ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md). | Only with `max_push_policy: "branch"` (orchestrator profile) |
-| `merge_run_pr` | publication | Merge the pull request of one of this client's published runs with the operator's `gh` login, only through the project's merge policy gate (T15.8: policy in force and on, not paused, open, not draft, published head, base branch, mergeable, every required check passed, verification and reports as the policy says), pinned to the head (`--match-head-commit`). The head may also be a chain of pure base merges on the published tip (GitHub's Update branch commit, verified by the controller; ADR-0073); the result carries `head_kind` (`published` or `base_merge`). Refusals are `PERMISSION_BLOCKED` with a closed `details.reason`; every decision is a `merge_event` in `get_digest`. Idempotent. With linked submodule pull requests (ADR-0080) it merges them first, in path order, re-points the umbrella to the merged commits, then merges the umbrella, resuming where an earlier call stopped; `details.submodule_merge` shows the progress. See [ADR-0070](../adr/0070-mcp-merge-run-pr.md). | With `publish_run` (the server's `gh` merge port on `ci_trigger.gh_binary`, also when `ci_trigger` is off) |
+| `publish_run` | publication | Push one of this client's SUCCEEDED runs' branch with the operator-push rules and the pre-push secret scan, then open (or reuse) a pull request with the operator's `gh` login. Idempotent. For a project with writable submodules (ADR-0087) it first scans every changed repository, pushes each submodule branch to its own repository, then the umbrella, and opens one pull request per repository (the umbrella's lists the others); the result adds `submodules[]` and the run envelopes list `linked_pull_requests`. See [ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md). | Only with `max_push_policy: "branch"` (orchestrator profile) |
+| `merge_run_pr` | publication | Merge the pull request of one of this client's published runs with the operator's `gh` login, only through the project's merge policy gate (T15.8: policy in force and on, not paused, open, not draft, published head, base branch, mergeable, every required check passed, verification and reports as the policy says), pinned to the head (`--match-head-commit`). The head may also be a chain of pure base merges on the published tip (GitHub's Update branch commit, verified by the controller; ADR-0073); the result carries `head_kind` (`published` or `base_merge`). Refusals are `PERMISSION_BLOCKED` with a closed `details.reason`; every decision is a `merge_event` in `get_digest`. Idempotent. With linked submodule pull requests (ADR-0087) it merges them first, in path order, re-points the umbrella to the merged commits, then merges the umbrella, resuming where an earlier call stopped; `details.submodule_merge` shows the progress. See [ADR-0070](../adr/0070-mcp-merge-run-pr.md). | With `publish_run` (the server's `gh` merge port on `ci_trigger.gh_binary`, also when `ci_trigger` is off) |
 | `update_run_branch` | publication | Ask GitHub, through the operator's `gh` login (`gh api` PUT `update-branch`, pinned to the head), to merge the base branch into the pull request branch of one of this client's published runs; refused unless the head is the published tip or a pure base-merge chain on it, the merge would not conflict and the project's merge policy is on. Returns `{ run_id, pull_request, updated, previous_head_sha }`; `updated: false` when the base is already contained. See [ADR-0073](../adr/0073-merge-gate-accepts-pure-base-merges.md). | With `merge_run_pr` |
 | `close_pr` | publication | Close a superseded pull request that `publish_run` created for one of this client's runs of a project, with the operator's `gh` login, posting a fixed comment that links the replacement pull request (same repository) and, with `delete_branch: true`, deleting its branch. Refused (`PERMISSION_BLOCKED`, `details.reason`) for any pull request Switchboard did not create for the caller (`NOT_SWITCHBOARD_PR`), a merged one or one no longer on the published branch. Idempotent (`closed: false` when already closed). Every call, allowed or refused, is recorded. See [ADR-0078](../adr/0078-mcp-close-pr.md). | With `publish_run` |
-| `refresh_project_base` | publication | Fetch a remote-backed project's base now (ADR-0074); for a project with `submodules.mode: "recursive"` it also makes the base's submodule commits present and returns `submodules: { total, present, fetched, missing }` (ADR-0080). | Offered with the base port, above `inspect-untrusted` |
-| `rebase_session` | publication | Replay a meta-session's controller commits onto the fresh base without a worktree, never pushing (ADR-0074). A submodule path that both the session and the base changed is a `CONFLICT` naming the path (ADR-0080). | As `refresh_project_base` |
+| `refresh_project_base` | publication | Fetch a remote-backed project's base now (ADR-0074); for a project with `submodules.mode: "recursive"` it also makes the base's submodule commits present and returns `submodules: { total, present, fetched, missing }` (ADR-0087). | Offered with the base port, above `inspect-untrusted` |
+| `rebase_session` | publication | Replay a meta-session's controller commits onto the fresh base without a worktree, never pushing (ADR-0074). A submodule path that both the session and the base changed is a `CONFLICT` naming the path (ADR-0087). | As `refresh_project_base` |
 | `search_project_context` | retrieval | Read-only semantic search over a project's indexed contexts. See [Retrieval index](advanced-features.md#retrieval-index-milestone-12). | Only when retrieval is on for at least one of the client's projects |
 | `list_skills` | skills | Operator-approved skill names this client may inject, with the newest usable version's metadata (no bodies). | Only when `skills.enabled` |
 | `get_skill` | skills | The text of one visible skill version. | Only when `skills.enabled` |
@@ -127,15 +127,34 @@ Switchboard's own records when you ask:
   is shown separately as `provider_usage`, below). Nothing here is a
   percentage of your subscription. The sources are in
   [docs/research/capacity-signals-2026-10-14.md](../research/capacity-signals-2026-10-14.md).
-- **Provider-reported usage (Codex).** For an enabled provider whose CLI can report the signed-in account's quota
-  without a model call, each provider entry also carries `provider_usage`: `source: "provider_reported"` with the plan,
-  `limit_reached`, the windows (`used_fraction`, `remaining_fraction`, `window_seconds`, `resets_at`) and credits, or
-  `source: "unknown"` with a reason when the read failed, which is never headroom. Today only Codex has it, read by
-  running `codex app-server` with your own Codex login (Switchboard reads no credential and no file under `~/.codex`).
+- **Provider-reported usage (Codex, Grok Build, Kimi Code).** For an enabled provider whose CLI can report the signed-in
+  account's quota without a model call, each provider entry also carries `provider_usage`:
+  `source: "provider_reported"` with the plan, `limit_reached`, the windows (`used_fraction`, `remaining_fraction`,
+  `window_seconds`, `resets_at`) and credits, or
+  `source: "unknown"` with a reason when the read failed, which is never headroom. Codex is read by running
+  `codex app-server` with your own Codex login (Switchboard reads no credential and no file under `~/.codex`). Grok Build
+  is read by running `grok agent --no-leader stdio` and asking its `_x.ai/billing` method, which backs Grok's `/usage`
+  screen, with your own Grok login. Its report adds `period` (kind, start, reset), `amounts` (prepaid balance and
+  on-demand cap and use; the unit is not stated, so it reads `unspecified`) and `unreported`, the figures Grok did not
+  send, which are unknown, not zero.
+  Kimi Code is read from the CLI's own `/usage` display: Switchboard runs `kimi` under a pseudo-terminal in
+  `<data_dir>/probes/kimi-usage`, types `/usage` and parses the 5 hour, weekly and monthly rows (whole percent, reset
+  to the minute, [ADR-0084](../adr/0084-kimi-usage-via-cli-usage-display.md)); it needs the terminal runner that
+  `serve` wires, and Kimi lists that directory in its workspace list and keeps a `/usage` line in its input history.
   It is shown beside the estimates and does not change them, routing or pacing, and it is not stored. `doctor` prints
   it in a separate "Provider-reported usage" section that never changes `ok`. Details:
-  [ADR-0079](../adr/0079-provider-reported-usage-reader.md),
-  [docs/research/codex-usage-2026-10-21.md](../research/codex-usage-2026-10-21.md).
+  [ADR-0079](../adr/0079-provider-reported-usage-reader.md), [ADR-0083](../adr/0083-grok-build-usage-reader.md),
+  [docs/research/codex-usage-2026-10-21.md](../research/codex-usage-2026-10-21.md),
+  [docs/research/grok-usage-sources-2026-10-21.md](../research/grok-usage-sources-2026-10-21.md).
+- **Provider-reported usage (Cursor).** Cursor CLI has no non-interactive usage command, so Switchboard starts
+  `cursor-agent` in a pseudo-terminal (`script(1)`, read-only `--mode ask`, an empty scratch directory), runs its own
+  `/usage` slash command and reads the panel. That takes about 6 s and makes no model call. `provider_usage` then
+  carries the plan, the windows `included`, `included:auto` and `included:api` (shares as the CLI rounds them), the reset
+  day (`resets_at` at the start of that UTC day, `reset_precision: "day"`, `reset_label` verbatim) and `on_demand`
+  (state and dollars as shown). Cursor uses its own login; Switchboard reads no Cursor file. A changed panel or a
+  failed read is `unknown`. Details:
+  [ADR-0080](../adr/0080-cursor-usage-from-the-cli-usage-command.md),
+  [docs/research/cursor-usage-2026-10-21.md](../research/cursor-usage-2026-10-21.md).
 - **Circuit breaker.** After `capacity.breaker.failure_threshold` (default 3) rate-limit, overload or crash failures in
   a row, a provider is held back for `capacity.breaker.open_seconds` (default 300). New requests go to other providers;
   with `require_provider` they fail `ELIGIBILITY_NONE`. Queued runs wait. Then one run tries it, and its outcome
@@ -324,7 +343,7 @@ subsections below give the full behaviour; `switchboard --help` prints the same 
 | `index status`, `index rebuild`, `index clear` | Retrieval index state per store; request a rebuild; delete a store's vectors | project/global argument, `--json` | [Retrieval index](advanced-features.md#retrieval-index-milestone-12) |
 | `eval run <suite> --provider <id> [--live-budget <file>]`, `eval results <suite>` | Own-repository evaluation: replay a suite as runs, grade network-off with hidden tests, record `eval_result` (skipped in CI; real providers need a live budget) | `--provider`, `--live-budget` (`run` only), `--json` | [docs/operations/evaluation.md](../operations/evaluation.md) |
 | `gc [--apply] [--dry-run]` | Retention clean-up: dry run by default; `--apply` collects (refused while `serve` runs or without `retention.days`) | `--apply`, `--dry-run`, `--json` | [Operator commands](advanced-features.md#operator-commands) |
-| `projects sources list`, `projects sources approve <id>`, `projects sources reject <id>` | List, approve or reject the repository-owner requests of `request_project_source` (ADR-0080); an approved owner joins `project_sources.allowed_owners` at once, without a restart | none | [Submodules](#umbrella-projects-with-git-submodules) |
+| `projects sources list`, `projects sources approve <id>`, `projects sources reject <id>` | List, approve or reject the repository-owner requests of `request_project_source` (ADR-0087); an approved owner joins `project_sources.allowed_owners` at once, without a restart | none | [Submodules](#umbrella-projects-with-git-submodules) |
 | `projects list`, `projects show <id>`, `projects validate [<id>]`, `projects approve <id>` | List and inspect configured and dynamic projects, check them, approve or reject a pending dynamic revision | `--revision`, `--reject`, `--json` | [Dynamic projects](#dynamic-projects) |
 | `git push <id>` | Push a meta-session's published commits to the context's configured remote branch (never forced; refused while `serve` runs) | `--json` | [How commits reach Git](#how-commits-reach-git) |
 | `git ack-secret-scan <gps_id>` | Acknowledge a push the secret scan refused: clears `secret_scan_blocked` until the next refusal; never allows the push (works while `serve` runs) | `--json` | [LLD §20.9](../design/LLD.md#209-pre-push-secret-scan-fr-git-11-t914-adr-0061) |
@@ -488,7 +507,7 @@ is refused. Every call, accepted or refused, is recorded in the ledger.
 
 A revision with a `container` environment, a push policy other than `none`, a commit `identity`, `sign: true`, a new or
 changed `setup` step (`project_setup`, ADR-0071), writable submodules (`submodule_write`), `merge_policy.checks:
-"all_reported"` (`merge_checks`, ADR-0080), or a wider trust ceiling or provider set than the revision in force is
+"all_reported"` (`merge_checks`, ADR-0087), or a wider trust ceiling or provider set than the revision in force is
 stored as `PENDING_APPROVAL` and cannot start runs
 until you approve it; until then the previous revision stays in force. Review it with `switchboard projects show <id>`,
 then run `switchboard projects approve <id>` (add `--revision <n>` once the project has more than one revision, and
@@ -505,7 +524,7 @@ dynamic projects can run when `serve` composes placement (milestone 10,
 ### Umbrella projects with Git submodules
 
 An umbrella repository whose submodules you want agents to edit can be onboarded, run, published and merged over MCP
-only (ADR-0080, [LLD §3.4.17](../design/LLD.md#3417-submodule-projects-adr-0080)). Set `submodules` on the primary
+only (ADR-0087, [LLD §3.4.17](../design/LLD.md#3417-submodule-projects-adr-0087)). Set `submodules` on the primary
 context (see [Configuration](getting-started.md)); read the result back with `list_projects`. If a submodule belongs
 to an owner that `project_sources` does not list, the orchestrator calls `request_project_source`; you (or an approver
 client whose `approval_proxy_kinds` includes `project_source`) decide it, and the owner is allowed at once on hosts

@@ -2033,7 +2033,7 @@ export class RunLifecycle {
     } catch (err) {
       if (err instanceof ResumeDirectoryUnavailableError)
         return this.failResumeDirectory(runId, err.problem, err.message);
-      // ADR-0080 item 3: the submodule library's closed reason and path (never a URL), with its taxonomy code.
+      // ADR-0087 item 3: the submodule library's closed reason and path (never a URL), with its taxonomy code.
       if (err instanceof SubmodulePreparationError) {
         return this.fail(runId, err.failureCode, `workspace preparation failed: ${err.message}`, {
           reason: err.reason,

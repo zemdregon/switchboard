@@ -181,11 +181,11 @@ export interface EnsureCloneDeps {
   readonly settings: ProjectSourcesSettings;
   readonly git?: GitRunner;
   readonly timeoutMs?: number;
-  /** ADR-0080 object stores: clone with `--no-checkout` (default false). */
+  /** ADR-0087 object stores: clone with `--no-checkout` (default false). */
   readonly noCheckout?: boolean;
   /**
    * Extra command-scope `-c` pairs placed after the fixed hooks/fsmonitor settings on the clone and on the reuse fetch
-   * (ADR-0080 stores: `protocol.allow=never`, `protocol.https.allow=always`, `submodule.recurse=false`,
+   * (ADR-0087 stores: `protocol.allow=never`, `protocol.https.allow=always`, `submodule.recurse=false`,
    * `fetch.recurseSubmodules=false`). Default none.
    */
   readonly extraConfig?: readonly string[];

@@ -1,5 +1,5 @@
 /**
- * The ordered merge of an umbrella publication with linked submodule pull requests (ADR-0080 item 7, G7, FR-SUB-03;
+ * The ordered merge of an umbrella publication with linked submodule pull requests (ADR-0087 item 7, G7, FR-SUB-03;
  * LLD §3.4.17). MCP `merge_run_pr` ({@link mergeOnRequest}) and the policy poller ({@link pollMergePolicies}) run this
  * one step machine through {@link submoduleMergeHook} for an umbrella publish ref that has `submodule_pull_request`
  * rows; every other ref takes the T15.8 gate exactly as before. Its state is the append-only `submodule_merge` table

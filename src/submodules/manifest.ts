@@ -1,5 +1,5 @@
 /**
- * The submodule manifest of one umbrella commit (ADR-0080 item 2, G10). The controller never runs `git submodule` and
+ * The submodule manifest of one umbrella commit (ADR-0087 item 2, G10). The controller never runs `git submodule` and
  * never lets Git follow a `.gitmodules` URL: it reads the gitlinks (`git ls-tree -r -z --full-tree`, mode `160000`) and
  * the `.gitmodules` blob of the commit (`git config --blob <commit>:.gitmodules --no-includes -z --list`) itself,
  * through the hardened local helper (scrubbed environment, no hooks, no drivers, no network), and checks every used

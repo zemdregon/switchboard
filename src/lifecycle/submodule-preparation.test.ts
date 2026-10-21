@@ -1,5 +1,5 @@
 /**
- * ADR-0080 item 3 through the run lifecycle: a submodule refusal while the workspace manager prepares a recursive
+ * ADR-0087 item 3 through the run lifecycle: a submodule refusal while the workspace manager prepares a recursive
  * context's worktree (`SubmodulePreparationError`) fails the run before spawn with the library's closed taxonomy code and
  * `{ reason, path }` details (never a URL), and the lease is released. Real Git against local fixture repositories; the
  * fake adapter; no network, no provider CLI.
@@ -100,7 +100,7 @@ function start(sources: () => Fixture["settings"]): RunLifecycle {
   });
 }
 
-describe("submodule preparation through the run lifecycle (ADR-0080 item 3)", () => {
+describe("submodule preparation through the run lifecycle (ADR-0087 item 3)", () => {
   it("a refused submodule source fails the run before spawn with its closed code, reason and path, and releases the lease", async () => {
     const a = makeRemote(fx, "lib-a", { "a.txt": "a\n" });
     const u = makeUmbrella(

@@ -63,7 +63,7 @@
  * | G16 | `pr close {number} --repo {owner}/{repo} --comment {comment} [--delete-branch]` (write) |
  * | G17 | `pr view {number} --repo {owner}/{repo} --json {G17_FIELDS}` |
  *
- * ADR-0080 item 7 (submodule projects). Both are reads, for any `owner/repo` the controller resolved (a submodule's
+ * ADR-0087 item 7 (submodule projects). Both are reads, for any `owner/repo` the controller resolved (a submodule's
  * repository included). G18 reads every reported check, not only the required ones, for `merge_policy.checks:
  * all_reported`; G19 reads a pull request's state and merge commit for the ordered-merge step machine:
  *
@@ -93,9 +93,9 @@ export const PR_TITLE_MAX = 200;
 export const PR_BODY_MAX_BYTES = 20 * 1024;
 /** G11: only the result bucket of each required check (`gh pr checks` manual: `pass`, `fail`, `pending`, ...). */
 export const G11_FIELDS = "bucket";
-/** G18: only the result bucket of each reported check, required or not (ADR-0080 item 7). */
+/** G18: only the result bucket of each reported check, required or not (ADR-0087 item 7). */
 export const G18_FIELDS = "bucket";
-/** G19: the state and merge commit of one pull request (ADR-0080 item 7). */
+/** G19: the state and merge commit of one pull request (ADR-0087 item 7). */
 export const G19_FIELDS = "state,mergeCommit";
 /** G12 merge methods; each is one `gh pr merge` flag (`--squash`, `--merge`, `--rebase`). */
 export const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
@@ -274,13 +274,13 @@ export function ghPrRequiredChecksArgv(owner: string, repo: string, prNumber: st
   return audited(["pr", "checks", prNumber, "--repo", repoArg(owner, repo), "--required", "--json", G11_FIELDS]);
 }
 
-/** G18: every reported check of one pull request's head, required or not (ADR-0080 item 7, read-only). */
+/** G18: every reported check of one pull request's head, required or not (ADR-0087 item 7, read-only). */
 export function ghPrReportedChecksArgv(owner: string, repo: string, prNumber: string): string[] {
   if (!isPrNumber(prNumber)) throw new GhArgvError("invalid pull request number");
   return audited(["pr", "checks", prNumber, "--repo", repoArg(owner, repo), "--json", G18_FIELDS]);
 }
 
-/** G19: the state and merge commit of one pull request, by number (ADR-0080 item 7, read-only). */
+/** G19: the state and merge commit of one pull request, by number (ADR-0087 item 7, read-only). */
 export function ghPrMergeStateArgv(owner: string, repo: string, prNumber: string): string[] {
   if (!isPrNumber(prNumber)) throw new GhArgvError("invalid pull request number");
   return audited(["pr", "view", prNumber, "--repo", repoArg(owner, repo), "--json", G19_FIELDS]);

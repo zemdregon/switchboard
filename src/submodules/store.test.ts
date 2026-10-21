@@ -1,5 +1,5 @@
 /**
- * ADR-0080 item 3: shared object stores. Git runs for real against local "remote" repositories; the fixture runner maps
+ * ADR-0087 item 3: shared object stores. Git runs for real against local "remote" repositories; the fixture runner maps
  * the https URLs to them with command-scope `insteadOf`, so the production argv stays https only and nothing leaves
  * the host. Runner calls are counted to show that a fetch happens only for a missing commit.
  */

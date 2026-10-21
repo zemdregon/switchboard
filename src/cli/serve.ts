@@ -186,7 +186,7 @@ import {
   WorkspaceManager,
 } from "../workspace/index.js";
 import { briefContextPack } from "./brief-pack.js";
-import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
+import { type CliIo, PROBE_ENV_ALLOWLIST, probeRootFor } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
 import { ragBackendFor, ragProjects, type ServeRag, startServeRag, toBuildProject } from "./rag-index.js";
 import { checkUnprivileged } from "./unprivileged.js";
@@ -534,7 +534,7 @@ export function serveBaseRefresh(
 }
 
 /**
- * ADR-0080 item 3: the submodule plan of a project's primary context, for configured and (in-force) dynamic projects;
+ * ADR-0087 item 3: the submodule plan of a project's primary context, for configured and (in-force) dynamic projects;
  * undefined unless it sets `submodules.mode: "recursive"`.
  */
 export function serveSubmodulePlan(
@@ -637,7 +637,7 @@ async function runDaemon(
   const ledger = createLedger(db, { ids, ...(now ? { now } : {}) });
   const artifacts = new ArtifactStore(`${config.dataDir}/artifacts`);
   const seeds = serveSeeds(config, db, artifacts, ids, io.env, createDockerRuntime, now);
-  // ADR-0080 items 3 and 8: configured owners plus approved grants, re-read at each check, for submodule URLs and stores.
+  // ADR-0087 items 3 and 8: configured owners plus approved grants, re-read at each check, for submodule URLs and stores.
   const liveProjectSources = effectiveProjectSources(
     config.projectSources,
     config.projectSources !== undefined
@@ -659,7 +659,7 @@ async function runDaemon(
       io.env,
       now,
     ),
-    // ADR-0080 item 3: submodule worktrees of a primary context with `submodules.mode: "recursive"`; every other
+    // ADR-0087 item 3: submodule worktrees of a primary context with `submodules.mode: "recursive"`; every other
     // project's worktree is exactly as before.
     submodules: {
       sources: liveProjectSources,
@@ -773,7 +773,7 @@ async function runDaemon(
   let gitTools: GitToolService;
   let finalizePublisher: GitPublisher;
   try {
-    // ADR-0080 item 4: submodule stores live under project_sources.clone_root; without it attach records refuse.
+    // ADR-0087 item 4: submodule stores live under project_sources.clone_root; without it attach records refuse.
     const submoduleCloneRoot =
       config.projectSources !== undefined ? { submoduleCloneRoot: config.projectSources.cloneRoot } : {};
     const publisher = new GitPublisher({
@@ -1356,7 +1356,7 @@ async function runDaemon(
   // T15.8 (FR-SUB-02, LLD §20.7, ADR-0060): projects whose merge policy is on in the definition in force: configured
   // projects, and dynamic projects' revisions in force (a revision turning it on waits for operator approval).
   const mergeTargets = () => mergeTargetsFrom(config.projects, mergeStore);
-  // ADR-0080 item 7: the ordered merge of an umbrella with linked submodule pull requests, on both the poller and
+  // ADR-0087 item 7: the ordered merge of an umbrella with linked submodule pull requests, on both the poller and
   // `merge_run_pr`: G19 on the same port, the shared pusher, the stores under `project_sources.clone_root`, and the
   // primary context's identity (configured or dynamic in force) for the repoint commit.
   const submoduleMergeDeps = (port: GhCiStatusPort): SubmoduleMergeDeps => ({
@@ -1534,6 +1534,8 @@ async function runDaemon(
       useCheckRunsFallback: config.ciTrigger.useCheckRunsFallback,
     });
 
+  const usageTerminal = fake.enabled ? undefined : io.providerUsageTerminal?.(probeRootFor(config.dataDir));
+
   let code = 0;
   try {
     const mcpDeps = {
@@ -1562,9 +1564,15 @@ async function runDaemon(
       },
       ...(now ? { now } : {}),
       // ADR-0079 (FR-CAP-13): `get_capacity` reads provider-reported usage through each provider's own CLI.
-      providerUsage: { runner: createProbeRunner(PROBE_ENV_ALLOWLIST), cache: new ProviderUsageCache() },
+      providerUsage: {
+        runner: createProbeRunner(PROBE_ENV_ALLOWLIST),
+        cache: new ProviderUsageCache(),
+        // ADR-0079: the pseudo-terminal for TUI-only readers (Kimi Code) in `<data_dir>/probes`; only when the entry
+        // point supplies it, and never with the test fake switch on (Delegated: a test never starts a provider TUI).
+        ...(usageTerminal !== undefined ? { terminal: usageTerminal } : {}),
+      },
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
-      // ADR-0080 item 8: runtime owner grants; an approval widens `allowed_owners` at once (no restart).
+      // ADR-0087 item 8: runtime owner grants; an approval widens `allowed_owners` at once (no restart).
       ...(config.projectSources !== undefined
         ? {
             projectSourceGrants: new ProjectSourceGrantStore(db, {
@@ -1592,7 +1600,7 @@ async function runDaemon(
             },
             // T14.9 (FR-CTL-10, ADR-0048): a revision waiting for the operator reaches the sinks as `approval_pending`
             // (a revision has no run; the project carries it). One revision row emits once.
-            // ADR-0080: a new owner request reaches the sinks as `approval_pending` (kind `project_source`, no project).
+            // ADR-0087: a new owner request reaches the sinks as `approval_pending` (kind `project_source`, no project).
             announcePendingSource: (a: PendingSourceAnnouncement) =>
               sinks.emit({ projectId: NO_PROJECT_ID, eventKind: "approval_pending", reasonCode: a.kind, runId: null }),
             announcePendingRevision: (a: PendingRevisionAnnouncement) =>
@@ -1631,7 +1639,7 @@ async function runDaemon(
         pusher,
         resolveContext: resolvePushContext,
         pulls: new GhPullRequestPort({ binary: config.ciTrigger.ghBinary, sourceEnv: io.env }),
-        // ADR-0080 item 6: umbrella projects (`submodules.mode: "recursive"`) publish their submodule commits first,
+        // ADR-0087 item 6: umbrella projects (`submodules.mode: "recursive"`) publish their submodule commits first,
         // with the pusher's secret-scan allowlist and the same allowlisted push environment (ADR-0028).
         submodules: {
           db,
@@ -1643,7 +1651,7 @@ async function runDaemon(
       },
       // ADR-0074 (LLD §3.4.15): `refresh_project_base` and `rebase_session`, with the same allowlisted fetch environment
       // as the first-worktree refresh and the controller's own push (ADR-0028).
-      // ADR-0080 item 3: for a recursive context, the fetched base's gitlinks are made present in their stores.
+      // ADR-0087 item 3: for a recursive context, the fetched base's gitlinks are made present in their stores.
       base: { db, ids, sourceEnv: io.env, submodules: { sources: liveProjectSources }, ...(now ? { now } : {}) },
       // ADR-0070 (LLD §3.4.13): `merge_run_pr`, offered with `publish_run`: the T15.8 gate on the poller's port, or,
       // when `ci_trigger.enabled` is false, the same G10 to G12 port on `ci_trigger.gh_binary`. Not limited to
@@ -1658,7 +1666,7 @@ async function runDaemon(
         resolveRemote: resolveCiRemote,
         nowMs: () => (now ? now() : new Date()).getTime(),
         ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
-        // ADR-0080 item 7: the ordered merge for a publication with linked submodule pull requests.
+        // ADR-0087 item 7: the ordered merge for a publication with linked submodule pull requests.
         linkedMerge: submoduleMergeHook(
           {
             db,

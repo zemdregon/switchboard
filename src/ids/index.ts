@@ -7,7 +7,7 @@ import { randomFillSync } from "node:crypto";
  * `prv_` (project_revision) is Proposed in LLD §1, and `prd_` (project_revision_decision) and `pev_` (project_event) are
  * Proposed in T9.9 (ADR-0030); `inc_` (inner_call) is Proposed in LLD §13.3 (T11.1); `prq_` (pull_request) is Proposed in
  * ADR-0069; `prc_` (pull_request_close) is Proposed in ADR-0078; `smc_`, `smp_`, `spr_`, `smm_` (submodule commit, push,
- * pull request, merge step), `psr_` and `psd_` (project source request and decision) are ADR-0080's.
+ * pull request, merge step), `psr_` and `psd_` (project source request and decision) are ADR-0087's.
  */
 export const ID_PREFIXES = [
   "sess",

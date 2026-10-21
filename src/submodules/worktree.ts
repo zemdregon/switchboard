@@ -1,5 +1,5 @@
 /**
- * Per-run submodule worktrees (ADR-0080 item 3). After the umbrella's own `git worktree add`, each declared,
+ * Per-run submodule worktrees (ADR-0087 item 3). After the umbrella's own `git worktree add`, each declared,
  * non-excluded submodule path is checked out at its gitlink commit as a detached linked worktree of its shared store
  * (`git -C <store> worktree add --detach <run worktree>/<path> <sha>`), through the hardened helper: scrubbed
  * environment, so no global or system filter, hook or fsmonitor runs, and `driverOverrides` of the store's own
@@ -356,7 +356,7 @@ export interface WriteTreeOptions {
   /** Where the temporary index is made (default the OS temporary directory). */
   readonly scratchDir?: string;
   /**
-   * ADR-0080 item 4: submodule-relative literal paths to add instead of every change (an explicit commit path inside
+   * ADR-0087 item 4: submodule-relative literal paths to add instead of every change (an explicit commit path inside
    * the submodule), checked by the caller. `excludes` do not apply to them (literal pathspecs carry no magic).
    */
   readonly paths?: readonly string[];
@@ -472,7 +472,7 @@ async function adminDirOf(store: string, linkPath: string, recorded: string | un
 }
 
 /**
- * ADR-0080 item 3: where a run worktree's attach record lives, beside the worktree under the data directory
+ * ADR-0087 item 3: where a run worktree's attach record lives, beside the worktree under the data directory
  * (`<dataDir>/worktrees/<sess>/<run>.submodules.json`). Derived from the worktree path alone, so every consumer (the
  * workspace manager, the commit tool, `finalize_commit`, `gc`, publication) finds it without extra state.
  */

@@ -1,5 +1,5 @@
 /**
- * Test world of the ordered merge (ADR-0080 item 7): an umbrella repository with a local bare `origin`, two submodule
+ * Test world of the ordered merge (ADR-0087 item 7): an umbrella repository with a local bare `origin`, two submodule
  * "remotes" (`acme/liba` at the duplicate paths `libs/a` and `vendor/a`, `acme/libb` at `libs/b`) reached through the
  * store fixture's https-to-local runner, their stores already cloned, one published umbrella tip whose gitlinks point
  * at the session's pushed submodule heads, and the ledger rows `publish_run` writes (`git_commit`, `git_push`,

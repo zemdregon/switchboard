@@ -441,12 +441,12 @@ export interface McpServerDeps {
    */
   readonly announcePendingRevision?: (a: PendingRevisionAnnouncement) => void;
   /**
-   * ADR-0080 item 8: runtime owner grants for `project_sources.allowed_owners`. With `config.projectSources` it offers
+   * ADR-0087 item 8: runtime owner grants for `project_sources.allowed_owners`. With `config.projectSources` it offers
    * `request_project_source` to a `manage_projects` client, serves the `project_source` approval kind to an approver
    * that lists it, and makes an approval effective at the next check. Absent: configured owners only.
    */
   readonly projectSourceGrants?: ProjectSourceGrantStore;
-  /** ADR-0080: announces a new owner request to the sinks (`approval_pending`, kind `project_source`). */
+  /** ADR-0087: announces a new owner request to the sinks (`approval_pending`, kind `project_source`). */
   readonly announcePendingSource?: (a: PendingSourceAnnouncement) => void;
   /**
    * T14.15 (FR-CTL-13, LLD §20.3): the decision service. Absent means `request_decision`, `list_decisions` and `decide`
@@ -574,7 +574,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   }
   /** Project ids with a delegate_task/continue_task between resolution and admission (delete_project waits for them). */
   const admittingCount = new Map<string, number>();
-  // ADR-0080 item 8: configured owners plus approved grants, re-read at each check (no restart).
+  // ADR-0087 item 8: configured owners plus approved grants, re-read at each check (no restart).
   const liveProjectSources: ProjectSourcesGetter | undefined =
     deps.config.projectSources === undefined
       ? undefined
@@ -2477,7 +2477,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       }
       if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
         // T9.9 (FR-PRJ-10): offered only with manage_projects; otherwise answered exactly like an unknown tool, but recorded.
-        // ADR-0080: `request_project_source` also needs project_sources and the grant store.
+        // ADR-0087: `request_project_source` also needs project_sources and the grant store.
         if (
           client.manageProjects === true &&
           projectTools !== undefined &&
