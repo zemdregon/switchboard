@@ -5,11 +5,11 @@ What Switchboard does not do, or does not yet verify. Part of the [Switchboard g
 ## Known limitations
 
 - **Submodules (ADR-0087).** Nested submodules (a submodule's own `.gitmodules`) are ignored and stay empty (ROADMAP
-  Q-116). A GitHub wiki submodule is read-only. The umbrella commit that re-points gitlinks during the ordered merge
+  Q-117). A GitHub wiki submodule is read-only. The umbrella commit that re-points gitlinks during the ordered merge
   is not signed, even with `sign: true`. Only `https` URLs on GitHub-style hosts you allowed are supported (no `ssh`,
   no GitHub Enterprise). The umbrella pull request body is not edited after the first publication, and a
   submodule pull request that a person merged first is accepted only when its merge commit is on the default branch
-  (Q-117). A `project_source` grant does not expire (Q-118). The first run of a large umbrella clones every submodule
+  (Q-118). A `project_source` grant does not expire (Q-119). The first run of a large umbrella clones every submodule
   store; `refresh_project_base` warms them.
 
 - **Codex is only lightly validated.** The Codex compliance manifest covers `>=0.162.0 <0.163.0` (an Assumption, ROADMAP

@@ -302,6 +302,11 @@ export interface CapacityConfigInput {
   subscriptions?: Record<string, SubscriptionConfigInput>;
   /** T6.13 (FR-CAP-10, LLD §16.9): pacing parameters; every key defaults to its LLD value (Assumptions, Q-98). */
   pacing?: { mode?: PacingMode; target_fraction?: number; burst_fraction?: number; min_confidence?: number };
+  /**
+   * Read the operator's GitHub Copilot quota through their logged-in `gh` (`gh api /copilot_internal/user`) for
+   * `get_capacity` and `switchboard capacity`. Default true; false is the operator's opt-out.
+   */
+  copilot_quota?: boolean;
 }
 
 /** A `capacity.subscriptions.<name>` entry (LLD §16.9): config provider ids sharing 1..4 usage windows. */
@@ -347,6 +352,8 @@ export const DEFAULT_BREAKER_OPEN_SECONDS = 300;
 export const DEFAULT_RETRY_MAX_ATTEMPTS = 3;
 export const DEFAULT_RETRY_BASE_MS = 2000;
 export const DEFAULT_RETRY_CAP_MS = 120000;
+/** `capacity.copilot_quota` (Delegated: on, operator opt-out; it only reads the operator's own quota through `gh`). */
+export const DEFAULT_COPILOT_QUOTA = true;
 
 /**
  * LLD §15.4 defaults and the minimum of `continuity.max_bundle_bytes` (Assumptions, ADR-0038 item 5.5). They equal
@@ -1197,6 +1204,7 @@ export const configSchema = {
         window_seconds: { type: "integer", minimum: 60, maximum: 604800 },
         confidence_runs: { type: "integer", minimum: 1, maximum: 1000 },
         queue_horizon_seconds: { type: "integer", minimum: 0, maximum: 86400 },
+        copilot_quota: { type: "boolean" },
         breaker: {
           type: "object",
           additionalProperties: false,

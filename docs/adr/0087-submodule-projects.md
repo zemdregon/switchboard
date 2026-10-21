@@ -12,9 +12,9 @@
   merged commits and the opt-in `all_reported` check policy. Every detail below is the coder's, not owner-approved.
   Nothing here changes bypass runs, the Git-write denial (the agent still cannot run `git submodule`) or worktree
   isolation.
-- Related: FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15, FR-SUB-03, FRD BR-60, BR-61,
+- Related: FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15, FR-SUB-03, FRD BR-61, BR-62,
   [LLD §3.4.17](../design/LLD.md#3417-submodule-projects-adr-0087), [ROADMAP T9.22](../ROADMAP.md#63-m9-projects-and-controlled-commits-tasks),
-  Q-116, Q-117, Q-118.
+  Q-117, Q-118, Q-119.
 
 ## Context
 
@@ -232,10 +232,10 @@ umbrella-relative submodule paths only; never a URL with credentials, a title, a
 - The first run of a large umbrella clones every store (bounded parallel); later runs fetch only missing commits.
   `refresh_project_base` warms the cache.
 - A wiki is read-only. A future ADR may allow pushing wiki changes directly.
-- Not covered: nested submodules (a submodule's own `.gitmodules` is ignored: its submodules stay empty, Q-116),
+- Not covered: nested submodules (a submodule's own `.gitmodules` is ignored: its submodules stay empty, Q-117),
   `ssh` submodule URLs, GitHub Enterprise, a submodule pull request merged by a person before the umbrella step (it is
-  accepted when its merge commit is on the default branch), and editing an existing pull request body (Q-117). Open:
-  whether `project_source` grants should expire (Q-118).
+  accepted when its merge commit is on the default branch), and editing an existing pull request body (Q-118). Open:
+  whether `project_source` grants should expire (Q-119).
 
 ## Revisit when
 

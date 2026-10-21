@@ -281,6 +281,7 @@ import {
   storeCatalog,
   versionInjectable,
 } from "../skills/index.js";
+import { COPILOT_PROVIDER, type CopilotQuotaReader } from "../usage/copilot-quota.js";
 import { gitText } from "../workspace/git.js";
 import { type BaseToolDeps, rebaseSessionTool, refreshProjectBase } from "./base-tools.js";
 import { type ClosePrArgs, closePr, closePrOffered, recordClosePrRefusal } from "./close-pr.js";
@@ -477,6 +478,11 @@ export interface McpServerDeps {
    * ceiling is above `inspect-untrusted`.
    */
   readonly base?: BaseToolDeps;
+  /**
+   * ADR-0081: the usage-only `copilot` provider's quota reader (`capacity.copilot_quota`, the operator's own `gh`).
+   * Present: `get_capacity` accepts `provider: "copilot"` and attaches `provider_quota`. Absent: unchanged.
+   */
+  readonly copilotQuota?: CopilotQuotaReader;
 }
 
 /** T16.9: what the skill tools read. Nothing here is written. */
@@ -2050,8 +2056,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     // ADR-0076: either spelling; the answer names the canonical provider.
     const given = args.provider as string | undefined;
     const named = given === undefined ? undefined : (canonicalProviderId(given) ?? given);
-    if (named !== undefined && !ids.includes(named)) {
-      const accepted = acceptedProviderNames(ids);
+    // ADR-0081: `copilot` is usage-only (no adapter): accepted only while the quota reader is configured.
+    const quota = deps.copilotQuota;
+    const usageOnly = quota !== undefined && named === COPILOT_PROVIDER && !ids.includes(named);
+    if (named !== undefined && !ids.includes(named) && !usageOnly) {
+      const accepted = [...acceptedProviderNames(ids), ...(quota !== undefined ? [COPILOT_PROVIDER] : [])];
       throw invalid(`unknown provider ${JSON.stringify(given)}; accepted names: ${accepted.join(", ")}`, {
         providers: ids,
         accepted_names: accepted,
@@ -2063,19 +2072,31 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       windowSeconds: DEFAULT_CAPACITY_WINDOW_SECONDS,
       confidenceRuns: DEFAULT_CAPACITY_CONFIDENCE_RUNS,
     };
-    const providers = capacityProviders(named === undefined ? ids : [named], {
+    const providers = capacityProviders(usageOnly ? [] : named === undefined ? ids : [named], {
       ...(deps.config.providers !== undefined ? { providers: deps.config.providers } : {}),
       ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
     });
     // T6.7: the affinity block shows this client's own runs only.
     const now = (deps.now ?? (() => new Date()))();
-    const projection = capacityProjection(ledger, providers, settings, now, deps.clientId);
-    if (deps.providerUsage === undefined) return projection;
-    const targets = usageReadTargets(
-      deps.registry.list().filter((a) => providers.some((p) => p.id === a.id)),
-      projection,
-    );
-    return withProviderUsage(projection, await readProviderUsage(targets, deps.providerUsage, now));
+    const estimated = capacityProjection(ledger, providers, settings, now, deps.clientId);
+    // ADR-0079 (FR-CAP-13): provider-reported usage per adapter entry. A usage-only `copilot` request has no entries.
+    const projection =
+      deps.providerUsage === undefined
+        ? estimated
+        : withProviderUsage(
+            estimated,
+            await readProviderUsage(
+              usageReadTargets(
+                deps.registry.list().filter((a) => providers.some((p) => p.id === a.id)),
+                estimated,
+              ),
+              deps.providerUsage,
+              now,
+            ),
+          );
+    // ADR-0081: the provider-reported quota rides alongside, never mixed into the estimates. The reader never throws.
+    if (quota === undefined || (named !== undefined && !usageOnly)) return projection;
+    return { ...projection, provider_quota: [await quota()] };
   };
 
   /**

@@ -90,7 +90,7 @@ describe("live smoke provider plug-ins (T4.3)", () => {
       grok: { transport: "subprocess-jsonl", flags: ["--always-approve"] },
       // T4.68 bypass-only gate (ruling 2026-10-19 08:45 CDT): the plug-in's ACP smoke cell no longer compiles.
       kimi: { transport: "Ineligible", flags: [] },
-      opencode: { transport: "subprocess-jsonl", flags: [] },
+      opencode: { transport: "subprocess-jsonl", flags: ["--auto"] },
     };
     for (const [id, w] of Object.entries(want)) {
       const plugin = (await import(pathToFileURL(path.join(dir, `${id}.mjs`)).href)).default;
