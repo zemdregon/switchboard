@@ -1,5 +1,5 @@
 /**
- * Provider-reported usage windows in the capacity projection (ADR-0080; FR-CAP-14, BR-50). Rows carry the metrics the
+ * Provider-reported usage windows in the capacity projection (ADR-0081; FR-CAP-14, BR-50). Rows carry the metrics the
  * Claude parser records from the 2026-10-21 capture.
  */
 import { mkdtempSync, rmSync } from "node:fs";

@@ -1,5 +1,5 @@
 /**
- * Claude Code subscription usage windows from `rate_limit_event` (ADR-0080; FR-CAP-14, FR-CAP-09, BR-50).
+ * Claude Code subscription usage windows from `rate_limit_event` (ADR-0081; FR-CAP-14, FR-CAP-09, BR-50).
  *
  * Captured 2026-10-21 on Claude Code 2.1.294 (`docs/research/claude-usage-capture-2026-10-21.md`): every
  * `--output-format stream-json` run emits one `rate_limit_event`, `status: "allowed"` included, whose `rate_limit_info`

@@ -1,4 +1,4 @@
-# ADR-0080: Claude Code usage windows from the run's own `rate_limit_event`
+# ADR-0081: Claude Code usage windows from the run's own `rate_limit_event`
 
 - Status: Accepted (built 2026-10-21).
 - Date: 2026-10-21
@@ -13,7 +13,7 @@
   [ADR-0058](0058-captured-limit-signatures.md) (captured limit signatures),
   [ADR-0063](0063-per-run-provider-otlp-metrics-receiver.md) (per-run OTLP metrics, the other usage source),
   [capture note](../research/claude-usage-capture-2026-10-21.md),
-  [LLD §16.11](../design/LLD.md#1611-claude-code-usage-windows-from-run-output-fr-cap-14-adr-0080),
+  [LLD §16.11](../design/LLD.md#1611-claude-code-usage-windows-from-run-output-fr-cap-14-adr-0081),
   [ROADMAP T6.18](../ROADMAP.md#611-m6-capacity-and-resilience-tasks).
 
 ## Context

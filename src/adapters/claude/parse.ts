@@ -22,7 +22,7 @@
  * weekly limit · resets 12pm (UTC)", exit 1; a reset hour with no date). The `rejected` `rate_limit_event` shape above
  * is still an Assumption from a synthetic fixture.
  *
- * ADR-0080 (captured 2026-10-21, `docs/research/claude-usage-capture-2026-10-21.md`): every run emits an `allowed`
+ * ADR-0081 (captured 2026-10-21, `docs/research/claude-usage-capture-2026-10-21.md`): every run emits an `allowed`
  * `rate_limit_event` whose `unifiedWindows` carry the account's 5-hour and 7-day used share and reset; they become a
  * `provider_reported` `usage` event (`./usage.ts`).
  */
@@ -205,7 +205,7 @@ function resultEvents(e: Json, state: ParseState): NormalizedEvent[] {
 
 function rateLimitEvents(e: Json): NormalizedEvent[] {
   const info = obj(e.rate_limit_info);
-  // ADR-0080: the window figures are recorded whatever the status; only `rejected` is a limit signal.
+  // ADR-0081: the window figures are recorded whatever the status; only `rejected` is a limit signal.
   const metrics = claudeUsageMetrics(info);
   const usage: NormalizedEvent[] = metrics ? [{ kind: "usage", source: "provider_reported", metrics }] : [];
   const status = str(info?.status);
