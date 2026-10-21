@@ -1748,6 +1748,15 @@ CLI"; no flag below is invented, and no flag is assumed to exist beyond what [R2
 SRS §3.3; compilation to native controls is **Proposed** (FR-POL-02: an adapter that cannot satisfy a profile is
 ineligible for it, never downgraded). Bypass flags (`--dangerously-skip-permissions`, `--yolo`, `--force`,
 `--always-approve`, `--approve-mcps`, `--full-auto`) are never emitted outside an approved `privileged` run (FR-POL-03).
+
+*Note 2026-10-20 ([ADR-0077](../adr/0077-bypass-unconfined-and-every-provider-bypass-cell.md), owner decision 79):*
+an approved bypass cell is not confined to the worktree. Where a provider section below says a bypass cell is
+Ineligible, sandboxed to the worktree or wrapped, ADR-0077 overrides it for that cell: Codex compiles
+`--dangerously-bypass-approvals-and-sandbox` (`codex exec --help`, codex-cli 0.162.0, 2026-10-20) in place of
+`--sandbox`; the Grok Build worktree cell compiles `--sandbox off` (worktree files with network `off` are refused);
+the Cursor cell starts without the ADR-0059 wrapper; and the Codex, Grok Build, Cursor, OpenCode and Antigravity bypass
+cells emit a requested model as `--model <id>` (each flag from the installed `--help` on the operator host). Lower-tier
+cells are unchanged.
 Version ranges come from compliance manifests, not this table (FR-ADP-03, FR-POL-07).
 
 *M4 closure note (T4.90, 2026-10-17, Delegated, not owner-approved):* the first sentence above no longer holds for

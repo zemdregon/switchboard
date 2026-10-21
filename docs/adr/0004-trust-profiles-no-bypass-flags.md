@@ -1,6 +1,8 @@
 # ADR-0004: Trust profiles compiled per adapter; no automatic bypass flags
 
-- Status: Accepted
+- Status: Accepted; superseded in part by [ADR-0077](0077-bypass-unconfined-and-every-provider-bypass-cell.md)
+  (2026-10-20, owner ruling): an approved bypass run is not confined to its worktree, and every provider but Muse Code
+  and Copilot gets a bypass cell
 - Date: 2026-10-12
 - Decided by: Delegated (agent, 2026-10-12)
 - Related: FR-POL-01–09, NFR-SEC-03, [SRS §3.3](../requirements/SRS.md#33-policy-and-trust-profiles-fr-pol)

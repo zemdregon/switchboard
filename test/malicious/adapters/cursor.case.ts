@@ -17,11 +17,7 @@
  * unreadable known event kinds parse only as `unknown`.
  */
 import { CursorAdapter } from "../../../src/adapters/cursor/adapter.js";
-import {
-  BYPASS_SCOPE,
-  PASSTHROUGH_BWRAP,
-  PRIVILEGED_BYPASS_PROFILE,
-} from "../../../src/adapters/cursor/fixtures/cases.js";
+import { BYPASS_SCOPE, PRIVILEGED_BYPASS_PROFILE } from "../../../src/adapters/cursor/fixtures/cases.js";
 import { privilegedProfile } from "../../../src/adapters/fixtures/privileged.js";
 import { replayLauncher } from "../../../src/adapters/fixtures/replay.js";
 import type { ResolvedProfile } from "../../../src/adapters/types.js";
@@ -177,7 +173,6 @@ const cursorCase: AdapterLegCase = {
   makeAdapter: (file, exitCode) =>
     new CursorAdapter({
       executable: process.execPath,
-      bwrap: PASSTHROUGH_BWRAP,
       launcherArgs: replayLauncher("cursor", file, ["--exit-code", String(exitCode)]),
       timeouts: { wallClockMs: 10_000, idleMs: 2_000, killGraceMs: 300 },
     }),

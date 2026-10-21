@@ -28,6 +28,7 @@ import {
   DEFAULT_MAX_LINE_BYTES,
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
+import { MODEL_ID_PATTERN } from "../../models/registry.js";
 import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
@@ -65,6 +66,7 @@ import {
   FORMAT_FLAG,
   FORMAT_JSON,
   GIT_WRITE_CONTROL_DETAIL,
+  MODEL_FLAG,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
   OPENCODE_BINARY,
   OPENCODE_LOGIN_COMMAND,
@@ -86,6 +88,8 @@ import {
  */
 export const OPENCODE_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
+/** A model id passed as one argv word (the registry's `MODEL_ID_PATTERN` shape; never read as a flag). */
+const MODEL_ID_RE = new RegExp(MODEL_ID_PATTERN);
 const PROBE_TIMEOUT_MS = 10_000;
 const MAX_SUMMARY_CHARS = 2_000;
 const MAX_TARGET_CHARS = 512;
@@ -302,8 +306,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
    * 6. network other than `on`: CAPABILITY_MISSING (no network control and no sandbox, TDD §4.6);
    * 7. repository_config `disabled` or `approved`: CAPABILITY_MISSING (a repository's `opencode.json` and `AGENTS.md`
    *    load, [LIVE] 10a, 10c, and no documented flag ignores them); only `enabled` compiles (owner decision 26, Q-37);
-   * 8. a requested model: CAPABILITY_MISSING (the model registry has no OpenCode data yet, T4.5; `--model` is not
-   *    emitted, so the operator's configured default model runs).
+   * 8. a requested model that is not a plain id: CAPABILITY_MISSING; otherwise it is `--model <id>` (ADR-0077); with
+   *    none the operator's configured default model runs.
    */
   #build(request: CompileRequest, profile: ResolvedProfile, tail: string[]): Invocation | Ineligible {
     const allowlist = profile.shellAllowlist ?? [];
@@ -355,12 +359,12 @@ export class OpenCodeAdapter implements ProviderAdapter {
           "load and no documented flag ignores them; owner decision 26 (Q-37) allows `enabled` in an approved bypass run",
       );
     }
-    if (request.model !== undefined) {
-      return ineligible("CAPABILITY_MISSING", "no model registry data for OpenCode yet (T4.5; --model is not emitted)");
+    if (request.model !== undefined && !MODEL_ID_RE.test(request.model)) {
+      return ineligible("CAPABILITY_MISSING", "requested model is not a plain model id");
     }
     if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${OPENCODE_BINARY} not found on PATH`);
 
-    const policyFlags = [STANDALONE_FLAG];
+    const policyFlags = [STANDALONE_FLAG, ...(request.model !== undefined ? [MODEL_FLAG, request.model] : [])];
     return {
       transport: "subprocess-jsonl",
       // The prompt is one argv word after `--` (Assumption, see protocol.ts); it is visible in the process list.

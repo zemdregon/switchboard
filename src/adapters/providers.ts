@@ -138,7 +138,14 @@ export const BUILTIN_PROVIDERS = [
     kind: "real",
     label: "Codex (real provider)",
     // [R2] L28, L125 (`--yolo`, not to be built around) and L126 (`--full-auto`, deprecated compatibility option).
-    bypassFlags: ["--yolo", "--full-auto"],
+    // `codex exec --help` of codex-cli 0.162.0 (2026-10-20, ADR-0077): `--dangerously-bypass-approvals-and-sandbox`
+    // ("Skip all confirmation prompts and execute commands without sandboxing"), emitted only in the approved bypass
+    // cell; `--sandbox danger-full-access` is the same widening as a flag value. The adapter never emits that value.
+    bypassFlags: ["--yolo", "--full-auto", "--dangerously-bypass-approvals-and-sandbox"],
+    bypassValues: [
+      { flag: "--sandbox", value: "danger-full-access" },
+      { flag: "-s", value: "danger-full-access" },
+    ],
     // TDD §4.10: "Tied to the working directory" is `No` (T5.12 cell 2, codex-cli 0.162.0;
     // docs/research/live-checks-2026-10-19-codex-container-resume.md).
     resumeCwd: "independent",

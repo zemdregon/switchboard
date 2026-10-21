@@ -129,3 +129,8 @@ export const TOKEN_KEYS: readonly (readonly [path: readonly string[], metric: st
   [["cache", "read"], "cache_read"],
   [["cache", "write"], "cache_write"],
 ];
+
+/**
+ * Model flag, emitted only from a request's model in the approved bypass cell (ADR-0077). `opencode run --help` 2.0.x on the operator host (2026-10-20): "--model, -m string  Model to use in the format provider/model#variant".
+ */
+export const MODEL_FLAG = "--model";

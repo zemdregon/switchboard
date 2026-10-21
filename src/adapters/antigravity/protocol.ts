@@ -157,3 +157,8 @@ export const USAGE_KEYS: readonly string[] = [
  * Native Antigravity output reports no backing vendor ([LIVE] C4); this structured field is accepted when present.
  */
 export const BACKING_PROVIDER_KEY = "backing_provider";
+
+/**
+ * Model flag, emitted only from a request's model in the approved bypass cell (ADR-0077). `agy --help` on the operator host (2026-10-20): "--model  Model for the current CLI session".
+ */
+export const MODEL_FLAG = "--model";

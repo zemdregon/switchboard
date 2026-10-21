@@ -54,6 +54,11 @@ planning and are marked "(planning)". Actors are defined in §2.
 
 The inner backend has no row: it holds no permissions, performs no action and appears in no decision (BR-35).
 
+*Note 2026-10-20 ([ADR-0077](../adr/0077-bypass-unconfined-and-every-provider-bypass-cell.md), owner ruling):* the
+"Emit permission-bypass flags" row is unchanged, but what a bypass run may then do is wider: it is not confined to its
+worktree (reads and writes outside it are allowed), while the Git-write denial and the pre-push secret scan still
+apply. Worktree confinement stays a rule of every lower tier.
+
 Rules on the matrix: a caller's maximum trust profile is a ceiling per MCP client; a request above it ends with
 `PERMISSION_BLOCKED` before any side effect (BR-13). Privileged approval exists only on the operator CLI (BR-14), or,
 since 2026-10-13, in the operator's configuration for a client set `privileged_approval: "not_required"` (BR-14 note,

@@ -25,7 +25,7 @@ import {
   type ProbeRunner,
   type ResolvedProfile,
 } from "../types.js";
-import { CODEX_BYPASS_OUTSIDE_PRIVILEGED, CODEX_BYPASS_UNDOCUMENTED, CodexAdapter, resolveOnPath } from "./adapter.js";
+import { CODEX_BYPASS_NOT_APPROVED, CODEX_BYPASS_OUTSIDE_PRIVILEGED, CodexAdapter, resolveOnPath } from "./adapter.js";
 import { codexConformanceCases, EDIT_PROFILE, fixturePath, INSPECT_PROFILE, replayAdapter } from "./fixtures/cases.js";
 import { CODEX_LOGIN_COMMAND } from "./protocol.js";
 
@@ -815,19 +815,83 @@ describe("privileged compile matrix (T3.6, T3.17; TDD §4.2.1)", () => {
     expect(resumed.argv).toEqual([EXE, "exec", "--json", ...harness("workspace-write"), "resume", "t-1"]);
   });
 
-  it("bypass true is Ineligible whatever the approval: R2 does not document the flag precisely enough to emit", () => {
-    const p = privilegedProfile({ ...CODEX_SCOPE, bypass: true });
-    for (const bypassApproved of [undefined, false, true]) {
+  /** The scope the Codex bypass cell compiles (ADR-0077): worktree files, shell broad, network on. */
+  const BYPASS_SCOPE: PrivilegedScope = {
+    ...CODEX_SCOPE,
+    network: { mode: "on" },
+    bypass: true,
+  };
+  const BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox";
+  const bypassCtx = (scope: PrivilegedScope) => ({ profile: privilegedProfile(scope), bypassApproved: true });
+
+  it("approved bypass compiles --dangerously-bypass-approvals-and-sandbox with no sandbox (ADR-0077)", () => {
+    const req = request({ bypassApproved: true });
+    const inv = must(adapter().compile(req, privilegedProfile(BYPASS_SCOPE)));
+    expect(inv.policyFlags).toEqual([BYPASS_FLAG, "--ignore-user-config", "--ignore-rules"]);
+    expect(inv.argv).toEqual([EXE, "exec", "--json", ...inv.policyFlags]);
+    // Unconfined: no sandbox flag at all, so nothing keeps the run inside its worktree (owner ruling 2026-10-20).
+    expect(inv.argv).not.toContain("--sandbox");
+    expect(findBypassFlags(inv, "codex")).toEqual([BYPASS_FLAG]);
+    expect(auditInvocation(inv, bypassCtx(BYPASS_SCOPE), "codex")).toEqual([]);
+    expect(auditInvocation(inv, { ...bypassCtx(BYPASS_SCOPE), bypassApproved: false }, "codex")).toEqual([BYPASS_FLAG]);
+    const resumed = must(
+      adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, req, privilegedProfile(BYPASS_SCOPE)),
+    );
+    expect(resumed.argv).toEqual([EXE, "exec", "--json", ...inv.policyFlags, "resume", "t-1"]);
+  });
+
+  it("the bypass cell: repository_config enabled omits the harness flags; a model compiles to --model", () => {
+    const enabled = must(
+      adapter().compile(
+        request({ bypassApproved: true, model: "gpt-6" }),
+        privilegedProfile({ ...BYPASS_SCOPE, repository_config: { mode: "enabled" } }),
+      ),
+    );
+    expect(enabled.policyFlags).toEqual([BYPASS_FLAG, "--model", "gpt-6"]);
+    expect(
+      adapter().compile(request({ bypassApproved: true, model: "-x" }), privilegedProfile(BYPASS_SCOPE)),
+    ).toMatchObject({ reason: "CAPABILITY_MISSING", detail: expect.stringMatching(/plain model id/) });
+  });
+
+  it("bypass without an approval is Ineligible and carries no bypass flag", () => {
+    const p = privilegedProfile(BYPASS_SCOPE);
+    for (const bypassApproved of [undefined, false]) {
       const req = request(bypassApproved === undefined ? {} : { bypassApproved });
       for (const r of [
         adapter().compile(req, p),
         adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, req, p),
       ]) {
-        expect(r).toEqual({ ineligible: true, reason: "PROFILE_UNSUPPORTED", detail: CODEX_BYPASS_UNDOCUMENTED });
-        expect(JSON.stringify(r)).not.toMatch(/--yolo|--full-auto|--dangerously/);
+        expect(r).toEqual({ ineligible: true, reason: "PROFILE_UNSUPPORTED", detail: CODEX_BYPASS_NOT_APPROVED });
       }
     }
-    expect(CODEX_BYPASS_UNDOCUMENTED).toBe("bypass/privileged flag not documented in R2: verify live");
+  });
+
+  it.each([
+    ["read-only files", { files: { access: "read-only" } }, /read-only/],
+    ["shell none", { shell: { mode: "none" } }, /shell=none/],
+    ["network off", { network: { mode: "off" } }, /network=off/],
+    ["network allowlist", { network: { mode: "allowlist", hosts: ["a.example.test"] } }, /network=allowlist/],
+    ["repository_config approved", { repository_config: { mode: "approved" } }, /approved/],
+  ] as const)("approved bypass with %s is Ineligible", (_l, part, detail) => {
+    const r = adapter().compile(
+      request({ bypassApproved: true }),
+      privilegedProfile({ ...BYPASS_SCOPE, ...part } as PrivilegedScope),
+    );
+    expect(r).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING", detail: expect.stringMatching(detail) });
+  });
+
+  it("lower tiers stay confined: every non-bypass cell keeps --sandbox and never carries the bypass flag", () => {
+    const cells: Array<[ResolvedProfile, PrivilegedScope | undefined]> = [
+      [INSPECT_PROFILE, undefined],
+      [EDIT_PROFILE, undefined],
+      [privilegedProfile(CODEX_SCOPE), CODEX_SCOPE],
+    ];
+    for (const [profile] of cells) {
+      const inv = must(adapter().compile(request(), profile));
+      expect(inv.argv).toContain("--sandbox");
+      expect(inv.argv).not.toContain(BYPASS_FLAG);
+      expect(findBypassFlags(inv, "codex")).toEqual([]);
+    }
   });
 
   it.each([
@@ -863,7 +927,7 @@ describe("privileged compile matrix (T3.6, T3.17; TDD §4.2.1)", () => {
     });
   });
 
-  it("table: every scope shape x bypassApproved x writable never carries a bypass flag", () => {
+  it("table: every scope shape x bypassApproved x writable carries a bypass flag only in the approved bypass cell", () => {
     let compiled = 0;
     for (const scope of scopeShapes()) {
       const p = privilegedProfile(scope);
@@ -874,11 +938,16 @@ describe("privileged compile matrix (T3.6, T3.17; TDD §4.2.1)", () => {
             workspace: { cwd: "/work/tree", writable },
             ...(bypassApproved === undefined ? {} : { bypassApproved }),
           });
-          const shouldCompile =
-            !scope.bypass &&
-            scope.shell.mode === "broad" &&
-            scope.network.mode === "off" &&
-            scope.repository_config.mode === "disabled";
+          const shouldCompile = scope.bypass
+            ? bypassApproved === true &&
+              writable &&
+              scope.files.access === "worktree" &&
+              scope.shell.mode === "broad" &&
+              scope.network.mode === "on" &&
+              scope.repository_config.mode !== "approved"
+            : scope.shell.mode === "broad" &&
+              scope.network.mode === "off" &&
+              scope.repository_config.mode === "disabled";
           for (const r of [
             adapter().compile(req, p),
             adapter().resumeArgs({ provider: "codex", nativeSessionId: "t-1" }, req, p),
@@ -886,11 +955,18 @@ describe("privileged compile matrix (T3.6, T3.17; TDD §4.2.1)", () => {
             if (isIneligible(r)) {
               expect(shouldCompile, `${label}: ${r.detail}`).toBe(false);
               expect(["PROFILE_UNSUPPORTED", "CAPABILITY_MISSING"], label).toContain(r.reason);
-              if (scope.bypass) expect(r.detail, label).toBe(CODEX_BYPASS_UNDOCUMENTED);
+              if (scope.bypass && bypassApproved !== true) expect(r.detail, label).toBe(CODEX_BYPASS_NOT_APPROVED);
               continue;
             }
             expect(shouldCompile, label).toBe(true);
             compiled += 1;
+            if (scope.bypass) {
+              // Only the approved bypass cell carries the flag, and the audit admits it only in that context.
+              expect(findBypassFlags(r, "codex"), label).toEqual(["--dangerously-bypass-approvals-and-sandbox"]);
+              expect(auditInvocation(r, { profile: p, bypassApproved: true }, "codex"), label).toEqual([]);
+              expect(r.argv, label).not.toContain("--sandbox");
+              continue;
+            }
             expect(findBypassFlags(r), label).toEqual([]);
             expect(auditInvocation(r), label).toEqual([]);
             expect(r.policyFlags, label).toEqual(
