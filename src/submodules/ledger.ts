@@ -1,5 +1,5 @@
 /**
- * Typed rows of migration 0037's submodule tables (ADR-0087 items 4, 6, 7 and 9): `submodule_commit`,
+ * Typed rows of migration 0038's submodule tables (ADR-0087 items 4, 6, 7 and 9): `submodule_commit`,
  * `submodule_push`, `submodule_pull_request` and `submodule_merge`. Plain inserts and reads on the caller's database
  * handle, so an insert joins the caller's transaction (the commit path writes `submodule_commit` rows in the same
  * transaction as the umbrella's `git_commit` row). No run event is appended here: the caller decides what to announce.

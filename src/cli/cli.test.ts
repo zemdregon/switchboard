@@ -80,7 +80,9 @@ describe("help and command surface (FR-OPS-03)", () => {
     const help = await run(["--help"]);
     expect(help.code).toBe(0);
     expect(help.out).toBe(HELP);
-    expect(help.out).not.toMatch(/login|logout|auth/i);
+    // Whole words: `mcp oauth` manages Switchboard's own authorization server (like `consent`), not a sign-in.
+    expect(help.out).not.toMatch(/\b(login|logout|auth|signin)\b/i);
+    expect(help.out).not.toMatch(/^ {2}(login|logout|auth|signin)\b/im);
     for (const cmd of ["login", "auth", "logout", "signin"]) {
       const r = await run([cmd]);
       expect(r.code).toBe(2);

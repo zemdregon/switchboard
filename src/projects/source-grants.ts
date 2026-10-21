@@ -5,7 +5,7 @@
  * reader asks {@link effectiveProjectSources} at the time of the check. Hosts are never added: a grant can only name a
  * host already in `allowed_hosts`.
  *
- * Both tables are append-only (migration 0037): a request's status is derived from its one decision row.
+ * Both tables are append-only (migration 0038): a request's status is derived from its one decision row.
  * **Delegated** limitation: `allowed_owners` is a single list, not per host, so an approved owner is allowed on every
  * host in `allowed_hosts`, exactly like a configured owner.
  */

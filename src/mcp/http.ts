@@ -7,12 +7,16 @@
  * client store is configured: a valid request creates a `pending` client that can do nothing until the operator approves
  * it. The authorization and token endpoints (T13.8, `src/mcp/oauth-server.ts`) answer when an authorization server is
  * configured: `/authorize` shows the operator consent page and `/token` exchanges codes and rotates refresh tokens.
+ * `/revoke` is the RFC 7009 revocation endpoint of the same server (`AuthorizationServer.handleRevoke`).
  *
  * The MCP endpoint verifies the bearer token (T13.3, Q-73; `src/mcp/oauth-tokens.ts`). A request without an
  * `Authorization` header gets 401 with a `WWW-Authenticate` challenge naming the metadata URL (RFC 6750 §3, RFC 9728
  * §5.1). A malformed, unknown, expired, revoked or wrong-audience token, or a refresh token used as a bearer token, gets
  * one identical 401 with `error="invalid_token"`; the reason code goes only to `onTokenRejected`. A valid token needs
- * the `mcp` scope and an OAuth-client-to-MCP-client mapping (T13.4, Q-77), otherwise 403 `insufficient_scope`; then
+ * the `mcp` scope and an OAuth-client-to-MCP-client mapping (T13.4, Q-77; resolved by `resolveMcpClientFor`: the config
+ * map, then the ledger binding a profile-bound one-time code made, then `default_mcp_client`), otherwise 403
+ * `insufficient_scope`. A ledger binding is re-checked on every request: one that no longer names an entry eligible for
+ * a binding (removed, given a privileged ceiling or `privileged_approval: not_required`) is refused the same way; then
  * the request is served by a stateless MCP server for that configured client, with its maximum trust profile. The
  * OAuth client must still be approved. Only POST is served; requests in flight are capped. The handler never echoes a
  * token, removes the `Authorization` and `Cookie` headers before the MCP server sees the request, and logs nothing
@@ -57,6 +61,7 @@ import {
   AUTHORIZATION_SERVER_WELL_KNOWN,
   type HttpTransportSettings,
   PROTECTED_RESOURCE_WELL_KNOWN,
+  resolveMcpClientFor,
 } from "../config/http-transport.js";
 import { CONSENT_LINK_PATH } from "../control/consent-link.js";
 import { mediaType, readBody } from "./http-body.js";
@@ -84,7 +89,8 @@ export function protectedResourceMetadata(s: HttpTransportSettings): Record<stri
 
 /**
  * RFC 8414 §2. Authorization code with PKCE S256 only, public clients (`none`), rotating refresh tokens (ADR-0041 item
- * 4). Revocation is the operator CLI (`switchboard auth revoke`), so no revocation endpoint is advertised.
+ * 4). A client revokes its own tokens at the RFC 7009 revocation endpoint (public clients: `none`, the `client_id`
+ * alone); the operator revokes any client with `switchboard mcp oauth revoke`.
  */
 export function authorizationServerMetadata(s: HttpTransportSettings): Record<string, unknown> {
   return {
@@ -96,6 +102,8 @@ export function authorizationServerMetadata(s: HttpTransportSettings): Record<st
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
+    revocation_endpoint: `${s.issuer}${AS_ENDPOINT_PATHS.revocation}`,
+    revocation_endpoint_auth_methods_supported: ["none"],
     // T13.11 (FR-MCP-19): Client ID Metadata Documents (draft-ietf-oauth-client-id-metadata-document §6).
     client_id_metadata_document_supported: s.cimd,
   };
@@ -118,8 +126,11 @@ export interface HttpAuthDeps {
   tokens?: Pick<OAuthTokenStore, "verify">;
   /** Told the reason code of each refused token, for the local log. Never receives the token. */
   onTokenRejected?: (reason: TokenRejectReason) => void;
-  /** Told when a valid token is refused at the MCP endpoint (T13.4): no `mcp` scope, or no MCP client mapping. */
-  onClientRefused?: (reason: "missing_scope" | "unmapped_client", oauthClientId: string) => void;
+  /**
+   * Told when a valid token is refused at the MCP endpoint (T13.4): no `mcp` scope, no MCP client mapping, or a ledger
+   * binding to an entry that is no longer eligible.
+   */
+  onClientRefused?: (reason: "missing_scope" | "unmapped_client" | "ineligible_binding", oauthClientId: string) => void;
   /**
    * Builds the MCP server for one configured MCP client and one token subject, the OAuth client id (T13.4, T13.5;
    * `serve` passes `createSwitchboardServer` with the same dependencies as stdio plus the subject and its bindings).
@@ -130,8 +141,12 @@ export interface HttpAuthDeps {
   clients?: Pick<OAuthClientStore, "register" | "get">;
   /** Told the id of each newly registered (pending) client, for the local audit log. */
   onClientRegistered?: (clientId: string) => void;
-  /** Authorization and token endpoints with the consent page (T13.8). Without one both answer 404. */
-  authorizationServer?: Pick<AuthorizationServer, "handleAuthorize" | "handleToken">;
+  /**
+   * Authorization and token endpoints with the consent page (T13.8), and the revocation endpoint. Without one all
+   * answer 404; without `handleRevoke` only `/revoke` does.
+   */
+  authorizationServer?: Pick<AuthorizationServer, "handleAuthorize" | "handleToken"> &
+    Partial<Pick<AuthorizationServer, "handleRevoke">>;
   /** Consent-page approval links under `/approval/` (T14.10, FR-CTL-09). Without one the prefix answers 404. */
   approvalLinks?: { handle(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> };
 }
@@ -365,13 +380,23 @@ export function httpTransportHandler(s: HttpTransportSettings, auth: HttpAuthDep
       });
       return;
     }
-    if (pathname === AS_ENDPOINT_PATHS.authorization || pathname === AS_ENDPOINT_PATHS.token) {
+    if (
+      pathname === AS_ENDPOINT_PATHS.authorization ||
+      pathname === AS_ENDPOINT_PATHS.token ||
+      pathname === AS_ENDPOINT_PATHS.revocation
+    ) {
       const as = auth.authorizationServer;
-      if (!as) {
+      const revoke = as?.handleRevoke;
+      if (!as || (pathname === AS_ENDPOINT_PATHS.revocation && revoke === undefined)) {
         send(res, 404, { error: "not_found" });
         return;
       }
-      const handled = pathname === AS_ENDPOINT_PATHS.token ? as.handleToken(req, res) : as.handleAuthorize(req, res);
+      const handled =
+        pathname === AS_ENDPOINT_PATHS.token
+          ? as.handleToken(req, res)
+          : pathname === AS_ENDPOINT_PATHS.revocation && revoke !== undefined
+            ? revoke.call(as, req, res)
+            : as.handleAuthorize(req, res);
       handled.catch(() => {
         if (!res.headersSent) send(res, 500, { error: "server_error" });
         else res.destroy();
@@ -408,7 +433,8 @@ export function httpTransportHandler(s: HttpTransportSettings, auth: HttpAuthDep
       }
       // T13.4 (FR-MCP-14, Q-77): the token's OAuth client must still be approved (fail closed without a client store:
       // a revoked client's unexpired token is refused even if its tokens were not revoked with it).
-      if (auth.clients?.get(verdict.token.clientId)?.status !== "approved") {
+      const oauthClient = auth.clients?.get(verdict.token.clientId);
+      if (oauthClient?.status !== "approved") {
         refuse(res, "revoked");
         return;
       }
@@ -419,12 +445,16 @@ export function httpTransportHandler(s: HttpTransportSettings, auth: HttpAuthDep
         send(res, 403, { error: "insufficient_scope" }, { "www-authenticate": insufficient });
         return;
       }
-      const mcpClientId = s.clientMap.get(verdict.token.clientId) ?? s.defaultMcpClient;
-      if (mcpClientId === undefined) {
-        auth.onClientRefused?.("unmapped_client", verdict.token.clientId);
+      const resolved = resolveMcpClientFor(s, verdict.token.clientId, oauthClient.mcpClient);
+      if (resolved === undefined || !resolved.eligible) {
+        auth.onClientRefused?.(
+          resolved === undefined ? "unmapped_client" : "ineligible_binding",
+          verdict.token.clientId,
+        );
         send(res, 403, { error: "insufficient_scope" }, { "www-authenticate": insufficient });
         return;
       }
+      const mcpClientId = resolved.mcpClient;
       if (endpoint === undefined) {
         send(res, 501, { error: "not_implemented" });
         return;

@@ -1,5 +1,5 @@
 /**
- * Migration 0037 (ADR-0087; FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15, FR-SUB-03, LLD §3.4.17): umbrella projects
+ * Migration 0038 (ADR-0087; FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15, FR-SUB-03, LLD §3.4.17): umbrella projects
  * with Git submodules, linked publication, the ordered merge and project source grants.
  *
  * - `submodule_commit`: one row per controller-made commit in a submodule repository (`kind = 'publish'`), written in

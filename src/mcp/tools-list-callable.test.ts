@@ -25,8 +25,10 @@ import {
   DEFAULT_MAX_RUN_BYTES,
 } from "../skills/index.js";
 import { DECIDE_TOOL_NAMES, DECISION_TOOL_NAMES } from "./decision-tools.js";
+import { OAuthAdmin } from "./oauth-admin.js";
 import {
   BASE_TOOL_NAMES,
+  OAUTH_TOOL_NAMES,
   PROJECT_TOOL_NAMES,
   PUBLISH_TOOL_NAMES,
   SEARCH_TOOL_NAMES,
@@ -47,6 +49,7 @@ const ALL_TOOL_NAMES: readonly string[] = [
   ...APPROVAL_PROXY_TOOL_NAMES,
   ...DECISION_TOOL_NAMES,
   ...DECIDE_TOOL_NAMES,
+  ...OAUTH_TOOL_NAMES,
 ];
 
 type Client = Omit<ResolvedMcpClient, "id">;
@@ -92,6 +95,8 @@ const fullDeps = ({ db, dataDir }: { db: import("better-sqlite3").Database; data
   },
   // ADR-0074: the base port behind refresh_project_base and rebase_session (never reached: invalid arguments).
   base: { db, ids: createIdGenerator(), sourceEnv: {} },
+  // The OAuth admin view behind list_oauth_clients (stdio only; the harness clients are stdio sessions).
+  oauthAdmin: new OAuthAdmin(db, { clientMap: new Map() }),
 });
 
 interface Setup {
@@ -118,6 +123,7 @@ const SETUPS: readonly Setup[] = [
       "decide",
       "refresh_project_base",
       "rebase_session",
+      "list_oauth_clients",
     ],
   },
   {
@@ -156,6 +162,7 @@ const SETUPS: readonly Setup[] = [
       "get_skill",
       "refresh_project_base",
       "rebase_session",
+      "list_oauth_clients",
     ],
   },
   {

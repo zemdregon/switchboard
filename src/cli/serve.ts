@@ -131,6 +131,9 @@ import {
   CimdFetcher,
   createSwitchboardServer,
   type HttpTransportListener,
+  IpAttemptLimiter,
+  OAuthAdmin,
+  OAuthAuditLog,
   OAuthClientStore,
   OAuthTokenStore,
   PairingCodeStore,
@@ -1681,7 +1684,15 @@ async function runDaemon(
         ),
       },
     };
-    mcp = await startStdioServer({ ...mcpDeps, clientId });
+    // `list_oauth_clients` on stdio only, and only with the HTTP transport on: the HTTP servers below are built from
+    // `mcpDeps` without it (and `createSwitchboardServer` refuses it for any HTTP subject anyway).
+    mcp = await startStdioServer({
+      ...mcpDeps,
+      clientId,
+      ...(config.httpTransport !== undefined
+        ? { oauthAdmin: new OAuthAdmin(db, config.httpTransport, now ? { now } : {}) }
+        : {}),
+    });
     mcp.server.onclose = () => resolveStop("mcp transport closed");
     log.info("serving MCP on stdio", {
       client: clientId,
@@ -1697,6 +1708,10 @@ async function runDaemon(
     // One wrong-passphrase lockout for the OAuth consent page and the approval-link page (T14.10).
     const passphraseLimiter = new AttemptLimiter();
     const pairing = new PairingCodeStore(db, now ? { now } : {});
+    // One per-address lockout for both consent pages; `client_ip_header` is honoured only from a loopback peer.
+    const ipLimiter = new IpAttemptLimiter(config.httpTransport?.clientIpHeader);
+    // Durable audit of grants and revocations (`oauth_event`); never a token, code or passphrase.
+    const oauthAudit = new OAuthAuditLog(db, now ? { now } : {});
     httpListener = await startHttpTransport(config.httpTransport, {
       tokens: oauthTokens,
       onTokenRejected: (reason) => log.warn("refused an HTTP bearer token", { reason }),
@@ -1723,6 +1738,8 @@ async function runDaemon(
               cimd: new CimdFetcher(),
               pairing,
               limiter: passphraseLimiter,
+              ipLimiter,
+              audit: oauthAudit,
               ...(config.httpTransport.passphraseHash !== undefined
                 ? { passphraseHash: config.httpTransport.passphraseHash }
                 : {}),
@@ -1739,6 +1756,7 @@ async function runDaemon(
               links: consentLinks,
               pairing,
               limiter: passphraseLimiter,
+              ipLimiter,
               ...(config.httpTransport.passphraseHash !== undefined
                 ? { passphraseHash: config.httpTransport.passphraseHash }
                 : {}),

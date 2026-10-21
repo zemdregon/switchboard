@@ -296,6 +296,7 @@ import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
 import type { SubjectBindings } from "./http-subjects.js";
 import { type MergeRunDeps, mergeRunPr, updateRunBranch, updateRunOffered } from "./merge-run-pr.js";
+import { type OAuthAdmin, UnknownOAuthClientError } from "./oauth-admin.js";
 import {
   admitBrief,
   contextListItem,
@@ -314,6 +315,7 @@ import {
   type BaseToolName,
   inputSchema,
   MCP_ARTIFACT_KINDS,
+  OAUTH_TOOL_NAMES,
   PROJECT_TOOL_NAMES,
   type ProjectToolName,
   PUBLISH_TOOL_NAMES,
@@ -415,6 +417,11 @@ export interface McpServerDeps {
   readonly subject?: string;
   /** T13.5: meta-session to subject bindings. Absent on stdio means no HTTP-bound meta-session is filtered out. */
   readonly subjectBindings?: SubjectBindings;
+  /**
+   * The OAuth admin view behind `list_oauth_clients`. Offered only on stdio (no `subject`): a server built for an HTTP
+   * subject never lists or serves the tool, even when this is passed (fail closed).
+   */
+  readonly oauthAdmin?: Pick<OAuthAdmin, "listClients" | "getClient">;
   /** Routing candidate order (BR-4 tie-break). Defaults to registry registration order. */
   readonly candidateOrder?: readonly ProviderId[];
   /** Clock for `get_capacity` (T6.3) and the routing window (T7.2); defaults to the system clock. */
@@ -2258,6 +2265,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   // ADR-0074 (LLD §3.4.15): scoped like `search_project_context` (projects) and `continue_task` (meta-sessions).
   const baseOffered = deps.base !== undefined && maxTrustProfile !== "inspect-untrusted";
   const baseValidators = compileBaseValidators();
+  const oauthAdmin = deps.subject === undefined ? deps.oauthAdmin : undefined;
+  const oauthOffered = oauthAdmin !== undefined;
+  const oauthValidator = new Ajv2020({ allErrors: true, strict: true, useDefaults: true }).compile(
+    inputSchema("list_oauth_clients"),
+  );
   /** The client's newest visible run of `projectId` in `repoRoot`: where `refresh_project_base` records its event. */
   const anchorRun = (projectId: string, repoRoot: string): string | undefined => {
     const rows = (deps.base as BaseToolDeps).db
@@ -2425,6 +2437,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         updateRunBranch: updateBranchOffered,
         closePr: closePrToolOffered,
         baseTools: baseOffered,
+        oauthClients: oauthOffered,
       }),
       // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
       ...(approvalProxy !== undefined
@@ -2538,6 +2551,18 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         const validate = baseValidators[tool];
         if (!validate(args)) throw schemaError(validate.errors ?? []);
         return ok(await baseHandlers[tool](args));
+      }
+      if ((OAUTH_TOOL_NAMES as readonly string[]).includes(name) && oauthAdmin !== undefined) {
+        // Stdio only: over HTTP `oauthAdmin` is never set, so the name is answered exactly like an unknown tool.
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        if (!oauthValidator(args)) throw schemaError(oauthValidator.errors ?? []);
+        const id = args.client_id as string | undefined;
+        try {
+          return ok({ clients: id === undefined ? oauthAdmin.listClients() : [oauthAdmin.getClient(id)] });
+        } catch (err) {
+          if (err instanceof UnknownOAuthClientError) throw invalid(err.message, { field: "client_id" });
+          throw err;
+        }
       }
       if ((WORK_QUEUE_TOOL_NAMES as readonly string[]).includes(name) && workQueueOffered) {
         // T15.9 (FR-QUE-08): when not offered (a console client) it is answered exactly like an unknown tool.

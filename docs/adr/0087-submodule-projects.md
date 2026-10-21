@@ -12,7 +12,7 @@
   merged commits and the opt-in `all_reported` check policy. Every detail below is the coder's, not owner-approved.
   Nothing here changes bypass runs, the Git-write denial (the agent still cannot run `git submodule`) or worktree
   isolation.
-- Related: FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15, FR-SUB-03, FRD BR-59, BR-60,
+- Related: FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15, FR-SUB-03, FRD BR-60, BR-61,
   [LLD §3.4.17](../design/LLD.md#3417-submodule-projects-adr-0087), [ROADMAP T9.22](../ROADMAP.md#63-m9-projects-and-controlled-commits-tasks),
   Q-116, Q-117, Q-118.
 
@@ -207,7 +207,7 @@ publication, pull_request, pull_request_error? }]`. `get_run`, `list_runs` and `
 
 ### 9. Persistence
 
-Migration 0037 adds the append-only, `STRICT` tables `submodule_commit`, `submodule_push`, `submodule_pull_request`,
+Migration 0038 adds the append-only, `STRICT` tables `submodule_commit`, `submodule_push`, `submodule_pull_request`,
 `submodule_merge`, `project_source_request` and `project_source_decision`. Ids, SHAs, `host/owner/repo` keys and
 umbrella-relative submodule paths only; never a URL with credentials, a title, a body or `gh` text.
 

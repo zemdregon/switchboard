@@ -41,6 +41,7 @@ const EXPECTED_TABLES = [
   "meta_session",
   "oauth_cimd_client",
   "oauth_client",
+  "oauth_event",
   "oauth_pairing_code",
   "oauth_token",
   "project_affinity",
