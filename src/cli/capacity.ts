@@ -6,30 +6,25 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { acceptedProviderNames, canonicalProviderId } from "../adapters/providers.js";
+import { createProbeRunner } from "../adapters/run.js";
 import {
-  attachProviderUsage,
   bindingPacingWindow,
   type CapacityProjection,
   capacityProjection,
   capacityProviders,
   type PacingSubscriptionView,
   type PacingWindowView,
-  type ProviderUsageReport,
+  providerUsageLines,
+  readProviderUsage,
+  usageReadTargets,
+  withProviderUsage,
 } from "../capacity/index.js";
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
 import { createLedger, LEDGER_FILE_NAME, migrate } from "../ledger/index.js";
 import { defaultAdapters } from "./doctor.js";
-import { type CliIo, UsageError } from "./io.js";
+import { type CliIo, PROBE_ENV_ALLOWLIST, UsageError } from "./io.js";
 
 export function runCapacity(io: CliIo, argv: readonly string[], provider?: string): CapacityProjection {
-  return capacityFor(io, argv, provider).projection;
-}
-
-function capacityFor(
-  io: CliIo,
-  argv: readonly string[],
-  provider?: string,
-): { projection: CapacityProjection; cfg: ResolvedConfig; ids: string[] } {
   const cfg = loadConfig({ argv, env: io.env, ...(io.homedir !== undefined ? { homedir: io.homedir } : {}) });
   const ids: string[] = (io.adapters ?? defaultAdapters()).list().map((a) => a.id);
   // ADR-0076: `--provider` takes either spelling (`claude`, `claude-code`); the projection names the canonical one.
@@ -39,21 +34,34 @@ function capacityFor(
       `unknown provider ${JSON.stringify(provider)}; expected one of ${acceptedProviderNames(ids).join(", ")}`,
     );
   }
-  const projection = projectCapacity(cfg, named === undefined ? ids : [named], (io.now ?? (() => new Date()))());
-  return { projection, cfg, ids };
+  return projectCapacity(cfg, named === undefined ? ids : [named], (io.now ?? (() => new Date()))());
 }
 
-/**
- * `runCapacity` plus provider-reported usage (FR-CAP-13, ADR-0079) when the entry point supplied a usage service
- * (`CliIo.providerUsage`); without one the projection is returned unchanged.
- */
+/** `runCapacity` plus the provider-reported usage of each enabled provider with a reader (ADR-0079, FR-CAP-13). */
 export async function runCapacityWithUsage(
   io: CliIo,
   argv: readonly string[],
   provider?: string,
 ): Promise<CapacityProjection> {
-  const { projection, cfg, ids } = capacityFor(io, argv, provider);
-  return attachProviderUsage(projection, io.providerUsage?.(ids, { dataDir: cfg.dataDir }));
+  const projection = runCapacity(io, argv, provider);
+  return addProviderUsage(io, projection, new Date(projection.as_of));
+}
+
+/**
+ * ADR-0079 (FR-CAP-13): lays the provider-reported usage over a projection (shared by `capacity` and `doctor`). Only
+ * enabled providers in the projection whose adapter has a reader are asked; the rest are unchanged.
+ */
+export async function addProviderUsage(
+  io: CliIo,
+  projection: CapacityProjection,
+  now: Date,
+): Promise<CapacityProjection> {
+  const named = new Set(projection.providers.map((p) => p.provider));
+  const adapters = (io.adapters ?? defaultAdapters()).list().filter((a) => named.has(a.id));
+  const targets = usageReadTargets(adapters, projection);
+  if (targets.length === 0) return projection;
+  const runner = io.providerUsageRunner ?? createProbeRunner(PROBE_ENV_ALLOWLIST);
+  return withProviderUsage(projection, await readProviderUsage(targets, { runner }, now));
 }
 
 /** The projection for `ids` from the configured data directory (shared by `capacity` and `doctor`). */
@@ -111,34 +119,6 @@ function pacingWindowLine(w: PacingWindowView): string {
 }
 
 /**
- * FR-CAP-13 (ADR-0079): the provider's own usage display, one line per window and balance. Every line that says
- * "remaining" also says "provider-reported" (LLD §16.3 wording rule); fractions, never percentages.
- */
-export function providerUsageLines(u: ProviderUsageReport): string[] {
-  const head = `  provider-reported usage (via ${u.via}, observed ${u.observed_at})`;
-  if (u.status === "unavailable") return [`${head}: unavailable: ${u.reason}`];
-  if (u.windows.length === 0 && u.balances.length === 0) return [`${head}: no usage data reported`];
-  const lines = [`${head}:`];
-  for (const w of u.windows) {
-    const split =
-      w.breakdown === undefined
-        ? ""
-        : ` (${Object.entries(w.breakdown)
-            .map(([k, v]) => `${k} ${v.toFixed(2)}`)
-            .join(", ")})`;
-    lines.push(
-      `    ${w.label} used ${w.used_fraction.toFixed(2)}${split} (remaining ${w.remaining_fraction.toFixed(2)}, ` +
-        `provider-reported), reset ${w.reset_at ?? "not reported"}`,
-    );
-  }
-  for (const b of u.balances) {
-    const amount = b.unlimited ? "unlimited" : b.amount === null ? "unreadable" : `${b.amount} ${b.currency ?? ""}`;
-    lines.push(`    ${b.label}: ${amount.trim()} (provider-reported)`);
-  }
-  return lines;
-}
-
-/**
  * Text view. Wording rule (LLD §16.3, FR-CAP-03): "remaining" appears only on the provider-reported line, never next to
  * an estimate, and no line speaks of quota left or a percentage.
  */
@@ -159,7 +139,8 @@ export function renderCapacity(p: CapacityProjection): string {
       }`,
     );
     lines.push(`  provider-reported reset: ${c.reset_at === null ? "none" : c.reset_at.at}`);
-    if (c.provider_usage !== undefined) lines.push(...providerUsageLines(c.provider_usage));
+    // ADR-0079 (FR-CAP-13): the provider's own report, read live through its CLI.
+    if (c.provider_usage !== undefined) lines.push(...providerUsageLines(c.provider_usage, "  "));
     if (c.cache !== undefined) {
       // FR-CAP-08: reported counts with their source; never read as cache use.
       lines.push(

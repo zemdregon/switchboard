@@ -1,150 +1,124 @@
 /**
- * Provider-reported plan usage (FR-CAP-13, ADR-0079, BR-50): the figures a provider CLI shows in its own usage display,
- * read through that CLI with the CLI's own login. Switchboard never reads a credential, never calls a provider API
- * itself and never stores these figures in the ledger (ADR-0003); a report lives in memory for a short time only.
+ * Live provider-reported usage for the capacity surfaces (ADR-0079, FR-CAP-13, LLD §16.10). `get_capacity`,
+ * `switchboard capacity` and `doctor` ask each enabled provider whose adapter has a `readProviderUsage` reader and
+ * attach the answer to that provider's entry as `provider_usage`. The projection itself stays a pure function of the
+ * ledger: the report is laid over it, never stored, never fed into `capacity_score`, routing or pacing.
  *
- * Provider-neutral: each provider plugs in a {@link ProviderUsageReader} (the Kimi Code one is
- * `src/adapters/kimi/usage.ts`). {@link ProviderUsageService} caches one report per provider and shares one in-flight
- * read between concurrent callers, so `get_capacity` polled in a loop starts at most one provider CLI per TTL.
- * Every report is `source: "provider_reported"` (BR-50): the values are the provider's, never an estimate.
+ * Reads are cached per process for {@link PROVIDER_USAGE_TTL_MS} so that repeated calls do not start a CLI each
+ * time, and run for all providers at once.
  */
+import type { ProviderUsageResult } from "../adapters/provider-usage.js";
+import type { ProbeRunner, ProviderAdapter } from "../adapters/types.js";
+import type { ProviderCapacity } from "./estimate.js";
+import type { CapacityProjection } from "./projection.js";
 
-/** One quota window as the provider reported it. Fractions are 0..1, rounded to 6 decimal places. */
-export interface ProviderUsageWindow {
-  /** Stable id within the provider (`5h`, `weekly`, `monthly` for Kimi Code). */
-  id: string;
-  /** The provider's own label, for display. */
-  label: string;
-  used_fraction: number;
-  /** `1 - used_fraction`, as reported (provider-reported, never an estimate; FR-CAP-03). */
-  remaining_fraction: number;
-  /** Granularity of the reported value: 0.01 for a rounded whole percent. */
-  precision: number;
-  /** When the window resets, if the provider said; derived from a relative hint, so approximate. */
-  reset_at: string | null;
-  /** Granularity of `reset_at` in seconds (60 for a minute-resolution hint), or null with no reset. */
-  reset_precision_seconds: number | null;
-  /** Optional split of `used_fraction` by the provider's own categories (Kimi Code: `kimi`, `code`). */
-  breakdown?: Record<string, number>;
-}
+/** Proposed (Delegated): a minute, so a busy orchestrator polling `get_capacity` starts at most one read a minute. */
+export const PROVIDER_USAGE_TTL_MS = 60_000;
 
-/** A money figure the provider reported (for example a top-up wallet). `amount` null when it could not be read. */
-export interface ProviderUsageBalance {
-  id: string;
-  label: string;
-  amount: number | null;
-  currency: string | null;
-  unlimited?: true;
-}
+/** Process-local cache of the last read per provider. A failed read is cached too, for the same time. */
+export class ProviderUsageCache {
+  readonly #entries = new Map<string, { at: number; value: Promise<ProviderUsageResult> }>();
+  constructor(readonly ttlMs: number = PROVIDER_USAGE_TTL_MS) {}
 
-interface ReportBase {
-  provider: string;
-  source: "provider_reported";
-  observed_at: string;
-  /** How the figures were obtained, in words (no path, no command line, no credential). */
-  via: string;
-}
-
-export type ProviderUsageReport =
-  | (ReportBase & { status: "ok"; windows: ProviderUsageWindow[]; balances: ProviderUsageBalance[] })
-  | (ReportBase & { status: "unavailable"; reason: string });
-
-/** Reads one provider's usage. Implementations must not throw for expected failures; they return `unavailable`. */
-export interface ProviderUsageReader {
-  readonly provider: string;
-  readonly via: string;
-  read(now: Date): Promise<ProviderUsageReport>;
-}
-
-export interface ProviderUsageServiceOptions {
-  /** How long an `ok` report is reused. Default 300 000 ms (Proposed: a plan window moves slowly). */
-  readonly ttlMs?: number;
-  /** How long an `unavailable` report is reused. Default 60 000 ms (Proposed). */
-  readonly failureTtlMs?: number;
-  readonly now?: () => Date;
-}
-
-export const DEFAULT_PROVIDER_USAGE_TTL_MS = 300_000;
-export const DEFAULT_PROVIDER_USAGE_FAILURE_TTL_MS = 60_000;
-
-/** Reason used when a reader throws: generic, because the error text could carry anything. */
-export const PROVIDER_USAGE_READER_FAILED = "the usage reader failed unexpectedly";
-
-/** Rounds a fraction to 6 decimal places (the precision every window fraction is published with). */
-export const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
-
-/** In-memory cache over a set of readers. No ledger writes, no migration. */
-export class ProviderUsageService {
-  readonly #readers = new Map<string, ProviderUsageReader>();
-  readonly #cache = new Map<string, { report: ProviderUsageReport; expires: number }>();
-  readonly #inflight = new Map<string, Promise<ProviderUsageReport>>();
-  readonly #ttl: number;
-  readonly #failureTtl: number;
-  readonly #now: () => Date;
-
-  constructor(readers: readonly ProviderUsageReader[], opts: ProviderUsageServiceOptions = {}) {
-    for (const r of readers) this.#readers.set(r.provider, r);
-    this.#ttl = opts.ttlMs ?? DEFAULT_PROVIDER_USAGE_TTL_MS;
-    this.#failureTtl = opts.failureTtlMs ?? DEFAULT_PROVIDER_USAGE_FAILURE_TTL_MS;
-    this.#now = opts.now ?? (() => new Date());
+  get(provider: string, nowMs: number, read: () => Promise<ProviderUsageResult>): Promise<ProviderUsageResult> {
+    const hit = this.#entries.get(provider);
+    if (hit !== undefined && nowMs - hit.at < this.ttlMs && nowMs >= hit.at) return hit.value;
+    const value = read();
+    this.#entries.set(provider, { at: nowMs, value });
+    return value;
   }
+}
 
-  /** Providers with a reader, in registration order. */
-  providers(): string[] {
-    return [...this.#readers.keys()];
-  }
-
-  /** The cached or a fresh report; undefined when no reader is registered for `provider`. */
-  async get(provider: string): Promise<ProviderUsageReport | undefined> {
-    const reader = this.#readers.get(provider);
-    if (reader === undefined) return undefined;
-    const cached = this.#cache.get(provider);
-    if (cached !== undefined && this.#now().getTime() < cached.expires) return cached.report;
-    const pending = this.#inflight.get(provider);
-    if (pending !== undefined) return pending;
-    const p = this.#read(reader).finally(() => this.#inflight.delete(provider));
-    this.#inflight.set(provider, p);
-    return p;
-  }
-
-  async #read(reader: ProviderUsageReader): Promise<ProviderUsageReport> {
-    const at = this.#now();
-    let report: ProviderUsageReport;
-    try {
-      report = await reader.read(at);
-    } catch {
-      report = {
-        status: "unavailable",
-        provider: reader.provider,
-        source: "provider_reported",
-        observed_at: at.toISOString(),
-        via: reader.via,
-        reason: PROVIDER_USAGE_READER_FAILED,
-      };
-    }
-    const ttl = report.status === "ok" ? this.#ttl : this.#failureTtl;
-    this.#cache.set(reader.provider, { report, expires: this.#now().getTime() + ttl });
-    return report;
-  }
+/** What a surface needs to read provider usage. */
+export interface ProviderUsageReaderDeps {
+  readonly runner: ProbeRunner;
+  readonly cache?: ProviderUsageCache;
 }
 
 /**
- * Adds `provider_usage` to each enabled provider entry the service has a reader for, reading them in parallel. Other
- * entries are returned as they were (same object), so output without a reader is byte-identical. Disabled providers
- * are not read (**Delegated**, least privilege: a provider the operator turned off is not started for a status line).
+ * Reads every adapter in `adapters` that has a reader, in parallel; adapters without one are left out of the map. A
+ * reader that throws yields `unknown` with a short reason, never an exception to the caller.
  */
-export async function attachProviderUsage<
-  E extends { provider: string; enabled: boolean; provider_usage?: ProviderUsageReport },
-  P extends { providers: E[] },
->(projection: P, service: ProviderUsageService | undefined): Promise<P> {
-  if (service === undefined) return projection;
-  const known = new Set(service.providers());
-  const providers = await Promise.all(
-    projection.providers.map(async (entry) => {
-      if (!entry.enabled || !known.has(entry.provider)) return entry;
-      const report = await service.get(entry.provider);
-      return report === undefined ? entry : { ...entry, provider_usage: report };
+export async function readProviderUsage(
+  adapters: readonly ProviderAdapter[],
+  deps: ProviderUsageReaderDeps,
+  now: Date,
+): Promise<Map<string, ProviderUsageResult>> {
+  const out = new Map<string, ProviderUsageResult>();
+  const readers = adapters.filter((a) => typeof a.readProviderUsage === "function");
+  const results = await Promise.all(
+    readers.map((a) => {
+      const read = async (): Promise<ProviderUsageResult> => {
+        try {
+          const r = await a.readProviderUsage?.(deps.runner, now);
+          if (r === undefined) throw new Error("no reader");
+          return r;
+        } catch (e) {
+          return {
+            provider: a.id,
+            source: "unknown",
+            observed_at: now.toISOString(),
+            method: "readProviderUsage",
+            error: `usage read failed: ${e instanceof Error ? e.name : "error"}`,
+          };
+        }
+      };
+      return deps.cache === undefined ? read() : deps.cache.get(a.id, now.getTime(), read);
     }),
   );
-  return { ...projection, providers };
+  for (const [i, a] of readers.entries()) {
+    const r = results[i];
+    if (r !== undefined) out.set(a.id, r);
+  }
+  return out;
+}
+
+/** The projection with `provider_usage` set on each provider entry that has a report. Pure; the input is unchanged. */
+export function withProviderUsage(
+  projection: CapacityProjection,
+  usage: ReadonlyMap<string, ProviderUsageResult>,
+): CapacityProjection {
+  if (usage.size === 0) return projection;
+  return {
+    ...projection,
+    providers: projection.providers.map((p): ProviderCapacity => {
+      const u = usage.get(p.provider);
+      return u === undefined ? p : { ...p, provider_usage: u };
+    }),
+  };
+}
+
+/** The adapters a surface should read: those named, enabled in the projection. */
+export function usageReadTargets(
+  adapters: readonly ProviderAdapter[],
+  projection: CapacityProjection,
+): ProviderAdapter[] {
+  const enabled = new Set(projection.providers.filter((p) => p.enabled).map((p) => p.provider));
+  return adapters.filter((a) => enabled.has(a.id));
+}
+
+/**
+ * Text lines for one report (shared by `switchboard capacity` and `doctor`). FR-CAP-03 wording: "remaining" appears
+ * only here, on provider-reported figures, and shares are fractions (the provider's percentage divided by 100).
+ */
+export function providerUsageLines(u: ProviderUsageResult, indent: string): string[] {
+  if (u.source === "unknown") return [`${indent}provider-reported usage: unknown (${u.error}; ${u.method})`];
+  const head =
+    `${indent}provider-reported usage (${u.method}, at ${u.observed_at}): plan ${u.plan ?? "unknown"}, ` +
+    `limit reached ${u.limit_reached === null ? "unknown" : u.limit_reached ? `yes${u.limit_reached_type ? ` (${u.limit_reached_type})` : ""}` : "no"}`;
+  const lines = [head];
+  for (const w of u.windows) {
+    const len = w.window_seconds === null ? "length unknown" : `${w.window_seconds} s`;
+    lines.push(
+      `${indent}  ${w.id} (${len}, provider_reported): used ${w.used_fraction}, remaining ${w.remaining_fraction}, ` +
+        `resets ${w.resets_at ?? "unknown"}`,
+    );
+  }
+  if (u.credits !== null) {
+    lines.push(
+      `${indent}  credits: ${u.credits.unlimited ? "unlimited" : (u.credits.balance ?? "unknown")}` +
+        `${u.credits.has_credits ? "" : " (none)"}`,
+    );
+  }
+  return lines;
 }

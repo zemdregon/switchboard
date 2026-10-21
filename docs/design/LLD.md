@@ -6354,13 +6354,9 @@ the tool covers every registered provider. Output:
 T6.7 adds an optional per-provider `cache` block and a top-level `affinity` block (§16.8). `switchboard capacity
 [--provider <id>] [--json]` prints the same projection: `--json` is the same object, and the text view prints one block
 per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surface, any line or key containing
-"remaining" also contains "provider_reported" or "provider-reported" (a `remaining_fraction` key counts as such inside a
-`provider_usage` object whose `source` is `provider_reported`, §16.10), and no surface prints "quota left", "available
+"remaining" also contains "provider_reported" or "provider-reported", and no surface prints "quota left", "available
 quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
 and `confidence`, labelled "estimate".
-
-FR-CAP-13 (T6.17) adds an optional per-provider `provider_usage` object, present only for a provider with a usage reader
-(§16.10); other providers' entries are byte-identical to before.
 
 T6.14 adds an optional top-level `pacing` array, one entry per subscription (§16.9). It is omitted when no subscription
 is configured, so an unconfigured projection stays byte-identical. `doctor` prints one pacing line per subscription.
@@ -6374,6 +6370,10 @@ including `fake`, even when `candidateOrder` omits it). `switchboard capacity` a
 probes. `capacity --json` adds `schema_version` as every CLI `--json` does. With no ledger file, the CLI computes over
 an empty in-memory ledger and creates nothing. The `doctor` JSON gains a `capacity` key, and its text gains one line per
 adapter. The section never changes `ok`, and an unreadable ledger leaves it out.
+
+*Amendment 2026-10-21 (ADR-0079, Delegated):* "never probes a provider" no longer holds as written. For an enabled
+provider whose adapter has `readProviderUsage`, `get_capacity` also runs that CLI's own read-only account call and adds
+`provider_usage` (§16.10). It makes no model call and reads no credential.
 
 ### 16.4 Per-provider circuit breaker
 
@@ -6693,56 +6693,63 @@ including `privileged` and `require_provider` runs and runs admitted to an undef
 became deferred before dispatch. Nothing creates a run, a probe or a provider call. Tests:
 `src/lifecycle/pacing-gate.test.ts`, `src/routing/pacing-admission.test.ts`.
 
-### 16.10 Provider usage readers (FR-CAP-13)
+### 16.10 Provider-reported usage reader (FR-CAP-13, ADR-0079)
 
-*Added 2026-10-21 by T6.17 ([ADR-0079](../adr/0079-provider-reported-usage-via-cli-usage-display.md), Delegated).*
+*Added 2026-10-21 (Delegated, not owner-approved).* The estimator of §16.2 never sees a provider's own quota, because no
+run output carries one. Where a provider's CLI can report the signed-in account's windows without a model call, an
+optional adapter method reads them, and the result is shown beside the projection.
 
-```ts
-interface ProviderUsageReader {
-  readonly provider: string;             // canonical adapter id, e.g. "kimi"
-  read(signal: AbortSignal): Promise<ProviderUsageReading>;
-}
-```
-
-`ProviderUsageService` (`src/capacity/provider-usage.ts`) holds the readers and an in-memory cache. A success is kept
-300 s and a failure 60 s; concurrent callers for one provider share one in-flight read (single-flight). Nothing is
-persisted. `get_capacity` and `switchboard capacity` call it for providers that have a reader; `doctor` does not.
-
-**Kimi reader** (`KimiUsageReader`, `src/adapters/kimi/usage.ts`). It runs `kimi` under a pseudo-terminal through
-util-linux or BSD `script`, in a stable, private probe directory `<data_dir>/probes/kimi-usage` (created 0700; refused
-unless it is a real, empty directory owned by the controller's user), with an environment of `PATH` and `HOME` (and
-`TERM`, `COLUMNS`, `LINES`). It types `/usage`, collects the terminal text, and ends the CLI with Ctrl-C. Kimi trusts
-folders one by one, so the first read meets its "Trust this folder?" dialog: the reader answers "Trust and continue"
-only when the dialog names the probe directory and that option is selected, and fails closed otherwise; it also fails
-closed, typing nothing, when the prompt does not appear. The pure parser `parseKimiUsagePanel` reads the "Plan usage"
-panel: rows `5h limit`, `Weekly limit` and `Monthly limit` with `N% used` and `resets in 1d 2h 3m`, a `kimi N% · code
-M%` breakdown on the monthly row, and an optional "Extra Usage" booster wallet. Pinned by
-`src/adapters/kimi/fixtures/usage-tui-2.1.1.raw`. No model call, no session, no credential read, no request to the
-provider's API. Side effects: one trust record and one workspace-list entry for the probe directory (once) and one
-`/usage` line of input history per read.
-
-Output, per provider with a reader:
+**Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
+(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; only Codex implements it.
 
 ```jsonc
-"provider_usage": {
-  "status": "ok", "provider": "kimi", "source": "provider_reported",
-  "observed_at": "<ISO time>", "via": "Kimi Code TUI /usage (the CLI's own credentials; Switchboard reads terminal text only)",
-  "windows": [ { "id": "5h", "label": "5h limit",
-                 "used_fraction": 0.12, "remaining_fraction": 0.88,   // remaining_fraction is provider_reported
-                 "precision": 0.01,                                    // whole percent
-                 "reset_at": "<ISO time>", "reset_precision_seconds": 60,
-                 "breakdown": { "kimi": 0.1, "code": 0.02 } } ],       // optional
-  "balances": [ { "id": "booster", "label": "Extra Usage", "amount": 0, "currency": "<code>", "unlimited": false } ]
-}
-// or, when the reading cannot be taken or parsed:
-"provider_usage": { "status": "unavailable", "provider": "kimi", "source": "provider_reported",
-                    "observed_at": "<ISO time>", "via": "kimi tui /usage", "reason": "<short reason>" }
+// ProviderUsageReport
+{ "source": "provider_reported", "provider": "codex", "observed_at": "<ISO>", "method": "codex app-server account/rateLimits/read",
+  "plan": "plus", "limit_reached": false, "limit_reached_type": null,
+  "windows": [ { "id": "primary", "limit_id": "codex", "window_seconds": 18000,
+                 "used_fraction": 0.21, "remaining_fraction": 0.79, "resets_at": "<ISO>" } ],
+  "credits": { "has_credits": true, "unlimited": false, "balance": "<string>" } }
+// ProviderUsageUnavailable
+{ "source": "unknown", "provider": "codex", "observed_at": "<ISO>", "error": "<short reason>" }
 ```
 
-The reset time is the observation time plus the relative offset, so it is exact to the minute only. Wording rule
-(FR-CAP-03): any line or key with "remaining" also says `provider_reported` or provider-reported. The reading is
-shown only: it is not an input to the estimator, the pacing gate or routing (**Proposed** follow-up). Tests:
-`src/adapters/kimi/usage.test.ts`, `src/capacity/provider-usage.test.ts`, `src/mcp/get-capacity.test.ts`.
+**Codex wire exchange** (`src/adapters/codex/usage.ts`). The adapter runs `codex app-server` through the existing
+`ProbeRunner` with the environment allowlist `PATH` and `HOME` and a 15 s timeout (**Proposed**). It writes three
+JSON-RPC lines on stdin: `initialize` (id 1), the `initialized` notification, and `account/rateLimits/read` (id 2) with
+`excludeResetCreditDetails: true`. The process exits at stdin end-of-file before answering, so stdin is held open until
+the id-2 answer arrives. No model is called. The CLI uses its own login; Switchboard reads no credential and no file
+under `~/.codex` (ADR-0003).
+
+| Provider field (app-server) | Report field |
+| --- | --- |
+| `rateLimits` and each entry of `rateLimitsByLimitId`: `primary`, `secondary` | `windows[]`, `id` is `primary` or `secondary`, prefixed `<limit_id>:` for a non-default bucket |
+| `usedPercent` | `used_fraction` = `usedPercent / 100`; `remaining_fraction` = `1 - used_fraction` |
+| `windowDurationMins` | `window_seconds` = minutes × 60 |
+| `resetsAt` (Unix seconds) | `resets_at` (ISO) |
+| `limitId` | `limit_id` |
+| `planType` | `plan` |
+| `credits.hasCredits`, `unlimited`, `balance` | `credits.has_credits`, `unlimited`, `balance` |
+| `rateLimitReachedType`, `ordinaryUsageAllowed` | `limit_reached`, `limit_reached_type`, only from the provider's flags, never inferred from a full window |
+
+`accountId` and every other field are dropped.
+
+**Failure rules.** A spawn failure, a timeout, a missing answer or a JSON-RPC error returns `ProviderUsageUnavailable`
+with a short reason. An unknown figure is never headroom (BR-50).
+
+**Reader and cache** (`src/capacity/provider-usage.ts`). `readProviderUsage` runs the readers of enabled providers that
+have one, in parallel. `ProviderUsageCache` is per process with a one-minute TTL (**Proposed**, Delegated).
+`withProviderUsage` adds the report to each provider entry of the §16.3 projection as `provider_usage`; the projection
+itself (`capacity_score`, `explicit_remaining`, `reset_at`, `pacing`, routing) is unchanged. The report is never written
+to the ledger and does not feed routing, pacing or the score; `REMAINING_KEYS` and `USAGE_KEYS` stay empty. Feeding it
+into pacing is possible follow-up work and is not done.
+
+**Surfaces.** `get_capacity` (the output schema gains an optional `provider_usage` per provider), `switchboard capacity`
+(text and `--json`) and `switchboard doctor` (a separate "Provider-reported usage" section, informational, never
+changes `ok`). Text shows fractions, not percentages (FR-CAP-03 wording rule), and "remaining" appears only on
+`provider_reported` lines. Tests: `src/adapters/codex/usage.test.ts` (recorded redacted fixture
+`src/adapters/codex/fixtures/usage/app-server-rate-limits.jsonl` and two synthetic ones),
+`src/capacity/provider-usage.test.ts`, and the block "provider_usage on get_capacity, capacity and doctor (ADR-0079,
+FR-CAP-13)" in `src/mcp/get-capacity.test.ts`.
 
 ## 17. Routing (M7)
 

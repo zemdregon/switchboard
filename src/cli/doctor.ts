@@ -13,13 +13,14 @@ import {
   evaluateVersionCanary,
   type ProbeResult,
   type ProviderId,
+  type ProviderUsageResult,
   providerEntries,
   providerEntry,
   readVersionCanaryStore,
   recordAdapterVersion,
 } from "../adapters/index.js";
 import { type LoadReader, osLoadReader, readLoad1 } from "../capacity/host-load.js";
-import type { CapacityProjection } from "../capacity/index.js";
+import { type CapacityProjection, providerUsageLines } from "../capacity/index.js";
 import {
   loadConfig,
   type ResolvedConfig,
@@ -55,7 +56,7 @@ import {
   planRetentionGc,
   statfsDiskProbe,
 } from "../workspace/index.js";
-import { pacingDoctorLine, projectCapacity } from "./capacity.js";
+import { addProviderUsage, pacingDoctorLine, projectCapacity } from "./capacity.js";
 import { type InnerDoctorSection, innerDoctorSection, renderInnerDoctor } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { type RagDoctorSection, ragDoctorSection, renderRagDoctor } from "./rag-index.js";
@@ -694,7 +695,12 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   } catch {
     retrieval = undefined; // informational: an unreadable ledger or store never fails doctor
   }
-  const capacity = cfg ? capacitySection(cfg, registry, (io.now ?? (() => new Date()))()) : undefined;
+  const capacityNow = (io.now ?? (() => new Date()))();
+  let capacity = cfg ? capacitySection(cfg, registry, capacityNow) : undefined;
+  if (capacity !== undefined) {
+    // ADR-0079 (FR-CAP-13): informational, never changes `ok`; a failed read is an `unknown` entry, not an error.
+    capacity = await addProviderUsage({ ...io, adapters: registry }, capacity, capacityNow);
+  }
   const modelGroups = cfg ? modelGroupsSection(cfg, registry, models) : undefined;
   const ok = checks.every((c) => c.status !== "fail") && adapters.every((a) => a.status !== "fail");
   return {
@@ -861,6 +867,17 @@ export function renderDoctor(r: DoctorReport): string {
         `       ${c.provider}: breaker ${c.breaker.state}, throttle risk ${c.throttle_risk}, ` +
           `estimate confidence ${c.confidence.toFixed(2)}`,
       );
+    }
+    // ADR-0079 (FR-CAP-13): each provider's own report, apart from the estimates above.
+    const reported = r.capacity.providers.filter((c) => c.provider_usage !== undefined);
+    if (reported.length > 0) {
+      lines.push("Provider-reported usage (read through each provider's own CLI):");
+      for (const c of reported) {
+        lines.push(
+          `       ${c.provider}:`,
+          ...providerUsageLines(c.provider_usage as ProviderUsageResult, "         "),
+        );
+      }
     }
     // T6.14 (LLD §16.9): one line per subscription from the same projection. Absent when nothing is configured.
     if (r.capacity.pacing !== undefined) {

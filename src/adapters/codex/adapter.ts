@@ -25,6 +25,7 @@ import { classifyCommon } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import { renderObjective } from "../prompt.js";
+import type { ProviderUsageResult } from "../provider-usage.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -71,6 +72,14 @@ import {
   STATUS_DECLINED,
   VERSION_FLAG,
 } from "./protocol.js";
+import {
+  CODEX_USAGE_ARGS,
+  CODEX_USAGE_METHOD,
+  CODEX_USAGE_STDIN,
+  CODEX_USAGE_TIMEOUT_MS,
+  codexUsageFromStdout,
+  isCodexUsageAnswer,
+} from "./usage.js";
 
 /**
  * Environment names passed through to Codex (FR-EXE-07, NFR-SEC-02). Proposed: PATH for the binary and HOME so the
@@ -266,6 +275,33 @@ export class CodexAdapter implements ProviderAdapter {
       .join("")
       .slice(0, AUTH_STATUS_LINE_MAX);
     return { state: "UNKNOWN", reason: `${AUTH_UNKNOWN_REASON} (exit ${r.exitCode}${line ? `: ${line}` : ""})` };
+  }
+
+  /**
+   * ADR-0079 (FR-CAP-13, LLD §16.10): the account's rate-limit windows as Codex reports them, through
+   * `codex app-server` `account/rateLimits/read` (see ./usage.ts). No model call; the CLI uses its own login and
+   * Switchboard reads no file. A spawn failure, timeout or missing answer is `unknown`, never headroom (BR-50).
+   */
+  async readProviderUsage(runner: ProbeRunner, now: Date = new Date()): Promise<ProviderUsageResult> {
+    const at = now.toISOString();
+    const unknown = (error: string): ProviderUsageResult => ({
+      provider: "codex",
+      source: "unknown",
+      observed_at: at,
+      method: CODEX_USAGE_METHOD,
+      error,
+    });
+    const exe = this.#exe;
+    if (exe === undefined) return unknown(`${CODEX_BINARY} not found on PATH`);
+    const r = await runner([exe, ...this.#launcher, ...CODEX_USAGE_ARGS], {
+      timeoutMs: CODEX_USAGE_TIMEOUT_MS,
+      stdinText: CODEX_USAGE_STDIN,
+      holdStdinUntil: isCodexUsageAnswer,
+    });
+    if (r.spawnError !== undefined) return unknown(`could not start ${CODEX_BINARY} app-server (${r.spawnError})`);
+    const read = codexUsageFromStdout(r.stdout, at);
+    if (read.source === "unknown" && r.timedOut) return unknown("codex app-server timed out before answering");
+    return read;
   }
 
   /**

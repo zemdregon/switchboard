@@ -10,8 +10,8 @@
  * empty because no provider's run output reports remaining quota (T6.0 inventory).
  */
 
+import type { ProviderUsageResult } from "../adapters/provider-usage.js";
 import { type CacheObservation, cacheObservation } from "./cache.js";
-import type { ProviderUsageReport } from "./provider-usage.js";
 
 /** Breaker states as stored in `provider_health` (LLD §1, §16.4). */
 export type BreakerState = "CLOSED" | "OPEN" | "HALF_OPEN";
@@ -93,10 +93,10 @@ export interface ProviderCapacity {
   /** T6.7 (FR-CAP-08): reported cache counts over the window; absent when no sourced key or no row holds one. */
   cache?: CacheObservation;
   /**
-   * FR-CAP-13 (ADR-0079): the provider's own plan usage, read through its CLI's usage display. Present only when a
-   * usage reader is configured for this provider (`get_capacity`, `switchboard capacity`); never from the ledger.
+   * ADR-0079 (FR-CAP-13): the provider's own quota report, read live through its CLI. Absent when the caller read none
+   * (the provider has no reader, or the surface does not read). Never feeds `capacity_score`.
    */
-  provider_usage?: ProviderUsageReport;
+  provider_usage?: ProviderUsageResult;
 }
 
 /** Failure codes that signal throttling (`elevated`, LLD §16.2 step 3) and that the breaker counts (§16.4). */
