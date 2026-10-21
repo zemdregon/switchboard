@@ -2498,9 +2498,10 @@ describe("grok registry entry and manifest gate (T4.22)", () => {
     expect(bypassClassFlags()).toContain("--always-approve");
   });
 
-  it("fails the version gate for any version until `adapters validate` passes one (ADR-0009)", () => {
+  it("admits only the range `adapters validate` recorded (1.0.50, 2026-10-21; ADR-0009)", () => {
     const registry = new AdapterRegistry();
-    for (const v of ["1.0.50", "1.0.52", "0.0.0", null]) {
+    for (const v of ["1.0.50", "1.0.52"]) expect(registry.gate("grok", v).eligible, v).toBe(true);
+    for (const v of ["1.0.49", "1.1.0", "0.0.0", null]) {
       expect(registry.gate("grok", v).eligible, String(v)).toBe(false);
     }
   });

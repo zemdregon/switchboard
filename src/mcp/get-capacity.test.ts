@@ -3,13 +3,14 @@
  * LLD §16.3). One projection behind the three surfaces. Fake adapter only; no provider CLI, login or network; the
  * ledger rows are written directly so that the estimate has inputs without running anything.
  */
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parseCursorUsageScreen } from "../adapters/cursor/usage.js";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import {
   AdapterRegistry,
@@ -676,6 +677,40 @@ describe("provider_usage on get_capacity, capacity and doctor (ADR-0079, FR-CAP-
     const doctor = await cli(["doctor"], { adapters: reg, providerUsageRunner: noRun });
     expect(doctor.out).toContain("Provider-reported usage (read through each provider's own CLI):");
     expect(doctor.out).toContain("primary (18000 s, provider_reported): used 0.21, remaining 0.79");
+  });
+
+  it("a Cursor report (ADR-0080) parsed from the recorded /usage capture passes the output schema and prints", async () => {
+    const raw = readFileSync(
+      path.join(import.meta.dirname, "..", "adapters", "cursor", "fixtures", "usage_pro_exhausted.pty.txt"),
+      "utf8",
+    );
+    const parsed = parseCursorUsageScreen(raw, NOW);
+    if (parsed === null) throw new Error("fixture did not parse");
+    const cursorish = new ReportingFake({ ...parsed, provider: "fake" });
+    const client = await connect(undefined, {
+      registry: new AdapterRegistry().register(cursorish),
+      providerUsage: { runner: noRun },
+    });
+    const r = await capacityTool(client);
+    expect(r.isError).toBe(false);
+    expect(r.body.providers[0].provider_usage).toMatchObject({
+      source: "provider_reported",
+      plan: "Pro",
+      reset_label: "Resets Nov 5",
+      reset_precision: "day",
+      on_demand: { state: "disabled" },
+    });
+    const success = (outputSchema("get_capacity") as { anyOf: Json[] }).anyOf[0] as Json;
+    const validate = new Ajv2020({ allErrors: true, strict: true }).compile(success);
+    expect(validate(r.body), JSON.stringify(validate.errors)).toBe(true);
+    const text = await cli(["capacity"], {
+      adapters: new AdapterRegistry().register(cursorish),
+      providerUsageRunner: noRun,
+    });
+    expect(text.out).toContain("included (length unknown, provider_reported): used 1, remaining 0, resets 2026-11-05");
+    expect(text.out).toContain("reset as shown: Resets Nov 5 (day precision, UTC)");
+    expect(text.out).toContain("on-demand: disabled, used $0 (On-demand usage is off)");
+    expectHonestText(text.out);
   });
 
   it("a provider disabled in config is not read (usageReadTargets keeps enabled entries only)", () => {

@@ -94,3 +94,18 @@ under it still listed "worktree isolation" as kept in bypass, and ADR-0059 kept 
   `test/live-malicious.test.ts` pin the new cells, the lower tiers that stay confined and the harness rule.
 - The operator's live-run pin wrapper (`~/operator-runs/live-ext/pin-wrap.sh`) no longer sees Cursor behind `bwrap`;
   the channel must link `cursor-agent` in its pin directory again (an operator step, not a repository task).
+
+## Status note (2026-10-21, follow-up; Delegated)
+
+The decision is unchanged. Two gaps found while enabling the providers in production are closed:
+
+- **Doctor's model-group check.** It refused a member whenever the adapter's `reportedModelFlag` (about pinning a
+  *reported* model, T7.12) was `not_accepted`, so the Codex, Cursor and Kimi Code members of a `bypass` group showed
+  `CAPABILITY_MISSING` although their bypass cells pass a requested model (item 7). Adapters now declare
+  `requestedModelFlag` (`cells: "bypass"` for Codex, Grok Build, Cursor, OpenCode, Antigravity and Kimi Code); when it
+  is present doctor resolves the member in the model registry and labels it "approved bypass cell only". An adapter
+  without it keeps the old check. Routing is unchanged.
+- **Manifests.** `switchboard adapters validate` passed on the operator host on 2026-10-21 for Cursor 2026.10.19,
+  Antigravity 1.4.3 and Grok Build 1.0.50 (one smoke call each in the approved bypass cell, model pinned by the
+  operator's live-models configuration); the commands wrote the manifest fields recorded here. Grok Build's range
+  admits a version for the first time.

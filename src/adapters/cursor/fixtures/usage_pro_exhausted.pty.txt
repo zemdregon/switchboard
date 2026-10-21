@@ -1,0 +1,57 @@
+[>1u]11;?[2K[G
+
+  Cursor Agent
+  [2mv2026.10.19-6bbf2c4[22m
+  [2mTip: Try Cursor Grok 4.7 via /model, frontier intelligence at a fraction of the cost.[22m
+
+
+
+ [48;2;21;21;21m                                                                                                                                                              [49m
+ [48;2;21;21;21m [2m→ [22m[7mP[27m[2mlan, search, build anything[22m                                                                                                                               [49m
+ [48;2;21;21;21m                                                                                                                                                              [49m
+
+  [32mAsk (shift+tab to cycle)[39m
+  [2mAuto[22m
+  [2m/tmp/sb-cursor-usage-REDACTED[22m
+[?25l[?2004h]0;Cursor Agent[?2031h[?1004h[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G [48;2;21;21;21m → [1m[36m/usage[39m[22m[7m [27m                                                                                                                                                    [49m
+ [48;2;21;21;21m                                                                                                                                                              [49m
+
+  [32mAsk (shift+tab to cycle)[39m
+  [2mAuto[22m
+  [2m/tmp/sb-cursor-usage-REDACTED[22m
+[2K[1A[2K[1A[2K[1A[2K[G   → [1m/usage[22m                    [1mShow plan and on-demand usage[22m
+   [2m  /context[22m                  [2mShow context usage breakdown[22m
+   [2m  /subagent-thermo-nuclea…[22m  [2mThermo-nuclear branch audit (bugs, breaking changes, security, devex, feature-flag leaks) scoped to the diff. Invoked via Task…[22m
+   [2m  /subagent-test-case-gen…[22m  [2mGenerate comprehensive test cases from product requirements using uploadProductRequirementFile and createTestCasesFromFile MCP…[22m
+   [2m  /subagent-thermo-nuclea…[22m  [2mThermo-nuclear code quality audit (maintainability, structure, 1k-line rule, spaghetti, code-judo). Invoked via Task after a…[22m
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G [48;2;21;21;21m [2m→ [22m[7mP[27m[2mlan, search, build anything[22m                                                                                                                               [49m
+ [48;2;21;21;21m                                                                                                                                                              [49m
+
+   → [1m/usage[22m                    [1mShow plan and on-demand usage[22m
+   [2m  /context[22m                  [2mShow context usage breakdown[22m
+   [2m  /subagent-thermo-nuclea…[22m  [2mThermo-nuclear branch audit (bugs, breaking changes, security, devex, feature-flag leaks) scoped to the diff. Invoked via Task…[22m
+   [2m  /subagent-test-case-gen…[22m  [2mGenerate comprehensive test cases from product requirements using uploadProductRequirementFile and createTestCasesFromFile MCP…[22m
+   [2m  /subagent-thermo-nuclea…[22m  [2mThermo-nuclear code quality audit (maintainability, structure, 1k-line rule, spaghetti, code-judo). Invoked via Task after a…[22m
+
+  [36mLoading usage data...[39m
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G  [32mAsk (shift+tab to cycle)[39m
+  [2mAuto[22m
+  [2m/tmp/sb-cursor-usage-REDACTED[22m
+
+  [36mLoading usage data...[39m
+[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G[38;2;244;231;161m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[39m
+ [1m[38;2;244;231;161mUsage[39m[22m[2m • [22mPro                                                                                                                                     [2mResets Nov 5[22m
+ [2mMonthly plan and on-demand usage[22m
+
+ [2mCategory[22m        [2mCurrent[22m             [2mUsage[22m
+ Included        100% used           [36m████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████[39m
+ [2m  Auto[22m          [2m100% used[22m           [34m████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████[39m
+ [2m  API[22m           [2m100% used[22m           [35m████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████[39m
+ On-Demand       Disabled            [2m————————————————————————————————————————————————————————————————————————————————————————————————————————————————————————[22m
+
+ [2mOn-demand usage is off[22m
+
+ [2mView in dashboard: [22m]8;;https://cursor.com/dashboard?tab=usage[4m[34mcursor.com/dashboard?tab=usage[39m[24m]8;;
+
+ [2mEsc to close[22m
+[?2004l
