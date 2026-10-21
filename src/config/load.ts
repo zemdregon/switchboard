@@ -8,7 +8,8 @@ import { validateOperatorPatterns } from "../git/safe-pattern.js";
 import { compileSecretScanAllow, type SecretScanAllowEntry, SecretScanAllowError } from "../git/secret-scan.js";
 import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
-import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
+import { parsePrivilegedScope } from "../policy/scope.js";
+import type { PrivilegedScope, ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { BriefError, briefBlockTokens, readBriefFile } from "../projects/brief.js";
 import {
   DEFAULT_MAX_BODY_BYTES,
@@ -174,6 +175,18 @@ export interface ResolvedConfig {
   confinedVerification: boolean;
   /** Validated `projects[]` (FR-PRJ-01; T9.1); empty when the config has none. Paths are as written, not yet canonical. */
   projects: ResolvedProject[];
+  /**
+   * ADR-0091 (FR-POL-12): `default_trust_profile`, the profile a `delegate_task` / `enqueue_work` request without
+   * `trust_profile` resolves to (a configured project's own `default_trust_profile` overrides it), clamped to the
+   * effective ceiling at request time. Absent: `trust_profile` stays required, exactly as before.
+   */
+  defaultTrustProfile?: TrustProfile;
+  /**
+   * ADR-0091 (FR-POL-12): `default_privileged_scope`, parsed (defaults filled) at load. A request whose resolved profile
+   * is `privileged` and that names no `privileged_scope` uses it. Absent: V13 as before. Required when any default
+   * profile is `privileged` (load fails closed otherwise).
+   */
+  defaultPrivilegedScope?: PrivilegedScope;
   /** Validated `git.sanitize_patterns` (FR-GIT-04; T9.3): sources in the safe subset, in configuration order. */
   sanitizePatterns: string[];
   /** Validated `git.secret_scan.allow` (FR-GIT-11; T9.14): every rule id known, every glob non-empty; empty by default. */
@@ -671,6 +684,8 @@ export function loadConfig(
       ? [["default_mcp_client", cfg.transport.http.default_mcp_client] as [string, string]]
       : []),
   ];
+  // ADR-0091: `allow_unattended_privileged` admits `not_required` for an explicit mapping (never for the default).
+  const allowUnattendedPrivileged = cfg.transport?.http?.allow_unattended_privileged === true;
   for (const [where, id] of httpTargets) {
     const entry = mcpById.get(id);
     const problem = httpProfileProblem(
@@ -678,6 +693,7 @@ export function loadConfig(
         ? undefined
         : { maxTrustProfile: entry.max_trust_profile, privilegedApproval: entry.privileged_approval },
       where === "default_mcp_client" ? "default" : "mapped",
+      { allowUnattendedPrivileged },
     );
     if (problem === "unknown") {
       httpErrors.push(`$.transport.http.${where}: unknown mcp_clients id ${JSON.stringify(id)}`);
@@ -689,7 +705,10 @@ export function loadConfig(
     } else if (problem === "approval_not_required") {
       httpErrors.push(
         `$.transport.http.${where}: ${JSON.stringify(id)} has privileged_approval not_required; an HTTP client's ` +
-          "privileged runs must wait for the operator (FR-MCP-14)",
+          (where === "default_mcp_client"
+            ? "privileged runs must wait for the operator (FR-MCP-14)"
+            : "privileged runs must wait for the operator (FR-MCP-14) unless transport.http.allow_unattended_privileged " +
+              "is true (ADR-0091)"),
       );
     }
   }
@@ -748,6 +767,7 @@ export function loadConfig(
   }
 
   const projectSources = resolveProjectSources(cfg.project_sources, allowedRoots, dataDir, baseDir);
+  const trustDefaults = resolveTrustDefaults(cfg);
 
   return {
     configPath,
@@ -755,6 +775,7 @@ export function loadConfig(
     ...(httpTransport !== undefined ? { httpTransport } : {}),
     ...(projectSources !== undefined ? { projectSources } : {}),
     projects: resolveProjects(cfg, briefFiles),
+    ...trustDefaults,
     sanitizePatterns: [...(cfg.git?.sanitize_patterns ?? [])],
     secretScanAllow,
     ...(cfg.inner_agent !== undefined ? { innerAgent: resolveInnerAgent(cfg.inner_agent) } : {}),
@@ -840,6 +861,42 @@ export function loadConfig(
       ),
     ),
     skills: resolveSkills(cfg),
+  };
+}
+
+/**
+ * ADR-0091 (FR-POL-12, fail closed, NFR-SEC-06): the configured request defaults. `default_privileged_scope` is checked
+ * by the same closed schema and list rules as a request's `privileged_scope` (LLD §3.1), with the error naming its JSON
+ * path; a `privileged` default (top level or in any project) without it is refused, so a defaulted privileged request
+ * can never reach V13 with nothing to run under.
+ */
+function resolveTrustDefaults(cfg: SwitchboardConfig): {
+  defaultTrustProfile?: TrustProfile;
+  defaultPrivilegedScope?: PrivilegedScope;
+} {
+  let scope: PrivilegedScope | undefined;
+  if (cfg.default_privileged_scope !== undefined) {
+    const parsed = parsePrivilegedScope(cfg.default_privileged_scope, "$.default_privileged_scope");
+    if (!parsed.ok) throw new ConfigError(`Invalid config: ${parsed.field}: ${parsed.message}`);
+    scope = parsed.scope;
+  }
+  if (scope === undefined) {
+    const where =
+      cfg.default_trust_profile === "privileged"
+        ? "$.default_trust_profile"
+        : (cfg.projects ?? [])
+            .map((p, i) => (p.default_trust_profile === "privileged" ? `$.projects[${i}].default_trust_profile` : ""))
+            .find((w) => w !== "");
+    if (where !== undefined) {
+      throw new ConfigError(
+        `Invalid config: ${where}: privileged needs default_privileged_scope (the scope a defaulted privileged request ` +
+          "runs under); add it or choose another profile",
+      );
+    }
+  }
+  return {
+    ...(cfg.default_trust_profile !== undefined ? { defaultTrustProfile: cfg.default_trust_profile } : {}),
+    ...(scope !== undefined ? { defaultPrivilegedScope: scope } : {}),
   };
 }
 

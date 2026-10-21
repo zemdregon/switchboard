@@ -42,6 +42,7 @@ import { createIdGenerator } from "../ids/index.js";
 import { createLedger, type Ledger, openLedger, type TrustProfile } from "../ledger/index.js";
 import { RunLifecycle, type RunLifecycleOptions } from "../lifecycle/index.js";
 import { createProfileResolver } from "../policy/index.js";
+import type { PrivilegedScope } from "../policy/types.js";
 import type { AdmitWorkDeps } from "../queue/admission.js";
 import { runProjectWorkQueueTick } from "../queue/scheduler.js";
 import { compileCheck, requirementsFor, TRUST_PROFILE_ORDER } from "../routing/index.js";
@@ -214,6 +215,8 @@ interface Setup {
   }[];
   /** Configured projects (T9.2); the array is shared with the server so a test can change it between calls. */
   projects?: ResolvedProject[];
+  /** ADR-0091: `default_trust_profile` and the parsed `default_privileged_scope`. Absent: neither is configured. */
+  defaults?: { trustProfile?: TrustProfile; privilegedScope?: PrivilegedScope };
   lifecycle?: Partial<RunLifecycleOptions>;
   start?: boolean;
   /**
@@ -279,6 +282,8 @@ async function setup(s: Setup): Promise<void> {
   const config = {
     allowedRoots: [root],
     projects: s.projects ?? [],
+    ...(s.defaults?.trustProfile !== undefined ? { defaultTrustProfile: s.defaults.trustProfile } : {}),
+    ...(s.defaults?.privilegedScope !== undefined ? { defaultPrivilegedScope: s.defaults.privilegedScope } : {}),
     mcpClients: new Map(
       clients.map((c) => [
         c.id,
@@ -1842,6 +1847,146 @@ describe("privileged admission (T3.3; FR-POL-09, FR-MCP-06, BR-13, BR-14, V13, C
   });
 });
 
+describe("configured request defaults (ADR-0091; FR-POL-12, FR-MCP-26; owner ruling 2026-10-21)", () => {
+  const CLIENTS = [
+    { id: "zemdregon", max: "privileged" as const, approval: "not_required" as const, projects: ["web-app"] },
+    { id: "edit", max: "edit-untrusted" as const, projects: ["web-app"] },
+    { id: "inspect", max: "inspect-untrusted" as const },
+  ];
+  /** The operator's default scope as `loadConfig` resolves it (parsed, `bypass` filled). */
+  const BYPASS: PrivilegedScope = {
+    files: { access: "worktree" },
+    shell: { mode: "broad" },
+    network: { mode: "on" },
+    repository_config: { mode: "enabled" },
+    bypass: true,
+  };
+  const ALWAYS_BYPASS = { trustProfile: "privileged" as const, privilegedScope: BYPASS };
+  const bare = (over: Json = {}): Json => ({ objective: "add a feature", workspace_path: repo, ...over });
+  const profileOf = (runId: string) => ledger.getRunRecord(runId)?.trust_profile;
+  const scopeOf = (runId: string) =>
+    JSON.parse(ledger.getRunRecord(runId)?.policy_snapshot_json ?? "{}").privilegedScope?.scope;
+
+  it("no default configured: an absent trust_profile is INVALID_REQUEST naming the field, nothing written", async () => {
+    await setup({ adapters: [fakeWriter()], clients: CLIENTS, projects: [project()], start: false });
+    const r = await call("delegate_task", bare());
+    expect(r.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { field: "trust_profile" } });
+    expect(r.body.error.message).toBe("trust_profile is required");
+    const q = await call("enqueue_work", { project_id: "web-app", request: { objective: "x" } });
+    expect(q.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { field: "request.trust_profile" } });
+    expect(runCount()).toBe(0);
+    expect(ledger.listWorkItems({ clientId: "zemdregon", limit: 10 })).toHaveLength(0);
+    // V13 unchanged without a default scope.
+    const noScope = await call("delegate_task", bare({ trust_profile: "privileged" }));
+    expect(noScope.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { field: "privileged_scope" } });
+  });
+
+  it("privileged default with a not_required client: QUEUED under the default scope, APPROVED by client policy", async () => {
+    await setup({ adapters: [fakeWriter()], clients: CLIENTS, defaults: ALWAYS_BYPASS, start: false });
+    const d = await call("delegate_task", bare({ idempotency_key: "always-bypass-1" }));
+    expect(d.isError).toBe(false);
+    expect(d.body.status).toBe("QUEUED");
+    expect(profileOf(d.body.run_id)).toBe("privileged");
+    expect(scopeOf(d.body.run_id)).toEqual(BYPASS);
+    expect(ledger.getApprovalForRun(d.body.run_id)).toMatchObject({
+      status: "APPROVED",
+      decided_by: "client_policy:zemdregon",
+    });
+    expect(ledger.listApprovals().filter((a) => a.status === "PENDING")).toHaveLength(0);
+    // The hash covers the resolved profile and scope: the same request spelled out replays the defaulted one.
+    const explicit = await call(
+      "delegate_task",
+      bare({ idempotency_key: "always-bypass-1", trust_profile: "privileged", privileged_scope: BYPASS }),
+    );
+    expect(explicit.body).toMatchObject({ run_id: d.body.run_id, replayed: true });
+    // An explicit privileged request without a scope takes the default scope; an explicit scope wins.
+    const noScope = await call("delegate_task", bare({ trust_profile: "privileged" }));
+    expect(scopeOf(noScope.body.run_id)).toEqual(BYPASS);
+    const own = await call("delegate_task", bare({ privileged_scope: SCOPE }));
+    expect(scopeOf(own.body.run_id)).toEqual(SCOPE);
+    expect(runCount()).toBe(3);
+  });
+
+  it("an explicit lower profile still wins over a privileged default, and a scope with it is still refused", async () => {
+    await setup({ adapters: [fakeWriter()], clients: CLIENTS, defaults: ALWAYS_BYPASS, start: false });
+    const r = await call("delegate_task", bare({ trust_profile: "inspect-untrusted" }));
+    expect(r.isError).toBe(false);
+    expect(profileOf(r.body.run_id)).toBe("inspect-untrusted");
+    expect(ledger.listApprovals()).toHaveLength(0);
+    const scoped = await call("delegate_task", bare({ trust_profile: "edit-untrusted", privileged_scope: BYPASS }));
+    expect(scoped.body.error).toMatchObject({ code: "INVALID_REQUEST", details: { field: "privileged_scope" } });
+  });
+
+  it("clamps the default to the client's and the project's ceiling instead of failing, and a project default wins", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: CLIENTS,
+      projects: [
+        project({ maxTrustProfile: "edit-untrusted" }),
+        project({ id: "lab", name: "Lab", defaultTrustProfile: "test-sandboxed" }),
+      ],
+      defaults: ALWAYS_BYPASS,
+      start: false,
+    });
+    // The project's ceiling (edit-untrusted) for a privileged client.
+    const inProject = await call("delegate_task", { objective: "x", project: "web-app" });
+    expect(inProject.isError).toBe(false);
+    expect(profileOf(inProject.body.run_id)).toBe("edit-untrusted");
+    // The client's ceiling: edit-untrusted and inspect-untrusted clients.
+    const edit = await call("delegate_task", bare(), 1);
+    expect(profileOf(edit.body.run_id)).toBe("edit-untrusted");
+    const inspect = await call("delegate_task", bare(), 2);
+    expect(profileOf(inspect.body.run_id)).toBe("inspect-untrusted");
+    expect(ledger.listApprovals()).toHaveLength(0);
+    // list_projects shows what an absent trust_profile resolves to there.
+    const listed = (await call("list_projects")).body.projects.find((p: Json) => p.id === "web-app");
+    expect(listed).toMatchObject({ effective_max_profile: "edit-untrusted", default_trust_profile: "edit-untrusted" });
+  });
+
+  it("a configured project's default_trust_profile overrides the top-level one", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: [{ id: "zemdregon", max: "privileged", approval: "not_required", projects: ["lab"] }],
+      projects: [project({ id: "lab", name: "Lab", defaultTrustProfile: "test-sandboxed" })],
+      defaults: ALWAYS_BYPASS,
+      start: false,
+    });
+    const r = await call("delegate_task", { objective: "x", project: "lab" });
+    expect(r.isError).toBe(false);
+    expect(profileOf(r.body.run_id)).toBe("test-sandboxed");
+    expect((await call("list_projects")).body.projects[0]).toMatchObject({ default_trust_profile: "test-sandboxed" });
+  });
+
+  it("enqueue_work stores the resolved profile and scope, and admission runs it pre-approved", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: CLIENTS,
+      projects: [project()],
+      defaults: ALWAYS_BYPASS,
+      start: false,
+    });
+    const enq = await call("enqueue_work", { project_id: "web-app", request: { objective: "x" } });
+    expect(enq.isError).toBe(false);
+    expect(enq.body.trust_profile).toBe("privileged");
+    const stored = JSON.parse(ledger.getWorkItem(enq.body.work_item_id)?.request_json ?? "{}");
+    expect(stored).toMatchObject({ trust_profile: "privileged", privileged_scope: BYPASS, project: "web-app" });
+    // The clamped default for a client whose ceiling is lower.
+    const low = await call("enqueue_work", { project_id: "web-app", request: { objective: "y" } }, 1);
+    expect(JSON.parse(ledger.getWorkItem(low.body.work_item_id)?.request_json ?? "{}")).not.toHaveProperty(
+      "privileged_scope",
+    );
+    expect(low.body.trust_profile).toBe("edit-untrusted");
+    const tick = () => runProjectWorkQueueTick(ledger, queueAdmission, { maxItemsPerProject: 500, dequeueBatch: 2 });
+    expect(await tick()).toMatchObject({ admitted: 2, failed: 0 });
+    const runId = ledger.getWorkItem(enq.body.work_item_id)?.admitted_run_id as string;
+    expect(ledger.getRunRecord(runId)).toMatchObject({ trust_profile: "privileged", state: "QUEUED" });
+    expect(ledger.getApprovalForRun(runId)).toMatchObject({
+      status: "APPROVED",
+      decided_by: "client_policy:zemdregon",
+    });
+  });
+});
+
 describe("privileged_approval not_required (owner decision 22, ADR-0019)", () => {
   const CLIENTS = [
     { id: "zemdregon", max: "privileged" as const, approval: "not_required" as const },
@@ -2135,7 +2280,8 @@ describe("projects (T9.2; FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; FRD V12, BR-23)", () 
     const client = servers[0]?.client as Client;
     const { tools } = await client.listTools();
     const del = tools.find((t) => t.name === "delegate_task");
-    expect(del?.inputSchema.required).toEqual(["objective", "trust_profile"]);
+    // ADR-0091 (FR-MCP-26): trust_profile is optional; absent with no configured default it is INVALID_REQUEST.
+    expect(del?.inputSchema.required).toEqual(["objective"]);
     expect(Object.keys(del?.inputSchema.properties ?? {})).toContain("project");
     expect(tools.map((t) => t.name)).toContain("list_projects");
   });

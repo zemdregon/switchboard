@@ -1,6 +1,7 @@
 # ADR-0019: Per-client `privileged_approval` setting
 
-- Status: Accepted
+- Status: Accepted; amended in part by [ADR-0091](0091-configured-default-trust-profile-and-unattended-http-privileged.md)
+  (an HTTP-mapped or bound client may carry `not_required` when `transport.http.allow_unattended_privileged` is true)
 - Date: 2026-10-13
 - Decided by: zemdregon (owner decisions 19, 22), mechanism Delegated (agent, 2026-10-13). zemdregon decided that in approved
   bypass runs only the per-scope approval is lifted, while Git-write denial (FR-GIT-01, owner decision 7) and worktree

@@ -25,7 +25,7 @@ Only one `serve` can hold a data directory at a time.
 
 | Tool | Family | What it does | Availability |
 | --- | --- | --- | --- |
-| `delegate_task` | run | Starts a coding task in a new meta-session; returns a `run_id` at once (optional `wait_seconds`, 0 to 60, waits without cancelling). Give exactly one of `workspace_path` and `project` (see `list_projects`). | Always |
+| `delegate_task` | run | Starts a coding task in a new meta-session; returns a `run_id` at once (optional `wait_seconds`, 0 to 60, waits without cancelling). Give exactly one of `workspace_path` and `project` (see `list_projects`). `trust_profile` may be omitted when the operator set `default_trust_profile`: it is then that default lowered to your ceiling, and a `privileged` request without `privileged_scope` uses `default_privileged_scope` (ADR-0091). | Always |
 | `continue_task` | run | Continues an idle meta-session with a new instruction: resumes the same provider's native session, or hands off to another provider (or a fresh session) with a bundle built from Switchboard's own records. A `privileged` meta-session continues on its own provider only. | Always |
 | `get_run` | run | Returns a run's status, failure code, provider, summary, changed-file count and artifact ids, optionally with events. A run that was retried or failed over names its successor in `superseded_by`; the successor names the run it follows in `retry_of`. | Always; `console` sees it |
 | `cancel_run` | run | Requests cancellation of a run (asynchronous; poll `get_run`). | Always (orchestrator only) |
@@ -38,8 +38,8 @@ Only one `serve` can hold a data directory at a time.
 | `pause_project` | control | Pause one of the client's projects: no new run is admitted (running runs finish) until resume. | Always; `console` sees it |
 | `resume_project` | control | Lift a pause this client set on one of its projects. | Always; `console` sees it |
 | `steer_run` | control | Append a note to a run; on a fake adapter it continues the same native session. | Always; `console` sees it |
-| `list_projects` | project | Lists the configured projects this client may use (id, name, environment kind, contexts with their effective definition (`base_ref`, push remote name and branch prefix, commit identity, `sign`, `finalize_commit`, `submodules`), trust ceiling, allowed providers, merge policy), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. | Always (orchestrator only) |
-| `enqueue_work` | queue | Queue a `delegate_task` request on one project this client may use; the controller admits it later under the creating client's ceiling. | Orchestrator profile only (stdio and network transport); `console` sees none |
+| `list_projects` | project | Lists the configured projects this client may use (id, name, environment kind, contexts with their effective definition (`base_ref`, push remote name and branch prefix, commit identity, `sign`, `finalize_commit`, `submodules`), trust ceiling, `default_trust_profile` when the operator configured a default, allowed providers, merge policy), plus its own dynamic projects marked `source: "dynamic"` with their revision and status. Read-only; returns no filesystem paths. | Always (orchestrator only) |
+| `enqueue_work` | queue | Queue a `delegate_task` request on one project this client may use; the controller admits it later under the creating client's ceiling. An omitted `trust_profile` (and a privileged request's omitted scope) is filled from the operator's defaults at enqueue and stored. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `list_work` | queue | Work items this client queued, highest priority first, then oldest, with optional project and state filters. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `cancel_work` | queue | Cancel a `PENDING` or `READY` item this client queued; an admitted item stops with `cancel_run` on its run. | Orchestrator profile only (stdio and network transport); `console` sees none |
 | `publish_run` | publication | Push one of this client's SUCCEEDED runs' branch with the operator-push rules and the pre-push secret scan, then open (or reuse) a pull request with the operator's `gh` login. Idempotent. For a project with writable submodules (ADR-0087) it first scans every changed repository, pushes each submodule branch to its own repository, then the umbrella, and opens one pull request per repository (the umbrella's lists the others); the result adds `submodules[]` and the run envelopes list `linked_pull_requests`. See [ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md). | Only with `max_push_policy: "branch"` (orchestrator profile) |
@@ -376,7 +376,9 @@ one-time code comes from the CLI. This is *Proposed* until ROADMAP T13.12 is Don
 
 Prerequisites: `transport.http` is enabled with a `public_url` behind your TLS proxy (see the `transport` row of the
 [configuration table](getting-started.md#configure)), and the MCP client profile you will offer exists in
-`mcp_clients`. Only a profile that is allowed over HTTP works: not `privileged_approval: not_required`. A
+`mcp_clients`. Only a profile that is allowed over HTTP works: not `privileged_approval: not_required`, unless you set
+`transport.http.allow_unattended_privileged: true` (ADR-0091), in which case that profile's privileged runs over HTTP
+run without `switchboard approve` (`doctor` warns). A
 profile with a `privileged` ceiling is allowed, as with a `clients` mapping, and its privileged runs still wait for your
 approval ([ADR-0086](../adr/0086-bound-codes-follow-the-mapped-rule.md)); `default_mcp_client` still refuses a
 `privileged` ceiling.
