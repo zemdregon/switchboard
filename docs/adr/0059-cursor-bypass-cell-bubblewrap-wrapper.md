@@ -1,6 +1,8 @@
 # ADR-0059: The Cursor bypass cell runs inside an enforcing bubblewrap wrapper
 
-- Status: Accepted (owner ruling 2026-10-19 06:41 CDT, option A)
+- Status: Superseded by [ADR-0077](0077-bypass-unconfined-and-every-provider-bypass-cell.md) for the Cursor bypass
+  cell (2026-10-20, owner ruling: bypass is not confined to the worktree; the cell starts without the wrapper, whose
+  module stays for a future lower-tier cell). Was: Accepted (owner ruling 2026-10-19 06:41 CDT, option A)
 - Date: 2026-10-19
 - Decided by: Linus, relaying the owner-level ruling of 2026-10-19 06:41 CDT
   (`owner-rulings/20261019T114059Z-t448-fix-bwrap.md` on the operator host, option A), which builds on the 06:15 CDT

@@ -8,7 +8,7 @@ const opt = (list, name) => {
 };
 
 const SINGLE = "--single=";
-const SANDBOX_PROFILES = ["strict", "read-only", "workspace"];
+const SANDBOX_PROFILES = ["off", "strict", "read-only", "workspace"];
 
 // Mirrors BYPASS_FLAGS in src/adapters/audit.ts minus `--always-approve` (the one bypass flag the approved Grok cell
 // compiles, checked below to travel with `--sandbox`), plus flags the adapter never emits (adapter.ts header): the
@@ -40,7 +40,7 @@ export default {
     }
     // [R2] L613 to L615: the permission mode is never compiled without the sandbox profile.
     if (!argv.includes("--always-approve") || !SANDBOX_PROFILES.includes(opt(argv, "--sandbox") ?? "")) {
-      fail("expected --always-approve together with --sandbox strict|read-only|workspace", 64);
+      fail("expected --always-approve together with --sandbox off|strict|read-only|workspace", 64);
     }
     const refused = argv.filter((a) => REFUSED.some((f) => a === f || a.startsWith(`${f}=`)));
     if (refused.length > 0) fail(`flag refused: ${refused.join(" ")}`, 64);

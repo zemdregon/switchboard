@@ -5,8 +5,9 @@
  * synthetic fixtures (`src/adapters/grok/fixtures/task_failure.jsonl`). They are not recordings of a real Grok Build run.
  *
  * Compiles the one scope family Grok Build supports: an approved privileged bypass scope with repository configuration
- * `enabled` (T4.22, owner decisions 26 and 46). The leg's main profile is `--sandbox strict` (network off); the other
- * two compiled cells (`workspace` with network on, `read-only` files) are checked through `extraProfiles`. Repository
+ * `enabled` (T4.22, owner decisions 26 and 46). The leg's main profile is `--sandbox off` (worktree files, network on;
+ * ADR-0077: bypass is not confined to the worktree); the other compiled cell (`read-only` files, network off) is
+ * checked through `extraProfiles`. Worktree files with network off are refused (no sandbox keeps it off). Repository
  * configuration `approved` is refused. FR-POL-04 is therefore not shown for Grok Build: in the compiled scope project
  * sources load; what this case proves is that no flag widens that (no `--trust`, no `--permission-mode`).
  *
@@ -141,24 +142,12 @@ const grokCase: AdapterLegCase = {
   bypassApproved: true,
   nonDisabledRepoConfig: privilegedProfile({ ...BYPASS_SCOPE, repository_config: { mode: "approved" } }),
   // `--no-auto-update` keeps the binary fixed during the run (ADR-0009); `--output-format streaming-json` is the parsed
-  // surface; `--sandbox strict` and `--disable-web-search` are the scope's file and network containment (T4.22).
-  isolationFlags: [
-    "--no-auto-update",
-    "--output-format",
-    "streaming-json",
-    "--sandbox",
-    "strict",
-    "--disable-web-search",
-  ],
+  // surface; `--sandbox off` is given explicitly so no config default confines the run (ADR-0077).
+  isolationFlags: ["--no-auto-update", "--output-format", "streaming-json", "--sandbox", "off"],
   extraProfiles: [
     {
-      label: "workspace (network on)",
-      profile: privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "on" } }),
-      isolationFlags: ["--no-auto-update", "--output-format", "streaming-json", "--sandbox", "workspace"],
-    },
-    {
       label: "read-only files",
-      profile: privilegedProfile({ ...BYPASS_SCOPE, files: { access: "read-only" } }),
+      profile: privilegedProfile({ ...BYPASS_SCOPE, files: { access: "read-only" }, network: { mode: "off" } }),
       isolationFlags: [
         "--no-auto-update",
         "--output-format",
@@ -172,7 +161,7 @@ const grokCase: AdapterLegCase = {
   // Never emitted by the adapter (src/adapters/grok/adapter.ts header; FR-POL-03, ADR-0017): `--trust` writes the
   // global trusted-folders file and enables project sources, `-w`/`--worktree` and `--fork-session` leave the run's
   // checkout or session, `--permission-mode` and `--allow` widen what the sandbox run may do, `-m`/`--model` is not
-  // compiled (T4.5); plus the bypass flags other than the one `--always-approve` the approved scope compiles.
+  // compiled without a requested model (the leg requests none); plus the bypass flags other than the one `--always-approve` the approved scope compiles.
   neverEnabledFlags: [
     "--trust",
     "-w",
@@ -2900,30 +2889,29 @@ export interface GrokCompiledCell {
   label: string;
   profile: ResolvedProfile;
   writable: boolean;
-  sandbox: "strict" | "workspace" | "read-only";
+  sandbox: "off" | "read-only";
   /** `--disable-web-search` is compiled exactly when network is `off`. */
   webSearchOff: boolean;
 }
 
 export const grokCompiledCells: readonly GrokCompiledCell[] = [
-  { label: "strict", profile: PRIVILEGED_BYPASS_PROFILE, writable: true, sandbox: "strict", webSearchOff: true },
   {
-    label: "workspace (network on)",
-    profile: privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "on" } }),
+    label: "off (worktree, network on)",
+    profile: PRIVILEGED_BYPASS_PROFILE,
     writable: true,
-    sandbox: "workspace",
+    sandbox: "off",
     webSearchOff: false,
   },
   {
     label: "read-only files",
-    profile: privilegedProfile({ ...BYPASS_SCOPE, files: { access: "read-only" } }),
+    profile: privilegedProfile({ ...BYPASS_SCOPE, files: { access: "read-only" }, network: { mode: "off" } }),
     writable: true,
     sandbox: "read-only",
     webSearchOff: true,
   },
   {
     label: "read-only workspace request",
-    profile: PRIVILEGED_BYPASS_PROFILE,
+    profile: privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "off" } }),
     writable: false,
     sandbox: "read-only",
     webSearchOff: true,
@@ -2978,9 +2966,8 @@ export const grokRefusedScopes: readonly {
 }[] = [
   ...(["disabled", "approved"] as const).flatMap((mode) =>
     [
-      ["strict", BYPASS_SCOPE],
-      ["workspace (network on)", { ...BYPASS_SCOPE, network: { mode: "on" } }],
-      ["read-only files", { ...BYPASS_SCOPE, files: { access: "read-only" } }],
+      ["off (worktree, network on)", BYPASS_SCOPE],
+      ["read-only files", { ...BYPASS_SCOPE, files: { access: "read-only" }, network: { mode: "off" } }],
     ].map(([label, scope]) => ({
       label: `${label}, repository_config ${mode}`,
       profile: privilegedProfile({ ...(scope as typeof BYPASS_SCOPE), repository_config: { mode } }),
@@ -2991,6 +2978,12 @@ export const grokRefusedScopes: readonly {
   {
     label: "read-only files, network on",
     profile: privilegedProfile({ ...BYPASS_SCOPE, files: { access: "read-only" }, network: { mode: "on" } }),
+    bypassApproved: true,
+    reason: "CAPABILITY_MISSING",
+  },
+  {
+    label: "worktree files, network off (ADR-0077: --sandbox off keeps no network off)",
+    profile: privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "off" } }),
     bypassApproved: true,
     reason: "CAPABILITY_MISSING",
   },

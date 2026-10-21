@@ -467,11 +467,11 @@ describe("grok parser residuals, third pass: stream order, usage dedup and resum
     const refused = missing.compile(req, gitWrite);
     expect(refused).toMatchObject({ ineligible: true, reason: "PROFILE_UNSUPPORTED" });
     expect(missing.resumeArgs(safe, req, gitWrite)).toEqual(refused);
-    const withModel = { ...req, model: "grok-4.7-build" };
+    const withModel = { ...req, model: "-x" };
     expect(missing.resumeArgs(safe, withModel, approved)).toEqual(missing.compile(withModel, approved));
     expect(missing.compile(withModel, approved)).toMatchObject({
       reason: "CAPABILITY_MISSING",
-      detail: expect.stringContaining("T4.5"),
+      detail: "requested model is not a plain model id",
     });
   });
 
@@ -1359,17 +1359,17 @@ describe("grok parser residuals, eighth pass: target-field guard interactions, t
     const a = adapter();
     const binding = { provider: "grok" as const, nativeSessionId: SID };
     const readOnlyReq = { ...req, workspace: { cwd: "/w", writable: false } };
-    const first = a.compile(readOnlyReq, approved);
+    const networkOff = { ...privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "off" } }), bypassApproved: true };
+    const first = a.compile(readOnlyReq, networkOff);
     if ("ineligible" in first) throw new Error(first.detail);
     expect(first.policyFlags).toEqual(["--sandbox", "read-only", "--disable-web-search", "--always-approve"]);
-    expect(a.resumeArgs(binding, readOnlyReq, approved)).toEqual({ ...first, argv: [...first.argv, "-r", SID] });
+    expect(a.resumeArgs(binding, readOnlyReq, networkOff)).toEqual({ ...first, argv: [...first.argv, "-r", SID] });
     // With network on, a non-writable workspace is refused on both paths with the same detail.
-    const networkOn = { ...privilegedProfile({ ...BYPASS_SCOPE, network: { mode: "on" } }), bypassApproved: true };
-    const refused = a.compile(readOnlyReq, networkOn);
+    const refused = a.compile(readOnlyReq, approved);
     expect(refused).toMatchObject({ ineligible: true, reason: "CAPABILITY_MISSING" });
-    expect(a.resumeArgs(binding, readOnlyReq, networkOn)).toEqual(refused);
-    // The same scope on a writable workspace compiles, so the refusal is the request's flag alone.
-    expect(a.compile(req, networkOn)).toMatchObject({ policyFlags: ["--sandbox", "workspace", "--always-approve"] });
+    expect(a.resumeArgs(binding, readOnlyReq, approved)).toEqual(refused);
+    // The same scope on a writable workspace compiles unconfined (ADR-0077), so the refusal is the request's flag alone.
+    expect(a.compile(req, approved)).toMatchObject({ policyFlags: ["--sandbox", "off", "--always-approve"] });
   });
 
   it("a failed run still returns its first bound id, and resumeArgs compiles it (the adapter does not judge resumability)", () => {

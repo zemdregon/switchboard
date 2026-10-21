@@ -12,13 +12,6 @@ import { CursorAdapter } from "../adapter.js";
 
 export const fixturePath = (name: string): string => fileURLToPath(new URL(`./${name}.jsonl`, import.meta.url));
 
-/**
- * SYNTHETIC pass-through stand-in for `bwrap` (ADR-0059): every compiled run starts inside the wrapper, so replay runs
- * go through this script, which confines nothing, and stay runnable on hosts without a usable bwrap. The real wrapper
- * is tested in `confinement.test.ts`.
- */
-export const PASSTHROUGH_BWRAP = fileURLToPath(new URL("./passthrough-bwrap.sh", import.meta.url));
-
 export const DEFAULT_SESSION_ID = "synthetic-cursor-session-0001";
 export const RESUMED_SESSION_ID = "synthetic-cursor-session-0042";
 
@@ -47,7 +40,6 @@ export interface ReplayOptions {
 export function replayAdapter(fixture: string, o: ReplayOptions = {}): CursorAdapter {
   return new CursorAdapter({
     executable: process.execPath,
-    bwrap: PASSTHROUGH_BWRAP,
     launcherArgs: replayLauncher("cursor", fixturePath(fixture), [
       ...(o.exitCode !== undefined ? ["--exit-code", String(o.exitCode)] : []),
       ...(o.write ? ["--write", o.write] : []),

@@ -122,6 +122,16 @@ Git-write denial (FR-GIT-01, FR-GIT-03), worktree isolation (FR-WS-01, FR-WS-02)
 (FR-GIT-11). Read confinement is a property of the other profiles. Per-provider wrappers already built
 ([ADR-0059](../adr/0059-cursor-bypass-cell-bubblewrap-wrapper.md)) stay as they are.
 
+*Note 2026-10-20 (owner ruling, zemdregon, 17:48 CDT: "Bypass mode is permitted to work outside its worktree.
+Restrictions within the worktree are for lower tier modes.")*: an approved bypass run may read **and write** outside
+its worktree ([ADR-0077](../adr/0077-bypass-unconfined-and-every-provider-bypass-cell.md)). It still starts in a
+controller-created worktree (FR-WS-01, FR-WS-02), but no bypass cell confines the provider to it: the Cursor bypass
+cell no longer starts inside the ADR-0059 wrapper and the Grok Build worktree cell compiles `--sandbox off`. This
+replaces "worktree isolation" and "wrappers ... stay as they are" in the note above for bypass runs only. Bypass still
+keeps the Git-write denial (FR-GIT-01, FR-GIT-03) and the pre-push secret scan (FR-GIT-11); every lower tier keeps its
+worktree confinement. Every provider except Muse Code (and Copilot, which has no adapter) has an approved bypass cell,
+Codex included (`--dangerously-bypass-approvals-and-sandbox`, FR-POL-03).
+
 | ID | Requirement | Priority | Source | Verify | Milestone |
 | --- | --- | --- | --- | --- | --- |
 | FR-POL-01 | The controller shall implement the five trust profiles above, configurable but not weakenable below the table's defaults without a config change recorded in the run's policy snapshot. | Must | CAP-3, [ADR-0004](../adr/0004-trust-profiles-no-bypass-flags.md) | T | M2 (`inspect-untrusted`, `edit-untrusted`), M3 (rest) |

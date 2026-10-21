@@ -185,6 +185,8 @@ describe("declarations count only once the entry has an adapter (create)", () =>
     expect(declaredBypassShortFlags()).toEqual(CURSOR_SHORT);
     const ACTIVE_VALUES = [
       { flag: "--permission-mode", value: "bypassPermissions" },
+      { flag: "--sandbox", value: "danger-full-access" },
+      { flag: "-s", value: "danger-full-access" },
       { flag: "--allow", value: "*" },
       { flag: "--allow", value: "**" },
       { flag: "--allowed-tools", value: "*" },
@@ -195,7 +197,8 @@ describe("declarations count only once the entry has an adapter (create)", () =>
       { flag: "--sandbox-network", value: "enabled" },
     ];
     // Claude Code's `--permission-mode bypassPermissions` and Grok Build's (declared since T4.22) are one value;
-    // Cursor's `--sandbox disabled` is active since T4.42, Muse Code's three values since T4.72.
+    // Codex's `--sandbox danger-full-access` (both spellings) since ADR-0077, Cursor's `--sandbox disabled` since T4.42,
+    // Muse Code's three values since T4.72.
     expect(declaredBypassValues()).toEqual(ACTIVE_VALUES);
     expect(bypassClassShortFlags()).toEqual(CURSOR_SHORT);
     expect(bypassClassValues()).toEqual(ACTIVE_VALUES);
@@ -217,7 +220,13 @@ describe("declarations count only once the entry has an adapter (create)", () =>
     );
     expect(decl).toEqual({
       claude: { short: [], values: [{ flag: "--permission-mode", value: "bypassPermissions" }] },
-      codex: { short: [], values: [] },
+      codex: {
+        short: [],
+        values: [
+          { flag: "--sandbox", value: "danger-full-access" },
+          { flag: "-s", value: "danger-full-access" },
+        ],
+      },
       grok: {
         short: [],
         values: [
