@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ClaudeAdapter } from "../adapters/claude/adapter.js";
 import { parseCursorUsageScreen } from "../adapters/cursor/usage.js";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
+import { grokUsageFromResult } from "../adapters/grok/usage.js";
 import {
   AdapterRegistry,
   type ProbeRunner,
@@ -767,6 +768,36 @@ describe("provider_usage on get_capacity, capacity and doctor (ADR-0079, FR-CAP-
     const other = await connect(undefined, { registry: new AdapterRegistry().register(silent) });
     expect((await capacityTool(other)).body.providers[0]).not.toHaveProperty("provider_usage");
     expect(silent.reads).toBe(0);
+  });
+
+  it("a Grok-shaped report (period, amounts, unreported) passes the output schema and renders in text", async () => {
+    const recorded = grokUsageFromResult(
+      JSON.parse(
+        readFileSync(new URL("../adapters/grok/fixtures/billing-supergrok-weekly.json", import.meta.url), "utf8"),
+      ),
+      NOW.toISOString(),
+    );
+    const synthetic = grokUsageFromResult(
+      JSON.parse(
+        readFileSync(new URL("../adapters/grok/fixtures/billing-with-usage.synthetic.json", import.meta.url), "utf8"),
+      ),
+      NOW.toISOString(),
+    );
+    for (const report of [recorded, synthetic]) {
+      const client = await connect(undefined, {
+        registry: new AdapterRegistry().register(new ReportingFake(report)),
+        providerUsage: { runner: noRun, cache: new ProviderUsageCache() },
+      });
+      const got = await capacityTool(client);
+      expect(got.isError).toBe(false);
+      expect(got.body.providers[0].provider_usage).toEqual(report);
+      expectHonestJson(got.body);
+    }
+    const reg = new AdapterRegistry().register(new ReportingFake(recorded));
+    const text = await cli(["capacity"], { adapters: reg, providerUsageRunner: noRun });
+    expect(text.out).toContain("period: weekly, resets 2026-10-26T15:37:46.149Z");
+    expect(text.out).toContain("prepaid_balance 0 (unit unspecified)");
+    expect(text.out).toContain("unreported: config.creditUsagePercent, config.monthlyLimit");
   });
 
   it("`switchboard capacity` and `doctor` print the reported windows under the wording rule; JSON matches", async () => {

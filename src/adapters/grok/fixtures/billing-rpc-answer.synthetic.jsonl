@@ -1,0 +1,4 @@
+not json at all
+{"jsonrpc":"2.0","method":"_x.ai/session/update","params":{"x":1}}
+{"jsonrpc":"2.0","id":1,"result":{"agentInfo":{"name":"grok","hostname":"example-host"}}}
+{"jsonrpc":"2.0","id":2,"result":{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-10-19T15:37:46.149639+00:00","end":"2026-10-26T15:37:46.149639+00:00"},"onDemandCap":{"val":0}},"subscription_tier":"SuperGrok"}}

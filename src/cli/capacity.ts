@@ -22,9 +22,17 @@ import {
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
 import { createLedger, LEDGER_FILE_NAME, migrate } from "../ledger/index.js";
 import { defaultAdapters } from "./doctor.js";
-import { type CliIo, PROBE_ENV_ALLOWLIST, UsageError } from "./io.js";
+import { type CliIo, PROBE_ENV_ALLOWLIST, probeRootFor, UsageError } from "./io.js";
 
 export function runCapacity(io: CliIo, argv: readonly string[], provider?: string): CapacityProjection {
+  return capacityFor(io, argv, provider).projection;
+}
+
+function capacityFor(
+  io: CliIo,
+  argv: readonly string[],
+  provider?: string,
+): { projection: CapacityProjection; cfg: ResolvedConfig } {
   const cfg = loadConfig({ argv, env: io.env, ...(io.homedir !== undefined ? { homedir: io.homedir } : {}) });
   const ids: string[] = (io.adapters ?? defaultAdapters()).list().map((a) => a.id);
   // ADR-0076: `--provider` takes either spelling (`claude`, `claude-code`); the projection names the canonical one.
@@ -34,7 +42,10 @@ export function runCapacity(io: CliIo, argv: readonly string[], provider?: strin
       `unknown provider ${JSON.stringify(provider)}; expected one of ${acceptedProviderNames(ids).join(", ")}`,
     );
   }
-  return projectCapacity(cfg, named === undefined ? ids : [named], (io.now ?? (() => new Date()))());
+  return {
+    projection: projectCapacity(cfg, named === undefined ? ids : [named], (io.now ?? (() => new Date()))()),
+    cfg,
+  };
 }
 
 /** `runCapacity` plus the provider-reported usage of each enabled provider with a reader (ADR-0079, FR-CAP-13). */
@@ -43,8 +54,8 @@ export async function runCapacityWithUsage(
   argv: readonly string[],
   provider?: string,
 ): Promise<CapacityProjection> {
-  const projection = runCapacity(io, argv, provider);
-  return addProviderUsage(io, projection, new Date(projection.as_of));
+  const { projection, cfg } = capacityFor(io, argv, provider);
+  return addProviderUsage(io, projection, new Date(projection.as_of), cfg.dataDir);
 }
 
 /**
@@ -55,13 +66,22 @@ export async function addProviderUsage(
   io: CliIo,
   projection: CapacityProjection,
   now: Date,
+  /** ADR-0079: probe directories for TUI-only readers live under `<dataDir>/probes`. */
+  dataDir?: string,
 ): Promise<CapacityProjection> {
   const named = new Set(projection.providers.map((p) => p.provider));
   const adapters = (io.adapters ?? defaultAdapters()).list().filter((a) => named.has(a.id));
   const targets = usageReadTargets(adapters, projection);
   if (targets.length === 0) return projection;
   const runner = io.providerUsageRunner ?? createProbeRunner(PROBE_ENV_ALLOWLIST);
-  return withProviderUsage(projection, await readProviderUsage(targets, { runner }, now));
+  const terminal =
+    dataDir !== undefined && io.providerUsageTerminal !== undefined
+      ? io.providerUsageTerminal(probeRootFor(dataDir))
+      : undefined;
+  return withProviderUsage(
+    projection,
+    await readProviderUsage(targets, { runner, ...(terminal !== undefined ? { terminal } : {}) }, now),
+  );
 }
 
 /** The projection for `ids` from the configured data directory (shared by `capacity` and `doctor`). */
