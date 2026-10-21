@@ -1,12 +1,16 @@
 /**
  * ADR-0069: the `publish_run` pull-request argv (G13 `pr create`, G14 `pr view --json number,state,url`), its audit and
- * parsers, and {@link GhPullRequestPort} over a fake {@link GhRunner}. No real `gh` runs.
+ * parsers, and {@link GhPullRequestPort} over a fake {@link GhRunner}. ADR-0078: G16 `pr close` for MCP `close_pr`.
+ * No real `gh` runs.
  */
 import { describe, expect, it } from "vitest";
 import {
   G14_FIELDS,
+  G17_FIELDS,
+  ghPrCloseArgv,
   ghPrCreateArgv,
   ghPrLinkViewArgv,
+  ghPrNumberViewArgv,
   isAllowedGhArgv,
   isPrBody,
   isPrTitle,
@@ -14,6 +18,7 @@ import {
   PR_TITLE_MAX,
   parsePrCreated,
   parsePrLinkView,
+  parsePrNumberView,
   pullRequestNumberOf,
 } from "./gh-argv.js";
 import type { GhRunner, GhRunResult } from "./gh-port.js";
@@ -93,6 +98,40 @@ describe("G13 and G14 gh argv (ADR-0069)", () => {
   });
 });
 
+describe("G16 gh argv (ADR-0078)", () => {
+  it("builds the close template with a controller comment, --delete-branch only when asked, and audits it", () => {
+    const close = ghPrCloseArgv("acme", "web", "7", "Superseded by #9.", false);
+    expect(close).toEqual(["pr", "close", "7", "--repo", "acme/web", "--comment", "Superseded by #9."]);
+    expect(ghPrCloseArgv("acme", "web", "7", "c", true).at(-1)).toBe("--delete-branch");
+    expect(isAllowedGhArgv(close)).toBe(true);
+    expect(isAllowedGhArgv([...close, "--delete-branch"])).toBe(true);
+  });
+
+  it("the audit refuses drift: other flags, a branch or URL instead of a number, a flag-like comment", () => {
+    const ok = ghPrCloseArgv("acme", "web", "7", "c", false);
+    expect(isAllowedGhArgv([...ok, "--delete-branch", "--delete-branch"])).toBe(false);
+    expect(isAllowedGhArgv([...ok, "--admin"])).toBe(false);
+    expect(isAllowedGhArgv(ok.map((c) => (c === "7" ? "sb/x" : c)))).toBe(false);
+    expect(isAllowedGhArgv(ok.map((c) => (c === "7" ? URL1 : c)))).toBe(false);
+    expect(isAllowedGhArgv(ok.map((c) => (c === "--comment" ? "--body" : c)))).toBe(false);
+    expect(() => ghPrCloseArgv("acme", "web", "7", "-c", false)).toThrow(/comment/u);
+    expect(() => ghPrCloseArgv("acme", "web", "0", "c", false)).toThrow(/number/u);
+    expect(() => ghPrCloseArgv("ac me", "web", "7", "c", false)).toThrow(/owner/u);
+  });
+
+  it("G17 reads one pull request by number only, and parses only a safe head branch", () => {
+    const view = ghPrNumberViewArgv("acme", "web", "7");
+    expect(view).toEqual(["pr", "view", "7", "--repo", "acme/web", "--json", G17_FIELDS]);
+    expect(isAllowedGhArgv(view)).toBe(true);
+    expect(isAllowedGhArgv(["pr", "view", "sb/x", "--repo", "acme/web", "--json", G17_FIELDS])).toBe(false);
+    expect(() => ghPrNumberViewArgv("acme", "web", "x")).toThrow(/number/u);
+    const out = JSON.stringify({ number: 7, state: "OPEN", url: URL1, headRefName: "sb/x", body: "ignored" });
+    expect(parsePrNumberView(out, "acme", "web")).toEqual({ number: 7, state: "OPEN", url: URL1, headRefName: "sb/x" });
+    const bad = JSON.stringify({ number: 7, state: "OPEN", url: URL1, headRefName: "-x" });
+    expect(() => parsePrNumberView(bad, "acme", "web")).toThrow();
+  });
+});
+
 describe("GhPullRequestPort (ADR-0069)", () => {
   const fake = (results: GhRunResult[]) => {
     const calls: { argv: readonly string[]; env: Record<string, string> }[] = [];
@@ -151,5 +190,42 @@ describe("GhPullRequestPort (ADR-0069)", () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(PullRequestPortError);
     expect((err as PullRequestPortError).code).toBe(code);
+  });
+
+  it("ADR-0078: findByNumber runs G17 (exit 1 is none); close runs G16 and maps failures to the closed codes", async () => {
+    const view = fake([
+      { exitCode: 0, stdout: JSON.stringify({ number: 7, state: "CLOSED", url: URL1, headRefName: "sb/x" }) },
+      { exitCode: 1, stdout: "" },
+    ]);
+    const reader = new GhPullRequestPort({ runner: view.runner });
+    expect(await reader.findByNumber({ owner: "acme", repo: "web", number: 7 })).toEqual({
+      number: 7,
+      state: "CLOSED",
+      url: URL1,
+      headBranch: "sb/x",
+    });
+    expect(await reader.findByNumber({ owner: "acme", repo: "web", number: 7 })).toBeNull();
+    expect(isAllowedGhArgv(view.calls[0]?.argv ?? [])).toBe(true);
+    const { calls, runner } = fake([
+      { exitCode: 0, stdout: "" },
+      { exitCode: 1, stdout: "" },
+    ]);
+    const port = new GhPullRequestPort({ runner, sourceEnv: SECRET_ENV });
+    await port.close({ owner: "acme", repo: "web", number: 7, comment: "Superseded by #9.", deleteBranch: true });
+    expect(calls[0]?.argv).toEqual([
+      "pr",
+      "close",
+      "7",
+      "--repo",
+      "acme/web",
+      "--comment",
+      "Superseded by #9.",
+      "--delete-branch",
+    ]);
+    expect(Object.keys(calls[0]?.env ?? {})).not.toContain("GH_TOKEN");
+    const err = await port
+      .close({ owner: "acme", repo: "web", number: 7, comment: "c", deleteBranch: false })
+      .catch((e: unknown) => e);
+    expect((err as PullRequestPortError).code).toBe("GH_FAILED");
   });
 });

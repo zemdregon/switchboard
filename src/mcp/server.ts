@@ -273,6 +273,7 @@ import {
 } from "../skills/index.js";
 import { gitText } from "../workspace/git.js";
 import { type BaseToolDeps, rebaseSessionTool, refreshProjectBase } from "./base-tools.js";
+import { type ClosePrArgs, closePr, closePrOffered, recordClosePrRefusal } from "./close-pr.js";
 import {
   type AnyDecisionToolName,
   DECIDE_TOOL_NAMES,
@@ -2190,6 +2191,23 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ownRun(a.run_id as string),
       a.expected_head_sha as string | undefined,
     );
+  // ADR-0078 (LLD §3.4.16): `close_pr`, offered with `publish_run` when the pull-request port can read by number and
+  // close; scoped to pull requests `publish_run` created for this client's visible runs of the project.
+  const closePrToolOffered = publishOffered && closePrOffered(deps.publish);
+  const closePrTool = async (a: Args) =>
+    closePr(
+      {
+        ledger,
+        clientId: deps.clientId,
+        clientProjects: client.projects ?? [],
+        visibleRun: (runId) => {
+          const run = ledger.getRunRecord(runId);
+          return run !== undefined && run.client_id === deps.clientId && ownSubject(run.meta_session_id);
+        },
+      },
+      deps.publish as PublishDeps,
+      a as unknown as ClosePrArgs,
+    );
   // ADR-0074 (LLD §3.4.15): scoped like `search_project_context` (projects) and `continue_task` (meta-sessions).
   const baseOffered = deps.base !== undefined && maxTrustProfile !== "inspect-untrusted";
   const baseValidators = compileBaseValidators();
@@ -2243,12 +2261,14 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     publish_run: publishRunTool,
     merge_run_pr: mergeRunPrTool,
     update_run_branch: updateRunBranchTool,
+    close_pr: closePrTool,
   };
   const publishToolOffered = (name: string) =>
     (PUBLISH_TOOL_NAMES as readonly string[]).includes(name) &&
     publishOffered &&
     (name !== "merge_run_pr" || mergeRunOffered) &&
-    (name !== "update_run_branch" || updateBranchOffered);
+    (name !== "update_run_branch" || updateBranchOffered) &&
+    (name !== "close_pr" || closePrToolOffered);
   const skillGate = (profile: TrustProfile): SkillGate => ({
     profile,
     allowDraftInTrusted: deps.skills?.settings.allowDraftInTrusted === true,
@@ -2355,6 +2375,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         publish: publishOffered,
         mergeRunPr: mergeRunOffered,
         updateRunBranch: updateBranchOffered,
+        closePr: closePrToolOffered,
         baseTools: baseOffered,
       }),
       // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
@@ -2400,6 +2421,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
           projectTools?.recordNotOffered(name as ProjectToolName, rawArgs);
         }
+        // ADR-0078: every `close_pr` call is audited, also one this client is not offered.
+        if (name === "close_pr") recordClosePrRefusal(ledger, deps.clientId, rawArgs, "TOOL_NOT_OFFERED");
         throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, {
           tools: offeredToolNames(),
         });
@@ -2438,14 +2461,21 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         if (!validate(args)) throw schemaError(validate.errors ?? []);
         return ok(await skillHandlers[tool](args));
       }
+      if (name === "close_pr" && !publishToolOffered(name)) {
+        // ADR-0078: audited, then answered like an unknown tool below.
+        recordClosePrRefusal(ledger, deps.clientId, rawArgs, "TOOL_NOT_OFFERED");
+      }
       if (publishToolOffered(name)) {
         // ADR-0069: when not offered (no publish port, or max_push_policy none) it is answered like an unknown tool;
         // ADR-0070: `merge_run_pr` also without the merge port; ADR-0073: `update_run_branch` also without the update
-        // port.
+        // port; ADR-0078: `close_pr` also without the port's read-by-number and close.
         const tool = name as PublishToolName;
         const args = structuredClone(rawArgs ?? {}) as Args;
         const validate = publishValidators[tool];
-        if (!validate(args)) throw schemaError(validate.errors ?? []);
+        if (!validate(args)) {
+          if (tool === "close_pr") recordClosePrRefusal(ledger, deps.clientId, rawArgs, "SCHEMA_INVALID");
+          throw schemaError(validate.errors ?? []);
+        }
         return ok(await publishHandlers[tool](args));
       }
       if ((BASE_TOOL_NAMES as readonly string[]).includes(name) && baseOffered) {
