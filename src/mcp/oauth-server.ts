@@ -41,15 +41,36 @@
  * for a URL whose origin is this issuer, or when the fetch cap is busy. A refused document is an error page with no
  * redirect, like an unknown client.
  *
+ * Profile-bound one-time codes (migration 0036, `switchboard mcp oauth issue-code`): the consent form's `pairing_code`
+ * field takes them as well as legacy `consent pair` codes. A bound code is looked up first without being spent; a client
+ * bound (in config or in the ledger) to another profile, or a profile no longer eligible for a binding, gets an error
+ * page and the code stays live. Otherwise the code is spent atomically and, in one transaction, a pending client is
+ * approved and a client not mapped in config is bound to the code's profile (`approveAndBind`). A legacy code and the
+ * passphrase approve exactly as before and bind nothing.
+ *
+ * Per-address lockout (`oauth-ip-limiter.ts`): wrong codes and wrong passphrases also count per client address; an
+ * address over the limit gets 429 on any code or passphrase entry, before the credential is checked. The global limits
+ * above stay in force.
+ *
+ * RFC 7009 revocation (`POST /revoke`, {@link AuthorizationServer.handleRevoke}): form-encoded `token`, optional
+ * `token_type_hint` (accepted and ignored: the store finds the token by hash), and `client_id` (public clients
+ * authenticate by identifier only). Only a token of that client is revoked; a refresh token takes its whole grant with
+ * it. An unknown or another client's token gets the same 200 (RFC 7009 §2.2).
+ *
+ * Grants and revocations are written to the durable audit (`oauth_event`) when `audit` is wired: consent approval
+ * (method, client, profile, address), token issue and refresh (client, profile), revocation (client, token kind).
+ *
  * Nothing secret is logged or echoed: `onEvent` receives event names, client ids, methods and reason codes only.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { HttpTransportSettings } from "../config/http-transport.js";
+import { type HttpTransportSettings, resolveMcpClientFor } from "../config/http-transport.js";
 import { mediaType, readBody } from "./http-body.js";
+import type { OAuthAuditLog } from "./oauth-audit.js";
 import { type CimdFetcher, checkCimdClientId, cimdInternalClientId, looksLikeCimdClientId } from "./oauth-cimd.js";
 import type { OAuthClientStore, RegisteredClient } from "./oauth-clients.js";
 import { consentHeaders, consentPage, errorPage, sendHtml } from "./oauth-consent-page.js";
+import { IP_LOCK_MS, IpAttemptLimiter } from "./oauth-ip-limiter.js";
 import type { PairingCodeStore } from "./oauth-pairing.js";
 import { verifyPassphrase as defaultVerifyPassphrase } from "./oauth-passphrase.js";
 import type { OAuthTokenStore } from "./oauth-tokens.js";
@@ -87,7 +108,10 @@ export type AuthEvent =
   | "token_refused"
   | "refresh_reused"
   | "cimd_fetched"
-  | "cimd_refused";
+  | "cimd_refused"
+  | "consent_refused_profile"
+  | "token_revoked"
+  | "revoke_refused";
 
 /** Audit fields: never a token, code, passphrase or pairing code. `host` is a Client Identifier URL's host (T13.11). */
 export type AuthEventFields = {
@@ -95,17 +119,28 @@ export type AuthEventFields = {
   method?: "passphrase" | "pairing_code";
   reason?: string;
   host?: string;
+  /** The `mcp_clients` profile a grant is for, or a bound code's profile. */
+  mcp_client?: string;
+  /** The client address the per-address lockout keyed (consent events only). */
+  ip?: string;
 };
 
 export interface AuthorizationServerDeps {
   /** `registerCimd` and `pendingCapReached` are needed for Client ID Metadata Documents; without them CIMD is off. */
-  clients: Pick<OAuthClientStore, "get" | "approve"> &
+  clients: Pick<OAuthClientStore, "get" | "approveAndBind"> &
     Partial<Pick<OAuthClientStore, "registerCimd" | "pendingCapReached">>;
   /** The metadata-document fetcher (T13.11); without one a URL `client_id` is an unknown client. */
   cimd?: Pick<CimdFetcher, "fetch">;
-  tokens: Pick<OAuthTokenStore, "issue" | "verify" | "useRefreshToken" | "revokeClient">;
-  /** Pairing-code redemption; without it the fallback is unavailable. */
-  pairing?: Pick<PairingCodeStore, "redeem">;
+  tokens: Pick<
+    OAuthTokenStore,
+    "issue" | "verify" | "useRefreshToken" | "revokeClient" | "revokeForClient" | "newGrantId"
+  >;
+  /** One-time code lookup and redemption; without it the fallback is unavailable. */
+  pairing?: Pick<PairingCodeStore, "lookup" | "consume">;
+  /** Per-address lockout; `serve` shares one with the approval-link page. A fresh one when absent. */
+  ipLimiter?: IpAttemptLimiter;
+  /** Durable audit of grants and revocations (`oauth_event`); nothing is recorded without it. */
+  audit?: Pick<OAuthAuditLog, "record">;
   /** `transport.http.passphrase_hash`; without it the passphrase path is unavailable. */
   passphraseHash?: string;
   /** Injected by tests to skip scrypt's cost. */
@@ -210,6 +245,8 @@ export class AuthorizationServer {
   private readonly codes = new Map<string, CodeGrant>();
   /** Wrong passphrases: a global lockout. */
   private readonly limiter: AttemptLimiter;
+  /** Wrong codes and passphrases per client address. */
+  private readonly ipLimiter: IpAttemptLimiter;
   /** Times of recent wrong pairing codes (a separate, short throttle; never a lockout). */
   private pairingFailures: number[] = [];
   private verifying = false;
@@ -225,6 +262,24 @@ export class AuthorizationServer {
     this.random = deps.randomBytes ?? randomBytes;
     this.checkPassphrase = deps.verifyPassphrase ?? defaultVerifyPassphrase;
     this.limiter = deps.limiter ?? new AttemptLimiter();
+    this.ipLimiter = deps.ipLimiter ?? new IpAttemptLimiter(s.clientIpHeader);
+  }
+
+  /** The profile a client acts as at the MCP endpoint, for the audit; undefined when it has none. */
+  private profileOf(clientId: string, ledgerBinding: string | undefined): string | undefined {
+    return resolveMcpClientFor(this.s, clientId, ledgerBinding)?.mcpClient;
+  }
+
+  /**
+   * Why a profile-bound code may not approve this client, or undefined: the profile is no longer eligible for a
+   * ledger binding, or the client is already mapped (config) or bound (ledger) to another profile.
+   */
+  private bindingProblem(client: RegisteredClient, profile: string): string | undefined {
+    if (this.s.bindableMcpClients?.has(profile) !== true) return "profile_ineligible";
+    const mapped = this.s.clientMap.get(client.clientId);
+    if (mapped !== undefined && mapped !== profile) return "bound_elsewhere";
+    if (client.mcpClient !== undefined && client.mcpClient !== profile) return "bound_elsewhere";
+    return undefined;
   }
 
   /** True while {@link MAX_PAIRING_FAILURES_PER_MINUTE} wrong pairing codes fall within the last minute. */
@@ -521,6 +576,8 @@ export class AuthorizationServer {
     }
     const passphrase = form.get("passphrase") ?? "";
     const pairingCode = form.get("pairing_code") ?? "";
+    const { ip, key: ipKey } = this.ipLimiter.identify(req);
+    const at = ip !== undefined ? { ip } : {};
     const retry = (status: number, notice: string) => {
       const csrf = this.secret();
       this.consents.set(requestId, { ...consent, csrfHash: sha256(csrf) });
@@ -533,6 +590,19 @@ export class AuthorizationServer {
         "retry-after": String(LOCKOUT_MS / 1000),
       });
     };
+    const ipLockedOut = () => {
+      this.consents.delete(requestId);
+      sendHtml(res, 429, errorPage("Too many wrong attempts from this address. Try again later."), {
+        ...clearCookie,
+        "retry-after": String(IP_LOCK_MS / 1000),
+      });
+    };
+    // Per address first: an address over its limit is refused before any credential is checked.
+    if ((passphrase !== "" || pairingCode !== "") && this.ipLimiter.locked(ipKey, now)) {
+      this.event("consent_refused_locked", { client_id: client.clientId, reason: "address_locked", ...at });
+      ipLockedOut();
+      return;
+    }
     // The passphrase lockout does not block pairing codes, so a stranger who keeps the passphrase locked cannot also
     // lock out the operator's local recovery path (`switchboard consent pair`).
     if (passphrase !== "" && this.limiter.locked(now)) {
@@ -551,6 +621,8 @@ export class AuthorizationServer {
     }
     const method = passphrase !== "" ? "passphrase" : "pairing_code";
     let ok: boolean;
+    /** The profile a bound code binds the client to; undefined for the passphrase and a legacy code. */
+    let codeProfile: string | undefined;
     if (method === "passphrase") {
       if (this.verifying) {
         retry(429, "Another approval is being checked. Try again.");
@@ -564,26 +636,74 @@ export class AuthorizationServer {
         this.verifying = false;
       }
     } else {
-      ok = this.deps.pairing?.redeem(pairingCode) ?? false;
+      const pairing = this.deps.pairing;
+      // Looked up first without spending it, so a profile conflict leaves the operator's code live.
+      const live = pairing?.lookup(pairingCode);
+      if (pairing !== undefined && live?.mcpClient !== undefined) {
+        const problem = this.bindingProblem(client, live.mcpClient);
+        if (problem !== undefined) {
+          this.consents.delete(requestId);
+          this.event("consent_refused_profile", {
+            client_id: client.clientId,
+            mcp_client: live.mcpClient,
+            reason: problem,
+            ...at,
+          });
+          sendHtml(
+            res,
+            403,
+            errorPage(
+              problem === "bound_elsewhere"
+                ? "This client is already bound to a different client profile. Nothing changed; the code is still valid."
+                : "The client profile this code was issued for can no longer be used over HTTP. Nothing changed.",
+            ),
+            clearCookie,
+          );
+          return;
+        }
+      }
+      const spent = live !== undefined ? pairing?.consume(pairingCode) : undefined;
+      ok = spent !== undefined && spent.mcpClient === live?.mcpClient;
+      codeProfile = spent?.mcpClient;
     }
     const after = this.now().getTime();
     if (!ok) {
-      this.event("consent_failed", { client_id: client.clientId, method });
+      this.event("consent_failed", { client_id: client.clientId, method, ...at });
+      const ipLock = this.ipLimiter.fail(ipKey, after);
       if (method === "passphrase" && this.limiter.fail(after)) {
         this.event("consent_locked_out", { client_id: client.clientId });
         lockedOut();
         return;
       }
       if (method === "pairing_code") this.pairingFailures.push(after);
+      if (ipLock) {
+        this.event("consent_locked_out", { client_id: client.clientId, reason: "address", ...at });
+        ipLockedOut();
+        return;
+      }
       retry(401, "Wrong passphrase or pairing code.");
       return;
     }
     if (method === "passphrase") this.limiter.succeed();
     this.consents.delete(requestId);
-    if (client.status === "pending" && !this.deps.clients.approve(client.clientId)) {
+    // A client mapped in config keeps that mapping; the ledger binding is only for one that is not.
+    const bindTo = codeProfile !== undefined && !this.s.clientMap.has(client.clientId) ? codeProfile : undefined;
+    const decided = this.deps.clients.approveAndBind(client.clientId, bindTo);
+    if (!decided.ok) {
+      if (decided.reason === "bound_elsewhere") {
+        this.event("consent_refused_profile", {
+          client_id: client.clientId,
+          ...(codeProfile !== undefined ? { mcp_client: codeProfile } : {}),
+          reason: "bound_elsewhere",
+          ...at,
+        });
+        sendHtml(res, 403, errorPage("This client is already bound to a different client profile."), clearCookie);
+        return;
+      }
       sendHtml(res, 403, errorPage("This client is not approved."), clearCookie);
       return;
     }
+    const profile = this.profileOf(client.clientId, decided.client.mcpClient);
     const code = this.secret("sbac_");
     this.codes.set(sha256(code).toString("hex"), {
       clientId: client.clientId,
@@ -593,7 +713,21 @@ export class AuthorizationServer {
       expiresAt: after + AUTHORIZATION_CODE_TTL_MS,
       used: false,
     });
-    this.event("consent_approved", { client_id: client.clientId, method });
+    this.event("consent_approved", {
+      client_id: client.clientId,
+      method,
+      ...(profile !== undefined ? { mcp_client: profile } : {}),
+      ...(decided.bound ? { reason: "bound" } : {}),
+      ...at,
+    });
+    this.deps.audit?.record("consent_approved", {
+      clientId: client.clientId,
+      mcpClient: profile,
+      method: codeProfile !== undefined ? "bound_code" : method,
+      actor: "endpoint",
+      ip,
+      ...(decided.bound ? { reason: "bound" } : decided.approved ? { reason: "approved" } : {}),
+    });
     this.redirect(res, 303, this.redirectTo(consent.redirectUri, { code, state: consent.state }), clearCookie);
   }
 
@@ -685,7 +819,7 @@ export class AuthorizationServer {
         fail(400, "invalid_grant", "client_not_approved", client.clientId);
         return;
       }
-      this.issue(res, client, grant.scopes, "authorization_code");
+      this.issue(res, client, grant.scopes, "authorization_code", this.deps.tokens.newGrantId());
       return;
     }
     if (!client.grantTypes.includes("refresh_token")) {
@@ -734,17 +868,34 @@ export class AuthorizationServer {
       fail(400, "invalid_grant", `refresh_${used.reason}`, client.clientId);
       return;
     }
-    this.issue(res, client, scopes, "refresh_token");
+    this.issue(res, client, scopes, "refresh_token", pre.token.grantId ?? this.deps.tokens.newGrantId());
     return;
   }
 
-  private issue(res: ServerResponse, client: RegisteredClient, scopes: readonly string[], grant: string): void {
-    const base = { clientId: client.clientId, resource: this.s.resource, scopes };
+  private issue(
+    res: ServerResponse,
+    client: RegisteredClient,
+    scopes: readonly string[],
+    grant: "authorization_code" | "refresh_token",
+    grantId: string,
+  ): void {
+    const base = { clientId: client.clientId, resource: this.s.resource, scopes, grantId };
     const access = this.deps.tokens.issue({ ...base, kind: "access", ttlMs: ACCESS_TOKEN_TTL_MS });
     const refresh = client.grantTypes.includes("refresh_token")
       ? this.deps.tokens.issue({ ...base, kind: "refresh", ttlMs: REFRESH_TOKEN_TTL_MS })
       : undefined;
-    this.event("token_issued", { client_id: client.clientId, reason: grant });
+    const profile = this.profileOf(client.clientId, client.mcpClient);
+    this.event("token_issued", {
+      client_id: client.clientId,
+      reason: grant,
+      ...(profile !== undefined ? { mcp_client: profile } : {}),
+    });
+    this.deps.audit?.record(grant === "refresh_token" ? "token_refreshed" : "token_issued", {
+      clientId: client.clientId,
+      mcpClient: profile,
+      method: grant,
+      actor: "endpoint",
+    });
     sendJson(res, 200, {
       access_token: access.token,
       token_type: "Bearer",
@@ -752,5 +903,64 @@ export class AuthorizationServer {
       scope: scopes.join(" "),
       ...(refresh !== undefined ? { refresh_token: refresh.token } : {}),
     });
+  }
+
+  /**
+   * `POST /revoke` (RFC 7009). Public clients authenticate by `client_id` alone; a missing or unknown one is 401
+   * `invalid_client`. A missing `token` is 400 `invalid_request`. Otherwise 200 with an empty body whether or not the
+   * token was this client's (RFC 7009 §2.2), so the endpoint is no oracle for other clients' tokens.
+   */
+  async handleRevoke(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const fail = (status: number, error: string, reason: string, clientId?: string) => {
+      this.event("revoke_refused", { reason, ...(clientId !== undefined ? { client_id: clientId } : {}) });
+      sendJson(res, status, { error });
+    };
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "invalid_request" }, { allow: "POST" });
+      return;
+    }
+    if (mediaType(req) !== "application/x-www-form-urlencoded") {
+      fail(400, "invalid_request", "content_type");
+      return;
+    }
+    const read = await readBody(req, MAX_FORM_BYTES);
+    if (!read.ok) {
+      fail(read.status, "invalid_request", "body");
+      return;
+    }
+    const form = parseForm(read.body.toString("utf8"));
+    if (form === undefined) {
+      fail(400, "invalid_request", "duplicate_parameter");
+      return;
+    }
+    const clientId = form.get("client_id");
+    const client = clientId !== undefined ? this.findClient(clientId) : undefined;
+    if (client === undefined) {
+      fail(401, "invalid_client", "unknown_client");
+      return;
+    }
+    const token = form.get("token");
+    if (token === undefined || token === "") {
+      fail(400, "invalid_request", "missing_token", client.clientId);
+      return;
+    }
+    const r = this.deps.tokens.revokeForClient(token, client.clientId);
+    const reason = r.matched ? `${r.kind ?? "token"}_${r.revoked}` : "no_match";
+    this.event("token_revoked", { client_id: client.clientId, reason });
+    if (r.matched) {
+      this.deps.audit?.record("token_revoked", {
+        clientId: client.clientId,
+        method: r.kind,
+        actor: "endpoint",
+        reason: `revoked_${r.revoked}`,
+      });
+    }
+    res.writeHead(200, {
+      "content-length": "0",
+      "cache-control": "no-store",
+      pragma: "no-cache",
+      "x-content-type-options": "nosniff",
+    });
+    res.end();
   }
 }

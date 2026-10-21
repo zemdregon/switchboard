@@ -11,6 +11,12 @@
  * token from another issuer and a guessed token all read as unknown. Every refusal (malformed, unknown, wrong kind,
  * expired, revoked, wrong audience) yields the same outcome to the caller; only the reason code differs, and that code
  * is for the local log, never for the response.
+ *
+ * Migration 0036: each token carries the authorization grant it belongs to (`grant_id`, `sbg_...`), set when the code is
+ * exchanged and carried across refresh rotation. {@link OAuthTokenStore.revokeForClient} (the RFC 7009 endpoint) revokes
+ * a refresh token together with every token of its grant, and an access token alone; a token issued before the
+ * migration has no grant and is revoked alone. The operator views ({@link OAuthTokenStore.list},
+ * {@link OAuthTokenStore.counts}) return metadata only: never a token value or its hash.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -27,6 +33,8 @@ export type TokenRejectReason = "malformed" | "unknown" | "wrong_kind" | "expire
 
 export interface VerifiedToken {
   readonly clientId: string;
+  /** The grant the token belongs to (migration 0036); absent for a token issued before it. */
+  readonly grantId?: string;
   readonly resource: string;
   readonly scopes: readonly string[];
   readonly expiresAt: string;
@@ -42,7 +50,38 @@ export interface IssueTokenRequest {
   scopes: readonly string[];
   /** Lifetime in milliseconds; a positive integer. */
   ttlMs: number;
+  /** The authorization grant (`sbg_...`) the token belongs to; a rotation passes the old refresh token's. */
+  grantId?: string;
 }
+
+/** Token metadata for the operator views: never the value or its hash. `id` is the row id. */
+export interface TokenMetadata {
+  readonly id: number;
+  readonly kind: OAuthTokenKind;
+  readonly clientId: string;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+  readonly revoked: boolean;
+  readonly revokedAt?: string;
+}
+
+export interface TokenCounts {
+  readonly active: number;
+  readonly expired: number;
+  readonly revoked: number;
+  /** The newest `issued_at` of the client's tokens; undefined when it has none. */
+  readonly lastIssuedAt?: string;
+}
+
+/** The outcome of {@link OAuthTokenStore.revokeForClient}; `matched` false for an unknown or another client's token. */
+export interface ClientRevocation {
+  readonly matched: boolean;
+  readonly kind?: OAuthTokenKind;
+  /** Rows revoked by this call (0 when the token was already revoked). */
+  readonly revoked: number;
+}
+
+const GRANT_PATTERN = /^sbg_[A-Za-z0-9_-]{22}$/;
 
 export interface IssuedToken {
   /** The raw token. Hand it to the client once; never log or store it. */
@@ -58,6 +97,7 @@ interface TokenRow {
   scopes_json: string;
   expires_at: string;
   revoked: number;
+  grant_id: string | null;
 }
 
 function sha256(token: string): Buffer {
@@ -91,6 +131,7 @@ export class OAuthTokenStore {
   issue(req: IssueTokenRequest): IssuedToken {
     if (!Number.isSafeInteger(req.ttlMs) || req.ttlMs <= 0) throw new Error("token ttlMs must be a positive integer");
     if (req.clientId.length === 0 || req.resource.length === 0) throw new Error("token needs a client and a resource");
+    if (req.grantId !== undefined && !GRANT_PATTERN.test(req.grantId)) throw new Error("malformed grant id");
     const bytes = this.random(TOKEN_BYTES);
     if (bytes.length !== TOKEN_BYTES) throw new Error("token entropy source returned the wrong length");
     const token = `${PREFIX[req.kind]}${bytes.toString("base64url")}`;
@@ -98,8 +139,8 @@ export class OAuthTokenStore {
     const expiresAt = new Date(issued.getTime() + req.ttlMs).toISOString();
     this.db
       .prepare(
-        `INSERT INTO oauth_token (token_hash, kind, client_id, resource, scopes_json, issued_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO oauth_token (token_hash, kind, client_id, resource, scopes_json, issued_at, expires_at, grant_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         sha256(token).toString("hex"),
@@ -109,8 +150,113 @@ export class OAuthTokenStore {
         JSON.stringify([...req.scopes]),
         issued.toISOString(),
         expiresAt,
+        req.grantId ?? null,
       );
     return { token, expiresAt };
+  }
+
+  /** A fresh grant id for a new authorization (`sbg_` and 128 random bits). */
+  newGrantId(): string {
+    const bytes = this.random(16);
+    if (bytes.length !== 16) throw new Error("grant entropy source returned the wrong length");
+    return `sbg_${bytes.toString("base64url")}`;
+  }
+
+  /**
+   * RFC 7009 revocation by a client: only a token of `clientId` is revoked. A refresh token takes every token of its
+   * grant with it; an access token is revoked alone. An unknown, malformed or another client's token changes nothing
+   * (`matched` false), so the caller can answer 200 either way (RFC 7009 §2.2).
+   */
+  revokeForClient(token: string, clientId: string): ClientRevocation {
+    if (!looksLikeOAuthToken(token)) return { matched: false, revoked: 0 };
+    const presented = sha256(token);
+    return this.db.transaction((): ClientRevocation => {
+      const row = this.db
+        .prepare("SELECT token_hash, kind, client_id, grant_id FROM oauth_token WHERE token_hash = ?")
+        .get(presented.toString("hex")) as Pick<TokenRow, "token_hash" | "kind" | "client_id" | "grant_id"> | undefined;
+      if (row === undefined) return { matched: false, revoked: 0 };
+      const stored = Buffer.from(row.token_hash, "hex");
+      if (stored.length !== presented.length || !timingSafeEqual(stored, presented) || row.client_id !== clientId) {
+        return { matched: false, revoked: 0 };
+      }
+      const at = this.now().toISOString();
+      const revoked =
+        row.kind === "refresh" && row.grant_id !== null
+          ? this.db
+              .prepare(
+                "UPDATE oauth_token SET revoked = 1, revoked_at = ? WHERE grant_id = ? AND client_id = ? AND revoked = 0",
+              )
+              .run(at, row.grant_id, clientId).changes
+          : this.db
+              .prepare("UPDATE oauth_token SET revoked = 1, revoked_at = ? WHERE token_hash = ? AND revoked = 0")
+              .run(at, row.token_hash).changes;
+      return { matched: true, kind: row.kind, revoked };
+    })();
+  }
+
+  /**
+   * Token metadata, newest first, at most `limit` rows. Active tokens only (not revoked, not expired) unless `all`.
+   * Never selects the hash.
+   */
+  list(opts: { clientId?: string; all?: boolean; limit?: number } = {}): TokenMetadata[] {
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    if (opts.clientId !== undefined) {
+      where.push("client_id = ?");
+      args.push(opts.clientId);
+    }
+    if (opts.all !== true) {
+      where.push("revoked = 0 AND expires_at > ?");
+      args.push(this.now().toISOString());
+    }
+    const sql =
+      "SELECT rowid AS id, kind, client_id, issued_at, expires_at, revoked, revoked_at FROM oauth_token" +
+      (where.length > 0 ? ` WHERE ${where.join(" AND ")}` : "") +
+      " ORDER BY issued_at DESC, rowid DESC LIMIT ?";
+    args.push(opts.limit ?? 500);
+    const rows = this.db.prepare(sql).all(...args) as {
+      id: number;
+      kind: OAuthTokenKind;
+      client_id: string;
+      issued_at: string;
+      expires_at: string;
+      revoked: number;
+      revoked_at: string | null;
+    }[];
+    return rows.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      clientId: r.client_id,
+      issuedAt: r.issued_at,
+      expiresAt: r.expires_at,
+      revoked: r.revoked !== 0,
+      ...(r.revoked_at !== null ? { revokedAt: r.revoked_at } : {}),
+    }));
+  }
+
+  /** Active, expired and revoked token counts of one client, and its newest issue time. */
+  counts(clientId: string): TokenCounts {
+    const now = this.now().toISOString();
+    const r = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(revoked = 0 AND expires_at > ?), 0) AS active,
+                COALESCE(SUM(revoked = 0 AND expires_at <= ?), 0) AS expired,
+                COALESCE(SUM(revoked <> 0), 0) AS revoked,
+                MAX(issued_at) AS last
+           FROM oauth_token WHERE client_id = ?`,
+      )
+      .get(now, now, clientId) as {
+      active: number;
+      expired: number;
+      revoked: number;
+      last: string | null;
+    };
+    return {
+      active: r.active,
+      expired: r.expired,
+      revoked: r.revoked,
+      ...(r.last !== null ? { lastIssuedAt: r.last } : {}),
+    };
   }
 
   /** Revoke one token by value (the token endpoint's rotation and revocation paths). Returns whether a row changed. */
@@ -159,7 +305,7 @@ export class OAuthTokenStore {
     const presented = sha256(token);
     const row = this.db
       .prepare(
-        "SELECT token_hash, kind, client_id, resource, scopes_json, expires_at, revoked FROM oauth_token WHERE token_hash = ?",
+        "SELECT token_hash, kind, client_id, resource, scopes_json, expires_at, revoked, grant_id FROM oauth_token WHERE token_hash = ?",
       )
       .get(presented.toString("hex")) as TokenRow | undefined;
     if (row === undefined) return { ok: false, reason: "unknown" };
@@ -181,7 +327,13 @@ export class OAuthTokenStore {
     if (!Array.isArray(scopes) || !scopes.every((s) => typeof s === "string")) return { ok: false, reason: "unknown" };
     return {
       ok: true,
-      token: { clientId: row.client_id, resource: row.resource, scopes, expiresAt: row.expires_at },
+      token: {
+        clientId: row.client_id,
+        ...(row.grant_id !== null ? { grantId: row.grant_id } : {}),
+        resource: row.resource,
+        scopes,
+        expiresAt: row.expires_at,
+      },
     };
   }
 }

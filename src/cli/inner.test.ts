@@ -520,6 +520,7 @@ describe("usage and help", () => {
     expect(HELP).toContain("inner status");
     expect(HELP).toContain("inner test <task>");
     expect(HELP).toContain("inner resume <task>");
-    expect(HELP).not.toMatch(/login|logout|auth/i);
+    // Whole words: `mcp oauth` is Switchboard's own authorization server (like `consent`), not a sign-in (FR-OPS-03).
+    expect(HELP).not.toMatch(/\b(login|logout|auth|signin)\b/i);
   });
 });
