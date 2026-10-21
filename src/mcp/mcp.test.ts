@@ -767,7 +767,8 @@ describe("Claude and Codex adapters on recorded replay fixtures", () => {
       binary_version: "2.1.296",
       validated_range: ">=2.1.294 <2.2.0",
       // privileged: Claude compiles a representative scope (network on; LLD §3.1 "Listing", Proposed).
-      supported_profiles: ["inspect-untrusted", "edit-untrusted", "privileged"],
+      // trusted-development: its `broad` cell compiles since ADR-0090 (was refused under Q-34).
+      supported_profiles: ["inspect-untrusted", "edit-untrusted", "trusted-development", "privileged"],
     });
     expect(by.codex).toMatchObject({ adapter_status: "ADAPTER_VERSION_UNVERIFIED", auth_state: "NOT_CHECKED" });
     // FR-GIT-01: Claude names its deny rules; Codex declares that no control is documented.

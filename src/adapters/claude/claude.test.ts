@@ -644,11 +644,26 @@ describe("claude compile matrix (M3)", () => {
       { argv: argvFor([...R, "Bash"], [...R, "Bash(npm test)", "Bash(npm test *)"]) },
     ],
     [
+      // ADR-0090: was CAPABILITY_MISSING (Q-34); `Bash` with the allow rule `Bash`, Git deny rules kept.
       "trusted-development shell=broad (network off)",
       "trusted-development",
       { shell: "broad" },
       true,
-      { reason: "CAPABILITY_MISSING", detail: /shell=broad with network=off.*Q-34/ },
+      { argv: argvFor([...RW, "Bash"], [...RW, "Bash"]) },
+    ],
+    [
+      "trusted-development shell=broad, read-only workspace",
+      "trusted-development",
+      { shell: "broad" },
+      false,
+      { reason: "CAPABILITY_MISSING", detail: /shell=broad on a read-only workspace.*ADR-0090/ },
+    ],
+    [
+      "trusted-development shell=broad, file_access=read-only",
+      "trusted-development",
+      { shell: "broad", fileAccess: "read-only" },
+      true,
+      { reason: "CAPABILITY_MISSING", detail: /file_access=read-only with shell=broad.*ADR-0090/ },
     ],
     [
       "trusted-development network=policy",
@@ -808,7 +823,11 @@ describe("claude compile matrix (M3)", () => {
           }
           compiledCount += 1;
           expect(name, label).not.toBe("test-sandboxed"); // R-10, Q-16
-          expect(profile.shell, label).not.toBe("broad"); // Q-34: never compiled for Claude today
+          // ADR-0090: `broad` compiles for trusted-development only (Q-34 still refuses it elsewhere), and only on a
+          // writable worktree.
+          const broad = profile.shell === "broad";
+          if (broad)
+            expect([name, profile.fileAccess, writable], label).toEqual(["trusted-development", "worktree", true]);
           if (name === "trusted-development") {
             expect([profile.network, profile.repoConfig], label).toEqual(["off", "disabled"]);
           }
@@ -816,7 +835,7 @@ describe("claude compile matrix (M3)", () => {
           expect(rulesAfter(inv.argv, "--disallowedTools"), label).toEqual([...CLAUDE_GIT_DENY_RULES]);
           expect(rulesAfter(inv.policyFlags, "--disallowedTools"), label).toEqual([...CLAUDE_GIT_DENY_RULES]);
           const allow = rulesAfter(inv.argv, "--allowedTools");
-          expect(allow, label).not.toContain("Bash");
+          expect(allow.includes("Bash"), label).toBe(broad);
           const commands = allow.filter((r) => r.startsWith("Bash")).map((r) => /^Bash\((.*)\)$/.exec(r)?.[1] ?? "");
           expect(gitWriteRisks(commands), label).toEqual([]);
           // FR-POL-03: no bypass flag; FR-POL-04/08: repository configuration stays off; nothing config-loading.
