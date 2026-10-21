@@ -125,15 +125,25 @@ Switchboard's own records when you ask:
   is shown separately as `provider_usage`, below). Nothing here is a
   percentage of your subscription. The sources are in
   [docs/research/capacity-signals-2026-10-14.md](../research/capacity-signals-2026-10-14.md).
-- **Provider-reported usage (Codex).** For an enabled provider whose CLI can report the signed-in account's quota
-  without a model call, each provider entry also carries `provider_usage`: `source: "provider_reported"` with the plan,
-  `limit_reached`, the windows (`used_fraction`, `remaining_fraction`, `window_seconds`, `resets_at`) and credits, or
-  `source: "unknown"` with a reason when the read failed, which is never headroom. Today only Codex has it, read by
-  running `codex app-server` with your own Codex login (Switchboard reads no credential and no file under `~/.codex`).
+- **Provider-reported usage (Codex, Grok Build, Kimi Code).** For an enabled provider whose CLI can report the signed-in
+  account's quota without a model call, each provider entry also carries `provider_usage`:
+  `source: "provider_reported"` with the plan, `limit_reached`, the windows (`used_fraction`, `remaining_fraction`,
+  `window_seconds`, `resets_at`) and credits, or
+  `source: "unknown"` with a reason when the read failed, which is never headroom. Codex is read by running
+  `codex app-server` with your own Codex login (Switchboard reads no credential and no file under `~/.codex`). Grok Build
+  is read by running `grok agent --no-leader stdio` and asking its `_x.ai/billing` method, which backs Grok's `/usage`
+  screen, with your own Grok login. Its report adds `period` (kind, start, reset), `amounts` (prepaid balance and
+  on-demand cap and use; the unit is not stated, so it reads `unspecified`) and `unreported`, the figures Grok did not
+  send, which are unknown, not zero.
+  Kimi Code is read from the CLI's own `/usage` display: Switchboard runs `kimi` under a pseudo-terminal in
+  `<data_dir>/probes/kimi-usage`, types `/usage` and parses the 5 hour, weekly and monthly rows (whole percent, reset
+  to the minute, [ADR-0084](../adr/0084-kimi-usage-via-cli-usage-display.md)); it needs the terminal runner that
+  `serve` wires, and Kimi lists that directory in its workspace list and keeps a `/usage` line in its input history.
   It is shown beside the estimates and does not change them, routing or pacing, and it is not stored. `doctor` prints
   it in a separate "Provider-reported usage" section that never changes `ok`. Details:
-  [ADR-0079](../adr/0079-provider-reported-usage-reader.md),
-  [docs/research/codex-usage-2026-10-21.md](../research/codex-usage-2026-10-21.md).
+  [ADR-0079](../adr/0079-provider-reported-usage-reader.md), [ADR-0083](../adr/0083-grok-build-usage-reader.md),
+  [docs/research/codex-usage-2026-10-21.md](../research/codex-usage-2026-10-21.md),
+  [docs/research/grok-usage-sources-2026-10-21.md](../research/grok-usage-sources-2026-10-21.md).
 - **Provider-reported usage (Cursor).** Cursor CLI has no non-interactive usage command, so Switchboard starts
   `cursor-agent` in a pseudo-terminal (`script(1)`, read-only `--mode ask`, an empty scratch directory), runs its own
   `/usage` slash command and reads the panel. That takes about 6 s and makes no model call. `provider_usage` then
@@ -319,7 +329,7 @@ are exempt from the push credential rule and from the finalize-only size limits 
 A remote MCP client (a hosted connector, for example) connects to `serve` over Streamable HTTP and signs in with OAuth
 2.1. Switchboard has its own OAuth provider built in: there is no external authorization server to set up, and the
 one-time code comes from the CLI. This is *Proposed* until ROADMAP T13.12 is Done
-([ADR-0083](../adr/0083-cli-issued-one-time-codes-for-mcp-oauth.md)); the commands below are the design.
+([ADR-0085](../adr/0085-cli-issued-one-time-codes-for-mcp-oauth.md)); the commands below are the design.
 
 Prerequisites: `transport.http` is enabled with a `public_url` behind your TLS proxy (see the `transport` row of the
 [configuration table](getting-started.md#configure)), and the MCP client profile you will offer exists in

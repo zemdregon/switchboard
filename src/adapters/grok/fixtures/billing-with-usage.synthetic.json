@@ -1,0 +1,18 @@
+{
+  "config": {
+    "currentPeriod": {
+      "type": "USAGE_PERIOD_TYPE_MONTHLY",
+      "start": "2026-10-01T00:00:00+00:00",
+      "end": "2026-11-01T00:00:00+00:00"
+    },
+    "creditUsagePercent": 42.5,
+    "monthlyLimit": { "val": 100 },
+    "onDemandCap": { "val": 20 },
+    "onDemandUsed": { "val": 3.5 },
+    "prepaidBalance": { "val": 7 },
+    "history": [{ "billingCycle": "2026-09", "includedUsed": 10, "totalUsed": 12 }],
+    "unknownField": "ignored"
+  },
+  "subscription_tier": "SuperGrok Heavy",
+  "on_demand_enabled": true
+}

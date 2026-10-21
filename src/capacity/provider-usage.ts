@@ -8,7 +8,7 @@
  * time, and run for all providers at once.
  */
 import type { ProviderUsageResult } from "../adapters/provider-usage.js";
-import type { ProbeRunner, ProviderAdapter } from "../adapters/types.js";
+import type { ProbeRunner, ProviderAdapter, TerminalRunner } from "../adapters/types.js";
 import type { ProviderCapacity } from "./estimate.js";
 import type { CapacityProjection } from "./projection.js";
 
@@ -33,6 +33,11 @@ export class ProviderUsageCache {
 export interface ProviderUsageReaderDeps {
   readonly runner: ProbeRunner;
   readonly cache?: ProviderUsageCache;
+  /**
+   * For readers that need a pseudo-terminal (Kimi Code `/usage`, `src/adapters/terminal-run.ts`). Only production
+   * wiring sets it (`<data_dir>/probes`); without it such a reader answers `unknown` and starts nothing.
+   */
+  readonly terminal?: TerminalRunner;
 }
 
 /**
@@ -50,7 +55,11 @@ export async function readProviderUsage(
     readers.map((a) => {
       const read = async (): Promise<ProviderUsageResult> => {
         try {
-          const r = await a.readProviderUsage?.(deps.runner, now);
+          const r = await a.readProviderUsage?.(
+            deps.runner,
+            now,
+            deps.terminal !== undefined ? { terminal: deps.terminal } : undefined,
+          );
           if (r === undefined) throw new Error("no reader");
           return r;
         } catch (e) {
@@ -119,6 +128,13 @@ export function providerUsageLines(u: ProviderUsageResult, indent: string): stri
       `${indent}  credits: ${u.credits.unlimited ? "unlimited" : (u.credits.balance ?? "unknown")}` +
         `${u.credits.has_credits ? "" : " (none)"}`,
     );
+  }
+  if (u.period !== undefined) {
+    lines.push(`${indent}  period: ${u.period.kind}, resets ${u.period.resets_at ?? "unknown"}`);
+  }
+  for (const a of u.amounts ?? []) lines.push(`${indent}  ${a.id} ${a.value} (unit unspecified)`);
+  if (u.unreported !== undefined && u.unreported.length > 0) {
+    lines.push(`${indent}  unreported: ${u.unreported.join(", ")}`);
   }
   if (u.reset_label != null) {
     lines.push(

@@ -1,4 +1,4 @@
-# ADR-0083: CLI-issued, profile-bound one-time codes for MCP OAuth, per-IP lockout, revocation and operator OAuth CLI
+# ADR-0085: CLI-issued, profile-bound one-time codes for MCP OAuth, per-IP lockout, revocation and operator OAuth CLI
 
 - Status: Accepted for the direction (owner request, 2026-10-21, quoted below); the mechanism is Delegated (agent,
   2026-10-21) under [owner decision 25](../ROADMAP.md#42-owner-decisions) and is not owner-approved line by line. Extends

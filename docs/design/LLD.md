@@ -1561,7 +1561,7 @@ previous provider and model, runs that switched, by reason) are a query over `ro
 Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted 2026-10-14 under T13.1), with its
 SDK and protocol-era statements superseded in part by [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md) (T13.10).
 Requirements FR-MCP-12 to 17, FR-MCP-20 to 25 (CLI-issued codes, T13.12,
-[ADR-0083](../adr/0083-cli-issued-one-time-codes-for-mcp-oauth.md)) and FR-MCP-19 (Client ID Metadata
+[ADR-0085](../adr/0085-cli-issued-one-time-codes-for-mcp-oauth.md)) and FR-MCP-19 (Client ID Metadata
 Documents, T13.11; the SDK-era move FR-MCP-18 is in
 [§20.11](#2011-mcp-sdk-v2-and-client-id-metadata-documents-fr-mcp-18-fr-mcp-19-t1310-t1311)). Off unless the config
 enables it.
@@ -1766,7 +1766,7 @@ CREATE TABLE http_subject (              -- migration 0013 (T13.5); insert-only,
 
 #### CLI-issued, profile-bound codes, binding, lockout and revocation (FR-MCP-20 to FR-MCP-25, T13.12)
 
-*T13.12 (2026-10-21, Delegated, [ADR-0083](../adr/0083-cli-issued-one-time-codes-for-mcp-oauth.md)), `Partial`: the
+*T13.12 (2026-10-21, Delegated, [ADR-0085](../adr/0085-cli-issued-one-time-codes-for-mcp-oauth.md)), `Partial`: the
 migration text below follows `src/ledger/migrations/0037_oauth_profile_binding.ts`; the behaviour is the design and is
 confirmed against the tests when T13.12 is Done.*
 
@@ -6783,8 +6783,8 @@ run output carries one. Where a provider's CLI can report the signed-in account'
 optional adapter method reads them, and the result is shown beside the projection.
 
 **Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
-(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex and Cursor
-implement it.
+(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex, Cursor and Grok
+Build implement it.
 
 ```jsonc
 // ProviderUsageReport
@@ -6816,6 +6816,28 @@ under `~/.codex` (ADR-0003).
 | `rateLimitReachedType`, `ordinaryUsageAllowed` | `limit_reached`, `limit_reached_type`, only from the provider's flags, never inferred from a full window |
 
 `accountId` and every other field are dropped.
+
+**Optional report fields** (ADR-0085). A report may also carry `period` (`kind`: `weekly`, `monthly`, `daily` or
+`unknown`; `starts_at`; `resets_at`), the provider's current usage period even when no used share is reported;
+`amounts[]` (`id`, `value`, `unit: "unspecified"`, `key`), reported amounts whose unit the provider does not state; and
+`unreported[]`, keys the reader knows but the answer omitted (unreported, never 0). Codex sets none of them.
+
+**Grok Build wire exchange** (`src/adapters/grok/usage.ts`, ADR-0083). The adapter runs `grok agent --no-leader stdio`
+through the same `ProbeRunner` (`PATH` and `HOME`, 20 s timeout, **Proposed**). It writes two JSON-RPC lines:
+`initialize` (id 1, `protocolVersion: 1`) and `_x.ai/billing` (id 2, `{}`), and holds stdin open until the id-2 answer,
+because the agent exits at stdin end-of-file before answering. The `initialize` answer (agent id, hostname) is
+discarded. Grok fetches the figures from xAI with its own login; Switchboard reads no file under `~/.grok`.
+
+| Provider field (`_x.ai/billing` result) | Report field |
+| --- | --- |
+| `subscription_tier` | `plan` |
+| `config.currentPeriod.type` (`USAGE_PERIOD_TYPE_WEEKLY`, `_MONTHLY`, `_DAILY`) | `period.kind` (`weekly`, `monthly`, `daily`, else `unknown`) |
+| `config.currentPeriod.start`, `end` (fallback `config.billingPeriodStart`, `billingPeriodEnd`) | `period.starts_at`, `period.resets_at` (ISO) |
+| `config.creditUsagePercent` (**Assumption:** 0 to 100) | window `credit_period`: `used_fraction` = percent / 100, `window_seconds` = period length, `resets_at` = period end; absent → no window, key in `unreported` |
+| `config.prepaidBalance.val`, `onDemandCap.val`, `onDemandUsed.val`, `monthlyLimit.val` | `amounts[]` `prepaid_balance`, `on_demand_cap`, `on_demand_used`, `monthly_limit` (unit `unspecified`); absent → `unreported` |
+
+`limit_reached` and `limit_reached_type` are null and `credits` is null: Grok's answer has no such flag. Every other
+field is dropped. An answer without `config` is `unknown` ("`_x.ai/billing` answered without config").
 
 **Failure rules.** A spawn failure, a timeout, a missing answer or a JSON-RPC error returns `ProviderUsageUnavailable`
 with a short reason. An unknown figure is never headroom (BR-50).
@@ -6857,10 +6879,33 @@ into pacing is possible follow-up work and is not done.
 **Surfaces.** `get_capacity` (the output schema gains an optional `provider_usage` per provider), `switchboard capacity`
 (text and `--json`) and `switchboard doctor` (a separate "Provider-reported usage" section, informational, never
 changes `ok`). Text shows fractions, not percentages (FR-CAP-03 wording rule), and "remaining" appears only on
-`provider_reported` lines. Tests: `src/adapters/codex/usage.test.ts` (recorded redacted fixture
+`provider_reported` lines. Tests: `src/adapters/grok/usage.test.ts` (recorded fixture
+`src/adapters/grok/fixtures/billing-supergrok-weekly.json` and a synthetic one),
+`src/adapters/codex/usage.test.ts` (recorded redacted fixture
 `src/adapters/codex/fixtures/usage/app-server-rate-limits.jsonl` and two synthetic ones),
 `src/capacity/provider-usage.test.ts`, and the block "provider_usage on get_capacity, capacity and doctor (ADR-0079,
 FR-CAP-13)" in `src/mcp/get-capacity.test.ts`.
+
+**Kimi Code** ([ADR-0084](../adr/0084-kimi-usage-via-cli-usage-display.md), T6.19; `src/adapters/kimi/usage.ts`).
+Kimi implements the same method over the interactive TUI, because its other surfaces carry no plan quota. The reader
+takes an injected `TerminalRunner`; production wiring builds one on `<data_dir>/probes`, and without it (as in tests) the
+reader returns `ProviderUsageUnavailable` and spawns nothing. Each read runs `kimi` under util-linux or BSD `script` in
+`<data_dir>/probes/kimi-usage` (empty real directory owned by the user, mode 0700, checked every time) with `PATH`,
+`HOME`, `TERM`, `COLUMNS` and `LINES` only, answers the trust dialog only when it names that directory with "Trust and
+continue" selected, types `/usage`, parses the "Plan usage" panel with `parseKimiUsagePanel`, and exits with Ctrl-C.
+Unrecognised text, a timeout or another dialog is `unknown`.
+
+| Panel text | Report field |
+| --- | --- |
+| `5h limit`, `N% used`, `resets in 1d 2h 3m` | window `5h`, `window_seconds` 18000, `used_fraction` = N / 100, `resets_at` = observation time plus the offset |
+| `Weekly limit` | window `weekly`, `window_seconds` 604800 |
+| `Monthly limit` | window `monthly`, `window_seconds` null |
+| `kimi N% · code M%` on the monthly row | windows `kimi:monthly` and `code:monthly`, `limit_id` `kimi` and `code` |
+| "Extra Usage" booster wallet | `credits` |
+| (not displayed) | `plan` and `limit_reached` are null; `method` is `kimi TUI /usage (pseudo-terminal)` |
+
+Precision is a whole percent and a minute-level reset. Side effects: the probe directory appears once in Kimi's
+workspace list and each read adds a `/usage` line to its input history. Tests: `src/adapters/kimi/usage.test.ts`.
 
 ## 17. Routing (M7)
 

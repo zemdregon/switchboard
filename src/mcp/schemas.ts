@@ -136,7 +136,7 @@ export type SkillToolName = (typeof SKILL_TOOL_NAMES)[number];
  * ADR-0069 (LLD §3.4.12): `publish_run`, offered only to a client whose `max_push_policy` is `branch` and only when the
  * server has the publish port (`serve`); to any other client it does not exist. ADR-0070 (LLD §3.4.13): `merge_run_pr`
  * under the same gate and only when the server also has the merge port. ADR-0073 (LLD §3.4.14): `update_run_branch`
- * with `merge_run_pr` and only when the server also has the branch-update port and the pull-head reader. ADR-0083
+ * with `merge_run_pr` and only when the server also has the branch-update port and the pull-head reader. ADR-0085
  * (LLD §3.4.16): `close_pr` under `publish_run`'s gate and only when the pull-request port can read by number and
  * close.
  */
@@ -1122,6 +1122,32 @@ const PROVIDER_USAGE = {
             },
           ],
         },
+        // ADR-0083 (Grok Build): optional period, amounts and unreported keys.
+        period: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "starts_at", "resets_at"],
+          properties: {
+            kind: { enum: ["weekly", "monthly", "daily", "unknown"] },
+            starts_at: { type: ["string", "null"] },
+            resets_at: { type: ["string", "null"] },
+          },
+        },
+        amounts: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "value", "unit", "key"],
+            properties: {
+              id: { type: "string" },
+              value: { type: "number" },
+              unit: { const: "unspecified" },
+              key: { type: "string" },
+            },
+          },
+        },
+        unreported: { type: "array", items: { type: "string" } },
         // ADR-0080 (Cursor): optional, as shown by the provider.
         reset_label: { type: ["string", "null"] },
         reset_precision: { enum: ["day", null] },
@@ -1916,7 +1942,7 @@ const UPDATE_RUN_BRANCH_RESULT = {
   },
 } as const;
 
-/** ADR-0083 (LLD §3.4.16): a closed (or already closed) Switchboard pull request; a refusal is an error envelope. */
+/** ADR-0085 (LLD §3.4.16): a closed (or already closed) Switchboard pull request; a refusal is an error envelope. */
 const CLOSE_PR_RESULT = {
   type: "object",
   additionalProperties: false,

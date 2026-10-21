@@ -2496,7 +2496,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         return ok(await skillHandlers[tool](args));
       }
       if (name === "close_pr" && !publishToolOffered(name)) {
-        // ADR-0083: audited, then answered like an unknown tool below.
+        // ADR-0085: audited, then answered like an unknown tool below.
         recordClosePrRefusal(ledger, deps.clientId, rawArgs, "TOOL_NOT_OFFERED");
       }
       if (publishToolOffered(name)) {
