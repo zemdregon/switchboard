@@ -198,6 +198,23 @@ function checkPrivilegedDefault(cfg: ResolvedConfig): DoctorCheck | undefined {
 }
 
 /**
+ * ADR-0093 (FR-POL-13): a warning naming the clients configured `promote_trust_profile: true`: their explicit
+ * `trust_profile` below the configured default runs at the default instead (clamped to the ceilings). Absent when no
+ * client sets it.
+ */
+function checkTrustProfilePromotion(cfg: ResolvedConfig): DoctorCheck | undefined {
+  const promoting = [...cfg.mcpClients.values()].filter((c) => c.promoteTrustProfile === true).map((c) => c.id);
+  if (promoting.length === 0) return undefined;
+  return check(
+    "trust_profile_promotion",
+    "Trust profile promotion",
+    "warn",
+    `client${promoting.length > 1 ? "s" : ""} ${promoting.join(", ")}: an explicit trust_profile below the configured ` +
+      "default runs at the default instead (lowered to the client's and project's ceilings; continue_task unchanged)",
+  );
+}
+
+/**
  * ADR-0091 (FR-MCP-27): a warning when `transport.http.allow_unattended_privileged` is on, naming the HTTP-mapped and
  * bindable clients with `privileged_approval: not_required` (their privileged runs over HTTP need no `approve`).
  * Absent when the switch is off or the HTTP transport is disabled.
@@ -692,6 +709,8 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     if (approval) checks.push(approval);
     const privilegedDefault = checkPrivilegedDefault(cfg);
     if (privilegedDefault) checks.push(privilegedDefault);
+    const promotion = checkTrustProfilePromotion(cfg);
+    if (promotion) checks.push(promotion);
     const unattended = checkUnattendedHttp(cfg);
     if (unattended) checks.push(unattended);
     const innerShared = checkInnerSharedSubscription(cfg);

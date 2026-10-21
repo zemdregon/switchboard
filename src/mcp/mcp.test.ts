@@ -212,6 +212,8 @@ interface Setup {
     approval?: "required" | "not_required";
     projects?: string[];
     profile?: "orchestrator" | "console";
+    /** ADR-0093: `promote_trust_profile: true`. */
+    promote?: boolean;
   }[];
   /** Configured projects (T9.2); the array is shared with the server so a test can change it between calls. */
   projects?: ResolvedProject[];
@@ -293,6 +295,7 @@ async function setup(s: Setup): Promise<void> {
           ...(c.approval ? { privilegedApproval: c.approval } : {}),
           ...(c.projects ? { projects: c.projects } : {}),
           ...(c.profile ? { toolProfile: c.profile } : {}),
+          ...(c.promote ? { promoteTrustProfile: true } : {}),
         },
       ]),
     ),
@@ -1984,6 +1987,148 @@ describe("configured request defaults (ADR-0091; FR-POL-12, FR-MCP-26; owner rul
       status: "APPROVED",
       decided_by: "client_policy:zemdregon",
     });
+  });
+});
+
+describe("promote_trust_profile (ADR-0093; FR-POL-13; owner ruling 2026-10-21)", () => {
+  const CLIENTS = [
+    { id: "prod", max: "privileged" as const, approval: "not_required" as const, projects: ["web-app"], promote: true },
+    { id: "plain", max: "privileged" as const, approval: "not_required" as const, projects: ["web-app"] },
+  ];
+  const BYPASS: PrivilegedScope = {
+    files: { access: "worktree" },
+    shell: { mode: "broad" },
+    network: { mode: "on" },
+    repository_config: { mode: "enabled" },
+    bypass: true,
+  };
+  const ALWAYS_BYPASS = { trustProfile: "privileged" as const, privilegedScope: BYPASS };
+  const bare = (over: Json = {}): Json => ({ objective: "add a feature", workspace_path: repo, ...over });
+  const profileOf = (runId: string) => ledger.getRunRecord(runId)?.trust_profile;
+  const scopeOf = (runId: string) =>
+    JSON.parse(ledger.getRunRecord(runId)?.policy_snapshot_json ?? "{}").privilegedScope?.scope;
+  const promotedEvents = (runId: string) =>
+    ledger.listRunEvents(runId).filter((e) => e.type === "trust_profile_promoted");
+
+  it("an explicit trusted-development from a promoting client runs privileged under the default scope, pre-approved", async () => {
+    await setup({ adapters: [fakeWriter()], clients: CLIENTS, defaults: ALWAYS_BYPASS, start: false });
+    const d = await call("delegate_task", bare({ trust_profile: "trusted-development", idempotency_key: "promote-1" }));
+    expect(d.isError).toBe(false);
+    expect(d.body.status).toBe("QUEUED");
+    expect(d.body.approval).toMatchObject({ status: "APPROVED" });
+    expect(profileOf(d.body.run_id)).toBe("privileged");
+    expect(scopeOf(d.body.run_id)).toEqual(BYPASS);
+    expect(ledger.getApprovalForRun(d.body.run_id)).toMatchObject({
+      status: "APPROVED",
+      decided_by: "client_policy:prod",
+    });
+    expect(promotedEvents(d.body.run_id).map((e) => JSON.parse(e.payload_json))).toEqual([
+      { requested: "trusted-development", resolved: "privileged" },
+    ]);
+    // Resolution is the request: the same request spelled out as privileged replays the promoted run.
+    const explicit = await call(
+      "delegate_task",
+      bare({ trust_profile: "privileged", privileged_scope: BYPASS, idempotency_key: "promote-1" }),
+    );
+    expect(explicit.body).toMatchObject({ run_id: d.body.run_id, replayed: true });
+  });
+
+  it("a client without the key keeps its explicit lower profile", async () => {
+    await setup({ adapters: [fakeWriter()], clients: CLIENTS, defaults: ALWAYS_BYPASS, start: false });
+    const r = await call("delegate_task", bare({ trust_profile: "trusted-development" }), 1);
+    expect(r.isError).toBe(false);
+    expect(profileOf(r.body.run_id)).toBe("trusted-development");
+    expect(promotedEvents(r.body.run_id)).toHaveLength(0);
+    expect(ledger.listApprovals()).toHaveLength(0);
+  });
+
+  it("promotion is clamped to the project's ceiling and never lowers or fails a request", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: CLIENTS,
+      projects: [project({ maxTrustProfile: "edit-untrusted" })],
+      defaults: ALWAYS_BYPASS,
+      start: false,
+    });
+    const low = await call("delegate_task", { objective: "x", project: "web-app", trust_profile: "inspect-untrusted" });
+    expect(low.isError).toBe(false);
+    expect(profileOf(low.body.run_id)).toBe("edit-untrusted");
+    expect(promotedEvents(low.body.run_id).map((e) => JSON.parse(e.payload_json))).toEqual([
+      { requested: "inspect-untrusted", resolved: "edit-untrusted" },
+    ]);
+    // At the clamped default: unchanged, no event.
+    const same = await call("delegate_task", { objective: "y", project: "web-app", trust_profile: "edit-untrusted" });
+    expect(profileOf(same.body.run_id)).toBe("edit-untrusted");
+    expect(promotedEvents(same.body.run_id)).toHaveLength(0);
+    // Above it: unchanged, so V5 refuses it exactly as without promotion.
+    const high = await call("delegate_task", {
+      objective: "z",
+      project: "web-app",
+      trust_profile: "trusted-development",
+    });
+    expect(high.body.error).toMatchObject({
+      code: "PERMISSION_BLOCKED",
+      details: { requested: "trusted-development" },
+    });
+    expect(ledger.listApprovals()).toHaveLength(0);
+  });
+
+  it("an explicit privileged request keeps its own scope, and a promoted one with a scope uses it", async () => {
+    await setup({ adapters: [fakeWriter()], clients: CLIENTS, defaults: ALWAYS_BYPASS, start: false });
+    const own = await call("delegate_task", bare({ trust_profile: "privileged", privileged_scope: SCOPE }));
+    expect(scopeOf(own.body.run_id)).toEqual(SCOPE);
+    expect(promotedEvents(own.body.run_id)).toHaveLength(0);
+    const scoped = await call("delegate_task", bare({ trust_profile: "edit-untrusted", privileged_scope: SCOPE }));
+    expect(profileOf(scoped.body.run_id)).toBe("privileged");
+    expect(scopeOf(scoped.body.run_id)).toEqual(SCOPE);
+  });
+
+  it("enqueue_work stores the promoted profile and default scope; another client's item keeps its own", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: CLIENTS,
+      projects: [project()],
+      defaults: ALWAYS_BYPASS,
+      start: false,
+    });
+    const enq = await call("enqueue_work", {
+      project_id: "web-app",
+      request: { objective: "x", trust_profile: "trusted-development" },
+    });
+    expect(enq.isError).toBe(false);
+    expect(enq.body.trust_profile).toBe("privileged");
+    expect(JSON.parse(ledger.getWorkItem(enq.body.work_item_id)?.request_json ?? "{}")).toMatchObject({
+      trust_profile: "privileged",
+      privileged_scope: BYPASS,
+    });
+    const plain = await call(
+      "enqueue_work",
+      { project_id: "web-app", request: { objective: "y", trust_profile: "trusted-development" } },
+      1,
+    );
+    expect(plain.body.trust_profile).toBe("trusted-development");
+    expect(JSON.parse(ledger.getWorkItem(plain.body.work_item_id)?.request_json ?? "{}")).not.toHaveProperty(
+      "privileged_scope",
+    );
+  });
+
+  it("continue_task is not promoted: an explicit lower profile on a continuation stays", async () => {
+    await setup({
+      adapters: [fakeWriter()],
+      clients: [{ id: "prod", max: "edit-untrusted", promote: true }],
+      defaults: { trustProfile: "edit-untrusted" },
+    });
+    const d = await call("delegate_task", bare({ trust_profile: "inspect-untrusted" }));
+    expect(profileOf(d.body.run_id)).toBe("edit-untrusted");
+    await pollTerminal(d.body.run_id);
+    const c = await call("continue_task", {
+      meta_session_id: d.body.meta_session_id,
+      instruction: "look only",
+      trust_profile: "inspect-untrusted",
+    });
+    expect(c.isError).toBe(false);
+    expect(profileOf(c.body.run_id)).toBe("inspect-untrusted");
+    expect(promotedEvents(c.body.run_id)).toHaveLength(0);
   });
 });
 

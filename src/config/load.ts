@@ -313,6 +313,12 @@ export interface ResolvedMcpClient {
    * `loadConfig` sets it only when the key is true; absent is read as false (least privilege).
    */
   readonly allowLight?: boolean;
+  /**
+   * `promote_trust_profile` (FR-POL-13, ADR-0093): this client's explicit `trust_profile` below the default an omitted
+   * one would resolve to (ADR-0091, clamped to the request's ceiling) is resolved as if omitted. `loadConfig` sets it
+   * only when the key is true; absent is read as false (no promotion).
+   */
+  readonly promoteTrustProfile?: boolean;
 }
 
 const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
@@ -584,6 +590,18 @@ export function loadConfig(
       );
     }
   }
+  // ADR-0093 (FR-POL-13, fail closed): promotion means nothing without a default to promote to, so it is a mistake
+  // rather than a silent no-op.
+  const anyDefault =
+    cfg.default_trust_profile !== undefined || (cfg.projects ?? []).some((p) => p.default_trust_profile !== undefined);
+  for (const [i, c] of cfg.mcp_clients.entries()) {
+    if (c.promote_trust_profile === true && !anyDefault) {
+      throw new ConfigError(
+        `Invalid config: $.mcp_clients[${i}].promote_trust_profile: needs a default_trust_profile (top level or in a ` +
+          `project) to promote to (client ${JSON.stringify(c.id)}); add one or remove promote_trust_profile`,
+      );
+    }
+  }
   // T14.8 (NFR-SEC-06): an approval target must be a configured client; an unknown id aborts startup.
   for (const [i, c] of cfg.mcp_clients.entries()) {
     for (const [j, id] of (c.approval_proxy_targets ?? []).entries()) {
@@ -800,6 +818,7 @@ export function loadConfig(
           toolProfile: c.tool_profile ?? DEFAULT_TOOL_PROFILE,
           ...(c.skills !== undefined ? { skills: [...c.skills] } : {}),
           ...(c.allow_light === true ? { allowLight: true } : {}),
+          ...(c.promote_trust_profile === true ? { promoteTrustProfile: true } : {}),
         },
       ]),
     ),

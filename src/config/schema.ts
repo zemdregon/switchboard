@@ -165,6 +165,11 @@ export interface SwitchboardConfig {
     skills?: string[];
     /** T3.24 (FR-CAP-12, LLD §20.2): honour `light: true` on this client's requests during a host load hold. Default false. */
     allow_light?: boolean;
+    /**
+     * ADR-0093 (FR-POL-13): an explicit `trust_profile` below the configured default (ADR-0091) is treated as omitted.
+     * Default false; refused at load when no `default_trust_profile` is configured anywhere.
+     */
+    promote_trust_profile?: boolean;
   }[];
   limits?: {
     global_concurrency?: number;
@@ -1109,6 +1114,7 @@ export const configSchema = {
           tool_profile: { enum: [...TOOL_PROFILES] },
           skills: clientSkillListSchema(),
           allow_light: { type: "boolean" },
+          promote_trust_profile: { type: "boolean" },
         },
       },
     },

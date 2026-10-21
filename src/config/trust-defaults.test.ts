@@ -153,3 +153,33 @@ describe("transport.http.allow_unattended_privileged (ADR-0091, FR-MCP-27)", () 
     expect(errorOf(http({ allow_unattended_privileged: "yes" }))).toMatch(/allow_unattended_privileged/);
   });
 });
+
+describe("mcp_clients[].promote_trust_profile (ADR-0093, FR-POL-13)", () => {
+  const promoting = (over: Record<string, unknown> = {}) =>
+    base({
+      mcp_clients: [{ id: "main", max_trust_profile: "privileged", projects: ["web"], promote_trust_profile: true }],
+      ...over,
+    });
+
+  it("is absent by default and set only when true", () => {
+    expect(loadConfig({ configPath: write(base()) }).mcpClients.get("main")?.promoteTrustProfile).toBeUndefined();
+    const c = loadConfig({ configPath: write(promoting({ default_trust_profile: "edit-untrusted" })) });
+    expect(c.mcpClients.get("main")?.promoteTrustProfile).toBe(true);
+  });
+
+  it("fails closed without any default_trust_profile, and accepts a project default alone", () => {
+    expect(errorOf(promoting())).toMatch(/\$\.mcp_clients\[0\]\.promote_trust_profile: needs a default_trust_profile/);
+    expect(errorOf(promoting({ projects: [project({ default_trust_profile: "test-sandboxed" })] }))).toBe("");
+    expect(errorOf(promoting({ default_trust_profile: "privileged", default_privileged_scope: BYPASS_SCOPE }))).toBe(
+      "",
+    );
+    expect(
+      errorOf(
+        base({
+          default_trust_profile: "edit-untrusted",
+          mcp_clients: [{ id: "main", max_trust_profile: "privileged", promote_trust_profile: "yes" }],
+        }),
+      ),
+    ).toMatch(/promote_trust_profile/);
+  });
+});

@@ -1056,6 +1056,14 @@ maximum, and in a project the lower of it and the project's); with neither confi
 an explicit scope wins. The request hash, eligibility, admission and a queued item's `request_json` use the resolved
 profile and scope. `list_projects` items add `default_trust_profile` (the clamped default) when one is configured.
 
+*Amended 2026-10-21 ([ADR-0093](../adr/0093-promote-explicit-lower-trust-profiles.md), FR-POL-13, owner ruling 2026-10-21, mechanism Delegated):*
+for a client configured `promote_trust_profile: true`, an explicit `trust_profile` that ranks below the default an
+absent one would resolve to (above, already lowered to the effective ceiling) is resolved as if absent, including the
+default scope; at or above that default, or with no default configured, the request is unchanged, so promotion never
+lowers a request and never exceeds the ceiling. `delegate_task` decides it after the project's ceiling is known; the
+admission transaction then appends a `trust_profile_promoted` run event `{ requested, resolved }`. `enqueue_work` and
+decision enqueue entries store the promoted profile and scope in `request_json`. `continue_task` is not promoted.
+
 Behaviour: validation, path and profile checks, then in one transaction insert `meta_session` (new), `run` (`QUEUED`, or
 `AWAITING_APPROVAL` for `privileged`, with its `PENDING` approval row, §3.1) and the first `run_event`; only then return
 or wait (§10). A repeated `(client, idempotency_key)` with identical `request_hash` returns the original run; the same

@@ -3,7 +3,9 @@
 - Status: Accepted (built 2026-10-21). Amends [ADR-0019](0019-per-client-privileged-approval.md) in part (an HTTP
   client may carry `privileged_approval: "not_required"` when the operator opts in) and
   [ADR-0086](0086-bound-codes-follow-the-mapped-rule.md) and FR-MCP-14 in part (a mapped or bound entry with
-  `not_required` is accepted under the same opt-in). Both decisions stand otherwise.
+  `not_required` is accepted under the same opt-in). Both decisions stand otherwise. Amended in part by
+  [ADR-0093](0093-promote-explicit-lower-trust-profiles.md) (a client with `promote_trust_profile: true` has an
+  explicit lower `trust_profile` resolved to the default).
 - Date: 2026-10-21
 - Decided by: zemdregon for the outcome (owner ruling 2026-10-21, relayed by the orchestrator: the operator's prod
   Switchboard always runs in bypass mode, trust profile `privileged` with each provider's bypass cell

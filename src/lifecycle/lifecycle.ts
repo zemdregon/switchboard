@@ -439,6 +439,11 @@ export interface SubmitRequest {
    * configured `allow_light: true`; the admission transaction records a `light_run` event, read at dispatch.
    */
   readonly light?: boolean;
+  /**
+   * ADR-0093 (FR-POL-13): the explicit `trust_profile` the request named when the caller promoted it to the configured
+   * default (`trustProfile`). The admission transaction records a `trust_profile_promoted` event with both.
+   */
+  readonly trustProfilePromotedFrom?: TrustProfile;
 }
 
 /**
@@ -512,6 +517,8 @@ export const REPO_CONFIG_WARNING_EVENT = "repo_config_warning";
 
 /** `run_event` type recording the dispatch-time approval verdict of a `privileged` run (`approval_id`, `bypass_approved`). */
 export const PRIVILEGED_DISPATCH_EVENT = "privileged_dispatch";
+/** ADR-0093 (FR-POL-13): admission event of a run whose explicit `trust_profile` was promoted to the default. */
+export const TRUST_PROFILE_PROMOTED_EVENT = "trust_profile_promoted";
 
 /** Admission-time eligibility question (FRD V11); answered by the shared stage-1 filter. */
 export interface EligibilityQuestion {
@@ -1273,6 +1280,14 @@ export class RunLifecycle {
       }
       // T3.24 (FR-CAP-12): the honoured `light` flag, read by the host load hold at dispatch.
       if (req.light === true) this.ledger.appendRunEvent({ runId: run.id, type: LIGHT_RUN_EVENT, payload: {} });
+      // ADR-0093 (FR-POL-13): the run's profile is not the one the request named; say so on the run.
+      if (req.trustProfilePromotedFrom !== undefined) {
+        this.ledger.appendRunEvent({
+          runId: run.id,
+          type: TRUST_PROFILE_PROMOTED_EVENT,
+          payload: { requested: req.trustProfilePromotedFrom, resolved: req.trustProfile },
+        });
+      }
       // T16.4 (LLD §19.5 step 6, §19.11): the pinned set and its event, in this transaction. Nothing for an empty set.
       if (pinnedSkills?.event !== undefined) {
         pinnedSkills.write(run.id);
