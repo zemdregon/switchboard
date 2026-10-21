@@ -2,6 +2,15 @@ import type Database from "better-sqlite3";
 import { approvalCausePrefix, type DecisionInput, renderDecisionSummary } from "../continuity/decisions.js";
 import { deriveOpenWork, type OpenWorkRun } from "../continuity/open-work.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
+import {
+  getSubmodulePush,
+  listSubmoduleMergeSteps,
+  listSubmoduleMergeStepsForRun,
+  listSubmodulePullRequestsForRun,
+  type SubmoduleMergeRow,
+  type SubmodulePullRequestRow,
+  type SubmodulePushRow,
+} from "../submodules/ledger.js";
 import { insertChainedRunEvent, nextChainLink } from "./chain.js";
 import { type ControlPlaneLedgerSlice, createControlPlaneLedgerSlice } from "./control-plane.js";
 import { createDecisionLedgerSlice, type DecisionLedgerSlice } from "./decisions.js";
@@ -1062,6 +1071,14 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, De
   listPullRequestsForRun(runId: string): PullRequestRow[];
   /** ADR-0069: the `pull_request` rows of every run of a meta-session, oldest first. */
   listPullRequestsForMetaSession(metaSessionId: string): PullRequestRow[];
+  /**
+   * ADR-0079 item 6 (read side of `src/submodules/ledger.ts`): one run's linked pull requests (`submodule_pull_request`),
+   * each with the `submodule_push` row it was opened for, and the run's `submodule_merge` steps; oldest first.
+   */
+  listSubmodulePullRequestsForRun(runId: string): (SubmodulePullRequestRow & { push: SubmodulePushRow | undefined })[];
+  listSubmoduleMergeStepsForRun(runId: string): SubmoduleMergeRow[];
+  /** ADR-0079 item 7: every step of the ordered merge of one umbrella publish ref of a project, oldest first. */
+  listSubmoduleMergeSteps(projectId: string, umbrellaRef: string): SubmoduleMergeRow[];
   /**
    * `push_id`s named by the `secret_scan_acknowledged` run events of a meta-session (T9.14, operator
    * `git ack-secret-scan`, LLD §20.9). Unreadable payloads are skipped.
@@ -2361,6 +2378,21 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       return db
         .prepare("SELECT * FROM pull_request WHERE meta_session_id = ? ORDER BY created_at, id")
         .all(metaSessionId) as PullRequestRow[];
+    },
+
+    listSubmodulePullRequestsForRun(runId) {
+      return listSubmodulePullRequestsForRun(db, runId).map((pr) => ({
+        ...pr,
+        push: getSubmodulePush(db, pr.push_id),
+      }));
+    },
+
+    listSubmoduleMergeStepsForRun(runId) {
+      return listSubmoduleMergeStepsForRun(db, runId);
+    },
+
+    listSubmoduleMergeSteps(projectId, umbrellaRef) {
+      return listSubmoduleMergeSteps(db, projectId, umbrellaRef);
     },
 
     listSecretScanAcknowledgedPushIds(metaSessionId) {

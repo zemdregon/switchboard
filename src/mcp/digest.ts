@@ -44,6 +44,10 @@
  *   delta the scanned ones, in a snapshot the newest {@link SNAPSHOT_TERMINAL_MAX} per project. Metadata only: each
  *   entry is rebuilt from closed fields (codes from the closed lists, the ref, a SHA, a pull request number), never
  *   from `gh` or agent text. Present only when non-empty.
+ * - ADR-0079 item 7 (LLD §3.4.16): `ref_events` also lists the `submodule_merged` and `gitlinks_repointed` steps of the
+ *   ordered merge (`submodule_merge` rows of the listed runs, type `submodule_merge`, the row id as `event_id`): in a
+ *   snapshot all of them, in a delta those recorded after the cursor's event. A `submodule_refused` step is not listed
+ *   (the `merge_run_pr` refusal and `get_run`'s `linked_pull_requests[].merge_state` carry it).
  */
 
 import { createHash } from "node:crypto";
@@ -81,19 +85,31 @@ export interface ApprovalProxyItem {
   requested_at: string;
 }
 
+/** ADR-0079 item 7: the `type` of a digest ref event read from a `submodule_merge` step. */
+export const SUBMODULE_MERGE_TYPE = "submodule_merge";
+/** ADR-0079 item 7: the steps listed as ref events (`code`). */
+export const SUBMODULE_REF_EVENT_KINDS = ["submodule_merged", "gitlinks_repointed"] as const;
+
 /** T15.8: one ref or merge event in the digest (metadata only). */
 export interface DigestRefEvent {
+  /** A `run_event` id, or (ADR-0079) a `submodule_merge` row id. */
   event_id: string;
   run_id: string;
   ts: string;
-  type: typeof REF_EVENT_TYPE | typeof MERGE_EVENT_TYPE;
-  /** `ref_event`: the kind; `merge_event`: `merged` or `refused`. */
+  type: typeof REF_EVENT_TYPE | typeof MERGE_EVENT_TYPE | typeof SUBMODULE_MERGE_TYPE;
+  /** `ref_event`: the kind; `merge_event`: `merged` or `refused`; `submodule_merge`: the step. */
   code: string;
   /** `merge_event` refusals only. */
   reason?: string;
+  /** `submodule_merge`: the umbrella publish ref. */
   publish_ref: string;
+  /** `submodule_merge`: the submodule pull request head (`submodule_merged`) or the umbrella head repointed. */
   head_sha: string;
   pr_number: number | null;
+  /** `submodule_merged` only: the submodule repository (`owner/repo`). */
+  repo?: string;
+  /** `submodule_merge` only: the merge commit, or the umbrella commit that re-pointed the gitlinks. */
+  merged_sha?: string;
 }
 
 export interface DigestProject {
@@ -169,6 +185,7 @@ export function assembleDigest(
     projectIds: Iterable<string>,
     refEvents: RunEventRow[],
     terminalMax = Number.POSITIVE_INFINITY,
+    since?: string,
   ) => {
     const projects = assembleProjects(ledger, runs, { terminal, terminalMax }, projectIds, scrub, {
       now: options.now,
@@ -176,7 +193,7 @@ export function assembleDigest(
       ...(options.stallHours !== undefined ? { stallHours: options.stallHours } : {}),
       ...(options.openDecisions !== undefined ? { openDecisions: options.openDecisions } : {}),
     });
-    addRefEvents(projects, runs, refEvents, terminalMax);
+    addRefEvents(projects, runs, refEvents, terminalMax, submoduleRefEvents(ledger, runs, since));
     return projects;
   };
 
@@ -231,6 +248,8 @@ export function assembleDigest(
       (run) => terminalized.has(run.id),
       projectsOf(touched),
       scanned.filter((e) => REF_TYPES.has(e.type)),
+      Number.POSITIVE_INFINITY,
+      start.ts,
     ),
   };
 }
@@ -270,17 +289,58 @@ function digestRefEvent(e: RunEventRow): DigestRefEvent | undefined {
   };
 }
 
-/** T15.8: attaches each listed project's ref events, newest first, at most `max` per project. */
-function addRefEvents(projects: DigestProject[], runs: RunRecord[], events: RunEventRow[], max: number): void {
+/**
+ * ADR-0079 item 7: the `submodule_merged` and `gitlinks_repointed` steps of `runs` (a refusal is not a ref event: the
+ * `merge_run_pr` refusal carries it), created strictly after `since` when given. Rebuilt from closed fields only.
+ */
+function submoduleRefEvents(ledger: Ledger, runs: readonly RunRecord[], since?: string): DigestRefEvent[] {
+  const out: DigestRefEvent[] = [];
+  for (const run of runs) {
+    for (const s of ledger.listSubmoduleMergeStepsForRun(run.id)) {
+      if (s.step === "submodule_refused" || (since !== undefined && s.created_at <= since)) continue;
+      if (!REF_RE.test(s.umbrella_ref) || !SHA_RE.test(s.head_sha)) continue;
+      if (s.merged_sha === null || !SHA_RE.test(s.merged_sha)) continue;
+      out.push({
+        event_id: s.id,
+        run_id: s.run_id,
+        ts: s.created_at,
+        type: SUBMODULE_MERGE_TYPE,
+        code: s.step,
+        publish_ref: s.umbrella_ref,
+        head_sha: s.head_sha,
+        pr_number: s.pr_number,
+        ...(s.repo !== null ? { repo: s.repo } : {}),
+        merged_sha: s.merged_sha,
+      });
+    }
+  }
+  return out;
+}
+
+/** T15.8: attaches each listed project's ref events (and ADR-0079's), newest first, at most `max` per project. */
+function addRefEvents(
+  projects: DigestProject[],
+  runs: RunRecord[],
+  events: RunEventRow[],
+  max: number,
+  extra: readonly DigestRefEvent[] = [],
+): void {
   const projectOf = new Map(runs.map((r) => [r.id, r.project_id]));
   const byId = new Map(projects.map((p) => [p.project_id, p]));
-  const sorted = [...events].sort((a, b) => (after(a, b) ? -1 : after(b, a) ? 1 : 0));
-  for (const e of sorted) {
-    const projectId = projectOf.get(e.run_id);
+  const entries = [
+    ...events.flatMap((e) => {
+      const entry = digestRefEvent(e);
+      return entry === undefined ? [] : [entry];
+    }),
+    ...extra,
+  ];
+  const later = (a: DigestRefEvent, b: DigestRefEvent) => a.ts > b.ts || (a.ts === b.ts && a.event_id > b.event_id);
+  entries.sort((a, b) => (later(a, b) ? -1 : later(b, a) ? 1 : 0));
+  for (const entry of entries) {
+    const projectId = projectOf.get(entry.run_id);
     const project = projectId == null ? undefined : byId.get(projectId);
     if (project === undefined || (project.ref_events?.length ?? 0) >= max) continue;
-    const entry = digestRefEvent(e);
-    if (entry !== undefined) project.ref_events = [...(project.ref_events ?? []), entry];
+    project.ref_events = [...(project.ref_events ?? []), entry];
   }
 }
 

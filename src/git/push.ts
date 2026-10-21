@@ -337,6 +337,26 @@ export function pushArgs(remote: string, sha: string, ref: string): string[] {
   ];
 }
 
+/**
+ * ADR-0079 item 6: command-scope configuration of a submodule repository push. {@link PUSH_CONFIG} with the `https`
+ * transport only: a store's `origin` is its ADR-0068 https source, so `ssh` and `file` are never needed there.
+ */
+export const SUBMODULE_PUSH_CONFIG: readonly string[] = [
+  ...PUSH_CONFIG.slice(0, PUSH_CONFIG.indexOf("protocol.allow=never") - 1),
+  "-c",
+  "protocol.allow=never",
+  "-c",
+  "protocol.https.allow=always",
+];
+
+/**
+ * ADR-0079 item 6: argv (after `git`) of one submodule repository push from its store: `<sha>:<ref>` to the store's
+ * `origin`, never forced, with the {@link pushArgs} flags. Throws on anything that is not a plain branch update.
+ */
+export function submodulePushArgs(sha: string, ref: string): string[] {
+  return [...SUBMODULE_PUSH_CONFIG, ...pushArgs("origin", sha, ref).slice(PUSH_CONFIG.length)];
+}
+
 /** Remote target ref of a meta-session: `refs/heads/<branchPrefix><sess>`. */
 export function remoteTargetRef(branchPrefix: string, metaSessionId: string): string {
   return `refs/heads/${branchPrefix}${metaSessionId}`;

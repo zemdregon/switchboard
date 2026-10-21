@@ -197,6 +197,26 @@ export function findAcceptedSubmodulePush(
     .get(q.metaSessionId, q.repo, q.ref, q.headSha) as SubmodulePushRow | undefined;
 }
 
+/**
+ * The meta-session's latest accepted push of `repo` to `ref`, whatever its head (the start of the next secret-scan
+ * range, ADR-0079 item 5), or undefined.
+ */
+export function latestAcceptedSubmodulePush(
+  db: Database.Database,
+  q: { readonly metaSessionId: string; readonly repo: string; readonly ref: string },
+): SubmodulePushRow | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM submodule_push WHERE meta_session_id = ? AND repo = ? AND ref = ? AND outcome = 'ACCEPTED'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+    )
+    .get(q.metaSessionId, q.repo, q.ref) as SubmodulePushRow | undefined;
+}
+
+export function getSubmodulePush(db: Database.Database, id: string): SubmodulePushRow | undefined {
+  return db.prepare("SELECT * FROM submodule_push WHERE id = ?").get(id) as SubmodulePushRow | undefined;
+}
+
 export function listSubmodulePushesForRun(db: Database.Database, runId: string): SubmodulePushRow[] {
   return db
     .prepare("SELECT * FROM submodule_push WHERE run_id = ? ORDER BY created_at, id")
@@ -366,6 +386,13 @@ export function listSubmoduleMergeSteps(
   return db
     .prepare("SELECT * FROM submodule_merge WHERE project_id = ? AND umbrella_ref = ? ORDER BY created_at, id")
     .all(projectId, umbrellaRef) as SubmoduleMergeRow[];
+}
+
+/** Every merge step recorded on one run, oldest first (the digest's `ref_events`). */
+export function listSubmoduleMergeStepsForRun(db: Database.Database, runId: string): SubmoduleMergeRow[] {
+  return db
+    .prepare("SELECT * FROM submodule_merge WHERE run_id = ? ORDER BY created_at, id")
+    .all(runId) as SubmoduleMergeRow[];
 }
 
 // ---- helpers ----------------------------------------------------------------------------------------------------
