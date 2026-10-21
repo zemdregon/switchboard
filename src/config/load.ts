@@ -20,7 +20,12 @@ import { type CapacitySettings, checkCapacity, resolveCapacity } from "./capacit
 import { type CiTriggerSettings, checkCiTrigger, resolveCiTrigger } from "./ci-trigger.js";
 import { type ControlPlaneSettings, checkControlPlane, resolveControlPlane } from "./control-plane.js";
 import { ConfigError } from "./errors.js";
-import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
+import {
+  checkHttpTransport,
+  type HttpTransportSettings,
+  httpProfileProblem,
+  resolveHttpTransport,
+} from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
 import {
   checkNotificationSinks,
@@ -668,13 +673,20 @@ export function loadConfig(
   ];
   for (const [where, id] of httpTargets) {
     const entry = mcpById.get(id);
-    if (entry === undefined) httpErrors.push(`$.transport.http.${where}: unknown mcp_clients id ${JSON.stringify(id)}`);
-    else if (where === "default_mcp_client" && entry.max_trust_profile === "privileged") {
+    const problem = httpProfileProblem(
+      entry === undefined
+        ? undefined
+        : { maxTrustProfile: entry.max_trust_profile, privilegedApproval: entry.privileged_approval },
+      where === "default_mcp_client" ? "default" : "mapped",
+    );
+    if (problem === "unknown") {
+      httpErrors.push(`$.transport.http.${where}: unknown mcp_clients id ${JSON.stringify(id)}`);
+    } else if (problem === "privileged_ceiling") {
       httpErrors.push(
         `$.transport.http.default_mcp_client: ${JSON.stringify(id)} has a privileged ceiling; map each OAuth client ` +
           "to a privileged entry explicitly in transport.http.clients instead",
       );
-    } else if (entry.privileged_approval === "not_required") {
+    } else if (problem === "approval_not_required") {
       httpErrors.push(
         `$.transport.http.${where}: ${JSON.stringify(id)} has privileged_approval not_required; an HTTP client's ` +
           "privileged runs must wait for the operator (FR-MCP-14)",
@@ -684,7 +696,7 @@ export function loadConfig(
   if (httpErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${httpErrors.map((l) => `  ${l}`).join("\n")}`);
   }
-  const httpTransport = resolveHttpTransport(cfg.transport?.http);
+  const httpTransport = resolveHttpTransport(cfg.transport?.http, cfg.mcp_clients);
 
   const routingErrors = checkRouting(cfg.routing);
   if (routingErrors.length > 0) {

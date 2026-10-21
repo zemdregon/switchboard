@@ -1560,7 +1560,9 @@ previous provider and model, runs that switched, by reason) are a query over `ro
 
 Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted 2026-10-14 under T13.1), with its
 SDK and protocol-era statements superseded in part by [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md) (T13.10).
-Requirements FR-MCP-12 to 17 and FR-MCP-19 (Client ID Metadata Documents, T13.11; the SDK-era move FR-MCP-18 is in
+Requirements FR-MCP-12 to 17, FR-MCP-20 to 25 (CLI-issued codes, T13.12,
+[ADR-0085](../adr/0085-cli-issued-one-time-codes-for-mcp-oauth.md)) and FR-MCP-19 (Client ID Metadata
+Documents, T13.11; the SDK-era move FR-MCP-18 is in
 [§20.11](#2011-mcp-sdk-v2-and-client-id-metadata-documents-fr-mcp-18-fr-mcp-19-t1310-t1311)). Off unless the config
 enables it.
 
@@ -1577,7 +1579,8 @@ enables it.
   such as `https://app.example`, exactly as a browser sends them; default empty, which refuses every request carrying
   an `Origin`). `public_url` and `port` are required when enabled. `cimd` (T13.11: Client ID Metadata Documents
   accepted as `client_id`; default true, `false` makes a URL `client_id` an unknown client with no fetch; stdio
-  unaffected). Plain
+  unaffected). `client_ip_header` (T13.12, optional: the header that carries the client address for the per-IP
+  consent lockout, honoured only from a loopback peer; see the T13.12 block below). Plain
   HTTP in `public_url` is refused at load, even for localhost. Code: `src/config/http-transport.ts`.
 - **Metadata.** `GET /.well-known/oauth-protected-resource` and the path-suffixed form
   `/.well-known/oauth-protected-resource/<endpoint path>` (RFC 9728 §3.1) return `resource` (the normalised
@@ -1587,7 +1590,8 @@ enables it.
   ["authorization_code", "refresh_token"]`, `code_challenge_methods_supported: ["S256"]`,
   `token_endpoint_auth_methods_supported: ["none"]` and `client_id_metadata_document_supported` (the `cimd` flag,
   T13.11). Each of those three endpoints answers 404 when `serve` has not
-  configured it (registration: T13.7; authorization and token: T13.8). Code: `src/mcp/http.ts`.
+  configured it (registration: T13.7; authorization and token: T13.8). T13.12 adds `/revoke` and
+  `revocation_endpoint` (below). Code: `src/mcp/http.ts`.
 - **Challenge.** A request without a valid bearer token gets HTTP 401 with `WWW-Authenticate` naming the metadata URL.
   The server never returns a token or any authorization detail.
 - **Verification.** Signature or introspection, `exp`, `iss` equal to the configured issuer, `aud` equal to the resource
@@ -1759,6 +1763,85 @@ CREATE TABLE http_subject (              -- migration 0013 (T13.5); insert-only,
   redactor before it is written to stderr. Pairing codes and passphrases have no distinctive shape and are never passed
   to a log or a response at all.
 - **Forbidden.** Forwarding the inbound token, logging it, or storing it in the ledger.
+
+#### CLI-issued, profile-bound codes, binding, lockout and revocation (FR-MCP-20 to FR-MCP-25, T13.12)
+
+*T13.12 (2026-10-21, Delegated, [ADR-0085](../adr/0085-cli-issued-one-time-codes-for-mcp-oauth.md)), `Partial`: the
+migration text below follows `src/ledger/migrations/0037_oauth_profile_binding.ts`; the behaviour is the design and is
+confirmed against the tests when T13.12 is Done.*
+
+- **Issue (FR-MCP-20).** `switchboard mcp oauth issue-code --client-profile <mcp_client_id> [--ttl <n>s|m|h]` (also
+  `--json`). `--ttl` takes an integer and one unit; the default is `10m`, the lower bound `1m` and the upper bound
+  `60m` (`3600s`, `1h`); a value outside it, or any other unit, is a usage error before anything is written. The
+  profile must be an `mcp_clients` entry that config load would accept as an HTTP target: a `privileged` maximum
+  trust profile or `privileged_approval: not_required` is refused with a usage error naming the reason (FR-MCP-14). The
+  code is 128 random bits from the CSPRNG behind a fixed prefix; only its SHA-256 (64 hex characters) is stored, and the
+  plaintext is printed once. In one transaction the new row is inserted and every older unused, unexpired code is marked
+  superseded. Audit event `code_issued` in `oauth_event` (profile, actor, never the code).
+- **Redeem (consent page).** The existing "pairing code" field accepts either kind. For a profile-bound code the lookup
+  is by hash with a constant-time compare, and it must be unused, unsuperseded and unexpired; the spend (`used_at`) and
+  the client approval happen in one transaction, so a code approves at most one client once. The pending client is then
+  bound to the code's profile. A client that already has a binding to a different profile is refused (no spend, no
+  change; revoke the client and redeem a new code to re-bind); a binding to the same profile is idempotent. The
+  unbound `consent pair` code and the passphrase approve exactly as before and create no binding. Refusals show the
+  same generic message as a wrong code. Audit event `consent_approved` (client, profile, method).
+- **Migration 0036.** Additive and forward-only; it reuses the existing pairing-code and client tables.
+
+```sql
+ALTER TABLE oauth_pairing_code ADD COLUMN mcp_client TEXT   -- the profile a code was issued for; NULL = legacy `consent pair`
+  CHECK (mcp_client IS NULL OR length(mcp_client) BETWEEN 1 AND 128);
+ALTER TABLE oauth_client ADD COLUMN mcp_client TEXT         -- the ledger binding; the config map still wins
+  CHECK (mcp_client IS NULL OR length(mcp_client) BETWEEN 1 AND 128);
+ALTER TABLE oauth_client ADD COLUMN bound_at TEXT CHECK ((mcp_client IS NULL) = (bound_at IS NULL));
+ALTER TABLE oauth_token ADD COLUMN grant_id TEXT            -- 'sbg_*', kept across refresh rotation (revoke by grant)
+  CHECK (grant_id IS NULL OR grant_id GLOB 'sbg_*');
+CREATE TABLE oauth_event (                                  -- append-only audit, no values
+  id INTEGER PRIMARY KEY, at TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('code_issued','consent_approved','token_issued','token_refreshed',
+                                     'token_revoked','client_revoked','tokens_revoked')),
+  client_id TEXT, mcp_client TEXT, method TEXT, actor TEXT NOT NULL, ip TEXT, reason TEXT
+) STRICT;
+```
+
+  A token written before the migration has no `grant_id`; revoking such a refresh token at `/revoke` revokes that
+  token alone. Triggers make `oauth_event` reject `UPDATE` and `DELETE`.
+
+- **Resolution order at `/mcp` (FR-MCP-21).** For a verified token's OAuth client: (1) the `transport.http.clients`
+  entry for that client id (a CIMD URL maps to its derived id, as for T13.11); (2) else the `oauth_client_binding` row;
+  (3) else `default_mcp_client`; (4) else the request is refused. Whichever entry is chosen is re-checked on every
+  request: the profile must still exist in the loaded configuration and pass the stricter rule load applies to `default_mcp_client`
+  (no `privileged` ceiling, no `privileged_approval: not_required`), and the
+  client must still be `approved`; any failure is the same 401/403 refusal as today, never a retry against the next
+  step. The frozen maximum trust profile is that of the resolved entry, so a binding cannot raise it, and `privileged`
+  is unreachable over HTTP as before.
+- **Per-IP lockout (FR-MCP-23).** Consent-page wrong passphrases and wrong codes are counted per client address: 10
+  wrong attempts inside a 5-minute window set a 15-minute lock for that address (the constants of the operator's
+  gate; Delegated), during which every sign-in attempt from it is refused without checking the value. The global throttle
+  of T13.8 is unchanged and applies as well. The counters are in memory (Assumption: a restart clears them; the
+  global throttle and the code's own expiry bound the exposure).
+  `transport.http.client_ip_header` (optional string of 1 to 64 characters matching `^[a-z0-9][a-z0-9-]*$`, such as
+  `cf-connecting-ip`; anything else stops startup) names the header carrying the client address; it is read only when
+  the TCP peer address is loopback and its value is one IP literal; otherwise the peer address is used. From any other
+  peer the header is ignored. The lockout is logged with the address and a reason code, never the attempted value.
+- **Revocation endpoint (FR-MCP-22).** `POST /revoke`, `application/x-www-form-urlencoded` (RFC 7009), body at most
+  4 KiB, after the `Origin` check. Parameters: `token` and `client_id` (both required; `token_type_hint` accepted and
+  ignored). The token is looked up by SHA-256; when its row belongs to `client_id` it is revoked (a refresh token also
+  revokes the access tokens of its grant), and the response is `200` with an empty JSON object. An unknown token, a
+  token of another client or an unknown client also answer `200` and change nothing, so the response never discloses
+  whether a token exists; a missing parameter is `400 invalid_request`. The authorization server metadata adds
+  `revocation_endpoint` (the issuer plus `/revoke`) and `revocation_endpoint_auth_methods_supported: ["none"]`.
+  Audit event `token_revoked` (client id, never the token).
+- **Operator commands (FR-MCP-24).** `switchboard mcp oauth clients`, `client <client_id>`, `tokens [--client <id>]
+  [--all]` (default: unexpired, unrevoked tokens) and `revoke <client_id> [--tokens-only]`, each with `--json`. They
+  list `client_id`, name, redirect host, state (`pending`, `approved`, `denied`, `revoked`), bound profile and
+  its source, created and last-used times, and for tokens the kind, expiry and state; never a token, code, hash or
+  passphrase. `revoke` marks the client's tokens revoked and, without `--tokens-only`, the client `revoked`; both are
+  idempotent and work while `serve` runs, like `git ack-secret-scan`. Audit events `client_revoked` and `tokens_revoked`.
+- **MCP tool (FR-MCP-25).** `list_oauth_clients` has an empty input and returns the `clients` list above (no tokens). It
+  is registered by the stdio server only; the HTTP tool list never contains it, and a call over HTTP is an unknown tool.
+- **Tests (planned).** `src/mcp/oauth-profile-codes.test.ts`, `src/mcp/oauth-server.test.ts`, `src/mcp/http.test.ts`,
+  `src/cli/mcp-oauth.test.ts`, `src/ledger/ledger.test.ts` (migration 0037),
+  `src/config/config.test.ts` (`client_ip_header`), `test/malicious/controller.test.ts`.
 
 ### 3.4 Control plane (M14, Proposed, T14.0)
 

@@ -49,6 +49,7 @@ Only one `serve` can hold a data directory at a time.
 | `search_project_context` | retrieval | Read-only semantic search over a project's indexed contexts. See [Retrieval index](advanced-features.md#retrieval-index-milestone-12). | Only when retrieval is on for at least one of the client's projects |
 | `list_skills` | skills | Operator-approved skill names this client may inject, with the newest usable version's metadata (no bodies). | Only when `skills.enabled` |
 | `get_skill` | skills | The text of one visible skill version. | Only when `skills.enabled` |
+| `list_oauth_clients` | oauth | The OAuth clients that registered with the embedded authorization server: id, name, state, bound MCP client profile and times; never a token, code or hash. Read-only; the same data as `switchboard mcp oauth clients`. | stdio only; never offered over the network transport |
 | `create_project` | project management | Define a client-owned dynamic project (same shape and checks as a configured one). See [Dynamic projects](#dynamic-projects). | Only with `manage_projects: true` |
 | `update_project` | project management | Write a new revision of a dynamic project; a widening revision stays unusable until `projects approve`. | Only with `manage_projects: true` |
 | `delete_project` | project management | Remove a dynamic project once none of its runs is going; its history stays. | Only with `manage_projects: true` |
@@ -333,6 +334,42 @@ its `remote` is a remote name, never a URL (details below). With `"sign": true` 
 commit with your own Git signing configuration; only GnuPG with a throwaway key has been tried. Approved bypass runs
 are exempt from the push credential rule and from the finalize-only size limits (owner decisions 37 and 44).
 
+### Connect a remote MCP client with OAuth
+
+A remote MCP client (a hosted connector, for example) connects to `serve` over Streamable HTTP and signs in with OAuth
+2.1. Switchboard has its own OAuth provider built in: there is no external authorization server to set up, and the
+one-time code comes from the CLI. This is *Proposed* until ROADMAP T13.12 is Done
+([ADR-0085](../adr/0085-cli-issued-one-time-codes-for-mcp-oauth.md)); the commands below are the design.
+
+Prerequisites: `transport.http` is enabled with a `public_url` behind your TLS proxy (see the `transport` row of the
+[configuration table](getting-started.md#configure)), and the MCP client profile you will offer exists in
+`mcp_clients`. Only a profile that is allowed over HTTP works: not `privileged`, and not
+`privileged_approval: not_required`. Privileged runs are never available over HTTP.
+
+1. On the host running Switchboard, issue a code for the profile. The code is printed once, works once and expires
+   after 10 minutes unless you pass `--ttl` (1 to 60 minutes). Issuing a new code ends every older unused code.
+
+   ```text
+   switchboard mcp oauth issue-code --client-profile orchestrator --ttl 15m
+   ```
+
+2. In the remote client, add the connector with your public URL (`https://<public_url>`). The client finds the
+   authorization server by itself and sends your browser to the Switchboard consent page.
+3. Paste the code into the consent page's pairing-code field. The client is approved and bound to that profile, so it
+   gets that profile's trust ceiling and approval rules and nothing more. A configured `transport.http.clients` entry
+   still takes precedence over a binding; `default_mcp_client` is used only when there is neither.
+4. To see who is connected, run `switchboard mcp oauth clients` (or `client <client_id>`, `tokens`); an orchestrator on
+   stdio can call `list_oauth_clients`. None of them shows a token.
+5. To cut a client off, run `switchboard mcp oauth revoke <client_id>` (add `--tokens-only` to end its tokens and keep
+   the client). The client can also revoke its own token at the `revocation_endpoint` (RFC 7009).
+
+The passphrase and `switchboard consent pair` still work; a pairing code from `consent pair` approves a client without
+binding it to a profile. Wrong codes and passphrases are locked out per client address (10 wrong in 5 minutes locks
+that address for 15 minutes). If a reverse proxy sits in front of Switchboard, set `transport.http.client_ip_header`
+(for example `cf-connecting-ip`) so the lockout sees the real address; the header is trusted only when the request
+arrives from loopback. Static bearer tokens kept in a gate you run in front of Switchboard keep working; that gate
+should forward the OAuth endpoints and OAuth-authenticated `/mcp` traffic to Switchboard.
+
 ### Command reference
 
 Every top-level `switchboard` command, with its purpose, key options and a link to the section that describes it
@@ -360,6 +397,8 @@ subsections below give the full behaviour; `switchboard --help` prints the same 
 | `pause` | Pause every project: no new run is admitted until resume (an MCP client can pause only its own projects) | `--json` | [Control plane](advanced-features.md#control-plane-milestone-14) |
 | `resume` | Lift the operator pause set by `pause` (a project paused by an MCP client stays paused) | `--json` | [Control plane](advanced-features.md#control-plane-milestone-14) |
 | `consent hash-passphrase`, `consent pair` | Hash the HTTP consent-page passphrase for config; print a one-time pairing code (Switchboard's own secrets, never a provider sign-in) | `--json` | [ROADMAP §6.10](../ROADMAP.md#610-m13-network-mcp-transport-tasks) |
+| `mcp oauth issue-code --client-profile <mcp_client_id> [--ttl <n>s\|m\|h]` | Print a single-use code (default 10 minutes, 1 to 60) that approves a remote OAuth client on the consent page and binds it to that MCP client profile; issuing a code ends older unused ones; a `privileged` profile is refused | `--client-profile` (required), `--ttl`, `--json` | [Connect a remote MCP client with OAuth](#connect-a-remote-mcp-client-with-oauth) |
+| `mcp oauth clients`, `mcp oauth client <client_id>`, `mcp oauth tokens [--client <id>] [--all]`, `mcp oauth revoke <client_id> [--tokens-only]` | List and inspect OAuth clients and their tokens (never token values), and revoke a client's tokens or the client itself | `--client`, `--all`, `--tokens-only`, `--json` | [Connect a remote MCP client with OAuth](#connect-a-remote-mcp-client-with-oauth) |
 | `schedule list`, `schedule show <id>`, `schedule enable <id>`, `schedule disable <id>`, `schedule approve <id>`, `schedule deny <id>`, `schedule create <cron> <project> <template_json>` | List, inspect, enable, disable, approve, reject and create UTC cron schedules (off by default) | `--project` (list), `--json` | [ROADMAP §6.14](../ROADMAP.md#614-m15-project-queue-schedules-and-ci-triggers-tasks) |
 | `decisions list`, `decisions decide <dec_id> --option <n>` | List decision requests with their (untrusted) question and options; decide one as the operator: its work item resumes or is cancelled and its enqueue list is added once; deciding twice is refused | `--project`, `--state` (list), `--option`, `--note` (decide), `--json` | [LLD §20.3](../design/LLD.md#203-decision-requests-fr-ctl-13-t1415) |
 | `skills list`, `skills show <name>[@n]`, `skills add <name>`, `skills approve <name>@<n>`, `skills revoke <name>@<n>`, `skills retire <name>`, `skills unretire <name>`, `skills diff <name>@<a> <name>@<b>` | Skill store: list, inspect, validate and store a version, approve, revoke, retire and diff | `--all`, `--body`, `--file`, `--from-repository`, `--note`, `--json` | [Switchboard-controlled skills](advanced-features.md#switchboard-controlled-skills-milestone-16) |
@@ -379,6 +418,11 @@ switchboard pause
 switchboard resume
 switchboard consent hash-passphrase
 switchboard consent pair
+switchboard mcp oauth issue-code --client-profile <mcp_client_id> [--ttl <n>s|m|h]
+switchboard mcp oauth clients
+switchboard mcp oauth client <client_id>
+switchboard mcp oauth tokens [--client <id>] [--all]
+switchboard mcp oauth revoke <client_id> [--tokens-only]
 switchboard schedule list [--project <id>]
 switchboard schedule show <sch_id>
 switchboard schedule enable <sch_id>
