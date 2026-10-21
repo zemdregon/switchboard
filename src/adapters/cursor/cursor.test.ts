@@ -2536,7 +2536,7 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
     const lines2 = [
       INIT(),
       TOOL("started", { shellToolCall: {} }),
-      TOOL("completed", { shellToolCall: { result: { permissionDenied: { command: "git commit -m x" } } } }),
+      TOOL("completed", { shellToolCall: { result: { permissionDenied: { command: "git push origin HEAD" } } } }),
       RESULT(),
     ];
     const events2 = lines2.flatMap((l) => a.parseEvent(l, state2)).map((e) => guardEvent(e, ctx));
@@ -2801,15 +2801,15 @@ describe("cursor parser residual branches (T4.43, synthetic)", () => {
     const r = parse([
       INIT,
       TOOL("started", { shellToolCall: { args: { command: "ls" } } }),
-      TOOL("started", { shellToolCall: { args: { command: "git commit -am x" } } }),
-      TOOL("started", { shellToolCall: { args: { command: "git commit -am x" } } }),
+      TOOL("started", { shellToolCall: { args: { command: "git push origin HEAD" } } }),
+      TOOL("started", { shellToolCall: { args: { command: "git push origin HEAD" } } }),
       RESULT,
     ]);
     // `started` always reports (its set only feeds `completed` de-duplication), so the repeat is reported too.
     expect(calls(r.events).map((e) => (e.kind === "tool_call" ? e.command : undefined))).toEqual([
       "ls",
-      "git commit -am x",
-      "git commit -am x",
+      "git push origin HEAD",
+      "git push origin HEAD",
     ]);
     expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
   });

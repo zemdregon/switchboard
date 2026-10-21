@@ -1726,7 +1726,7 @@ describe("grok parser residuals, tenth pass: fail-closed order after `end`, resu
   });
 
   it("a Git write after a line break in the command reaches the guard whole, after `end` too, and outranks the order check", () => {
-    for (const command of ["ls\ngit push origin main", "ls\r\ngit push origin main", "ls;\n\tgit commit -m x"]) {
+    for (const command of ["ls\ngit push origin main", "ls\r\ngit push origin main", "ls;\n\tgit push origin HEAD"]) {
       const before = guarded([call({ input: { command } }), line(END)]);
       expect(before[0], JSON.stringify(command)).toMatchObject({ tool: "shell", violation: { kind: "git_write" } });
       expect(before[0], JSON.stringify(command)).not.toHaveProperty("command");

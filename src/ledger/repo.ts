@@ -1090,6 +1090,12 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, De
    */
   hasBaseRefreshFetch(repoRoot: string, trackingRef: string, sha: string): boolean;
   /**
+   * ADR-0094: whether a run of the repository at `repoRoot` recorded an approved bypass dispatch (`privileged_dispatch`
+   * with `bypass_approved` true) and had not finished at `since` (`finished_at` NULL or not before it), so its agent may
+   * have fetched into the shared repository after `since`.
+   */
+  hasBypassRunOnRepoSince(repoRoot: string, since: string): boolean;
+  /**
    * Payload JSON of the newest `git_push` run events across every run of a meta-session, NEWEST FIRST, at most
    * `limit` (T9.14, FR-CTL-03 `secret_scan_blocked`: operator pushes record on a run of the meta-session too).
    */
@@ -2362,6 +2368,20 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
 
     hasBaseRefreshFetch(repoRoot, trackingRef, sha) {
       return hasBaseRefreshFetch(db, repoRoot, trackingRef, sha);
+    },
+
+    hasBypassRunOnRepoSince(repoRoot, since) {
+      return (
+        db
+          .prepare(
+            `SELECT 1 FROM run r JOIN meta_session m ON m.id = r.meta_session_id JOIN run_event e ON e.run_id = r.id
+             WHERE m.repo_root = ? AND e.type = 'privileged_dispatch'
+               AND json_extract(e.payload_json, '$.bypass_approved') = 1
+               AND (r.finished_at IS NULL OR r.finished_at >= ?)
+             LIMIT 1`,
+          )
+          .get(repoRoot, since) !== undefined
+      );
     },
 
     listGitPushEventPayloadsForMetaSession(metaSessionId, limit) {

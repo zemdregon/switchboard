@@ -111,6 +111,16 @@ a lower `trust_profile` (such as `trusted-development`) keeps it unless you set 
 the run records a `trust_profile_promoted` event. `doctor` warns for all three.
 Leave these keys out on any deployment where other people's clients connect.
 
+**Git in a bypass run (ADR-0094).** An approved bypass run may run `git fetch` (plain remotes and branches), `git remote
+update`, `git ls-remote` and `git remote -v`, `show` or `get-url`; the fetched remote-tracking refs and new tags do not
+count as Git policy violations, so the run's work is still committed and publishable. The agent's own `git commit`, `git
+reset`, `git merge`, `git pull` and `git checkout -- <path>` are still refused by Claude Code, and with other providers
+any commit they make is moved off the run branch again; neither fails the run, and the work becomes a commit only
+through Switchboard. A push, a remote change (`git remote add`, `set-url`, ...), a fetch into a local branch (`git fetch
+origin main:main`), checking out, creating, deleting or moving another branch or tag, `git stash`, and `git -C` or
+`--git-dir` still fail the run with `PERMISSION_BLOCKED`. `git pull` stays refused even with `--ff-only`, because it
+would move the run branch that only Switchboard moves; fetch and compare with `origin/<branch>` instead.
+
 ## Security model
 
 - **No credential handling.** Switchboard never reads, copies, logs or exports provider credentials, and does not start

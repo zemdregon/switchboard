@@ -240,7 +240,7 @@ describe("gitDenyRuleSecurityReason: which Git deny-rule hits are security-class
     ["git send-pack ../r main", /not a local git verb/],
     ["git remote add up https://example.test/r.git", /not a local git verb/],
     ["git fetch https://example.test/r.git", /not a local git verb/],
-    ["git pull", /not a local git verb/],
+    ["git pull --upload-pack=/tmp/x", /runs a program/],
     ["git config core.hooksPath /tmp/h", /not a local git verb/],
     ["git update-ref refs/heads/main HEAD~1", /not a local git verb/],
     ["git symbolic-ref HEAD refs/heads/x", /not a local git verb/],

