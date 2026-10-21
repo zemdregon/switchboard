@@ -393,3 +393,12 @@ async function canonicalFile(p: string): Promise<string> {
   const dir = await realpath(path.dirname(p)).catch(() => path.dirname(p));
   return path.join(dir, path.basename(p));
 }
+
+/**
+ * ADR-0079 item 3: where a run worktree's attach record lives, beside the worktree under the data directory
+ * (`<dataDir>/worktrees/<sess>/<run>.submodules.json`). Derived from the worktree path alone, so every consumer (the
+ * workspace manager, the commit tool, `finalize_commit`, `gc`, publication) finds it without extra state.
+ */
+export function attachRecordFile(runWorktree: string): string {
+  return `${runWorktree.replace(/\/+$/, "")}.submodules.json`;
+}
