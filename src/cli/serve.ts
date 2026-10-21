@@ -80,6 +80,8 @@ import {
   mergeTargetsFrom,
   type OnRefSinkEvent,
   resolveGithubRemote,
+  type SubmoduleMergeDeps,
+  submoduleMergeHook,
   supersededDiffOf,
 } from "../ci/index.js";
 import { ConfigError, loadConfig, primaryContext, type ResolvedConfig, submodulesEnabled } from "../config/index.js";
@@ -1353,6 +1355,22 @@ async function runDaemon(
   // T15.8 (FR-SUB-02, LLD §20.7, ADR-0060): projects whose merge policy is on in the definition in force: configured
   // projects, and dynamic projects' revisions in force (a revision turning it on waits for operator approval).
   const mergeTargets = () => mergeTargetsFrom(config.projects, mergeStore);
+  // ADR-0079 item 7: the ordered merge of an umbrella with linked submodule pull requests, on both the poller and
+  // `merge_run_pr`: G17 on the same port, the shared pusher, the stores under `project_sources.clone_root`, and the
+  // primary context's identity (configured or dynamic in force) for the repoint commit.
+  const submoduleMergeDeps = (port: GhCiStatusPort): SubmoduleMergeDeps => ({
+    mergeState: port,
+    pusher,
+    sources: liveProjectSources,
+    identityOf: (projectId) => {
+      const project = config.projects.find((p) => p.id === projectId);
+      if (project !== undefined) return primaryContext(project).identity;
+      const dynamic = mergeStore.state(projectId)?.inForce?.definition;
+      return dynamic === undefined ? undefined : primaryContext(toResolved(dynamic)).identity;
+    },
+    scratchDir: path.join(config.dataDir, "git-scratch"),
+    secretScanAllow: config.secretScanAllow,
+  });
   const ciPort = ciTrigger.enabled
     ? new GhCiStatusPort({
         binary: ciTrigger.ghBinary,
@@ -1411,6 +1429,18 @@ async function runDaemon(
           pullHeads,
           nowMs: () => (now ? now() : new Date()).getTime(),
           ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
+          linkedMerge: submoduleMergeHook(
+            {
+              db,
+              ledger,
+              merge: ciPort,
+              targets: mergeTargets,
+              pullHeads,
+              nowMs: () => (now ? now() : new Date()).getTime(),
+              ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
+            },
+            submoduleMergeDeps(ciPort),
+          ),
         },
       )
     : undefined;
@@ -1616,6 +1646,19 @@ async function runDaemon(
         resolveRemote: resolveCiRemote,
         nowMs: () => (now ? now() : new Date()).getTime(),
         ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
+        // ADR-0079 item 7: the ordered merge for a publication with linked submodule pull requests.
+        linkedMerge: submoduleMergeHook(
+          {
+            db,
+            ledger,
+            merge: mergeRunPort,
+            targets: mergeTargets,
+            pullHeads,
+            nowMs: () => (now ? now() : new Date()).getTime(),
+            ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
+          },
+          submoduleMergeDeps(mergeRunPort),
+        ),
       },
     };
     mcp = await startStdioServer({ ...mcpDeps, clientId });

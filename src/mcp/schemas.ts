@@ -70,7 +70,14 @@
 
 import { FAILURE_CODES } from "../adapters/failure.js";
 import { acceptedProviderNames } from "../adapters/providers.js";
-import { MERGE_EVENT_TYPE, MERGE_REFUSAL_REASONS, REF_EVENT_KINDS, REF_EVENT_TYPE } from "../ci/merge-codes.js";
+import {
+  MERGE_EVENT_TYPE,
+  MERGE_REFUSAL_REASONS,
+  REF_EVENT_KINDS,
+  REF_EVENT_TYPE,
+  SUBMODULE_MERGE_PHASES,
+  SUBMODULE_MERGE_REPO_STATES,
+} from "../ci/merge-codes.js";
 import {
   MERGE_POLICY_CHECKS,
   MERGE_POLICY_METHODS,
@@ -1823,6 +1830,33 @@ const MERGE_RUN_PR_RESULT = {
     head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
     head_kind: { enum: ["published", "base_merge"] },
     method: { enum: [...MERGE_POLICY_METHODS] },
+    // ADR-0079 item 7: only for a publication with linked submodule pull requests (the same object a refusal's
+    // details.submodule_merge carries).
+    submodule_merge: {
+      type: "object",
+      additionalProperties: false,
+      required: ["phase", "repos"],
+      properties: {
+        phase: { enum: [...SUBMODULE_MERGE_PHASES] },
+        repos: {
+          type: "array",
+          maxItems: 1024,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["repo", "paths", "pr_number", "state"],
+            properties: {
+              repo: { type: "string", maxLength: 200 },
+              paths: { type: "array", maxItems: 1024, items: { type: "string", maxLength: 4096 } },
+              pr_number: { type: "integer", minimum: 1 },
+              state: { enum: [...SUBMODULE_MERGE_REPO_STATES] },
+              merged_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+              reason: { type: "string", maxLength: 64 },
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 
@@ -1874,7 +1908,17 @@ const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
     "refusal is PERMISSION_BLOCKED with details.reason (policy_off, draft, head_moved, base_mismatch, not_mergeable, " +
     "no_required_checks, no_checks_reported, check_pending, check_failed, unverified_at_head, report_missing); a gh failure is " +
     "TOOL_FAILURE gh_error, retryable. Idempotent: an already merged pull request returns merged true. Every attempt " +
-    "is a merge_event in get_digest.",
+    "is a merge_event in get_digest. For a publication with linked submodule pull requests (an umbrella project), " +
+    "each call advances an ordered merge as far as it can: each submodule pull request in path order through the same " +
+    "checks (and merge_policy.checks) at its pushed head and merged pinned to it (one merged by a person at that head " +
+    "is accepted); then one controller commit on the published tip that only re-points the gitlinks to the merge " +
+    "commits, pushed fast-forward to the pull request branch; then the umbrella gate at that new head, with " +
+    "verification and reports read at the published tip. Progress is in submodule_merge { phase (submodules, " +
+    "repoint, umbrella, merged), repos [{ repo, paths, pr_number, state (waiting, refused, merged), merged_sha, " +
+    "reason }] }, on the result and on every refusal's details; call again (check_pending is never waited for). " +
+    "Step refusals add merge_failed, store_unavailable, merge_commit_missing, merge_commit_off_default_branch, " +
+    "gitlink_mismatch, repoint_not_fast_forward, repoint_push_failed, secret_scan_blocked; the fetch, push and gh " +
+    "failures among them are TOOL_FAILURE, retryable.",
   update_run_branch:
     "Bring the pull request of one of this client's published runs up to date with its base branch (GitHub's Update " +
     "branch, with the operator's GitHub login, gh), only when the project's merge_policy is in force and enabled, the " +
