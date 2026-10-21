@@ -6796,8 +6796,8 @@ run output carries one. Where a provider's CLI can report the signed-in account'
 optional adapter method reads them, and the result is shown beside the projection.
 
 **Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
-(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex, Cursor and Grok
-Build implement it.
+(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex, Cursor, Grok
+Build, Kimi Code and Antigravity (T6.20, below) implement it.
 
 ```jsonc
 // ProviderUsageReport
@@ -6919,6 +6919,35 @@ Unrecognised text, a timeout or another dialog is `unknown`.
 
 Precision is a whole percent and a minute-level reset. Side effects: the probe directory appears once in Kimi's
 workspace list and each read adds a `/usage` line to its input history. Tests: `src/adapters/kimi/usage.test.ts`.
+
+**Antigravity** (T6.20, [ADR-0082](../adr/0082-antigravity-usage-from-the-cli-usage-command.md), answers Q-101;
+`src/adapters/antigravity/usage.ts`, recorded `agy` 1.4.3 fixtures in `src/adapters/antigravity/fixtures/usage/`):
+
+1. `authPreflight` (`agy models`, §4) first. `AUTH_REQUIRED` gives `unknown` with the error "agy is not signed in"
+   and the native login command; `UNKNOWN` gives `unknown` with its reason. Only `OK` continues, because a signed-out
+   `agy -p "/usage"` waits about 60 s for a sign-in.
+2. `agy -p /usage --output-format json` and `agy -p /credits --output-format json` in parallel, from the system
+   temporary directory, with the probe environment (`PATH`, `HOME`) and a 20 s bound (**Proposed**).
+3. The last stdout line that parses as a JSON object must have `status` `SUCCESS`, `num_turns` 0 and `command.name`
+   `usage` (own properties only). Each `command.data.groups[].buckets[]` entry becomes a window when its `id` and
+   `window` are tokens (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`), `remaining_fraction` is a finite number in [0, 1] and
+   `reset_time` is absent or parses as a date; a duplicate id and windows past 64 are dropped. No valid window gives
+   `unknown`. Free text (`description`, the tab-separated `response`) is never read.
+
+| Provider field (`/usage`, `/credits`) | Report field |
+| --- | --- |
+| `buckets[].id` | `windows[].id` (unique across groups) |
+| `groups[].name` | `windows[].limit_id` (the group of models that share the bucket) |
+| `buckets[].window`: `5h`, `weekly` | `window_seconds` 18 000, 604 800; any other kind null |
+| `buckets[].remaining_fraction` | `remaining_fraction`; `used_fraction` = `1 - remaining_fraction` (six places) |
+| `buckets[].reset_time` | `resets_at` (ISO) |
+| `remaining_credits` | `credits`: `has_credits` (above 0), `unlimited` false, `balance` as a string; null if `/credits` fails |
+| (none) | `plan`, `limit_reached`, `limit_reached_type` null |
+
+Observed on 1.4.3: a bucket at `remaining_fraction` 1 reports a `reset_time` of now plus its window (the window has not
+started), so that `resets_at` moves on every read. Tests: `src/adapters/antigravity/usage.test.ts` and
+`src/mcp/get-capacity-antigravity-usage.test.ts` (the real probe runner against a stand-in `agy` that prints the
+recorded answers).
 
 ### 16.12 Claude Code usage windows from run output (FR-CAP-15, ADR-0088)
 
