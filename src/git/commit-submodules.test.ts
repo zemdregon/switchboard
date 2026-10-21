@@ -294,6 +294,30 @@ describe("commit tool: all changes (ADR-0079 item 4)", () => {
     expect(g(s.umbrella, "ls-tree", "-r", "--name-only", r.sha)).not.toMatch(/mods\/a\//u);
   });
 
+  it("never runs a store's configured filter or hooks while committing in it", async () => {
+    const s = await setup();
+    const storeA = s.stores.get(KEY_A) as string;
+    const log = path.join(fx.root, "canary.log");
+    const script = path.join(fx.root, "canary.sh");
+    writeFileSync(script, `#!/bin/sh\necho ran >> '${log}'\ncat\n`, { mode: 0o755 });
+    g(storeA, "config", "filter.evil.clean", script);
+    g(storeA, "config", "filter.evil.required", "true");
+    const hooks = path.join(fx.root, "hooks");
+    mkdirSync(hooks);
+    for (const h of ["reference-transaction", "post-index-change", "pre-commit", "post-commit"]) {
+      writeFileSync(path.join(hooks, h), `#!/bin/sh\necho hook >> '${log}'\n`, { mode: 0o755 });
+    }
+    g(storeA, "config", "core.hooksPath", hooks);
+    write(s, "mods/a/.gitattributes", "*.txt filter=evil\n");
+    write(s, "mods/a/a.txt", "A\n");
+    const r = await publisher().commit(input(s.runId));
+    expect(r.submodules).toHaveLength(1);
+    expect(existsSync(log)).toBe(false);
+    // Positive control: plain Git in the same submodule worktree runs the filter.
+    g(path.join(s.wt, "mods/a"), "add", "a.txt");
+    expect(existsSync(log)).toBe(true);
+  });
+
   it("refuses NOTHING_TO_COMMIT when neither the umbrella nor a writable submodule changed", async () => {
     const s = await setup();
     write(s, "mods/b/b.txt", "B\n"); // read-only only

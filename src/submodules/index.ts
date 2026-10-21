@@ -1,8 +1,10 @@
 /**
- * Submodule projects library (ADR-0079 items 2, 3 and 9): the manifest of an umbrella commit, shared object stores,
- * per-run attach/detach of submodule worktrees and the typed rows of the submodule tables. Pure library; the workspace
- * manager and the MCP tools wire it.
+ * Submodule projects library (ADR-0079 items 2, 3, 4 and 9): the manifest of an umbrella commit, shared object stores,
+ * per-run attach/detach of submodule worktrees, submodule checkpoints, controller-made submodule commits and the typed
+ * rows of the submodule tables. Pure library; the workspace manager, the commit path and the MCP tools wire it.
  */
+export * from "./checkpoint.js";
+export * from "./commit.js";
 export * from "./errors.js";
 export * from "./ledger.js";
 export * from "./manifest.js";
