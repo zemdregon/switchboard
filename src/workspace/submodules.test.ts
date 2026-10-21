@@ -301,4 +301,167 @@ describe("run worktree submodules (ADR-0079 item 3)", () => {
     expect(existsSync(attachRecordFile(orphanDir))).toBe(false);
     expect(storeWorktrees("lib-a")).toEqual([]);
   });
+
+  describe("checkpoints (ADR-0079 item 3)", () => {
+    const refsOf = (repo: string) =>
+      g(
+        storePath({ host: HOST, owner: OWNER, repo }, fx.settings),
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/switchboard/checkpoints/",
+      )
+        .split("\n")
+        .filter(Boolean);
+    const eventsOf = (runId: string, type: string) =>
+      db.prepare("SELECT payload_json FROM run_event WHERE run_id = ? AND type = ?").all(runId, type) as {
+        payload_json: string;
+      }[];
+    const gitlink = (repo: string, commit: string, p: string) =>
+      /^160000 commit ([0-9a-f]{40})\t/u.exec(g(repo, "ls-tree", commit, "--", p))?.[1];
+
+    it("finalize checkpoints a changed writable submodule, records its gitlink and counts it as a change", async () => {
+      const { a, b, u } = umbrella();
+      const mgr = manager();
+      const { run, ws } = await prepare(mgr, u.dir);
+      writeFileSync(path.join(ws.worktreePath, "mods/a/a.txt"), "edited\n");
+      const fin = await mgr.finalize(run.id);
+      expect(fin.committed).toBe(true);
+      const tip = gitlink(ws.worktreePath, fin.postCommit, "mods/a") as string;
+      expect(tip).not.toBe(a.head);
+      expect(gitlink(ws.worktreePath, fin.postCommit, "mods/b")).toBe(b.head);
+      expect(refsOf("lib-a")).toEqual([`refs/switchboard/checkpoints/${run.id}/${tip}`]);
+      expect(g(path.join(ws.worktreePath, "mods/a"), "rev-parse", "HEAD")).toBe(tip);
+      expect(eventsOf(run.id, "submodule_changes_skipped")).toEqual([]);
+    });
+
+    it("a read-only change is not carried: nothing is committed and a submodule_changes_skipped event names the path", async () => {
+      const { u } = umbrella();
+      const mgr = manager();
+      const { run, ws } = await prepare(mgr, u.dir);
+      writeFileSync(path.join(ws.worktreePath, "mods/b/b.txt"), "edited\n");
+      const fin = await mgr.finalize(run.id);
+      expect(fin.committed).toBe(false);
+      expect(refsOf("lib-b")).toEqual([]);
+      const ev = eventsOf(run.id, "submodule_changes_skipped");
+      expect(ev).toHaveLength(1);
+      expect(JSON.parse((ev[0] as { payload_json: string }).payload_json)).toEqual({
+        stage: "checkpoint",
+        paths: [{ path: "mods/b", reason: "read_only" }],
+      });
+    });
+
+    it("a worktree without an attach record is finalized exactly as before", async () => {
+      const { u } = umbrella();
+      const { run, ws } = await prepare(manager(null), u.dir);
+      writeFileSync(path.join(ws.worktreePath, "README.md"), "x\n");
+      const fin = await manager(null).finalize(run.id);
+      expect(fin.committed).toBe(true);
+      expect(eventsOf(run.id, "submodule_changes_skipped")).toEqual([]);
+    });
+
+    it("a continued run starts with the submodule edits: the worktree is at the checkpoint commit", async () => {
+      const { u } = umbrella();
+      const mgr = manager();
+      const first = await prepare(mgr, u.dir);
+      const wt = first.ws.worktreePath;
+      writeFileSync(path.join(wt, "mods/a/new.txt"), "new\n");
+      const fin = await mgr.finalize(first.run.id);
+      const tip = gitlink(wt, fin.postCommit, "mods/a") as string;
+      mgr.releaseLease(first.run.id);
+      db.prepare("UPDATE run SET state = 'SUCCEEDED' WHERE id = ?").run(first.run.id);
+
+      // Resumed in place.
+      const second = await prepare(mgr, u.dir, first.session, wt);
+      expect(g(path.join(wt, "mods/a"), "rev-parse", "HEAD")).toBe(tip);
+      expect(readFileSync(path.join(wt, "mods/a/new.txt"), "utf8")).toBe("new\n");
+      mgr.releaseLease(second.run.id);
+      db.prepare("UPDATE run SET state = 'SUCCEEDED' WHERE id = ?").run(second.run.id);
+
+      // The worktree directory is gone: it is re-created from the checkpoint and attached at the same commit.
+      rmSync(wt, { recursive: true, force: true });
+      const third = await prepare(mgr, u.dir, first.session, wt);
+      expect(third.ws.worktreePath).toBe(wt);
+      expect(g(path.join(wt, "mods/a"), "rev-parse", "HEAD")).toBe(tip);
+      expect(readFileSync(path.join(wt, "mods/a/new.txt"), "utf8")).toBe("new\n");
+    });
+
+    it("retention gc drops the run's checkpoint refs from the stores with its worktree", async () => {
+      const { u } = umbrella();
+      const mgr = manager();
+      const { run, ws } = await prepare(mgr, u.dir);
+      writeFileSync(path.join(ws.worktreePath, "mods/a/a.txt"), "edited\n");
+      await mgr.finalize(run.id);
+      mgr.releaseLease(run.id);
+      db.prepare("UPDATE run SET state = 'SUCCEEDED' WHERE id = ?").run(run.id);
+      expect(refsOf("lib-a")).toHaveLength(1);
+      const r = await runRetentionGc({
+        db,
+        artifacts,
+        dataDir,
+        days: 0,
+        now: new Date(Date.now() + 86_400_000),
+        cloneRoot: fx.settings.cloneRoot,
+      });
+      expect(r.errors).toEqual([]);
+      expect(refsOf("lib-a")).toEqual([]);
+    });
+
+    it("gc keeps the checkpoint refs of a run that is still live", async () => {
+      const { u } = umbrella();
+      const mgr = manager();
+      const live = await prepare(mgr, u.dir);
+      writeFileSync(path.join(live.ws.worktreePath, "mods/a/a.txt"), "edited\n");
+      await mgr.finalize(live.run.id);
+      // An unrelated archived session sharing the store is collected.
+      const other = await prepare(mgr, u.dir);
+      mgr.releaseLease(other.run.id);
+      db.prepare("UPDATE run SET state = 'SUCCEEDED' WHERE id = ?").run(other.run.id);
+      await runRetentionGc({
+        db,
+        artifacts,
+        dataDir,
+        days: 0,
+        now: new Date(Date.now() + 86_400_000),
+        cloneRoot: fx.settings.cloneRoot,
+      });
+      expect(refsOf("lib-a")).toHaveLength(1);
+    });
+
+    it("the orphan sweep drops checkpoint refs of runs that are not in the ledger and keeps known runs'", async () => {
+      const { u } = umbrella();
+      const mgr = manager();
+      const { session, run, ws } = await prepare(mgr, u.dir);
+      writeFileSync(path.join(ws.worktreePath, "mods/a/a.txt"), "edited\n");
+      await mgr.finalize(run.id);
+      mgr.releaseLease(run.id);
+      const storeA = storePath({ host: HOST, owner: OWNER, repo: "lib-a" }, fx.settings);
+      const ghost = createIdGenerator().id("run");
+      g(
+        storeA,
+        "update-ref",
+        `refs/switchboard/checkpoints/${ghost}/${"a".repeat(40)}`,
+        g(storeA, "rev-parse", "HEAD"),
+      );
+      expect(refsOf("lib-a")).toHaveLength(2);
+      const orphanDir = path.join(dataDir, "worktrees", session, "run_orphan1");
+      renameSync(ws.worktreePath, orphanDir);
+      writeFileSync(
+        attachRecordFile(orphanDir),
+        readFileSync(attachRecordFile(ws.worktreePath), "utf8").replaceAll(ws.worktreePath, orphanDir),
+      );
+      rmSync(attachRecordFile(ws.worktreePath));
+      for (const [repo, p] of [
+        ["lib-a", "mods/a"],
+        ["lib-b", "mods/b"],
+      ] as const) {
+        g(storePath({ host: HOST, owner: OWNER, repo }, fx.settings), "worktree", "repair", path.join(orphanDir, p));
+      }
+      await collectOrphans({ db, dataDir, days: 0, cloneRoot: fx.settings.cloneRoot });
+      const later = new Date(Date.now() + 86_400_000);
+      const o = await collectOrphans({ db, dataDir, days: 0, now: later, cloneRoot: fx.settings.cloneRoot });
+      expect(o.errors).toEqual([]);
+      expect(o.removedWorktrees).toEqual([orphanDir]);
+      expect(refsOf("lib-a")).toEqual([expect.stringContaining(`/${run.id}/`)]);
+    });
+  });
 });

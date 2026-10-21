@@ -7,7 +7,15 @@ import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot } from "../config/index.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import { insertChainedRunEvent, type TrustProfile } from "../ledger/index.js";
+import {
+  applyCheckpointGitlinks,
+  checkpointSkippedEventPayload,
+  checkpointSubmodules,
+  SUBMODULE_CHANGES_SKIPPED_EVENT,
+  type SubmoduleCheckpointResult,
+} from "../submodules/checkpoint.js";
 import { SubmoduleError, type SubmoduleReason } from "../submodules/errors.js";
+import { attachRecordFile, readAttachRecord } from "../submodules/worktree.js";
 import { git, gitText, MIN_GIT_VERSION, parseGitVersion, versionAtLeast } from "./git.js";
 import { ensureWorktreeGitLink } from "./git-link.js";
 import {
@@ -483,10 +491,15 @@ export class WorkspaceManager {
     await this.ensureGitLink(ws);
     const nested = await findNestedRepositories(ws.worktreePath);
     const scope = this.scanScope(runId, nested);
+    // ADR-0079 item 3: changed writable submodule worktrees are checkpointed in their stores first; their gitlinks are
+    // set in the umbrella index after its own `add -A` (the scan scope excludes the submodule paths).
+    const subCheckpoint = await this.checkpointSubmodules(runId, ws.worktreePath);
     await git(["add", "-A", ...scope], { cwd: ws.worktreePath });
+    if (subCheckpoint !== undefined) await applyCheckpointGitlinks(ws.worktreePath, subCheckpoint.gitlinks);
     await this.unstageNativeSkills(runId, ws.worktreePath, "HEAD");
     const clean =
-      (await git(["diff", "--cached", "--quiet", "HEAD", ...scope], { cwd: ws.worktreePath, okCodes: [1] })).code === 0;
+      (await git(["diff", "--cached", "--quiet", "HEAD", ...scope], { cwd: ws.worktreePath, okCodes: [1] })).code ===
+        0 && (subCheckpoint?.gitlinks.size ?? 0) === 0;
     let committed = false;
     if (!clean) {
       await git(["commit", "--no-verify", "--no-gpg-sign", "-m", `switchboard: checkpoint for ${runId}`], {
@@ -495,6 +508,16 @@ export class WorkspaceManager {
       committed = true;
     }
     const postCommit = await gitText(["rev-parse", "HEAD"], { cwd: ws.worktreePath });
+    const skippedPayload = subCheckpoint !== undefined ? checkpointSkippedEventPayload(subCheckpoint) : undefined;
+    if (skippedPayload !== undefined) {
+      insertChainedRunEvent(this.db, {
+        id: this.ids.id("evt"),
+        runId,
+        ts: this.now().toISOString(),
+        type: SUBMODULE_CHANGES_SKIPPED_EVENT,
+        payloadJson: JSON.stringify(skippedPayload),
+      });
+    }
     const { diffArtifactId, changedFilesArtifactId, changedFiles } = await this.storeDiff(
       runId,
       ws,
@@ -613,6 +636,27 @@ export class WorkspaceManager {
     const paths = recordedNativePaths(this.db, runId);
     if (paths.length === 0) return;
     await git(["--literal-pathspecs", "reset", "-q", rev, "--", ...paths], { cwd });
+  }
+
+  /**
+   * ADR-0079 item 3 "Checkpoints", step 1 for a worktree that has an attach record; undefined otherwise (no
+   * `project_sources`, no record: nothing is read or run).
+   */
+  private async checkpointSubmodules(
+    runId: string,
+    worktreePath: string,
+  ): Promise<SubmoduleCheckpointResult | undefined> {
+    const cloneRoot = this.options.submodules?.sources()?.cloneRoot;
+    if (cloneRoot === undefined) return undefined;
+    const record = await readAttachRecord(attachRecordFile(worktreePath), cloneRoot).catch(() => undefined);
+    if (record === undefined) return undefined;
+    return checkpointSubmodules({
+      runId,
+      runWorktree: worktreePath,
+      record,
+      umbrellaHead: await gitText(["rev-parse", "HEAD"], { cwd: worktreePath }),
+      skillPaths: recordedNativePaths(this.db, runId),
+    });
   }
 
   /** ADR-0079 item 3: the run project's recursive submodule plan, or undefined (no option, no project, not recursive). */
