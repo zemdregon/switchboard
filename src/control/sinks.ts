@@ -56,7 +56,7 @@ export const NEEDS_ATTENTION_REASONS = [
   "secret_scan_blocked",
 ] as const;
 /** ADR-0047 / LLD §3.4.1 `approval_kind`. */
-export const APPROVAL_KINDS = ["privileged_scope", "dynamic_project", "push_revision"] as const;
+export const APPROVAL_KINDS = ["privileged_scope", "dynamic_project", "push_revision", "project_source"] as const;
 
 /** The closed reason codes each event kind may carry (ADR-0048 item 3; the run_terminal and pause rows are Delegated). */
 export const SINK_REASON_CODES: { readonly [K in SinkEventKind]: readonly string[] } = {

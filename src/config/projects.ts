@@ -15,6 +15,7 @@ import type {
   ContextConfig,
   ContextKind,
   EnvironmentKind,
+  MergePolicyChecks,
   MergePolicyMethod,
   MergePolicyReport,
   ProjectConfig,
@@ -86,7 +87,30 @@ export interface ResolvedContext {
   readonly innerAgent?: ProjectInnerSetting;
   /** T12.1 (LLD §14.1): present only when the context sets `rag`. */
   readonly rag?: ContextRagConfig;
+  /** ADR-0079 item 1 (FR-PRJ-11): present only when the context sets `submodules`. */
+  readonly submodules?: ResolvedSubmodules;
 }
+
+/** ADR-0079 item 1: a context's `submodules` setting, resolved (lists copied; absent lists are empty). */
+export interface ResolvedSubmodules {
+  readonly mode: "off" | "recursive";
+  /** Worktree-relative POSIX paths, or exactly `["*"]`. */
+  readonly writablePaths: readonly string[];
+  readonly exclude: readonly string[];
+}
+
+/** ADR-0079 item 1: true when the context sets `submodules.mode: "recursive"`. */
+export function submodulesEnabled(ctx: Pick<ResolvedContext, "submodules"> | undefined): boolean {
+  return ctx?.submodules?.mode === "recursive";
+}
+
+/** ADR-0079 item 1: the structural reason codes (`INVALID_REQUEST` for a dynamic definition). */
+export const SUBMODULE_RULE_CODES = [
+  "SUBMODULES_PRIMARY_ONLY",
+  "SUBMODULE_PATH_UNSAFE",
+  "SUBMODULES_NOT_WRITABLE",
+  "SUBMODULE_PATH_CONFLICT",
+] as const;
 
 export interface ResolvedProject {
   readonly id: string;
@@ -144,6 +168,8 @@ export interface ProjectMergePolicy {
   readonly requiredReports: readonly MergePolicyReport[];
   /** ADR-0070: false skips the `verification_result`-at-head condition. Absent means true (T15.8's gate). */
   readonly requireVerification?: boolean;
+  /** ADR-0079 item 7: `required` (default, today's gate; absent reads as `required`) or `all_reported`. Resolution always sets it. */
+  readonly checks?: MergePolicyChecks;
 }
 
 /** T14.17 (FR-CTL-15, LLD §20.13): the advisory critic of a project. */
@@ -172,6 +198,57 @@ export function resolveSkillAssignment(lists: SkillAssignmentConfig | undefined)
   const roles: Record<string, readonly string[]> = {};
   for (const [role, names] of Object.entries(lists?.roles ?? {})) roles[role] = [...names];
   return { defaults: [...(lists?.defaults ?? [])], roles };
+}
+
+/**
+ * ADR-0079 item 1: structural rules of one context's `submodules`. Each line is `<path>: <CODE>: <message>` so a
+ * dynamic definition reports the code as its reason (`checkStructure`). Never echoes a value.
+ */
+function checkSubmodules(c: ContextConfig, cat: string, isPrimary: boolean): string[] {
+  const s = c.submodules;
+  if (s === undefined) return [];
+  const errs: string[] = [];
+  if (s.mode === "recursive" && !isPrimary) {
+    errs.push(
+      `${cat}.submodules.mode: SUBMODULES_PRIMARY_ONLY: only the primary context can set submodules.mode recursive`,
+    );
+  }
+  const writable = s.writable_paths ?? [];
+  const lists = [
+    ["writable_paths", writable],
+    ["exclude", s.exclude ?? []],
+  ] as const;
+  for (const [key, list] of lists) {
+    for (const [k, entry] of list.entries()) {
+      const unsafe = key === "writable_paths" && entry === "*" ? undefined : submoduleSegmentProblem(entry);
+      if (unsafe !== undefined) errs.push(`${cat}.submodules.${key}[${k}]: SUBMODULE_PATH_UNSAFE: ${unsafe}`);
+    }
+  }
+  if (writable.includes("*") && writable.length > 1) {
+    errs.push(`${cat}.submodules.writable_paths: SUBMODULE_PATH_UNSAFE: "*" is only valid as the sole entry`);
+  }
+  if (writable.length > 0 && (s.mode !== "recursive" || !isPrimary || c.writable === false)) {
+    errs.push(
+      `${cat}.submodules.writable_paths: SUBMODULES_NOT_WRITABLE: needs submodules.mode recursive and a writable primary context`,
+    );
+  }
+  const excluded = new Set(s.exclude ?? []);
+  if (writable.some((w) => excluded.has(w))) {
+    errs.push(`${cat}.submodules: SUBMODULE_PATH_CONFLICT: a path is both in writable_paths and in exclude`);
+  }
+  return errs;
+}
+
+/** ADR-0079 item 1: problem of one submodule path, or undefined (no empty, `.`, `..` or `.git` segment, no leading `/`, no backslash). */
+function submoduleSegmentProblem(p: string): string | undefined {
+  if (p.length === 0) return "must not be empty";
+  if (p.includes("\\")) return "must not contain a backslash";
+  if (p.startsWith("/")) return "must be relative to the worktree (no leading '/')";
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === "." || seg === "..") return "must be normalised (no empty, '.' or '..' segment)";
+    if (seg.toLowerCase() === ".git") return "must not contain a .git segment";
+  }
+  return undefined;
 }
 
 /** Structural violations as `<json path>: <message>` lines, in the loader's format. */
@@ -247,6 +324,7 @@ export function checkProjects(cfg: SwitchboardConfig): string[] {
           errs.push(`${cat}.sign: only the primary, writable context can enable sign`);
         }
       }
+      if (c.submodules !== undefined) errs.push(...checkSubmodules(c, cat, isPrimary));
     }
     errs.push(...checkDependencySeeds(p, at));
     // ADR-0071: the setup step runs on the host only (its sandbox and proxy are host mechanisms); refused, not ignored.
@@ -346,6 +424,15 @@ export function resolveProjects(
           finalizeCommit: c.finalize_commit ?? false,
           ...(c.inner_agent !== undefined ? { innerAgent: c.inner_agent } : {}),
           ...(c.rag !== undefined ? { rag: structuredClone(c.rag) } : {}),
+          ...(c.submodules !== undefined
+            ? {
+                submodules: {
+                  mode: c.submodules.mode,
+                  writablePaths: [...(c.submodules.writable_paths ?? [])],
+                  exclude: [...(c.submodules.exclude ?? [])],
+                },
+              }
+            : {}),
         };
       }),
       ...(p.dependency_seeds !== undefined
@@ -384,6 +471,7 @@ export function resolveProjects(
               method: p.merge_policy.method ?? "squash",
               requiredReports: [...(p.merge_policy.required_reports ?? [])],
               ...(p.merge_policy.require_verification === false ? { requireVerification: false } : {}),
+              checks: p.merge_policy.checks ?? "required",
             },
           }
         : {}),

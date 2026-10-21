@@ -2102,6 +2102,15 @@ function project(over: Partial<ResolvedProject> = {}, contextPath = repo, baseRe
     ...over,
   };
 }
+const MAIN_LISTED = {
+  id: "main",
+  kind: "repository",
+  primary: true,
+  push_policy: "none",
+  base_ref: "main",
+  sign: false,
+  finalize_commit: false,
+};
 const projectArgs = (over: Json = {}): Json => ({
   objective: "add a feature",
   project: "web-app",
@@ -2615,7 +2624,7 @@ describe("projects (T9.2; FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; FRD V12, BR-23)", () 
           id: "web-app",
           name: "Web application",
           environment_kind: "host",
-          contexts: [{ id: "main", kind: "repository", primary: true, push_policy: "none" }],
+          contexts: [MAIN_LISTED],
           max_trust_profile: "inspect-untrusted",
           effective_max_profile: "inspect-untrusted",
           allowed_providers: ["claude-code", "codex"],
@@ -2624,7 +2633,7 @@ describe("projects (T9.2; FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; FRD V12, BR-23)", () 
           id: "other-app",
           name: "Other",
           environment_kind: "host",
-          contexts: [{ id: "main", kind: "repository", primary: true, push_policy: "none" }],
+          contexts: [MAIN_LISTED],
           effective_max_profile: "edit-untrusted",
         },
       ]);
@@ -2636,6 +2645,52 @@ describe("projects (T9.2; FR-PRJ-03, FR-PRJ-04, FR-PRJ-06; FRD V12, BR-23)", () 
       expect((await call("list_projects", {}, 2)).body).toEqual({ projects: [] });
       const bad = await call("list_projects", { project: "x" }, 0);
       expect(bad.body.error.code).toBe("INVALID_REQUEST");
+    });
+
+    it("shows each context's effective definition without a path or secret (ADR-0079 item 8)", async () => {
+      const rich = project({
+        mergePolicy: { enabled: true, method: "squash", requiredReports: [], checks: "all_reported" },
+      });
+      const base = rich.contexts[0] as ResolvedProject["contexts"][number];
+      await setup({
+        adapters: [fakeWriter()],
+        projects: [
+          {
+            ...rich,
+            contexts: [
+              {
+                ...base,
+                baseRef: "develop",
+                push: { policy: "branch", remote: "origin", branchPrefix: "sb/" },
+                identity: { name: "Ada", email: "ada@example.test" },
+                sign: true,
+                finalizeCommit: true,
+                submodules: { mode: "recursive", writablePaths: ["libs/a"], exclude: ["vendor/x"] },
+              },
+            ],
+          },
+        ],
+        clients: [{ id: "a", max: "edit-untrusted", projects: ["web-app"] }],
+      });
+      const r = await call("list_projects", {}, 0);
+      expect(r.isError).toBe(false);
+      expect(r.body.projects[0].contexts).toEqual([
+        {
+          id: "main",
+          kind: "repository",
+          primary: true,
+          push_policy: "branch",
+          base_ref: "develop",
+          push_remote: "origin",
+          branch_prefix: "sb/",
+          identity: { name: "Ada", email: "ada@example.test" },
+          sign: true,
+          finalize_commit: true,
+          submodules: { mode: "recursive", writable_paths: ["libs/a"], exclude: ["vendor/x"] },
+        },
+      ]);
+      expect(r.body.projects[0].merge_policy).toMatchObject({ checks: "all_reported" });
+      expect(JSON.stringify(r.body)).not.toContain(root);
     });
   });
 });

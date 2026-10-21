@@ -50,6 +50,12 @@ import {
   renderProjectApproval,
   showAnyProject,
 } from "./projects-dynamic.js";
+import {
+  decideSourceRequest,
+  listSourceRequests,
+  renderSourceDecision,
+  renderSourceRequests,
+} from "./projects-sources.js";
 import { indexRequest, indexStatus, renderIndexRequest, renderIndexStatus } from "./rag-index.js";
 import {
   cancelRun,
@@ -347,6 +353,28 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           emit(report, renderProjectApproval(report));
           return 0;
         }
+        if (sub === "sources") {
+          // ADR-0079 item 8: the operator's side of `request_project_source`.
+          const action = rest[0];
+          if (action === "list") {
+            if (rest.length > 1) throw new UsageError("projects sources list takes no arguments");
+            const requests = listSourceRequests(io, loaderArgv);
+            emit({ schema_version: JSON_SCHEMA_VERSION, requests }, renderSourceRequests(requests));
+            return 0;
+          }
+          if (action === "approve" || action === "reject") {
+            const id = rest[1];
+            if (id === undefined || rest.length > 2) {
+              throw new UsageError(`projects sources ${action} requires exactly one request id (psr_...)`);
+            }
+            const report = decideSourceRequest(io, loaderArgv, id, { reject: action === "reject" });
+            emit(report, renderSourceDecision(report));
+            return 0;
+          }
+          throw new UsageError(
+            `unknown projects sources subcommand ${JSON.stringify(action ?? "")}; expected list, approve or reject`,
+          );
+        }
         if (sub === "validate") {
           if (rest.length > 1) throw new UsageError("projects validate takes at most one project id");
           const report = await validateProjects(io, loaderArgv, rest[0], {
@@ -356,7 +384,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           return report.ok ? 0 : 1;
         }
         throw new UsageError(
-          `unknown projects subcommand ${JSON.stringify(sub ?? "")}; expected list, show, validate or approve`,
+          `unknown projects subcommand ${JSON.stringify(sub ?? "")}; expected list, show, validate, approve or sources`,
         );
       }
       case "git": {

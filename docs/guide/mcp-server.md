@@ -51,6 +51,7 @@ Only one `serve` can hold a data directory at a time.
 | `create_project` | project management | Define a client-owned dynamic project (same shape and checks as a configured one). See [Dynamic projects](#dynamic-projects). | Only with `manage_projects: true` |
 | `update_project` | project management | Write a new revision of a dynamic project; a widening revision stays unusable until `projects approve`. | Only with `manage_projects: true` |
 | `delete_project` | project management | Remove a dynamic project once none of its runs is going; its history stays. | Only with `manage_projects: true` |
+| `request_project_source` | project management | Ask for a repository owner to be added to `project_sources.allowed_owners` (an approver with the `project_source` kind or `projects sources approve` decides it; no restart). | Only with `manage_projects: true` and `project_sources` configured |
 | `list_pending_approvals` | approval | Pending approvals for this client, with digests (never scope bodies). | Only with `approval_proxy: true`; `console` sees it |
 | `decide_approval` | approval | Decide a pending approval with its matching digest. | Only with `approval_proxy: true`; `console` sees it |
 | `request_decision` | decision | Ask the operator a question with two to six options and a recommendation; optionally park one of this client's work items (`PARKED_DECISION`) and carry work items to enqueue on the decision. Sinks hear `decision_requested`, never the text. | Orchestrator profile only (stdio and network transport); `console` sees none |

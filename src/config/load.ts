@@ -44,7 +44,7 @@ import {
   resolveRouting,
 } from "./routing.js";
 import {
-  APPROVAL_PROXY_KINDS,
+  APPROVAL_PROXY_DEFAULT_KINDS,
   type ApprovalProxyKind,
   currentConfigSchema,
   DEFAULT_CONTINUITY_MAX_BUNDLE_BYTES,
@@ -761,7 +761,7 @@ export function loadConfig(
           ...(c.approval_proxy === true
             ? {
                 approvalProxyTargets: [...(c.approval_proxy_targets ?? [c.id])],
-                approvalProxyKinds: [...(c.approval_proxy_kinds ?? APPROVAL_PROXY_KINDS)],
+                approvalProxyKinds: [...(c.approval_proxy_kinds ?? APPROVAL_PROXY_DEFAULT_KINDS)],
               }
             : {}),
           toolProfile: c.tool_profile ?? DEFAULT_TOOL_PROFILE,

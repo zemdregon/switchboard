@@ -72,6 +72,7 @@ import { FAILURE_CODES } from "../adapters/failure.js";
 import { acceptedProviderNames } from "../adapters/providers.js";
 import { MERGE_EVENT_TYPE, MERGE_REFUSAL_REASONS, REF_EVENT_KINDS, REF_EVENT_TYPE } from "../ci/merge-codes.js";
 import {
+  MERGE_POLICY_CHECKS,
   MERGE_POLICY_METHODS,
   MERGE_POLICY_REPORTS,
   MODEL_GROUP_NAME_PATTERN,
@@ -110,8 +111,17 @@ export const TOOL_NAMES = [
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
-/** T9.9: offered only to a client with `manage_projects` (FR-PRJ-10); absent from every other client's tool list. */
-export const PROJECT_TOOL_NAMES = ["create_project", "update_project", "delete_project"] as const;
+/**
+ * T9.9: offered only to a client with `manage_projects` (FR-PRJ-10); absent from every other client's tool list.
+ * ADR-0079: `request_project_source` is offered only when the server also has `project_sources` (`toolDescriptors`
+ * option `projectSources`).
+ */
+export const PROJECT_TOOL_NAMES = [
+  "create_project",
+  "update_project",
+  "delete_project",
+  "request_project_source",
+] as const;
 export type ProjectToolName = (typeof PROJECT_TOOL_NAMES)[number];
 
 /**
@@ -683,7 +693,7 @@ const DIGEST = {
               properties: {
                 approval_id: { type: "string" },
                 approval_digest: { type: "string", pattern: "^[0-9a-f]{64}$" },
-                kind: { enum: ["privileged_scope", "dynamic_project", "push_revision"] },
+                kind: { enum: ["privileged_scope", "dynamic_project", "push_revision", "project_source"] },
                 project_id: { type: "string" },
                 run_id: RUN_ID,
                 revision: { type: "integer" },
@@ -963,6 +973,16 @@ const WORK_INPUTS = {
 } as const;
 
 const PROJECT_INPUTS = {
+  request_project_source: {
+    type: "object",
+    additionalProperties: false,
+    required: ["owner"],
+    // Syntax is checked by the controller (reason codes OWNER_INVALID, HOST_NOT_ALLOWED), not by the schema.
+    properties: {
+      owner: { type: "string", minLength: 1, maxLength: 200 },
+      host: { type: "string", minLength: 1, maxLength: 253, default: "github.com" },
+    },
+  },
   create_project: {
     type: "object",
     additionalProperties: false,
@@ -1377,12 +1397,35 @@ const PROJECTS = {
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["id", "kind", "primary", "push_policy"],
+              required: ["id", "kind", "primary", "push_policy", "base_ref", "sign", "finalize_commit"],
               properties: {
                 id: { type: "string" },
                 kind: { type: "string", enum: ["repository"] },
                 primary: { type: "boolean" },
                 push_policy: { type: "string", enum: ["none", "branch"] },
+                // ADR-0079 item 8 (G2): the effective definition, so a client can read back what it set. Never a path
+                // or a secret.
+                base_ref: { type: "string" },
+                push_remote: { type: "string" },
+                branch_prefix: { type: "string" },
+                identity: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["name", "email"],
+                  properties: { name: { type: "string" }, email: { type: "string" } },
+                },
+                sign: { type: "boolean" },
+                finalize_commit: { type: "boolean" },
+                submodules: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["mode", "writable_paths", "exclude"],
+                  properties: {
+                    mode: { type: "string", enum: ["off", "recursive"] },
+                    writable_paths: { type: "array", items: { type: "string" } },
+                    exclude: { type: "array", items: { type: "string" } },
+                  },
+                },
                 // ADR-0068: a dynamic context cloned from a URL; the normalised URL, never a path.
                 source_url: { type: "string" },
               },
@@ -1397,12 +1440,14 @@ const PROJECTS = {
           merge_policy: {
             type: "object",
             additionalProperties: false,
-            required: ["enabled", "method", "required_reports", "require_verification"],
+            required: ["enabled", "method", "required_reports", "require_verification", "checks"],
             properties: {
               enabled: { type: "boolean" },
               method: { enum: [...MERGE_POLICY_METHODS] },
               required_reports: { type: "array", items: { enum: [...MERGE_POLICY_REPORTS] } },
               require_verification: { type: "boolean" },
+              // ADR-0079 item 7.
+              checks: { enum: [...MERGE_POLICY_CHECKS] },
             },
           },
           // ADR-0071: the setup step in force (defaults filled in), present only when the project sets one.
@@ -1449,7 +1494,21 @@ const PROJECT_RESULT = {
   },
 } as const;
 
+const PROJECT_SOURCE_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["host", "owner", "status", "message"],
+  properties: {
+    request_id: { type: "string" },
+    host: { type: "string" },
+    owner: { type: "string" },
+    status: { type: "string", enum: ["PENDING_APPROVAL", "APPROVED", "REJECTED", "ALREADY_ALLOWED"] },
+    message: { type: "string" },
+  },
+} as const;
+
 const PROJECT_OUTPUTS = {
+  request_project_source: withError(PROJECT_SOURCE_RESULT),
   create_project: withError(PROJECT_RESULT),
   update_project: withError(PROJECT_RESULT),
   delete_project: withError(PROJECT_RESULT),
@@ -1981,8 +2040,10 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "Providers with adapter status, version, validated range, auth state, supported trust profiles, transports and " +
     "how Git writes are denied (FR-GIT-01).",
   list_projects:
-    "Projects this client may use with delegate_task: id, name, environment kind, contexts (id, kind, push policy), " +
-    "the project's trust ceiling, the ceiling this client gets there and allowed providers. Read-only; no paths.",
+    "Projects this client may use with delegate_task: id, name, environment kind, contexts (id, kind, push policy, " +
+    "base_ref, push remote name and branch prefix, commit identity, sign, finalize_commit and submodules, as in " +
+    "force), the project's trust ceiling, the ceiling this client gets there, allowed providers and merge policy. " +
+    "Read-only; no paths or secrets.",
   get_capacity:
     "Per-provider capacity, read-only. capacity_score, confidence and throttle_risk are controller estimates from " +
     "recent run outcomes, rate-limit signals, the circuit breaker and free slots, never provider-authoritative quota; " +
@@ -2031,12 +2092,20 @@ const SEARCH_DESCRIPTIONS: Readonly<Record<SearchToolName, string>> = {
 };
 
 const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
+  request_project_source:
+    "Ask for a repository owner to be allowed for clone_url (and submodule URLs) on a host the operator already " +
+    "allows in project_sources (host defaults to github.com; a host is never added). Returns a request_id and " +
+    "PENDING_APPROVAL: an approver client whose operator lists the project_source kind decides it with " +
+    "decide_approval (list_pending_approvals), or the operator runs `switchboard projects sources approve`. Once " +
+    "approved the owner takes effect at once, without a restart. ALREADY_ALLOWED means the operator configured the " +
+    "owner; asking again for a pending or approved owner returns the same request.",
   create_project:
     "Create a dynamic project for this client (shape as list_projects describes, plus repository contexts with base_ref " +
     "and exactly one of path and clone_url). path must be a Git repository under an allowed root. clone_url " +
     "(https://<host>/<owner>/<repo>, an owner the operator allows in project_sources) makes the server clone it with " +
     "its own git credentials, or reuse its earlier clone. Trust ceiling, providers and push policy may not exceed this " +
-    "client's. A container environment, a push policy other than none, a commit identity, signing or a widening " +
+    "client's. A container environment, a push policy other than none, a commit identity, signing, writable submodules, " +
+    "merge_policy.checks all_reported or a widening " +
     "returns PENDING_APPROVAL: approve it with decide_approval from an approver client (list_pending_approvals), or " +
     "the operator runs `switchboard projects approve`, before it can start runs.",
   update_project:
@@ -2068,6 +2137,8 @@ export interface ToolDescriptor {
 export function toolDescriptors(
   opts: {
     manageProjects?: boolean;
+    /** ADR-0079: the server has `project_sources` and a grant store, so `request_project_source` exists. */
+    projectSources?: boolean;
     searchContext?: boolean;
     workQueue?: boolean;
     skills?: boolean;
@@ -2142,12 +2213,14 @@ export function toolDescriptors(
   if (opts.manageProjects !== true) return base;
   return [
     ...base,
-    ...PROJECT_TOOL_NAMES.map((name) => ({
-      name,
-      description: PROJECT_DESCRIPTIONS[name],
-      inputSchema: structuredClone(PROJECT_INPUTS[name]) as Record<string, unknown>,
-      outputSchema: structuredClone(PROJECT_OUTPUTS[name]) as Record<string, unknown>,
-    })),
+    ...PROJECT_TOOL_NAMES.filter((name) => name !== "request_project_source" || opts.projectSources === true).map(
+      (name) => ({
+        name,
+        description: PROJECT_DESCRIPTIONS[name],
+        inputSchema: structuredClone(PROJECT_INPUTS[name]) as Record<string, unknown>,
+        outputSchema: structuredClone(PROJECT_OUTPUTS[name]) as Record<string, unknown>,
+      }),
+    ),
   ];
 }
 

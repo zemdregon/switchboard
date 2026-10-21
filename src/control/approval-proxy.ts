@@ -30,7 +30,7 @@
  *   project revision decision are announced through `announce` after the transaction commits.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
-import { APPROVAL_PROXY_KINDS, type ResolvedMcpClient } from "../config/index.js";
+import { APPROVAL_PROXY_DEFAULT_KINDS, type ResolvedMcpClient } from "../config/index.js";
 import type { ApprovalRow, Ledger, RunRecord, RunState } from "../ledger/index.js";
 import {
   ApprovalRefusedError,
@@ -42,20 +42,30 @@ import {
 import { canonicalJson } from "../lifecycle/request.js";
 import { parsePrivilegedScope } from "../policy/index.js";
 import type { DynamicProjectStore, ProjectRevisionRow } from "../projects/index.js";
-import { ProjectStoreError } from "../projects/index.js";
+import {
+  ProjectSourceError,
+  type ProjectSourceGrantStore,
+  type ProjectSourceRequestRow,
+  ProjectStoreError,
+} from "../projects/index.js";
 import { NO_PROJECT_ID } from "./sinks.js";
 
 export const APPROVAL_PROXY_TOOL_NAMES = ["list_pending_approvals", "decide_approval"] as const;
 export type ApprovalProxyToolName = (typeof APPROVAL_PROXY_TOOL_NAMES)[number];
 
 /** LLD §3.4.1 `approval_kind`. */
-export type ApprovalKind = "privileged_scope" | "dynamic_project" | "push_revision";
+export type ApprovalKind = "privileged_scope" | "dynamic_project" | "push_revision" | "project_source";
 
 /** `decided_by` prefix of a decision made through `decide_approval` (LLD §3.4.7, §3.4.8). */
 export const MCP_PROXY_DECIDER_PREFIX = "mcp_proxy:";
 
 /** Revision approval reasons that make a revision a `push_revision` (ADR-0047 1: push-enabled or identity-bearing). */
-const PUSH_REASONS: ReadonlySet<string> = new Set(["push_policy", "commit_identity", "commit_signing"]);
+const PUSH_REASONS: ReadonlySet<string> = new Set([
+  "push_policy",
+  "commit_identity",
+  "commit_signing",
+  "submodule_write",
+]);
 const DIGEST_RE = /^[0-9a-f]{64}$/;
 const MAX_SUMMARY = 512;
 
@@ -97,6 +107,8 @@ export interface ApprovalProxyDeps {
   readonly client: ResolvedMcpClient;
   /** Dynamic projects; absent means no revision is listed or decided. */
   readonly projectStore?: DynamicProjectStore;
+  /** ADR-0079: runtime owner grants; absent means no `project_source` approval is listed or decided. */
+  readonly sourceGrants?: ProjectSourceGrantStore;
   /** The lifecycle's `applyApprovalDecision` (T3 to QUEUED, T19 to CANCELLED, then dispatch). Runs in our transaction. */
   readonly applyDecision: (req: DecisionToApply) => RunState;
   /** Sink announcement for the decisions the transition hook does not announce. Must not throw. */
@@ -117,7 +129,7 @@ export function proxyTargets(clientId: string, client: ResolvedMcpClient): Reado
 /** The approval kinds `client` may list and decide (ADR-0068; default all three). Empty without `approval_proxy`. */
 export function proxyKinds(client: ResolvedMcpClient): ReadonlySet<ApprovalKind> {
   if (client.approvalProxy !== true) return new Set();
-  return new Set(client.approvalProxyKinds ?? APPROVAL_PROXY_KINDS);
+  return new Set(client.approvalProxyKinds ?? APPROVAL_PROXY_DEFAULT_KINDS);
 }
 
 /** LLD §3.4.8 `approval_digest`: hex SHA-256 over the canonical JSON of ledger-only fields. */
@@ -125,9 +137,15 @@ export function approvalDigest(
   input: { approvalId: string; kind: ApprovalKind; targetClientId: string; requestedAt: string } & (
     | { scopeHash: string }
     | { revisionHash: string }
+    | { host: string; owner: string }
   ),
 ): string {
-  const bound = "scopeHash" in input ? { scope_hash: input.scopeHash } : { revision_hash: input.revisionHash };
+  const bound =
+    "scopeHash" in input
+      ? { scope_hash: input.scopeHash }
+      : "revisionHash" in input
+        ? { revision_hash: input.revisionHash }
+        : { host: input.host, owner: input.owner };
   return createHash("sha256")
     .update(
       canonicalJson({
@@ -212,7 +230,12 @@ interface RevisionCandidate {
   readonly item: ApprovalProxyItem;
   readonly row: ProjectRevisionRow;
 }
-type Candidate = PrivilegedCandidate | RevisionCandidate;
+interface SourceCandidate {
+  readonly kind: "project_source";
+  readonly item: ApprovalProxyItem;
+  readonly row: ProjectSourceRequestRow;
+}
+type Candidate = PrivilegedCandidate | RevisionCandidate | SourceCandidate;
 
 export function createApprovalProxy(deps: ApprovalProxyDeps): ApprovalProxy {
   const { ledger, clientId, client } = deps;
@@ -289,6 +312,28 @@ export function createApprovalProxy(deps: ApprovalProxyDeps): ApprovalProxy {
     return { kind, item, row };
   };
 
+  /** ADR-0079: an undecided owner request of a target client, served only to a proxy that lists `project_source`. */
+  const sourceCandidate = (row: ProjectSourceRequestRow): SourceCandidate | undefined => {
+    if (!kinds.has("project_source") || row.status !== "PENDING" || !targets.has(row.client_id)) return undefined;
+    const item: ApprovalProxyItem = {
+      approval_id: row.id,
+      approval_digest: approvalDigest({
+        approvalId: row.id,
+        kind: "project_source",
+        host: row.host,
+        owner: row.owner,
+        targetClientId: row.client_id,
+        requestedAt: row.requested_at,
+      }),
+      kind: "project_source",
+      target_client_id: row.client_id,
+      // host and owner are validated segments (closed charset), never free text.
+      scope_summary: `add owner ${row.owner} on ${row.host} to project_sources`.slice(0, MAX_SUMMARY),
+      requested_at: row.requested_at,
+    };
+    return { kind: "project_source", item, row };
+  };
+
   /** A pending revision row as a candidate of a kind this proxy serves, or undefined (ADR-0068). */
   const servedRevision = (row: ProjectRevisionRow): RevisionCandidate | undefined => {
     const c = revisionCandidate(row);
@@ -309,6 +354,10 @@ export function createApprovalProxy(deps: ApprovalProxyDeps): ApprovalProxy {
       const pending = pendingRevisionRows(row.project_id).find((r) => r.id === row.id);
       return pending === undefined ? undefined : servedRevision(pending);
     }
+    if (approvalId.startsWith("psr_") && deps.sourceGrants !== undefined) {
+      const row = deps.sourceGrants.get(approvalId);
+      return row === undefined ? undefined : sourceCandidate(row);
+    }
     return undefined;
   };
 
@@ -325,7 +374,16 @@ export function createApprovalProxy(deps: ApprovalProxyDeps): ApprovalProxy {
         .map(servedRevision)
         .filter((c): c is RevisionCandidate => c !== undefined)
         .map((c) => c.item);
-      const approvals = [...privileged, ...revisions].sort(
+      // A project-less approval: listed only when no project filter is given.
+      const sources =
+        deps.sourceGrants === undefined || input.project_id !== undefined
+          ? []
+          : deps.sourceGrants
+              .pending()
+              .map(sourceCandidate)
+              .filter((c): c is SourceCandidate => c !== undefined)
+              .map((c) => c.item);
+      const approvals = [...privileged, ...revisions, ...sources].sort(
         (a, b) => a.requested_at.localeCompare(b.requested_at) || a.approval_id.localeCompare(b.approval_id),
       );
       return { approvals };
@@ -369,6 +427,20 @@ export function createApprovalProxy(deps: ApprovalProxyDeps): ApprovalProxy {
           }
           return { approval_id: c.row.id, status: decision };
         }
+        if (c.kind === "project_source") {
+          try {
+            (deps.sourceGrants as ProjectSourceGrantStore).decide({
+              requestId: c.row.id,
+              decision: decision === "APPROVED" ? "APPROVED" : "REJECTED",
+              decidedBy: decider,
+            });
+          } catch (err) {
+            if (err instanceof ProjectSourceError) throw new ApprovalProxyError(REFUSED);
+            throw err;
+          }
+          announcement = { projectId: NO_PROJECT_ID, kind: c.kind, runId: null };
+          return { approval_id: c.row.id, status: decision };
+        }
         const store = deps.projectStore as DynamicProjectStore;
         try {
           store.decide({
@@ -406,7 +478,7 @@ const ITEM_SCHEMA = {
   properties: {
     approval_id: { type: "string" },
     approval_digest: { type: "string", pattern: "^[0-9a-f]{64}$" },
-    kind: { enum: ["privileged_scope", "dynamic_project", "push_revision"] },
+    kind: { enum: ["privileged_scope", "dynamic_project", "push_revision", "project_source"] },
     project_id: { type: "string" },
     run_id: { type: "string" },
     revision: { type: "integer" },

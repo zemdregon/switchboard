@@ -137,11 +137,11 @@ import {
   startHttpTransport,
   startStdioServer,
 } from "../mcp/index.js";
-import type { PendingRevisionAnnouncement } from "../mcp/project-tools.js";
+import type { PendingRevisionAnnouncement, PendingSourceAnnouncement } from "../mcp/project-tools.js";
 import type { SearchContextDeps } from "../mcp/search-context.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
-import { DynamicProjectStore, innerSettingResolver, toResolved } from "../projects/index.js";
+import { DynamicProjectStore, innerSettingResolver, ProjectSourceGrantStore, toResolved } from "../projects/index.js";
 import {
   admitWorkItemRequest,
   attachQueueLowWater,
@@ -1475,6 +1475,16 @@ async function runDaemon(
       },
       ...(now ? { now } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+      // ADR-0079 item 8: runtime owner grants; an approval widens `allowed_owners` at once (no restart).
+      ...(config.projectSources !== undefined
+        ? {
+            projectSourceGrants: new ProjectSourceGrantStore(db, {
+              ids,
+              config: config.projectSources,
+              ...(now ? { now } : {}),
+            }),
+          }
+        : {}),
       // T14.8 (FR-CTL-08, ADR-0047 2f): proxied decisions the transition hook does not announce reach the same sinks.
       ...(sinks !== undefined
         ? {
@@ -1493,6 +1503,9 @@ async function runDaemon(
             },
             // T14.9 (FR-CTL-10, ADR-0048): a revision waiting for the operator reaches the sinks as `approval_pending`
             // (a revision has no run; the project carries it). One revision row emits once.
+            // ADR-0079: a new owner request reaches the sinks as `approval_pending` (kind `project_source`, no project).
+            announcePendingSource: (a: PendingSourceAnnouncement) =>
+              sinks.emit({ projectId: NO_PROJECT_ID, eventKind: "approval_pending", reasonCode: a.kind, runId: null }),
             announcePendingRevision: (a: PendingRevisionAnnouncement) =>
               sinks.emit({
                 projectId: a.projectId,
