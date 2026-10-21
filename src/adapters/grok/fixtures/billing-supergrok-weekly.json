@@ -1,0 +1,16 @@
+{
+  "config": {
+    "currentPeriod": {
+      "type": "USAGE_PERIOD_TYPE_WEEKLY",
+      "start": "2026-10-19T15:37:46.149639+00:00",
+      "end": "2026-10-26T15:37:46.149639+00:00"
+    },
+    "onDemandCap": { "val": 0 },
+    "onDemandUsed": { "val": 0 },
+    "prepaidBalance": { "val": 0 },
+    "isUnifiedBillingUser": true,
+    "billingPeriodStart": "2026-10-19T15:37:46.149639+00:00",
+    "billingPeriodEnd": "2026-10-26T15:37:46.149639+00:00"
+  },
+  "subscription_tier": "SuperGrok"
+}

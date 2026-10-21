@@ -1,4 +1,4 @@
-# ADR-0081: Kimi Code provider usage read from the CLI's own `/usage` display
+# ADR-0084: Kimi Code provider usage read from the CLI's own `/usage` display
 
 - Status: Accepted (built 2026-10-21).
 - Date: 2026-10-21
