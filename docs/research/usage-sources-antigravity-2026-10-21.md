@@ -1,8 +1,9 @@
 # Antigravity usage sources (2026-10-21)
 
-Research input for ROADMAP T6.20 and [ADR-0082](../adr/0082-antigravity-usage-from-the-cli-usage-command.md). Recorded on the
-operator host with `agy` 1.4.3, signed in, from an empty working directory. No model turn was run. Account identifiers
-are not recorded; the payloads carry none.
+Research input for ROADMAP T6.20 and
+[ADR-0082](../adr/0082-antigravity-usage-from-the-cli-usage-command.md). Recorded on the operator host with `agy`
+1.4.3, signed in, from an empty working directory. No model turn was run. Account identifiers are not recorded; the
+payloads carry none.
 
 ## Sources checked
 

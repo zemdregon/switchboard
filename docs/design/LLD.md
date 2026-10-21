@@ -6827,9 +6827,9 @@ workspace list and each read adds a `/usage` line to its input history. Tests: `
 **Antigravity** (T6.20, [ADR-0082](../adr/0082-antigravity-usage-from-the-cli-usage-command.md), answers Q-101;
 `src/adapters/antigravity/usage.ts`, recorded `agy` 1.4.3 fixtures in `src/adapters/antigravity/fixtures/usage/`):
 
-1. `authPreflight` (`agy models`, §4) first. `AUTH_REQUIRED` gives `unknown` with `agy is not signed in; run \`agy\`
-   to sign in`; `UNKNOWN` gives `unknown` with its reason. Only `OK` continues, because a signed-out `agy -p "/usage"`
-   waits about 60 s for a sign-in.
+1. `authPreflight` (`agy models`, §4) first. `AUTH_REQUIRED` gives `unknown` with the error "agy is not signed in"
+   and the native login command; `UNKNOWN` gives `unknown` with its reason. Only `OK` continues, because a signed-out
+   `agy -p "/usage"` waits about 60 s for a sign-in.
 2. `agy -p /usage --output-format json` and `agy -p /credits --output-format json` in parallel, from the system
    temporary directory, with the probe environment (`PATH`, `HOME`) and a 20 s bound (**Proposed**).
 3. The last stdout line that parses as a JSON object must have `status` `SUCCESS`, `num_turns` 0 and `command.name`
