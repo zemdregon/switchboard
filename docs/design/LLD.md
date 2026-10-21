@@ -2560,6 +2560,44 @@ remote-tracking ref (recorded) when a later step refuses.
 **`publish_run` after a rebase.** A push the remote rejects as not a fast-forward is `PERMISSION_BLOCKED`
 `NON_FAST_FORWARD` (it was `TOOL_FAILURE`); the controller never forces (Q-112).
 
+#### 3.4.16 `close_pr` (FR-GIT-13, ADR-0078)
+
+*Added 2026-10-21 from an operator task (Delegated agent work, not owner-approved).* Code: `src/mcp/close-pr.ts`, G16
+and G17 in `src/ci/gh-argv.ts` (`ghPrCloseArgv`, `ghPrNumberViewArgv`), `GhPullRequestPort.findByNumber` and `close` in
+`src/ci/gh-pr.ts`, schemas in `src/mcp/schemas.ts` (`PUBLISH_TOOL_NAMES`), `listCreatedPullRequests` and
+`recordPullRequestClose` in `src/ledger/repo.ts`, migration `src/ledger/migrations/0036_pr_close_audit.ts`.
+Decision record: [ADR-0078](../adr/0078-mcp-close-pr.md).
+
+**Offered** exactly when `publish_run` is (§3.4.12) and the publish port's pull-request port has `findByNumber` and
+`close` (`serve` wires `GhPullRequestPort` on `ci_trigger.gh_binary`, which has both). Otherwise it is answered exactly
+like an unknown tool; `tools/list` and `callTool` read the same `offeredDescriptors`.
+
+**Input** (closed): `{ project_id, pull_request_number: integer >= 1, replacement_pull_request_number: integer >= 1,
+delete_branch?: boolean = false }`. **Output** (closed): `{ project_id, run_id, pull_request: { number, url },
+replacement_pull_request: { number, url }, closed: boolean, branch_deleted: boolean }`; `closed: false` means the pull
+request was already closed and nothing was written.
+
+**Checks, in order.** The two numbers differ (`INVALID_REQUEST`, `SAME_PULL_REQUEST`); the project passes
+`publishableContext` (§3.4.12: `PERMISSION_BLOCKED` `NO_PROJECT`, `CONTEXT_UNKNOWN` or `POLICY_NONE`); the primary
+context's push remote is a github.com remote (`INVALID_REQUEST`, `REMOTE_NOT_GITHUB`); a `pull_request` row with
+`action = 'created'`, that number and that `owner/repo` (case-insensitive) exists for a run of the project whose
+`client_id` is the caller and whose meta-session the caller's HTTP subject may see (newest first; otherwise
+`PERMISSION_BLOCKED` `NOT_SWITCHBOARD_PR`). No `gh` call happens before this point. Then G17 reads the pull request and
+the replacement: a pull request that is missing or whose `headRefName` is not the row's branch is `PERMISSION_BLOCKED`
+`HEAD_BRANCH_MISMATCH`; a missing replacement is `INVALID_REQUEST` `REPLACEMENT_NOT_FOUND`; `MERGED` is
+`PERMISSION_BLOCKED` `ALREADY_MERGED`; `CLOSED` returns `closed: false`; `OPEN` is closed with G16 and the comment
+`Superseded by #<replacement>.` plus a fixed line naming `close_pr`, the client id and the run id, with
+`--delete-branch` only when `delete_branch` is true. A G16 or G17 failure is `TOOL_FAILURE` with `details.reason` the
+port's closed code, retryable except `GH_MISSING` and `AUTH_REQUIRED`. Not gated on the merge policy or a pause.
+
+**Records.** Every call is one append-only `pull_request_close` row (migration 0036): `client_id`, `project_id`,
+`number`, `replacement_number` and `delete_branch` from the arguments (only well-typed values, else NULL), the matched
+`pull_request_id`, `run_id` and `repo` once known, `outcome` (`closed`, `already_closed`, `refused`, `failed`) and
+`reason` (the error's `details.reason`, else its code; NULL on success). Calls the server refuses first are recorded
+too: `TOOL_NOT_OFFERED` (not offered to this client, or outside its tool profile) and `SCHEMA_INVALID`. A row with a run
+also appends a `pull_request_close` run event on that run with the same facts. Never a comment, title or body. Tests:
+`src/mcp/publish-run.test.ts` ("close_pr (ADR-0078)"), `src/ci/gh-pr.test.ts`, `src/mcp/tools-list-callable.test.ts`.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added
@@ -8156,18 +8194,20 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
    (`CiTriggerPoller`): `ci_trigger.enabled` is the one switch for every `gh` call and `poll_interval_seconds` the pace,
    but a project needs no `ci_trigger.projects[]` entry to be merged. A paused project (§3.4.4) and a superseded ref
    (§20.4) are skipped without a `gh` call. Only refs the project published (`listPublishedRefs`, §18.6).
-3. **`gh` templates** (`src/ci/gh-argv.ts`, ADR-0050 amendment 1 item 10), audited like G1 to G9: G10 `pr view
-   <branch> --json number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName`; G11 `pr checks <n> --required
-   --json bucket` (only the required checks' buckets, so non-required checks are never read and cannot block or pass a
-   merge); G12 `pr merge <n> --repo <o>/<r> --<method> --match-head-commit <sha>`. Never `--admin`, `--auto` or
+3. **`gh` templates** (`src/ci/gh-argv.ts`, ADR-0050 amendment 1 item 10), audited like G1 to G9: G10 `pr view <branch>
+   --json number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName`; G11 `pr checks <n> --required --json
+   bucket` (only the required checks' buckets, so non-required checks are never read and cannot block or pass a merge);
+   G12 `pr merge <n> --repo <o>/<r> --<method> --match-head-commit <sha>`. Never `--admin`, `--auto` or
    `--delete-branch`. G15 (ADR-0073, §3.4.14) `api --method PUT repos/{owner}/{repo}/pulls/{n}/update-branch -f
-   expected_head_sha=<sha> --silent` is the only write besides G12 and the publish templates, used by `update_run_branch`
-   only. The flags and fields were checked against the `gh` manual pages (`gh_pr_merge`,
-   `gh_pr_checks`, `gh_pr_view` on cli.github.com, 2026-10-20); `gh --help` could not be run on the build host, so the
-   check against the installed `gh` that ADR-0050 asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from
-   the manual's exit code 8 for pending checks): with `--json`, `gh pr checks` prints the array also when it exits 1
-   (a failed check) or 8 (a pending one), and exits 1 with no output when the base reports no required check. Every
-   reading fails closed: exit 1 with no output is `none` (refused), anything unparseable is `gh_error` (refused).
+   expected_head_sha=<sha> --silent` is the only write besides G12 and the publish templates, used by
+   `update_run_branch` only. G16 `pr close <n> --repo <o>/<r> --comment <comment> [--delete-branch]` and G17 `pr view
+   <n> --repo <o>/<r> --json number,state,url,headRefName` (ADR-0078, §3.4.16) are used by `close_pr` only. The flags
+   and fields were checked against the `gh` manual pages (`gh_pr_merge`, `gh_pr_checks`, `gh_pr_view` on cli.github.com,
+   2026-10-20); `gh --help` could not be run on the build host, so the check against the installed `gh` that ADR-0050
+   asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from the manual's exit code 8 for pending checks): with
+   `--json`, `gh pr checks` prints the array also when it exits 1 (a failed check) or 8 (a pending one), and exits 1
+   with no output when the base reports no required check. Every reading fails closed: exit 1 with no output is `none`
+   (refused), anything unparseable is `gh_error` (refused).
 4. **Gate order** (the first failing step is the reason): G10 (no pull request → nothing; not `OPEN` → a `merged` or
    `closed` ref event only; `draft`; head other than the published tip or head branch other than the ref → `head_moved`;
    base other than the primary context's base branch → `base_mismatch`; not `MERGEABLE`, `UNKNOWN` included →

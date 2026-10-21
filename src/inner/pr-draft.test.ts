@@ -390,7 +390,8 @@ describe("Switchboard makes no pull-request API call (FR-INN-11, BR-38)", () => 
   walk(SRC);
 
   // ADR-0069 (owner decision 78, FRD BR-38 note 2026-10-20): the one module allowed to build a pull-request argv is the
-  // audited operator-`gh` template module, used only by MCP `publish_run`; the inner agent never reaches it.
+  // audited operator-`gh` template module, used only by MCP `publish_run` (and `close_pr`, ADR-0078); the inner agent
+  // never reaches it.
   const PR_ARGV_ALLOWED = new Set(["ci/gh-argv.ts"]);
 
   it("no source module is, or names, a pull-request API client (except the audited gh argv of ADR-0069)", () => {
