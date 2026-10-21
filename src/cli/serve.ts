@@ -177,7 +177,7 @@ import {
   WorkspaceManager,
 } from "../workspace/index.js";
 import { briefContextPack } from "./brief-pack.js";
-import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
+import { type CliIo, PROBE_ENV_ALLOWLIST, probeRootFor } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
 import { ragBackendFor, ragProjects, type ServeRag, startServeRag, toBuildProject } from "./rag-index.js";
 import { checkUnprivileged } from "./unprivileged.js";
@@ -1448,6 +1448,8 @@ async function runDaemon(
       useCheckRunsFallback: config.ciTrigger.useCheckRunsFallback,
     });
 
+  const usageTerminal = fake.enabled ? undefined : io.providerUsageTerminal?.(probeRootFor(config.dataDir));
+
   let code = 0;
   try {
     const mcpDeps = {
@@ -1476,7 +1478,13 @@ async function runDaemon(
       },
       ...(now ? { now } : {}),
       // ADR-0079 (FR-CAP-13): `get_capacity` reads provider-reported usage through each provider's own CLI.
-      providerUsage: { runner: createProbeRunner(PROBE_ENV_ALLOWLIST), cache: new ProviderUsageCache() },
+      providerUsage: {
+        runner: createProbeRunner(PROBE_ENV_ALLOWLIST),
+        cache: new ProviderUsageCache(),
+        // ADR-0079: the pseudo-terminal for TUI-only readers (Kimi Code) in `<data_dir>/probes`; only when the entry
+        // point supplies it, and never with the test fake switch on (Delegated: a test never starts a provider TUI).
+        ...(usageTerminal !== undefined ? { terminal: usageTerminal } : {}),
+      },
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
       // T14.8 (FR-CTL-08, ADR-0047 2f): proxied decisions the transition hook does not announce reach the same sinks.
       ...(sinks !== undefined

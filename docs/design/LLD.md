@@ -6803,6 +6803,27 @@ changes `ok`). Text shows fractions, not percentages (FR-CAP-03 wording rule), a
 `src/capacity/provider-usage.test.ts`, and the block "provider_usage on get_capacity, capacity and doctor (ADR-0079,
 FR-CAP-13)" in `src/mcp/get-capacity.test.ts`.
 
+**Kimi Code** ([ADR-0084](../adr/0084-kimi-usage-via-cli-usage-display.md), T6.19; `src/adapters/kimi/usage.ts`).
+Kimi implements the same method over the interactive TUI, because its other surfaces carry no plan quota. The reader
+takes an injected `TerminalRunner`; production wiring builds one on `<data_dir>/probes`, and without it (as in tests) the
+reader returns `ProviderUsageUnavailable` and spawns nothing. Each read runs `kimi` under util-linux or BSD `script` in
+`<data_dir>/probes/kimi-usage` (empty real directory owned by the user, mode 0700, checked every time) with `PATH`,
+`HOME`, `TERM`, `COLUMNS` and `LINES` only, answers the trust dialog only when it names that directory with "Trust and
+continue" selected, types `/usage`, parses the "Plan usage" panel with `parseKimiUsagePanel`, and exits with Ctrl-C.
+Unrecognised text, a timeout or another dialog is `unknown`.
+
+| Panel text | Report field |
+| --- | --- |
+| `5h limit`, `N% used`, `resets in 1d 2h 3m` | window `5h`, `window_seconds` 18000, `used_fraction` = N / 100, `resets_at` = observation time plus the offset |
+| `Weekly limit` | window `weekly`, `window_seconds` 604800 |
+| `Monthly limit` | window `monthly`, `window_seconds` null |
+| `kimi N% · code M%` on the monthly row | windows `kimi:monthly` and `code:monthly`, `limit_id` `kimi` and `code` |
+| "Extra Usage" booster wallet | `credits` |
+| (not displayed) | `plan` and `limit_reached` are null; `method` is `kimi TUI /usage (pseudo-terminal)` |
+
+Precision is a whole percent and a minute-level reset. Side effects: the probe directory appears once in Kimi's
+workspace list and each read adds a `/usage` line to its input history. Tests: `src/adapters/kimi/usage.test.ts`.
+
 ## 17. Routing (M7)
 
 Implements FR-RTE-01 (full) to FR-RTE-04, FR-RTE-06 to FR-RTE-08 and FR-MCP-02 (`explain_route`) under
