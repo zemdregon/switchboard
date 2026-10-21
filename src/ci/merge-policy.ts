@@ -33,6 +33,10 @@
  * published tip (a pure base merge adds base content only); step 3's required checks are read at the pull request's
  * actual head as before. The accepted head and how it was accepted (`head_kind`) are recorded on the `merge_event` row.
  *
+ * ADR-0079 item 7: a ref with linked submodule pull requests takes the ordered merge ({@link LinkedMergeHook},
+ * `submodule-merge.ts`) on both paths instead; without the hook such a ref is never merged (fail closed). Every other
+ * ref is decided exactly as above.
+ *
  * Every decision is a `merge_event` row (migration 0031): `attempted` before G12 runs (at most one attempt per head SHA:
  * a G12 failure is recorded `gh_error` and is not retried until the head moves), `merged`, or `refused` with a reason,
  * once per `(ref, head, reason)`. A read failure is a `gh_error` refusal and is retried on the next poll. Each newly
@@ -46,9 +50,18 @@ import { defaultIds } from "../ids/index.js";
 import type { Ledger } from "../ledger/index.js";
 import { DOCS_ALIGNMENT_EVENT } from "../lifecycle/docs-alignment.js";
 import { type DynamicProjectStore, toResolved } from "../projects/index.js";
+import { listSubmodulePullRequestsForUmbrellaRef } from "../submodules/ledger.js";
 import type { HeadKind, PullHeadPort } from "./base-merge.js";
 import { branchOfPublishRef, isSafeBranch } from "./gh-argv.js";
-import { MERGE_EVENT_TYPE, type MergeRefusalReason, REF_EVENT_TYPE, type RefEventKind } from "./merge-codes.js";
+import {
+  MERGE_EVENT_TYPE,
+  type MergeRefusalReason,
+  REF_EVENT_TYPE,
+  type RefEventKind,
+  type SubmoduleMergePhase,
+  type SubmoduleMergeRefusalReason,
+  type SubmoduleMergeRepoState,
+} from "./merge-codes.js";
 import type { CiMergePort, CiPullRequestGateView, CiPullRequestState } from "./port.js";
 import { listPublishedRefs, type PublishedRef } from "./published-refs.js";
 
@@ -95,6 +108,50 @@ export interface RefSinkEvent {
 
 export type OnRefSinkEvent = (e: RefSinkEvent) => void;
 
+/** ADR-0079 item 7: one linked repository of the ordered merge (`details.submodule_merge.repos[]`). */
+export interface SubmoduleMergeRepoView {
+  /** `owner/repo` as `gh` takes it. */
+  readonly repo: string;
+  /** Umbrella-relative paths whose gitlinks reference the repository, in path order. */
+  readonly paths: readonly string[];
+  readonly pr_number: number;
+  readonly state: SubmoduleMergeRepoState;
+  readonly merged_sha?: string;
+  readonly reason?: string;
+}
+
+/** ADR-0079 item 7: the ordered merge's progress, recomputed from the ledger on every call. */
+export interface SubmoduleMergeView {
+  readonly phase: SubmoduleMergePhase;
+  readonly repos: readonly SubmoduleMergeRepoView[];
+}
+
+/** ADR-0079 item 7: what the ordered merge decided for one umbrella publish ref with linked pull requests. */
+export type LinkedMergeOutcome = {
+  refEvents: { kind: RefEventKind; headSha: string }[];
+  submoduleMerge: SubmoduleMergeView;
+} & (
+  | { kind: "merged"; prNumber: number; alreadyMerged: boolean; headSha: string; headKind: HeadKind }
+  | {
+      kind: "refused";
+      reason: MergeRefusalReason | SubmoduleMergeRefusalReason;
+      prNumber: number | null;
+      recorded: boolean;
+    }
+  | { kind: "skipped" }
+);
+
+/**
+ * ADR-0079 item 7: the ordered merge of an umbrella publish ref, or undefined when the ref has no linked submodule pull
+ * request (then the T15.8 gate runs exactly as before). `requestedBy` is the `git_push` requester of the repoint push.
+ */
+export type LinkedMergeHook = (
+  target: MergeTarget,
+  ref: PublishedRef,
+  gh: { owner: string; repo: string },
+  opts: { mode: "poll" | "request"; expectedHeadSha?: string; requestedBy?: `mcp_client:${string}` },
+) => Promise<LinkedMergeOutcome | undefined>;
+
 export interface MergePolicyDeps {
   readonly db: Database.Database;
   readonly ledger: Ledger;
@@ -110,12 +167,20 @@ export interface MergePolicyDeps {
   readonly nowMs?: () => number;
   /** Best effort; must not throw (a throw is swallowed). */
   readonly onEvent?: OnRefSinkEvent;
+  /** ADR-0079 item 7: the ordered merge (`src/ci/submodule-merge.ts`); absent, every ref takes the T15.8 gate. */
+  readonly linkedMerge?: LinkedMergeHook;
 }
 
 export interface MergePolicyPollResult {
   /** `headSha` is the pull request head G12 was pinned to; `headKind` how the gate accepted it (ADR-0073). */
   merged: { projectId: string; publishRef: string; prNumber: number; headSha: string; headKind: HeadKind }[];
-  refused: { projectId: string; publishRef: string; headSha: string; reason: MergeRefusalReason; recorded: boolean }[];
+  refused: {
+    projectId: string;
+    publishRef: string;
+    headSha: string;
+    reason: MergeRefusalReason | SubmoduleMergeRefusalReason;
+    recorded: boolean;
+  }[];
   refEvents: { projectId: string; publishRef: string; kind: RefEventKind; headSha: string }[];
   /** Refs whose remote is not a github.com remote. */
   unresolved: { projectId: string; publishRef: string }[];
@@ -283,7 +348,11 @@ export async function pollMergePolicies(deps: MergePolicyDeps): Promise<MergePol
         result.unresolved.push({ projectId, publishRef: ref.publishRef });
         continue;
       }
-      const out = await applyMergeGate(deps, target, ref, gh, { mode: "poll" });
+      // ADR-0079 item 7: a ref with linked submodule pull requests takes the ordered merge instead.
+      const linked = await deps.linkedMerge?.(target, ref, gh, { mode: "poll" });
+      // Fail closed: without the ordered merge, an umbrella with linked pull requests is never merged.
+      if (linked === undefined && deps.linkedMerge === undefined && hasLinkedRows(deps.db, ref.publishRef)) continue;
+      const out = linked ?? (await applyMergeGate(deps, target, ref, gh, { mode: "poll" }));
       for (const ev of out.refEvents) result.refEvents.push({ projectId, publishRef: ref.publishRef, ...ev });
       if (out.kind === "merged") {
         result.merged.push({
@@ -332,13 +401,17 @@ export type MergeGateOutcome = { refEvents: { kind: RefEventKind; headSha: strin
  * read with {@link PullHeadPort}; a pure base merge chain on the published tip is accepted (`head_kind: base_merge`),
  * anything else is `head_moved`, and a failed fetch is `gh_error`. `expectedHeadSha` may then also be that head. Rows
  * written after the head was accepted carry it (`pr_head_sha`) and `head_kind`.
+ *
+ * ADR-0079 item 7: `verifiedSha` keys step 2 (verification and reports) to that commit instead of the published tip:
+ * the ordered merge passes the pre-repoint tip, because its repoint commit (checked to change gitlinks only) is never
+ * verified itself.
  */
 export async function applyMergeGate(
   deps: Pick<MergePolicyDeps, "db" | "ledger" | "merge" | "targets" | "nowMs" | "onEvent" | "pullHeads">,
   target: MergeTarget,
   ref: PublishedRef,
   gh: { owner: string; repo: string },
-  opts: { mode: "poll" | "request"; expectedHeadSha?: string },
+  opts: { mode: "poll" | "request"; expectedHeadSha?: string; verifiedSha?: string },
 ): Promise<MergeGateOutcome> {
   const { db, ledger } = deps;
   const { projectId, policy } = target;
@@ -444,11 +517,13 @@ export async function applyMergeGate(
   if (expected !== undefined && expected !== acceptedSha) return refuse("head_moved", view.number);
   accepted = { kind: acceptedSha === ref.headSha ? "published" : "base_merge", sha: acceptedSha };
   const headKind = accepted.kind;
-  // Step 2 stays keyed to the published tip: a pure base merge adds base content only (ADR-0073).
-  if (policy.requireVerification !== false && !verifiedAtHead(db, projectId, ref.headSha)) {
+  // Step 2 stays keyed to the published tip: a pure base merge adds base content only (ADR-0073). ADR-0079 item 7:
+  // or to the pre-repoint tip the caller names.
+  const verifiedSha = opts.verifiedSha ?? ref.headSha;
+  if (policy.requireVerification !== false && !verifiedAtHead(db, projectId, verifiedSha)) {
     return refuse("unverified_at_head", view.number);
   }
-  if (policy.requiredReports.some((r) => r === "docs-alignment" && !reportAlignedAtHead(db, projectId, ref.headSha))) {
+  if (policy.requiredReports.some((r) => r === "docs-alignment" && !reportAlignedAtHead(db, projectId, verifiedSha))) {
     return refuse("report_missing", view.number);
   }
   // ADR-0079 item 7: `all_reported` reads every reported check (G16); absent or `required` is the default (G11).
@@ -509,8 +584,17 @@ export type MergeRequestOutcome =
       method: ProjectMergePolicy["method"];
       alreadyMerged: boolean;
       gh: { owner: string; repo: string };
+      /** ADR-0079 item 7: present only for a ref with linked submodule pull requests. */
+      submoduleMerge?: SubmoduleMergeView;
     }
-  | { kind: "refused"; reason: MergeRefusalReason; prNumber: number | null; headSha: string }
+  | {
+      kind: "refused";
+      reason: MergeRefusalReason | SubmoduleMergeRefusalReason;
+      prNumber: number | null;
+      headSha: string;
+      /** ADR-0079 item 7: present only for a ref with linked submodule pull requests. */
+      submoduleMerge?: SubmoduleMergeView;
+    }
   /** The ref has no ACCEPTED push for the project (nothing Switchboard published). */
   | { kind: "not_published" }
   /** The ref's remote is not a github.com remote. */
@@ -525,7 +609,14 @@ export type MergeRequestOutcome =
  */
 export async function mergeOnRequest(
   deps: Omit<MergePolicyDeps, "ledger"> & { ledger: Ledger },
-  req: { projectId: string; remote: string; publishRef: string; expectedHeadSha?: string },
+  req: {
+    projectId: string;
+    remote: string;
+    publishRef: string;
+    expectedHeadSha?: string;
+    /** ADR-0079 item 7: the requester of a repoint push (the calling MCP client). */
+    requestedBy?: `mcp_client:${string}`;
+  },
 ): Promise<MergeRequestOutcome> {
   const { db, ledger } = deps;
   const ref = listPublishedRefs(db, req.projectId).find(
@@ -546,6 +637,37 @@ export async function mergeOnRequest(
   if (isSuperseded(db, req.projectId, ref.publishRef)) return refuse("head_moved", target.policy.method);
   const gh = await deps.resolveRemote(req.projectId, ref.remote);
   if (gh === undefined) return { kind: "unresolved", headSha: ref.headSha };
+  // ADR-0079 item 7: a ref with linked submodule pull requests takes the ordered merge.
+  const linked = await deps.linkedMerge?.(target, ref, gh, {
+    mode: "request",
+    ...(req.expectedHeadSha !== undefined ? { expectedHeadSha: req.expectedHeadSha } : {}),
+    ...(req.requestedBy !== undefined ? { requestedBy: req.requestedBy } : {}),
+  });
+  if (linked === undefined && deps.linkedMerge === undefined && hasLinkedRows(db, ref.publishRef)) {
+    // Fail closed: without the ordered merge, an umbrella with linked pull requests is never merged.
+    return { kind: "refused", reason: "submodule_merge_unavailable", prNumber: null, headSha: ref.headSha };
+  }
+  if (linked !== undefined) {
+    if (linked.kind === "merged") {
+      return {
+        kind: "merged",
+        prNumber: linked.prNumber,
+        headSha: linked.headSha,
+        headKind: linked.headKind,
+        method: target.policy.method,
+        alreadyMerged: linked.alreadyMerged,
+        gh,
+        submoduleMerge: linked.submoduleMerge,
+      };
+    }
+    return {
+      kind: "refused",
+      reason: linked.kind === "refused" ? linked.reason : "not_mergeable",
+      prNumber: linked.kind === "refused" ? linked.prNumber : null,
+      headSha: ref.headSha,
+      submoduleMerge: linked.submoduleMerge,
+    };
+  }
   const out = await applyMergeGate(deps, target, ref, gh, {
     mode: "request",
     ...(req.expectedHeadSha !== undefined ? { expectedHeadSha: req.expectedHeadSha } : {}),
@@ -565,6 +687,11 @@ export async function mergeOnRequest(
     return { kind: "refused", reason: out.reason, prNumber: out.prNumber, headSha: ref.headSha };
   // `request` mode never skips; fail closed if it ever did.
   return { kind: "refused", reason: "not_mergeable", prNumber: null, headSha: ref.headSha };
+}
+
+/** ADR-0079 item 7: the umbrella publish ref has `submodule_pull_request` rows. */
+function hasLinkedRows(db: Database.Database, publishRef: string): boolean {
+  return listSubmodulePullRequestsForUmbrellaRef(db, publishRef).length > 0;
 }
 
 /** The ref was superseded by a newer published ref (T15.7). */
