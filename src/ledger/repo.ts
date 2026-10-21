@@ -908,6 +908,16 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, De
   /** `provider_reported` usage rows of `provider` observed at or after `sinceIso`, oldest first (never `inner_agent`). */
   listProviderReportedUsageSince(provider: string, sinceIso: string): ProviderUsageRow[];
   /**
+   * ADR-0088: the newest `limit` `provider_reported` usage rows of `provider` observed at or after `sinceIso` whose
+   * metrics hold `key` (a declared usage key), newest first.
+   */
+  listLatestProviderReportedUsageWithKey(
+    provider: string,
+    key: string,
+    sinceIso: string,
+    limit: number,
+  ): ProviderUsageRow[];
+  /**
    * T14.4 (FR-CTL-06): run rows created at or after `sinceIso` (every admission that wrote a row, whatever its state);
    * only the runs of `projectId` when it is given.
    */
@@ -1678,6 +1688,17 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
            ORDER BY observed_at, id`,
         )
         .all(provider, sinceIso) as ProviderUsageRow[];
+    },
+
+    listLatestProviderReportedUsageWithKey(provider, key, sinceIso, limit) {
+      return db
+        .prepare(
+          `SELECT metrics_json, observed_at FROM usage_observation
+           WHERE provider = ? AND source = 'provider_reported' AND observed_at >= ?
+             AND json_extract(metrics_json, ?) IS NOT NULL
+           ORDER BY observed_at DESC, id DESC LIMIT ?`,
+        )
+        .all(provider, sinceIso, `$.${JSON.stringify(key)}`, limit) as ProviderUsageRow[];
     },
 
     countRunsCreatedSince(sinceIso, projectId) {

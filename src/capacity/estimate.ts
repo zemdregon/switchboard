@@ -12,6 +12,7 @@
 
 import type { ProviderUsageResult } from "../adapters/provider-usage.js";
 import { type CacheObservation, cacheObservation } from "./cache.js";
+import { type ReportedUsageRow, reportedUsage } from "./reported-usage.js";
 
 /** Breaker states as stored in `provider_health` (LLD §1, §16.4). */
 export type BreakerState = "CLOSED" | "OPEN" | "HALF_OPEN";
@@ -53,6 +54,8 @@ export interface CapacityInputs {
   rateLimitSignals: readonly { resetAt: string | null }[];
   /** `provider_reported` usage rows inside the window (metrics as stored). */
   usage: readonly { metrics: Readonly<Record<string, unknown>>; observedAt: string }[];
+  /** ADR-0088: rows holding a declared window share, read over each window's own length; absent reads as none. */
+  reportedUsageRows?: readonly ReportedUsageRow[];
   breaker: { state: BreakerState; until: string | null; consecutiveFailures: number };
   slots: { inUse: number; limit: number };
 }
@@ -166,6 +169,9 @@ export function estimateCapacity(inputs: CapacityInputs, settings: EstimatorSett
   const available = Math.max(0, inputs.slots.limit - inputs.slots.inUse);
   // T6.7 (FR-CAP-08): reported cache counts, labelled; never estimated, never an input to the estimate.
   const cache = cacheObservation(inputs.provider, inputs.usage);
+  // ADR-0088 (FR-CAP-15): windows the provider reported in recorded run output, as an ADR-0079 report; never an input
+  // to the estimate above. A surface's live read (ADR-0079) replaces it for a provider with a reader.
+  const reported = reportedUsage(inputs.provider, inputs.reportedUsageRows ?? [], now);
 
   return {
     provider: inputs.provider,
@@ -192,5 +198,6 @@ export function estimateCapacity(inputs: CapacityInputs, settings: EstimatorSett
       usage_observations: inputs.usage.length,
     },
     ...(cache !== undefined ? { cache } : {}),
+    ...(reported !== undefined ? { provider_usage: reported } : {}),
   };
 }
