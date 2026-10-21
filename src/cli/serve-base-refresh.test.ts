@@ -20,7 +20,7 @@ import { createLedger, type Ledger, openLedger, type RunRecord } from "../ledger
 import { compactEvents } from "../mcp/envelope.js";
 import { DynamicProjectStore, toResolved } from "../projects/index.js";
 import { WorkspaceManager } from "../workspace/index.js";
-import { serveBaseRefresh } from "./serve.js";
+import { serveBaseRefresh, serveSubmodulePlan } from "./serve.js";
 
 const GIT_ENV = {
   PATH: process.env.PATH ?? "",
@@ -214,5 +214,37 @@ describe("serveBaseRefresh (ADR-0074)", () => {
     expect(shown).toEqual([
       expect.objectContaining({ payload: expect.objectContaining({ outcome: "failed", reason: "FETCH_FAILED" }) }),
     ]);
+  });
+});
+
+describe("serveSubmodulePlan (ADR-0079 item 3)", () => {
+  const def = (id: string, ctx: Partial<ProjectConfig["contexts"][number]> = {}): ProjectConfig => ({
+    id,
+    name: id,
+    contexts: [{ id: "main", kind: "repository", path: "/srv/x", base_ref: "main", ...ctx }],
+  });
+
+  it("plans only a primary context with mode recursive, for configured and in-force dynamic projects", () => {
+    const dynamic = def("dyn", {
+      clone_url: "https://github.test/acme/umbrella",
+      submodules: { mode: "recursive", writable_paths: ["libs/a"], exclude: ["vendor"] },
+    });
+    const state = (id: string) =>
+      id === "dyn" ? ({ inForce: { definition: dynamic } } as ReturnType<DynamicProjectStore["state"]>) : undefined;
+    const plan = serveSubmodulePlan(
+      {
+        projects: [
+          toResolved(def("conf", { base_remote: "upstream", submodules: { mode: "recursive" } })),
+          toResolved(def("off", { submodules: { mode: "off" } })),
+          toResolved(def("plain")),
+        ],
+      },
+      { state },
+    );
+    expect(plan("conf")).toEqual({ writablePaths: [], exclude: [], baseRemote: "upstream" });
+    expect(plan("dyn")).toEqual({ writablePaths: ["libs/a"], exclude: ["vendor"], baseRemote: "origin" });
+    expect(plan("off")).toBeUndefined();
+    expect(plan("plain")).toBeUndefined();
+    expect(plan("unknown")).toBeUndefined();
   });
 });
