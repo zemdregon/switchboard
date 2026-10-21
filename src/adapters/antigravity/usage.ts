@@ -84,8 +84,8 @@ function commandData(stdout: string, name: string): { data: Json } | { reason: s
 }
 
 /**
- * One bucket as a window. `id` is the provider's bucket id (unique across groups, e.g. `gemini-5h`); `limit_id` is
- * the name of the group of models that share the bucket (e.g. `Gemini Models`), the provider's metered unit.
+ * One bucket as a window. `id` is the provider's bucket id (unique across groups in the recording); `limit_id` is the
+ * name of the group of models that share the bucket, the provider's metered unit (see the fixtures for both).
  */
 function parseBucket(bucket: unknown, group: string | null): ProviderUsageWindow | undefined {
   const b = obj(bucket);
