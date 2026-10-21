@@ -35,10 +35,11 @@
  *
  * A profile-bound one-time code (`switchboard mcp oauth issue-code`) binds an OAuth client to an `mcp_clients` entry in
  * the ledger. Resolution at the MCP endpoint is: the config `clients` map, then that ledger binding, then
- * `default_mcp_client` ({@link resolveMcpClientFor}). Delegated: a ledger-bound profile must pass the stricter rule
- * load applies to `default_mcp_client` ({@link httpProfileProblem} with `bound`): no `privileged` ceiling and no
- * `privileged_approval: not_required`, checked when the code is issued and again on every request, so a code can never
- * give an HTTP client privileged runs; a privileged ceiling still needs an explicit `clients` mapping in config.
+ * `default_mcp_client` ({@link resolveMcpClientFor}). Delegated (ADR-0086, superseding ADR-0085 in part): a ledger
+ * binding follows the same rule as an explicit `clients` mapping ({@link httpProfileProblem} with `bound`): a
+ * `privileged` ceiling is allowed (its privileged runs still wait for the operator) and `privileged_approval:
+ * not_required` is refused, checked when the code is issued and again on every request. Issuing a code on the host is
+ * an operator act equivalent to editing the config map. `default_mcp_client` stays strict.
  */
 import net from "node:net";
 import { checkCimdClientId, cimdInternalClientId, looksLikeCimdClientId } from "../mcp/oauth-cimd.js";
@@ -132,7 +133,7 @@ export interface HttpTransportSettings {
   /** `client_ip_header`: honoured only from a loopback TCP peer; undefined uses the socket peer. */
   clientIpHeader?: string;
   /**
-   * The `mcp_clients` ids a ledger binding may name (exist, no privileged ceiling, approval required). Undefined or
+   * The `mcp_clients` ids a ledger binding may name (exist, approval required; a privileged ceiling is allowed as for a mapping). Undefined or
    * empty: every ledger binding is refused at the MCP endpoint (fail closed).
    */
   bindableMcpClients?: ReadonlySet<string>;
@@ -150,15 +151,16 @@ export type HttpProfileProblem = "unknown" | "privileged_ceiling" | "approval_no
 
 /**
  * The HTTP eligibility rule for an `mcp_clients` entry (T13.4, FR-MCP-14). `mapped` is an explicit config mapping (a
- * privileged ceiling is allowed, its runs still need the operator); `default` and `bound` (a ledger binding made by a
- * profile-bound one-time code) refuse a privileged ceiling. Every source refuses `privileged_approval: not_required`.
+ * privileged ceiling is allowed, its runs still need the operator) and `bound` (a ledger binding made by a
+ * profile-bound one-time code, ADR-0086) follow the same rule; only `default` refuses a privileged ceiling. Every
+ * source refuses `privileged_approval: not_required`.
  */
 export function httpProfileProblem(
   entry: HttpProfileEntry | undefined,
   source: "mapped" | "default" | "bound",
 ): HttpProfileProblem | undefined {
   if (entry === undefined) return "unknown";
-  if (source !== "mapped" && entry.maxTrustProfile === "privileged") return "privileged_ceiling";
+  if (source === "default" && entry.maxTrustProfile === "privileged") return "privileged_ceiling";
   if (entry.privilegedApproval === "not_required") return "approval_not_required";
   return undefined;
 }

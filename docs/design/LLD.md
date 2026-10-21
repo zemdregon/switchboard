@@ -1809,11 +1809,12 @@ CREATE TABLE oauth_event (                                  -- append-only audit
 - **Resolution order at `/mcp` (FR-MCP-21).** For a verified token's OAuth client: (1) the `transport.http.clients`
   entry for that client id (a CIMD URL maps to its derived id, as for T13.11); (2) else the `oauth_client_binding` row;
   (3) else `default_mcp_client`; (4) else the request is refused. Whichever entry is chosen is re-checked on every
-  request: the profile must still exist in the loaded configuration and pass the stricter rule load applies to `default_mcp_client`
-  (no `privileged` ceiling, no `privileged_approval: not_required`), and the
+  request: the profile must still exist in the loaded configuration and pass the rule a `clients` mapping follows
+  (`privileged_approval` not `not_required`; a `privileged` ceiling is allowed,
+  [ADR-0086](../adr/0086-bound-codes-follow-the-mapped-rule.md)), and the
   client must still be `approved`; any failure is the same 401/403 refusal as today, never a retry against the next
-  step. The frozen maximum trust profile is that of the resolved entry, so a binding cannot raise it, and `privileged`
-  is unreachable over HTTP as before.
+  step. The frozen maximum trust profile is that of the resolved entry, so a binding cannot raise it, and a privileged
+  run over HTTP still waits for the operator's approval, exactly as with a mapped client.
 - **Per-IP lockout (FR-MCP-23).** Consent-page wrong passphrases and wrong codes are counted per client address: 10
   wrong attempts inside a 5-minute window set a 15-minute lock for that address (the constants of the operator's
   gate; Delegated), during which every sign-in attempt from it is refused without checking the value. The global throttle

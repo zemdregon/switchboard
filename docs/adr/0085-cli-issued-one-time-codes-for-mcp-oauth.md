@@ -1,9 +1,11 @@
 # ADR-0085: CLI-issued, profile-bound one-time codes for MCP OAuth, per-IP lockout, revocation and operator OAuth CLI
 
-- Status: Accepted for the direction (owner request, 2026-10-21, quoted below); the mechanism is Delegated (agent,
-  2026-10-21) under [owner decision 25](../ROADMAP.md#42-owner-decisions) and is not owner-approved line by line. Extends
-  [ADR-0041](0041-http-transport-with-oauth-2-1.md) items 3 and 4 (consent sign-in; token issuance and the operator
-  revocation command that item 4 records as not built). The embedded authorization server, Dynamic Client
+- Status: Accepted for the direction (owner request, 2026-10-21, quoted below); superseded in part by
+  [ADR-0086](0086-bound-codes-follow-the-mapped-rule.md) (privileged ceiling for bound codes); the
+  mechanism is Delegated (agent, 2026-10-21) under [owner decision 25](../ROADMAP.md#42-owner-decisions) and is not
+  owner-approved line by line. Extends [ADR-0041](0041-http-transport-with-oauth-2-1.md) items 3 and 4 (consent
+  sign-in; token issuance and the operator revocation command that item 4 records as not built). The embedded
+  authorization server, Dynamic Client
   Registration, the passphrase and the unbound pairing code stay exactly as decided and built.
 - Date: 2026-10-21
 - Decided by: zemdregon for the direction. Owner request, 2026-10-21, verbatim: "switchboard needs to support oauth

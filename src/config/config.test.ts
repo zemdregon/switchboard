@@ -170,7 +170,7 @@ describe("loadConfig", () => {
         allowedOrigins: [],
         clientMap: new Map(),
         cimd: true,
-        // Migration 0036: the mcp_clients entries a profile-bound code may bind (no privileged ceiling).
+        // Migration 0036: the mcp_clients entries a profile-bound code may bind (a privileged ceiling with approval required is allowed, ADR-0086).
         bindableMcpClients: new Set(["main"]),
       });
     });
@@ -187,7 +187,7 @@ describe("loadConfig", () => {
       };
       const resolved = loadConfig({ configPath: write(cfg) }).httpTransport;
       expect(resolved?.clientIpHeader).toBe("cf-connecting-ip");
-      expect([...(resolved?.bindableMcpClients ?? [])]).toEqual(["main"]);
+      expect([...(resolved?.bindableMcpClients ?? [])]).toEqual(["main", "root"]);
       for (const bad of ["CF-Connecting-IP", "x_forwarded", "", "-x", "a".repeat(65)]) {
         expect(() => http({ ...on, client_ip_header: bad }), bad).toThrow(/client_ip_header/);
       }

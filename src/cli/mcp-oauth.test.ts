@@ -108,14 +108,13 @@ describe("mcp oauth issue-code", () => {
     withDb((db) => expect(new PairingCodeStore(db, { now: () => NOW }).lookup(report.code)).toBeUndefined());
   });
 
-  it("refuses an unknown profile, a privileged ceiling and privileged_approval not_required", async () => {
+  it("accepts a privileged ceiling with approval required, but refuses unknown and not_required (ADR-0086)", async () => {
     writeConfig({ enabled: true, public_url: RESOURCE, port: 0 }, [
       { id: "auto", max_trust_profile: "privileged", privileged_approval: "not_required" },
     ]);
     for (const [profile, message] of [
       ["nope", /unknown mcp_clients id/],
-      ["root", /privileged ceiling/],
-      ["auto", /privileged ceiling/],
+      ["auto", /privileged_approval not_required/],
     ] as const) {
       const r = await run(["mcp", "oauth", "issue-code", "--client-profile", profile]);
       expect(r.code, profile).toBe(2);
@@ -123,6 +122,9 @@ describe("mcp oauth issue-code", () => {
     }
     expect((await run(["mcp", "oauth", "issue-code"])).code).toBe(2);
     withDb((db) => expect(db.prepare("SELECT COUNT(*) AS n FROM oauth_pairing_code").get()).toEqual({ n: 0 }));
+    const priv = await run(["mcp", "oauth", "issue-code", "--client-profile", "root", "--json"]);
+    expect(priv.code).toBe(0);
+    expect(JSON.parse(priv.out)).toMatchObject({ mcp_client: "root" });
   });
 
   it("parses --ttl as <n>s|m|h between 1 and 60 minutes", async () => {

@@ -16,7 +16,7 @@
  * the `mcp` scope and an OAuth-client-to-MCP-client mapping (T13.4, Q-77; resolved by `resolveMcpClientFor`: the config
  * map, then the ledger binding a profile-bound one-time code made, then `default_mcp_client`), otherwise 403
  * `insufficient_scope`. A ledger binding is re-checked on every request: one that no longer names an entry eligible for
- * a binding (removed, given a privileged ceiling or `privileged_approval: not_required`) is refused the same way; then
+ * a binding (removed or given `privileged_approval: not_required`) is refused the same way; then
  * the request is served by a stateless MCP server for that configured client, with its maximum trust profile. The
  * OAuth client must still be approved. Only POST is served; requests in flight are capped. The handler never echoes a
  * token, removes the `Authorization` and `Cookie` headers before the MCP server sees the request, and logs nothing

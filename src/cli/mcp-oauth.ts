@@ -5,8 +5,8 @@
  *
  * - `issue-code --client-profile <id> [--ttl <n>s|m|h]` creates a one-time code bound to an `mcp_clients` entry, valid
  *   1 to 60 minutes (default 10). The entry must exist and pass the ledger-binding rule (`httpProfileProblem`
- *   `bound`: no `privileged` ceiling, no `privileged_approval: not_required`), so a code can never give an HTTP client
- *   privileged runs. Like `consent pair` it ends every older unused code. The code is printed to this terminal only
+ *   `bound`, the same as a config mapping, ADR-0086: a `privileged` ceiling is allowed and its privileged runs still
+ *   wait for the operator; `privileged_approval: not_required` is refused). Like `consent pair` it ends every older unused code. The code is printed to this terminal only
  *   (it is the point of the command); the ledger keeps its hash and the audit records the issue without it.
  * - `clients`, `client <client_id>`: registered clients with status, the profile each acts as and its source (config
  *   map, ledger binding or default), token counts and the newest issue time.
@@ -114,12 +114,6 @@ export function mcpOAuthIssueCode(
       "bound",
     );
     if (problem === "unknown") throw new UsageError(`unknown mcp_clients id ${JSON.stringify(profile.slice(0, 128))}`);
-    if (problem === "privileged_ceiling") {
-      throw new UsageError(
-        `${JSON.stringify(profile)} has a privileged ceiling; a one-time code cannot bind an HTTP client to it ` +
-          "(map the OAuth client explicitly in transport.http.clients instead)",
-      );
-    }
     if (problem === "approval_not_required") {
       throw new UsageError(
         `${JSON.stringify(profile)} has privileged_approval not_required; an HTTP client's privileged runs must wait ` +
