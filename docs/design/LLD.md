@@ -2551,10 +2551,18 @@ an open fence or HTML comment closed) first, then `---`, a label naming it agent
 (`pr_draft` artifact or run result summary), then the controller footer (run, meta-session, provider, project, head);
 with no proposal, the footer alone. A `gh` failure leaves
 the push in place and returns `pull_request: null` with `pull_request_error` from the closed list `GH_MISSING`,
-`AUTH_REQUIRED`, `TIMEOUT`, `GH_FAILED`, `PARSE_FAILED`, `REMOTE_NOT_GITHUB`, `BASE_INVALID`.
+`AUTH_REQUIRED`, `TIMEOUT`, `GH_FAILED`, `PARSE_FAILED`, `REMOTE_NOT_GITHUB`, `BASE_INVALID`. ADR-0095: a `GH_FAILED`
+from a non-zero exit adds `pull_request_error_detail: { exit_code, reason, message }`. `reason` is one of
+`HEAD_BRANCH_MISSING`, `BASE_BRANCH_MISSING`, `NO_COMMITS`, `PULL_REQUEST_EXISTS`, `RATE_LIMITED`,
+`PERMISSION_DENIED`, `NOT_FOUND`, `NETWORK`, `VALIDATION_FAILED` or `UNKNOWN`, classified from the stderr tail
+(at most 4096 characters, kept by `execGh` only on a non-zero exit). `message` is that stderr after the secret
+rules, with non-printable characters removed, lines joined with ` | `, capped at 300 characters, then passed
+through the outbound scrubber. It is returned only, never recorded. When G14 reports `MERGED` and the meta-session
+already has a `pull_request` row with that number, repository and the publication's head, that pull request is
+returned with `reused: true, merged: true` and no G13 runs (GitHub deletes a merged branch, so G13 would fail).
 
 **Output** (closed): `{ run_id, meta_session_id, publication: { push_id, remote, branch, head_sha, pushed_at, reused },
-pull_request: null | { number, url, draft, reused }, pull_request_error? }`.
+pull_request: null | { number, url, draft, reused, merged? }, pull_request_error?, pull_request_error_detail? }`.
 
 **Records** (migration 0033). `git_push.requested_by` also takes `mcp_client:<id>` (table rebuilt as in migration 0016;
 `GLOB 'mcp_client:?*'`). `pull_request` (append-only): `id` (`prq_`), `run_id`, `meta_session_id`, `push_id`,
@@ -2781,8 +2789,9 @@ owner joins the effective `allowed_owners` at once. CLI: `switchboard projects s
 **`refresh_project_base`** result adds `submodules: { total, present, fetched, missing }` for a project with
 `mode: "recursive"`. **`publish_run`** result keeps every existing field and, for such a project, adds `submodules:
 [{ repo, paths, branch, head_sha, default_branch, publication: { push_id, pushed_at, reused }, pull_request,
-pull_request_error? }]` (`repo` is `host/owner/repo`, `default_branch` may be null, `pull_request` is null when none
-was opened). Before any push it refuses `PERMISSION_BLOCKED` `SUBMODULE_HISTORY_UNVERIFIED` (`details.path`),
+pull_request_error?, pull_request_error_detail? }]` (`repo` is `host/owner/repo`, `default_branch` may be null,
+`pull_request` is null when none was opened; ADR-0095 merged reuse and failure detail as in §3.4.12, against the
+`submodule_pull_request` rows). Before any push it refuses `PERMISSION_BLOCKED` `SUBMODULE_HISTORY_UNVERIFIED` (`details.path`),
 the umbrella pusher's own refusal when the umbrella is still to be pushed (`GitPusher.preflight`: the push's policy and
 repository checks without the scan or the remote write, a refusal recorded as the `git_push` row the push would write;
 for example `REPO_CONFIG_UNSAFE`, `REMOTE_UNKNOWN`, `REMOTE_URL_CREDENTIALS`, `REMOTE_TRANSPORT_NOT_ALLOWED`,

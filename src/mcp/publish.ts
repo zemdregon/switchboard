@@ -9,8 +9,10 @@
  *
  * Idempotent: when the meta-session already has an ACCEPTED push of the current publish head to the current target,
  * nothing is pushed again and that push is returned; an open pull request for the branch is reused (and recorded once
- * per number and head). A `gh` failure never undoes the push: the result then has `pull_request: null` and a closed
- * `pull_request_error`.
+ * per number and head). ADR-0095: a merged pull request this controller recorded for the same branch and head is
+ * returned as reused with `merged: true` instead of opening another (GitHub deletes a merged branch, so G13
+ * would fail). A `gh` failure never undoes the push: the result then has `pull_request: null`, a closed
+ * `pull_request_error` and, for `GH_FAILED`, `pull_request_error_detail` (exit code, closed reason, sanitised excerpt).
  *
  * The pull request text is controller-built around the run's own proposal (ADR-0069 note 2026-10-20): the newest
  * `pr_draft` artifact, else a title and description proposed in the run's stored result summary
@@ -31,7 +33,12 @@
  */
 import type { ArtifactStore } from "../artifacts/index.js";
 import { branchOfPublishRef, isSafeBranch, PR_BODY_MAX_BYTES } from "../ci/gh-argv.js";
-import { type PullRequestErrorCode, type PullRequestPort, PullRequestPortError } from "../ci/gh-pr.js";
+import {
+  type GhFailureDetail,
+  type PullRequestErrorCode,
+  type PullRequestPort,
+  PullRequestPortError,
+} from "../ci/gh-pr.js";
 import { parseGithubRemote } from "../ci/published-refs.js";
 import type { PushContextConfig, PushResult } from "../git/push.js";
 import { isBranchPrefix, isRemoteName, remoteTargetRef } from "../git/push.js";
@@ -63,6 +70,18 @@ const PUSH_EVENTS_SCANNED = 500;
 
 /** `pull_request_error` vocabulary: the port's codes, plus the controller's own refusals before any `gh` call. */
 export type PublishPullRequestError = PullRequestErrorCode | "REMOTE_NOT_GITHUB" | "BASE_INVALID";
+
+/** A publication's pull request; `merged` (ADR-0095) only when an already merged one of the same head was returned. */
+export interface PublishedPullRequest {
+  number: number;
+  url: string;
+  draft: boolean;
+  reused: boolean;
+  merged?: true;
+}
+
+/** Why no pull request was opened: the closed code and, for `GH_FAILED`, the ADR-0095 detail. */
+type PullRequestFailure = { error: PublishPullRequestError; detail?: GhFailureDetail };
 
 export interface PublishDeps {
   /** The controller pusher (`serve` shares the agent `push` tool's instance, so pushes of one meta-session serialise). */
@@ -109,8 +128,10 @@ export interface PublishResult {
     /** True when an earlier accepted push of the same head was returned and nothing was pushed now. */
     reused: boolean;
   };
-  pull_request: { number: number; url: string; draft: boolean; reused: boolean } | null;
+  pull_request: PublishedPullRequest | null;
   pull_request_error?: PublishPullRequestError;
+  /** ADR-0095: with `pull_request_error: "GH_FAILED"`, the exit code, closed reason and sanitised stderr excerpt. */
+  pull_request_error_detail?: GhFailureDetail;
   /**
    * ADR-0087 item 6: one entry per changed submodule repository, in path order; present (possibly empty) only for a
    * project whose primary context sets `submodules.mode: "recursive"`.
@@ -129,8 +150,10 @@ export interface LinkedPublication {
   /** The repository's default branch (the pull request base); null when it is not known. */
   default_branch: string | null;
   publication: { push_id: string; pushed_at: string; reused: boolean };
-  pull_request: { number: number; url: string; draft: boolean; reused: boolean } | null;
+  pull_request: PublishedPullRequest | null;
   pull_request_error?: PublishPullRequestError;
+  /** ADR-0095: with `pull_request_error: "GH_FAILED"`, the exit code, closed reason and sanitised stderr excerpt. */
+  pull_request_error_detail?: GhFailureDetail;
 }
 
 /** Push outcomes that mean "you may not publish this" rather than "the controller failed". */
@@ -251,12 +274,17 @@ export async function publishRun(
         opts.draft,
         proposal,
       );
-      if ("error" in pr) entry.pull_request_error = pr.error;
-      else entry.pull_request = pr;
+      if ("error" in pr) {
+        entry.pull_request_error = pr.error;
+        if (pr.detail !== undefined) entry.pull_request_error_detail = pr.detail;
+      } else entry.pull_request = pr;
     }
   }
   const pr = await openPullRequest(ctx, deps, run, context, publication, opts.draft, proposal, subs ?? []);
-  if ("error" in pr) return { ...result, pull_request_error: pr.error };
+  if ("error" in pr) {
+    const detail = pr.detail !== undefined ? { pull_request_error_detail: pr.detail } : {};
+    return { ...result, pull_request_error: pr.error, ...detail };
+  }
   return { ...result, pull_request: pr };
 }
 
@@ -319,7 +347,7 @@ async function openLinkedPullRequest(
   linked: { repo: LinkedRepo; outcome: LinkedPushOutcome; umbrella: PublishResult["publication"] },
   draft: boolean,
   proposal: ProposedText | undefined,
-): Promise<NonNullable<LinkedPublication["pull_request"]> | { error: PublishPullRequestError }> {
+): Promise<PublishedPullRequest | PullRequestFailure> {
   const sub = deps.submodules as PublishSubmoduleDeps;
   const { outcome: o, umbrella } = linked;
   const url = await originUrlOf(linked.repo.store);
@@ -382,6 +410,13 @@ async function openLinkedPullRequest(
       record(found.number, found.url, "reused");
       return { number: found.number, url: found.url, draft: wasDraft, reused: true };
     }
+    // ADR-0095: already merged at this head (its branch is usually deleted): return it, never open another.
+    if (found !== null && found.state === "MERGED") {
+      const mine = prior(found.number).find((r) => r.head_sha === o.head_sha);
+      if (mine !== undefined) {
+        return { number: found.number, url: found.url, draft: mine.draft === 1, reused: true, merged: true };
+      }
+    }
     const created = await deps.pulls.create({
       owner: gh.owner,
       repo: gh.repo,
@@ -397,8 +432,7 @@ async function openLinkedPullRequest(
     record(created.number, created.url, "created");
     return { number: created.number, url: created.url, draft, reused: false };
   } catch (err) {
-    if (err instanceof PullRequestPortError) return { error: err.code };
-    return { error: "GH_FAILED" };
+    return failureOf(ctx, err);
   }
 }
 
@@ -502,7 +536,7 @@ async function openPullRequest(
   draft: boolean,
   proposed: ProposedText | undefined,
   linked: readonly LinkedPublication[],
-): Promise<NonNullable<PublishResult["pull_request"]> | { error: PublishPullRequestError }> {
+): Promise<PublishedPullRequest | PullRequestFailure> {
   const url = await (deps.pushUrl ?? defaultPushUrl)(context.path, publication.remote);
   const gh = url === undefined ? undefined : parseGithubRemote(url);
   if (gh === undefined) return { error: "REMOTE_NOT_GITHUB" };
@@ -537,6 +571,16 @@ async function openPullRequest(
         .find((r) => r.number === found.number);
       return { number: found.number, url: found.url, draft: prior?.draft === 1, reused: true };
     }
+    // ADR-0095: already merged at this head (its branch is usually deleted): return it, never open another.
+    if (found !== null && found.state === "MERGED") {
+      const repo = `${gh.owner}/${gh.repo}`;
+      const mine = ctx.ledger
+        .listPullRequestsForMetaSession(run.meta_session_id)
+        .find((r) => r.number === found.number && r.repo === repo && r.head_sha === publication.head_sha);
+      if (mine !== undefined) {
+        return { number: found.number, url: found.url, draft: mine.draft === 1, reused: true, merged: true };
+      }
+    }
     const created = await deps.pulls.create({
       owner: gh.owner,
       repo: gh.repo,
@@ -549,9 +593,15 @@ async function openPullRequest(
     record(created.number, created.url, "created");
     return { number: created.number, url: created.url, draft, reused: false };
   } catch (err) {
-    if (err instanceof PullRequestPortError) return { error: err.code };
-    return { error: "GH_FAILED" };
+    return failureOf(ctx, err);
   }
+}
+
+/** A port failure as the closed code; a `GH_FAILED` keeps its ADR-0095 detail, its excerpt through the outbound scrubber. */
+function failureOf(ctx: PublishContext, err: unknown): PullRequestFailure {
+  if (!(err instanceof PullRequestPortError)) return { error: "GH_FAILED" };
+  if (err.detail === undefined) return { error: err.code };
+  return { error: err.code, detail: { ...err.detail, message: ctx.scrub(err.detail.message) } };
 }
 
 /** The run's proposed pull request text and where it came from (ADR-0069 note 2026-10-20). */
