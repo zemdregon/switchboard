@@ -5,6 +5,8 @@
  *   (`src/config/schema.ts`), with the `providers.<id>` and `allowed_providers` parts of the config schema;
  * - `CONFIG_TO_ADAPTER_ID` (`src/routing/collect.ts`) and the runtime lookups {@link adapterIdForConfigId} and
  *   {@link configIdForAdapterId};
+ * - the provider-name aliases (ADR-0076): {@link canonicalProviderId} (canonical name = adapter id) and
+ *   {@link configIdForProviderName}, which every provider-name input boundary uses to accept either spelling;
  * - the adapters `serve` registers (`buildRegistry`) and `doctor` probes (`defaultAdapters`, with its labels);
  * - the bypass-class flags the argv audit refuses on top of the shared `BYPASS_FLAGS` ({@link declaredBypassFlags}),
  *   and the short spellings and flag values it refuses ({@link declaredBypassShortFlags},
@@ -35,7 +37,7 @@ import { GrokAdapter } from "./grok/adapter.js";
 import { KimiAdapter } from "./kimi/adapter.js";
 import { MuseAdapter } from "./muse/adapter.js";
 import { OpenCodeAdapter } from "./opencode/adapter.js";
-import type { AcpDeclarations, ProviderAdapter, ResumeCwd } from "./types.js";
+import type { AcpDeclarations, ProviderAdapter, ProviderId, ResumeCwd } from "./types.js";
 
 /** What `serve` and `doctor` pass to an entry's factory. Fields are named after the provider they configure. */
 export interface ProviderFactoryOptions {
@@ -507,6 +509,52 @@ export function adapterIdForConfigId(configId: string): string | undefined {
 /** Config id for an adapter id; undefined for the test-only fake and unknown ids. */
 export function configIdForAdapterId(id: string): string | undefined {
   return providerEntries().find((e) => e.id === id)?.configId;
+}
+
+// ---- provider names and aliases (ADR-0076; LLD §2 "Provider ids") ------------------------------------------------
+
+/** The entry either spelling names: its adapter id or its config id. Exact, case-sensitive match (ids are lower case). */
+function entryForName(name: string): ProviderEntry | undefined {
+  return providerEntries().find((e) => e.id === name || e.configId === name);
+}
+
+/**
+ * ADR-0076: the canonical provider name for `name`, which may be either spelling of a provider: the adapter id (the
+ * canonical name, `claude`) or its config id (the alias, `claude-code`). Undefined when no entry has `name`. Every
+ * input boundary that accepts a provider name normalises through this (or {@link configIdForProviderName}); the
+ * registration check keeps the two namespaces disjoint across entries, so the answer is never ambiguous. The return
+ * type is the built-in union; a runtime-registered id is returned as is (tests only, as `registerProvider` notes).
+ */
+export function canonicalProviderId(name: string): ProviderId | undefined {
+  return entryForName(name)?.id as ProviderId | undefined;
+}
+
+/**
+ * ADR-0076: the config spelling (`providers.<config id>`, `allowed_providers`) for either spelling of a provider;
+ * undefined for an unknown name and for the test-only fake, which has no config id.
+ */
+export function configIdForProviderName(name: string): string | undefined {
+  return entryForName(name)?.configId;
+}
+
+/**
+ * ADR-0076: both spellings of every provider `ids` names (either spelling; default every entry), canonical name first,
+ * each once. A name no entry knows is kept as given (a test registry may hold an adapter outside the table). For the
+ * error messages that list the accepted names.
+ */
+export function acceptedProviderNames(ids?: readonly string[]): string[] {
+  const out = new Set<string>();
+  const names = ids ?? providerEntries().map((e) => e.id);
+  for (const n of names) {
+    const e = entryForName(n);
+    if (e === undefined) {
+      out.add(n);
+      continue;
+    }
+    out.add(e.id);
+    if (e.configId !== undefined) out.add(e.configId);
+  }
+  return [...out];
 }
 
 /** The ACP declarations of adapter id `id`, if its entry has any (ADR-0036 items 9 and 10). */

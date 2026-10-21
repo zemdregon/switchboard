@@ -550,6 +550,52 @@ describe("limits (BR-32): never wider than the client", () => {
   });
 });
 
+describe("provider name aliases (ADR-0076)", () => {
+  it("allowed_providers takes claude and claude-code alike, stores one spelling, and an alias is never a widening", async () => {
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }]);
+    const created = await call("create_project", {
+      project: definition({ allowed_providers: ["claude", "claude-code"] }),
+    });
+    expect(created.body).toEqual({ id: "dyn-app", revision: 1, status: "ACTIVE", in_force_revision: 1 });
+    expect((await call("list_projects")).body.projects[0].allowed_providers).toEqual(["claude-code"]);
+    // The other spelling of the same set is equivalent: no approval needed.
+    const same = await call("update_project", {
+      id: "dyn-app",
+      project: definition({ allowed_providers: ["claude"] }),
+    });
+    expect(same.body).toEqual({ id: "dyn-app", revision: 2, status: "ACTIVE", in_force_revision: 2 });
+    // Adding a provider under its adapter spelling is still a widening that waits for the operator.
+    const wider = await call("update_project", {
+      id: "dyn-app",
+      project: definition({ allowed_providers: ["claude-code", "grok"] }),
+    });
+    expect(wider.body).toMatchObject({
+      revision: 3,
+      status: "PENDING_APPROVAL",
+      approval_needed: ["widened_providers"],
+      in_force_revision: 2,
+    });
+    // An unknown name is refused by the schema, which lists both spellings.
+    const unknown = await call("update_project", {
+      id: "dyn-app",
+      project: definition({ allowed_providers: ["claude-cod"] }),
+    });
+    expect(unknown.body.error.code).toBe("INVALID_REQUEST");
+  });
+
+  it("an alias of a disabled provider is refused exactly like its own spelling", async () => {
+    await setup([{ id: "mgr", max: "edit-untrusted", manage: true }], { disabled: ["claude-code", "grok"] });
+    for (const name of ["claude", "claude-code", "grok", "grok-build"]) {
+      const r = await call("create_project", { project: definition({ allowed_providers: [name] }) });
+      expect(r.body.error, name).toMatchObject({
+        code: "PERMISSION_BLOCKED",
+        details: { reason: "PROVIDER_OUTSIDE_CLIENT" },
+      });
+    }
+    expect(count("project_revision")).toBe(0);
+  });
+});
+
 describe("approval (BR-32): container, push and widening wait for the operator", () => {
   it("a push or container revision is PENDING_APPROVAL and cannot start runs until approved", async () => {
     await setup([{ id: "mgr", max: "edit-untrusted", manage: true, maxPush: "branch" }]);

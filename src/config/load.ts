@@ -34,6 +34,7 @@ import {
   resolveProjects,
   resolveSkillAssignment,
 } from "./projects.js";
+import { normaliseConfigProviderNames } from "./provider-names.js";
 import { checkRag, type RagSettings, resolveRag } from "./rag.js";
 import {
   checkRouting,
@@ -429,8 +430,14 @@ export function validateConfig(
   source = "config",
   opts: { readonly testFakeAdapter?: boolean } = {},
 ): SwitchboardConfig {
+  // ADR-0076: either spelling of a provider name is accepted; the loaded config holds the config spelling.
+  const named = normaliseConfigProviderNames(value);
+  if (named.problems.length > 0) {
+    throw new ConfigError(`Invalid ${source}:\n${named.problems.map((l) => `  ${l}`).join("\n")}`);
+  }
+  const normalised = named.value;
   const validate = validator(opts.testFakeAdapter === true);
-  if (validate(value)) return value;
+  if (validate(normalised)) return normalised;
   const lines = (validate.errors ?? []).map(describe);
   throw new ConfigError(`Invalid ${source}:\n${lines.map((l) => `  ${l}`).join("\n")}`);
 }

@@ -33,6 +33,7 @@
  */
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
+import { configIdForProviderName } from "../adapters/providers.js";
 import type {
   ProjectConfig,
   ProjectSourcesSettings,
@@ -453,6 +454,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
       const args = structuredClone(rawArgs ?? {}) as Record<string, unknown>;
       const validate = validators[name];
       if (!validate(args)) throw schemaError(validate.errors ?? []);
+      normaliseAllowedProviders(args);
       return await handlers[name](args, audit);
     } catch (err) {
       const te =
@@ -555,6 +557,22 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
 }
 
 /** ADR-0070: `list_projects`' `merge_policy` of a project, present only when it sets one (absent means off). */
+/**
+ * ADR-0076: `project.allowed_providers` in the config spelling (`claude` → `claude-code`), later duplicates dropped,
+ * after the schema accepted either spelling; the stored definition, the limit checks and the approval reasons then
+ * see one spelling, as in configured projects. A name with no config id is left for the checks to refuse.
+ */
+function normaliseAllowedProviders(args: Record<string, unknown>): void {
+  const def = args.project as { allowed_providers?: unknown } | undefined;
+  if (def === undefined || !Array.isArray(def.allowed_providers)) return;
+  const out: string[] = [];
+  for (const n of def.allowed_providers as string[]) {
+    const id = configIdForProviderName(n) ?? n;
+    if (!out.includes(id)) out.push(id);
+  }
+  def.allowed_providers = out;
+}
+
 export function mergePolicyItem(p: Pick<ResolvedProject, "mergePolicy">) {
   const m = p.mergePolicy;
   if (m === undefined) return {};

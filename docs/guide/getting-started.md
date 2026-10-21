@@ -115,9 +115,13 @@ Keys (from `src/config/schema.ts`; the `projects` key is described below the tab
 gate on `main` today; the other ids
 (`grok-build`, `muse-code`) name registered M4 adapters whose manifests admit no version
 until `switchboard adapters validate` passes a live CLI
-(ROADMAP §6.8.2). `<id>` is the *config* id. The *provider* id used in
-`routing.provider_preference` of `delegate_task` is the adapter id: `claude`
-for Claude Code (config id `claude-code`), `codex` for Codex. `max_trust_profile` accepts any of the five profile
+(ROADMAP §6.8.2). `<id>` is the *config* id. The canonical *provider* name is the adapter id: `claude`
+for Claude Code (config id `claude-code`), `grok` for Grok Build (`grok-build`), `kimi` for Kimi Code (`kimi-code`),
+`muse` for Muse Code (`muse-code`); the others are the same in both. Every provider input (`providers.<id>`,
+`allowed_providers`, `model_groups` members, `routing.provider_preference` of `delegate_task`, `get_capacity`, the CLI
+`--provider` flags) accepts either spelling, and outputs report the canonical name
+([ADR-0076](../adr/0076-provider-name-aliases.md), table in LLD §2 "Provider ids"). `max_trust_profile` accepts any
+of the five profile
 names, but see [Trust profiles](providers.md#trust-profiles).
 
 ## Check the setup with `doctor`

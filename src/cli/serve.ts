@@ -61,7 +61,7 @@ import type { FakeScenario } from "../adapters/fake/adapter.js";
 import {
   AdapterRegistry,
   adapterIdForConfigId,
-  configIdForAdapterId,
+  configIdForProviderName,
   createProbeRunner,
   evaluateVersionCanary,
   PreflightCache,
@@ -278,7 +278,8 @@ export function modelRegistry(config: ResolvedConfig): ModelRegistry {
 export function enablement(config: ResolvedConfig, fake: FakeSwitch): (id: ProviderId) => boolean {
   return (id) => {
     if (id === "fake") return fake.enabled;
-    const configId = configIdForAdapterId(id);
+    // ADR-0076: either spelling of the provider; `config.providers` holds the config spelling (validateConfig).
+    const configId = configIdForProviderName(id);
     if (configId === undefined) return false; // not a configured provider id: fail closed
     return config.providers.get(configId)?.enabled !== false;
   };

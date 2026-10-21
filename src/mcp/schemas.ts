@@ -69,12 +69,14 @@
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
+import { acceptedProviderNames } from "../adapters/providers.js";
 import { MERGE_EVENT_TYPE, MERGE_REFUSAL_REASONS, REF_EVENT_KINDS, REF_EVENT_TYPE } from "../ci/merge-codes.js";
 import {
   MERGE_POLICY_METHODS,
   MERGE_POLICY_REPORTS,
   MODEL_GROUP_NAME_PATTERN,
   PROJECT_ID_PATTERN,
+  PROVIDER_IDS,
   projectSchema,
   SETUP_CACHES,
   SKILL_NAME_PATTERN,
@@ -286,11 +288,13 @@ export function boundedSchema(schema: unknown): unknown {
 
 /**
  * ADR-0068: the MCP-only definition. Each context takes exactly one of `path` and `clone_url` (an HTTPS repository URL,
- * parsed and allow-listed by `src/projects/clone.ts`).
+ * parsed and allow-listed by `src/projects/clone.ts`). ADR-0076: `allowed_providers` lists both provider spellings.
  */
 function mcpProjectDefinition(): Record<string, unknown> {
   const def = boundedSchema(projectSchema) as Record<string, unknown>;
   const props = def.properties as Record<string, Record<string, unknown>>;
+  // ADR-0076: either spelling of each provider (`claude`, `claude-code`); project-tools stores the config spelling.
+  props.allowed_providers = { ...props.allowed_providers, items: { enum: acceptedProviderNames(PROVIDER_IDS) } };
   const contexts = props.contexts as Record<string, unknown>;
   const item = contexts.items as Record<string, unknown>;
   item.properties = {

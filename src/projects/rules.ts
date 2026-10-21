@@ -10,6 +10,7 @@
  * is `PERMISSION_BLOCKED` (FRD BR-32 "not allowed").
  */
 import { realpath } from "node:fs/promises";
+import { canonicalProviderId } from "../adapters/providers.js";
 import { checkProject } from "../cli/projects.js";
 import {
   checkProjects,
@@ -182,6 +183,11 @@ export function checkBaseRemote(def: ProjectConfig): void {
   }
 }
 
+/** ADR-0076: the comparison key of a provider name: its canonical name, or the name itself when no entry has it. */
+function providerKey(name: string): string {
+  return canonicalProviderId(name) ?? name;
+}
+
 /**
  * FR-PRJ-10 limits: the trust ceiling no wider than the client's; providers within the client's set; every context's
  * push policy no wider than `max_push_policy`. **Delegated**: SRS and LLD give a client no provider list of its own
@@ -201,8 +207,10 @@ export function checkClientLimits(
       "$.project.max_trust_profile",
     );
   }
+  // ADR-0076: compared by canonical name, so an alias spelling can never name a disabled provider past this check.
+  const disabled = new Set([...disabledProviders].map(providerKey));
   for (const [i, p] of (def.allowed_providers ?? []).entries()) {
-    if (disabledProviders.has(p)) {
+    if (disabled.has(providerKey(p))) {
       throw new ProjectRuleError(
         "PERMISSION_BLOCKED",
         "PROVIDER_OUTSIDE_CLIENT",
@@ -294,8 +302,9 @@ export function approvalReasons(
     const before = effectiveMaxProfile(clientMax, toResolved(inForce));
     if (rank(now) > rank(before)) out.add("widened_trust_ceiling");
     if (inForce.allowed_providers !== undefined) {
-      const was = new Set(inForce.allowed_providers);
-      if (def.allowed_providers === undefined || def.allowed_providers.some((p) => !was.has(p))) {
+      // ADR-0076: by canonical name, so `claude` and `claude-code` are one provider (no false widening, no bypass).
+      const was = new Set<string>(inForce.allowed_providers.map(providerKey));
+      if (def.allowed_providers === undefined || def.allowed_providers.some((p) => !was.has(providerKey(p)))) {
         out.add("widened_providers");
       }
     }

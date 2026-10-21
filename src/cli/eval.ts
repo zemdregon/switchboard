@@ -14,7 +14,7 @@
  *   version gate, project environments), without the MCP server, timers, sinks or retrieval (Delegated).
  */
 import path from "node:path";
-import type { ProviderId } from "../adapters/index.js";
+import { canonicalProviderId, type ProviderId } from "../adapters/index.js";
 import { createProbeRunner } from "../adapters/run.js";
 import { ArtifactStore } from "../artifacts/index.js";
 import { ConfigError, effectiveMaxProfile, loadConfig, primaryContext } from "../config/index.js";
@@ -123,7 +123,8 @@ export async function runEvalCommand(
       text: "eval run skipped: EVAL_SKIPPED_IN_CI (evaluation never runs in CI, FR-OPS-06)\n",
     };
   }
-  const provider = opts.provider;
+  // ADR-0076: either spelling (`claude`, `claude-code`); the run and its results name the canonical provider.
+  const provider = opts.provider === undefined ? undefined : (canonicalProviderId(opts.provider) ?? opts.provider);
   if (provider === undefined || provider === "") throw new UsageError("eval run requires --provider <id>");
 
   const config = loadConfig({ argv: loaderArgv, env: io.env, ...(io.homedir ? { homedir: io.homedir } : {}) });

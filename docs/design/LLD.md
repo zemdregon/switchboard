@@ -476,6 +476,28 @@ registry table, `BUILTIN_PROVIDERS` in `src/adapters/providers.ts`; `ProviderId`
 `PROVIDER_IDS` and the `providers` and `allowed_providers` schema parts in `src/config/schema.ts`,
 `CONFIG_TO_ADAPTER_ID` in `src/routing/collect.ts` and the `serve` and `doctor` registrations are derived from it.
 
+*Canonical name and aliases (2026-10-20, Delegated, not owner-approved, [ADR-0076](../adr/0076-provider-name-aliases.md)):*
+a provider's **canonical name** is its adapter id; its config id, where different, is an **alias**. Every input that
+names a provider accepts both spellings (exact, lower case) and normalises them with `canonicalProviderId` or
+`configIdForProviderName` (`src/adapters/providers.ts`); every output reports the canonical name, as before. The
+loaded config keeps the config spelling (the second column of the table above); config files may use either.
+
+| Canonical name | Alias | Label |
+| --- | --- | --- |
+| `claude` | `claude-code` | Claude Code |
+| `codex` | none (same spelling) | Codex |
+| `grok` | `grok-build` | Grok Build |
+| `antigravity` | none (same spelling) | Antigravity |
+| `cursor` | none (same spelling) | Cursor |
+| `opencode` | none (same spelling) | OpenCode |
+| `kimi` | `kimi-code` | Kimi Code |
+| `muse` | `muse-code` | Muse Code |
+| `fake` | none (test-only, no config id) | fake adapter |
+
+A list that names one provider twice after normalisation is de-duplicated; two `providers.<name>` keys naming one
+provider are a config error. Enablement, project limits, `widened_providers` and the project candidate filter compare
+canonical names, so an alias cannot re-enable a disabled provider or widen a project's set.
+
 | Config provider id | Adapter `ProviderId` | In the table (T4.1) | Declared bypass-class flags (source) | Declared short flags and values (ADR-0037; source) |
 | --- | --- | --- | --- | --- |
 | `claude-code` | `claude` | Adapter | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` ([TDD §4.1.1](TDD.md#411-claude-code-native-controls-per-profile-and-platform-t30), `claude --help` 2.1.296) | Value `--permission-mode bypassPermissions` (same source); active |
@@ -975,7 +997,7 @@ schema and fails on any unbounded node, so a new tool or field cannot silently r
 { "$defs": {
   "trust_profile": { "enum": ["inspect-untrusted","edit-untrusted","test-sandboxed","trusted-development","privileged"] },
   "routing": { "type": "object", "properties": {
-      "provider_preference": { "type": "string" },
+      "provider_preference": { "type": "string" },   // either spelling, normalised to the canonical name (ADR-0076)
       "require_provider": { "type": "boolean", "default": false },
       "minimum_capability": { "enum": ["low","medium","high"] },
       // Built (T7.14, §17.7, ADR-0055): delegate_task and enqueue_work only, mutually exclusive
@@ -1102,7 +1124,8 @@ files, no shell, network off, repository configuration disabled, no bypass); eac
 at admission and dispatch. An off-host profile is excluded from routing with the machine-readable reason
 `PROFILE_PLATFORM_UNVERIFIED`, which maps to `ELIGIBILITY_NONE` (FRD BR-3).
 **`get_capacity`** (M6) `{ provider? }` returns the FR-CAP-02 fields per provider with `source`; `explicit_remaining` is
-null unless provider-reported. Detailed in [§16.3](#163-get_capacity-and-switchboard-capacity) (T6.1).
+null unless provider-reported. Detailed in [§16.3](#163-get_capacity-and-switchboard-capacity) (T6.1). `provider`
+takes either spelling and the answer names the canonical provider ([ADR-0076](../adr/0076-provider-name-aliases.md)).
 **`explain_route`** (M7) `{ run_id }` returns candidates, eligibility reasons, features, weights, scores and the
 `affinity` object ([§3.2](#32-provider-and-model-affinity-m7)) from `route_decision`, no model reasoning. Detailed in
 [§17.5](#175-explain_route) (T7.0).
@@ -3729,7 +3752,9 @@ primary context writable (default: writable iff primary), `push.policy: "branch"
 `container` and refused for `host`. `base_ref` is required (FR-PRJ-02). `base_remote` is optional, a remote name
 like `push.remote`, and only on the primary context ([§5.2](#52-base-refresh-fr-prj-02-note-adr-0067)). Context ids
 match `^[a-z][a-z0-9-]{0,40}$` and the image digest `^sha256:[0-9a-f]{64}$` (**Assumptions**). `allowed_providers`
-takes the provider IDs of `PROVIDER_IDS` (`claude-code`, `codex`, ...), not the short `claude` shown in the example. `max_trust_profile`,
+takes the provider IDs of `PROVIDER_IDS` (`claude-code`, `codex`, ...); *since ADR-0076 (2026-10-20, Delegated)* the
+canonical spelling shown in the example (`claude`) is accepted too, in configuration and in `create_project` and
+`update_project` (whose schema enum lists both spellings), and is stored as the config id, de-duplicated. `max_trust_profile`,
 `allowed_providers` and `sign` are checked for shape only; enforcement is T9.2 and T9.10. The filesystem rules run only
 in `switchboard projects validate` (absolute path; `realpath` under an allowed root, so `..` and symlink escapes are
 refused; a Git repository whose top level is also under an allowed root; `base_ref` resolves to a commit; a `container`
@@ -3822,7 +3847,8 @@ identity in step 6):* the steps run in `resolveProject` and `projectCandidates` 
 (1) unknown id `INVALID_REQUEST`; (2) not in the client's list `PERMISSION_BLOCKED`; a `container` environment fails here
 (M10); (5) the primary context's path is canonicalised against the allowed roots again (`INVALID_REQUEST`) and its
 `base_ref` must resolve to a commit; (3) the profile is checked against `effectiveMaxProfile` (`src/config/projects.ts`);
-(4) candidates are filtered by `allowed_providers` (config ids mapped to adapter ids with `adapterIdForConfigId`;
+(4) candidates are filtered by `allowed_providers` (either spelling mapped to the canonical adapter id with
+`canonicalProviderId`, ADR-0076;
 **Delegated reading of FR-PRJ-06 against FRD BR-23**: `require_provider` naming a provider outside the set is
 `PERMISSION_BLOCKED` before any write, a set that leaves no registered provider is `ELIGIBILITY_NONE` with
 `details.reason = "PROJECT_PROVIDERS"`, and a non-required preference outside the set is ignored); the excluded

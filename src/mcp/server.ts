@@ -138,8 +138,9 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type Database from "better-sqlite3";
 import {
   type AdapterRegistry,
+  acceptedProviderNames,
   acceptsReportedModel,
-  adapterIdForConfigId,
+  canonicalProviderId,
   type ProviderId,
   type ResolvedProfile,
 } from "../adapters/index.js";
@@ -764,7 +765,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const allowed = project?.project.allowedProviders;
     if (allowed === undefined) return { candidates: all, excluded: [] };
     // Config ids (`claude-code`) differ from adapter ids (`claude`); a provider with no mapping (the test `fake`) is never allowed.
-    const set = new Set<string>(allowed.flatMap((id) => adapterIdForConfigId(id) ?? []));
+    // ADR-0076: either spelling is compared by canonical name; a name no entry knows is never allowed.
+    const set = new Set<string>(allowed.flatMap((id) => canonicalProviderId(id) ?? []));
     if (required !== undefined && !set.has(required)) {
       throw new ToolError(
         "PERMISSION_BLOCKED",
@@ -798,9 +800,17 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         });
       }
     }
+    // ADR-0076: either spelling (`claude`, `claude-code`) names a provider; the request carries the canonical name from
+    // here on (request hash, stored queue request, route decision and ledger), so outputs report it as before.
+    const given = routing.provider_preference;
+    if (given !== undefined) routing.provider_preference = canonicalProviderId(given) ?? given;
     const named = routing.provider_preference;
     if (named !== undefined && !deps.registry.has(named as ProviderId)) {
-      throw invalid(`unknown provider ${named}`, { field: "routing.provider_preference" });
+      const accepted = acceptedProviderNames(deps.registry.list().map((a) => a.id));
+      throw invalid(`unknown provider ${given}; accepted names: ${accepted.join(", ")}`, {
+        field: "routing.provider_preference",
+        providers: accepted,
+      });
     }
     if (routing.require_provider === true && named === undefined) {
       throw invalid("routing.require_provider needs routing.provider_preference", { field: "routing" });
@@ -1307,7 +1317,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       // outside the project is ineligible like any other reason (BR-23) and is not probed.
       if (required !== undefined) projectCandidates(resolved, p0);
       const allowedSet = resolved?.project.allowedProviders;
-      const p0Allowed = allowedSet === undefined || allowedSet.some((id) => adapterIdForConfigId(id) === p0);
+      const p0Allowed = allowedSet === undefined || allowedSet.some((id) => canonicalProviderId(id) === p0);
       answerP0 = p0Allowed ? await ask([p0], p0) : undefined;
       if (answerP0 === undefined || !admissible(answerP0, privileged).includes(p0)) {
         if (required !== undefined && answerP0 !== undefined) throw eligibilityError(answerP0); // BR-18 → BR-2 / BR-3
@@ -1989,9 +1999,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const registered = deps.registry.list().map((a) => a.id);
     const cand = candidates();
     const ids: string[] = [...cand, ...registered.filter((id) => !cand.includes(id))];
-    const named = args.provider as string | undefined;
+    // ADR-0076: either spelling; the answer names the canonical provider.
+    const given = args.provider as string | undefined;
+    const named = given === undefined ? undefined : (canonicalProviderId(given) ?? given);
     if (named !== undefined && !ids.includes(named)) {
-      throw invalid(`unknown provider ${JSON.stringify(named)}`, { providers: ids });
+      const accepted = acceptedProviderNames(ids);
+      throw invalid(`unknown provider ${JSON.stringify(given)}; accepted names: ${accepted.join(", ")}`, {
+        providers: ids,
+        accepted_names: accepted,
+      });
     }
     // T6.14: pass the capacity object through. Rebuilding a two-field settings object here would drop subscriptions,
     // and get_capacity would disagree with `capacity --json`.
