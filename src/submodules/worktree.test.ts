@@ -218,6 +218,26 @@ describe("repository filter drivers and hooks in a store (TDD §3.4)", () => {
   });
 });
 
+describe("writeWorktreeTree with a path subset (ADR-0079 item 4)", () => {
+  it("adds only the named paths and puts restored paths back to the parent's entries", async () => {
+    const s = await setup({ "a.txt": "a\n", "keep.txt": "keep\n" });
+    const storeA = s.stores.get("github.test/acme/lib-a") as string;
+    const rec = await attachSubmodules(s.wt, s.manifest, { storeFor: storeFor(s) });
+    const entry = rec.entries.find((e) => e.path === "mods/a") as AttachRecord["entries"][number];
+    writeFileSync(path.join(s.wt, "mods/a", "a.txt"), "A\n");
+    writeFileSync(path.join(s.wt, "mods/a", "keep.txt"), "changed\n");
+    mkdirSync(path.join(s.wt, "mods/a", "skills"));
+    writeFileSync(path.join(s.wt, "mods/a", "skills", "SKILL.md"), "skill\n");
+    const tree = await writeWorktreeTree(s.wt, entry, entry.sha, {
+      paths: ["a.txt", "skills"],
+      restorePaths: ["skills/SKILL.md"],
+    });
+    expect(g(storeA, "cat-file", "blob", `${tree}:a.txt`)).toBe("A");
+    expect(g(storeA, "cat-file", "blob", `${tree}:keep.txt`)).toBe("keep");
+    expect(g(storeA, "ls-tree", "-r", "--name-only", tree)).not.toMatch(/SKILL/u);
+  });
+});
+
 describe("verifySubmoduleLink", () => {
   it("rejects a .git link pointed at the store's own Git directory, a symlink, a directory or a missing link", async () => {
     const s = await setup();

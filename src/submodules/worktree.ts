@@ -321,12 +321,20 @@ export interface WriteTreeOptions {
   readonly excludes?: readonly string[];
   /** Where the temporary index is made (default the OS temporary directory). */
   readonly scratchDir?: string;
+  /**
+   * ADR-0079 item 4: submodule-relative literal paths to add instead of every change (an explicit commit path inside
+   * the submodule), checked by the caller. `excludes` do not apply to them (literal pathspecs carry no magic).
+   */
+  readonly paths?: readonly string[];
+  /** Literal paths whose entries are put back to `parentSha`'s after the add (recorded skill paths). */
+  readonly restorePaths?: readonly string[];
 }
 
 /**
  * The tree of the submodule worktree as a commit would record it: a temporary index (`GIT_INDEX_FILE` in a scratch
- * directory) is read from `parentSha`, `add -A -- . <nested excludes> <excludes>` runs, and `write-tree` returns the
- * tree id. The worktree's own index is not touched. Throws `SUBMODULE_LINK_INVALID` when the link does not verify.
+ * directory) is read from `parentSha`, `add -A -- . <nested excludes> <excludes>` (or a literal add of
+ * {@link WriteTreeOptions.paths}) runs, {@link WriteTreeOptions.restorePaths} are put back to the parent's entries,
+ * and `write-tree` returns the tree id. The worktree's own index is not touched. Throws `SUBMODULE_LINK_INVALID` when the link does not verify.
  */
 export async function writeWorktreeTree(
   runWorktree: string,
@@ -341,10 +349,24 @@ export async function writeWorktreeTree(
   try {
     const env = { GIT_INDEX_FILE: path.join(tmp, "index") };
     await git([...WORKTREE_CONFIG, "read-tree", parentSha], { cwd, env });
-    await git([...WORKTREE_CONFIG, "add", "-A", "--", ".", ...nested.excludes, ...(opts.excludes ?? [])], {
-      cwd,
-      env,
-    });
+    if (opts.paths === undefined) {
+      await git([...WORKTREE_CONFIG, "add", "-A", "--", ".", ...nested.excludes, ...(opts.excludes ?? [])], {
+        cwd,
+        env,
+      });
+    } else if (opts.paths.length > 0) {
+      await git([...WORKTREE_CONFIG, "--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"], {
+        cwd,
+        env,
+        input: `${opts.paths.join("\0")}\0`,
+      });
+    }
+    if (opts.restorePaths !== undefined && opts.restorePaths.length > 0) {
+      await git([...WORKTREE_CONFIG, "--literal-pathspecs", "reset", "-q", parentSha, "--", ...opts.restorePaths], {
+        cwd,
+        env,
+      });
+    }
     return await gitText([...WORKTREE_CONFIG, "write-tree"], { cwd, env });
   } finally {
     await rm(tmp, { recursive: true, force: true });
