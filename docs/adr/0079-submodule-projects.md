@@ -126,7 +126,8 @@ in `finalize_commit`:
    `paths` entry inside it is refused `submodule_read_only`. An explicit path inside a writable submodule is committed in
    that submodule only.
 
-Signing: `sign: true` signs the umbrella commit as today; submodule commits are signed the same way. **Delegated**:
+Signing: `sign: true` signs the umbrella commit as today; submodule commits are signed the same way (the umbrella
+repoint commit of item 7 is not signed: a known limit). **Delegated**:
 repository-configured filters and hooks never run (scrubbed environment, `driverOverrides` of the store's config).
 
 ### 5. Secret scan of every repository (G5)
