@@ -107,10 +107,70 @@ export interface PublicationView {
   pushed_at: string;
   pull_request_url?: string;
   pull_request_number?: number;
+  /** ADR-0079 item 6: the submodule pull requests `publish_run` linked to this branch; present only when there is one. */
+  linked_pull_requests?: LinkedPullRequestView[];
+}
+
+/** ADR-0079 items 6 and 7: one linked submodule pull request and, once the ordered merge reached it, its state. */
+export interface LinkedPullRequestView {
+  /** `host/owner/repo` (as `publish_run`'s `submodules[].repo`). */
+  repo: string;
+  paths: string[];
+  number: number;
+  url: string;
+  base_ref: string;
+  head_sha: string;
+  merge_state?: { state: "merged"; merged_sha: string } | { state: "refused"; reason: string };
+}
+
+/**
+ * ADR-0079: the newest `submodule_pull_request` row per repository linked to `branch`, with the paths of the push it
+ * was opened for and its merge state from the `submodule_merge` steps of the umbrella ref: `merged` once a
+ * `submodule_merged` step names the pull request, else `refused` with the newest refusal at its head, else absent.
+ */
+function linkedPullRequestsOf(ledger: Ledger, run: RunRecord, branch: string): LinkedPullRequestView[] {
+  const umbrellaRef = `refs/heads/${branch}`;
+  const newest = new Map<string, ReturnType<Ledger["listSubmodulePullRequestsForRun"]>[number]>();
+  for (const pr of ledger.listSubmodulePullRequestsForRun(run.id)) {
+    if (pr.umbrella_ref === umbrellaRef) newest.set(pr.push?.repo ?? pr.repo, pr);
+  }
+  if (newest.size === 0) return [];
+  const steps = run.project_id === null ? [] : ledger.listSubmoduleMergeSteps(run.project_id, umbrellaRef);
+  const out: LinkedPullRequestView[] = [];
+  for (const [repo, pr] of newest) {
+    // GitHub owner and repository names are case-insensitive.
+    const mine = steps.filter((s) => s.repo?.toLowerCase() === pr.repo.toLowerCase() && s.pr_number === pr.number);
+    const merged = mine.find((s) => s.step === "submodule_merged" && s.merged_sha !== null);
+    const refused = mine.filter((s) => s.step === "submodule_refused" && s.head_sha === pr.head_sha).at(-1);
+    out.push({
+      repo,
+      paths: pr.push !== undefined ? pathsOf(pr.push.paths_json) : [],
+      number: pr.number,
+      url: pr.url,
+      base_ref: pr.base_ref,
+      head_sha: pr.head_sha,
+      ...(merged !== undefined
+        ? { merge_state: { state: "merged" as const, merged_sha: merged.merged_sha as string } }
+        : refused?.reason != null
+          ? { merge_state: { state: "refused" as const, reason: refused.reason } }
+          : {}),
+    });
+  }
+  return out.sort((a, b) => ((a.paths[0] ?? a.repo) < (b.paths[0] ?? b.repo) ? -1 : 1));
+}
+
+function pathsOf(json: string): string[] {
+  try {
+    const v = JSON.parse(json) as unknown;
+    return Array.isArray(v) ? v.filter((p): p is string => typeof p === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 /** ADR-0069: accepted `git_push` events of the run (deduplicated by branch and head) and its `pull_request` rows. */
-function publicationsOf(ledger: Ledger, runId: string, pushes: readonly { ts: string; payload: unknown }[]) {
+function publicationsOf(ledger: Ledger, run: RunRecord, pushes: readonly { ts: string; payload: unknown }[]) {
+  const runId = run.id;
   const out: PublicationView[] = [];
   const seen = new Set<string>();
   for (const e of pushes) {
@@ -131,6 +191,8 @@ function publicationsOf(ledger: Ledger, runId: string, pushes: readonly { ts: st
       pub.pull_request_url = pr.url;
       pub.pull_request_number = pr.number;
     }
+    const linked = linkedPullRequestsOf(ledger, run, pub.branch);
+    if (linked.length > 0) pub.linked_pull_requests = linked;
   }
   return out;
 }
@@ -232,7 +294,7 @@ export function buildEnvelope(
   const verificationSummary = summaryView(summaryPayload, scrub);
   if (verificationSummary !== undefined) result.verification_summary = verificationSummary;
   const pin = verificationPin(ledger, run.id);
-  const publications = publicationsOf(ledger, run.id, pushes);
+  const publications = publicationsOf(ledger, run, pushes);
 
   return {
     run_id: run.id,

@@ -556,6 +556,43 @@ const ENVELOPE = {
           pushed_at: { type: "string" },
           pull_request_url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
           pull_request_number: { type: "integer", minimum: 1 },
+          // ADR-0079 items 6 and 7 (LLD §3.4.16): the submodule pull requests publish_run linked to this branch, with
+          // the ordered merge's state once it reached each; present only when there is one.
+          linked_pull_requests: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["repo", "paths", "number", "url", "base_ref", "head_sha"],
+              properties: {
+                repo: { type: "string", maxLength: 400 },
+                paths: { type: "array", items: { type: "string" } },
+                number: { type: "integer", minimum: 1 },
+                url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+                base_ref: { type: "string", maxLength: 255 },
+                head_sha: { type: "string", pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+                merge_state: {
+                  oneOf: [
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["state", "merged_sha"],
+                      properties: {
+                        state: { const: "merged" },
+                        merged_sha: { type: "string", pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+                      },
+                    },
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["state", "reason"],
+                      properties: { state: { const: "refused" }, reason: { type: "string", maxLength: 100 } },
+                    },
+                  ],
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -736,15 +773,28 @@ const DIGEST = {
                 event_id: { type: "string" },
                 run_id: RUN_ID,
                 ts: { type: "string" },
-                type: { enum: [REF_EVENT_TYPE, MERGE_EVENT_TYPE] },
+                // ADR-0079 item 7: `submodule_merge` entries are the ordered merge's steps (`code` is the step).
+                type: { enum: [REF_EVENT_TYPE, MERGE_EVENT_TYPE, "submodule_merge"] },
                 // `merged` is already a ref_event kind: list it once. A duplicate enum item makes get_digest's output
                 // schema invalid to a draft-07 meta-schema check (enum `uniqueItems`), which a strict MCP client can
                 // treat as a failed tools/list (see src/mcp/tools-list-callable.test.ts).
-                code: { enum: [...new Set<string>([...REF_EVENT_KINDS, "merged", "refused"])] },
+                code: {
+                  enum: [
+                    ...new Set<string>([
+                      ...REF_EVENT_KINDS,
+                      "merged",
+                      "refused",
+                      "submodule_merged",
+                      "gitlinks_repointed",
+                    ]),
+                  ],
+                },
                 reason: { enum: [...MERGE_REFUSAL_REASONS] },
                 publish_ref: { type: "string" },
                 head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
                 pr_number: { type: ["integer", "null"] },
+                repo: { type: "string", maxLength: 200 },
+                merged_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
               },
             },
           },
@@ -1800,6 +1850,50 @@ const PUBLISH_RESULT = {
       ],
     },
     pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
+    // ADR-0079 item 6 (LLD §3.4.16): one entry per changed submodule repository of an umbrella project (`repo` is
+    // `host/owner/repo`); present only for a project whose primary context sets `submodules.mode: "recursive"`.
+    submodules: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["repo", "paths", "branch", "head_sha", "default_branch", "publication", "pull_request"],
+        properties: {
+          repo: { type: "string", maxLength: 400 },
+          paths: { type: "array", minItems: 1, items: { type: "string" } },
+          branch: { type: "string", maxLength: 255 },
+          head_sha: { type: "string", pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+          default_branch: { type: ["string", "null"], maxLength: 255 },
+          publication: {
+            type: "object",
+            additionalProperties: false,
+            required: ["push_id", "pushed_at", "reused"],
+            properties: {
+              push_id: { type: "string", pattern: "^smp_[0-9A-HJKMNP-TV-Z]{26}$" },
+              pushed_at: { type: "string" },
+              reused: { type: "boolean" },
+            },
+          },
+          pull_request: {
+            oneOf: [
+              { type: "null" },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["number", "url", "draft", "reused"],
+                properties: {
+                  number: { type: "integer", minimum: 1 },
+                  url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+                  draft: { type: "boolean" },
+                  reused: { type: "boolean" },
+                },
+              },
+            ],
+          },
+          pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
+        },
+      },
+    },
   },
 } as const;
 
@@ -1861,7 +1955,13 @@ const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
     "GitHub login (gh) or reuses the open one for that branch. Idempotent: publishing again returns the existing push " +
     "and pull request. A refused push is PERMISSION_BLOCKED with details.reason. If gh fails the push still stands: " +
     "pull_request is null and pull_request_error names why. The pull request body includes the run's agent-written " +
-    "draft, labelled untrusted.",
+    "draft, labelled untrusted. For an umbrella project (submodules.mode recursive) the controller first pushes each " +
+    "changed submodule repository's commits to the same branch name on that repository (after a secret scan of every " +
+    "repository; a finding refuses everything, with paths prefixed by the submodule path), refuses " +
+    "SUBMODULE_HISTORY_UNVERIFIED for a gitlink it did not commit and SUBMODULE_PUSH_FAILED (details.submodules) " +
+    "without pushing the umbrella unless every submodule push was accepted (a retry pushes only what is missing), " +
+    "then opens one pull request per submodule repository against its default branch and the umbrella pull " +
+    "request listing them; submodules[] reports each repository.",
   merge_run_pr:
     "Merge the pull request of one of this client's runs that publish_run published, with the operator's GitHub " +
     "login (gh), only when the project's merge_policy is in force and enabled (see list_projects; update_project " +

@@ -1598,6 +1598,15 @@ async function runDaemon(
         pusher,
         resolveContext: resolvePushContext,
         pulls: new GhPullRequestPort({ binary: config.ciTrigger.ghBinary, sourceEnv: io.env }),
+        // ADR-0079 item 6: umbrella projects (`submodules.mode: "recursive"`) publish their submodule commits first,
+        // with the pusher's secret-scan allowlist and the same allowlisted push environment (ADR-0028).
+        submodules: {
+          db,
+          plan: serveSubmodulePlan(config, new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) })),
+          sources: liveProjectSources,
+          secretScanAllow: config.secretScanAllow,
+          sourceEnv: io.env,
+        },
       },
       // ADR-0074 (LLD §3.4.15): `refresh_project_base` and `rebase_session`, with the same allowlisted fetch environment
       // as the first-worktree refresh and the controller's own push (ADR-0028).

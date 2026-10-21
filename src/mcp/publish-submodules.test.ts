@@ -32,15 +32,15 @@ import { RunLifecycle } from "../lifecycle/index.js";
 import { DynamicProjectStore } from "../projects/index.js";
 import {
   commitFiles,
-  type Fixture as SubFixture,
-  g,
   GIT_ENV,
+  g,
   gitmodulesText,
   HOST,
   makeFixture,
   makeRemote,
   makeUmbrella,
   OWNER,
+  type Fixture as SubFixture,
 } from "../submodules/fixtures/repos.js";
 import { insertSubmoduleMerge } from "../submodules/ledger.js";
 import { readSubmoduleManifest } from "../submodules/manifest.js";
@@ -213,8 +213,9 @@ async function start(): Promise<Fx> {
       sources: () => sub.settings,
       git: sub.runner,
       push,
-      // The fixture host stands for github.com (the fake gh never reaches a network).
-      githubRepo: (url: string) => parseGithubRemote(url.replace(`https://${HOST}/`, "https://github.com/")),
+      // The fixture host stands for github.com (the fake gh never reaches a network); names in lower case.
+      githubRepo: (url: string) =>
+        parseGithubRemote(url.replace(`https://${HOST}/`, "https://github.com/").toLowerCase()),
     },
   };
   const mcp = createSwitchboardServer({
@@ -619,9 +620,7 @@ describe("publish_run with linked submodule publication (ADR-0079 items 5 and 6)
     expect(listed.publications[0].linked_pull_requests).toEqual(linked);
     const digest = (await f.call("get_digest", {})).body;
     const project = digest.projects.find((p: Json) => p.project_id === "web");
-    expect(project.finished.find((e: Json) => e.run_id === runId).publications[0].linked_pull_requests).toEqual(
-      linked,
-    );
+    expect(project.finished.find((e: Json) => e.run_id === runId).publications[0].linked_pull_requests).toEqual(linked);
     const kinds = (project.ref_events as Json[]).map((e) => [e.type, e.code, e.pr_number, e.publish_ref]);
     expect(kinds).toEqual(
       expect.arrayContaining([
