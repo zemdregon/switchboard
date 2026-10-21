@@ -2566,7 +2566,7 @@ remote-tracking ref (recorded) when a later step refuses.
 *Added 2026-10-21 (Delegated agent work for an operator task for zemdregon, owner decision 25; not owner-approved).*
 Realizes FR-PRJ-11, FR-PRJ-12, FR-GIT-13, FR-GIT-14 and FR-SUB-03. Decision record and rationale:
 [ADR-0079](../adr/0079-submodule-projects.md); this section holds only the contracts. Code: `src/submodules/`
-(manifest, store, worktree, errors), `src/projects/source-grants.ts`, `src/mcp/project-tools.ts`,
+(manifest, store, worktree, errors), `src/ci/submodule-merge.ts`, `src/projects/source-grants.ts`, `src/mcp/project-tools.ts`,
 `src/mcp/schemas.ts`, `src/config/schema.ts`, `src/control/approval-proxy.ts`, `src/cli/projects-sources.ts`;
 migration `src/ledger/migrations/0036_submodule_projects.ts`.
 
@@ -2612,9 +2612,23 @@ branch, head_sha, default_branch, publication, pull_request, pull_request_error?
 a `pull_request_opened` run event with its `repo`. `get_digest` `ref_events` add the kinds `submodule_merged` and
 `gitlinks_repointed`.
 
-**`merge_run_pr` and the policy poller.** A refusal adds `details.submodule_merge: { phase, repos: [{ repo, state }] }`.
+**`merge_run_pr` and the policy poller.** For an umbrella publish ref with `submodule_pull_request` rows both run
+the ordered merge (`src/ci/submodule-merge.ts`, the `linkedMerge` hook of `mergeOnRequest` and `pollMergePolicies`;
+without the hook such a ref is never merged). The result adds, and every refusal's details add, `submodule_merge: {
+phase: "submodules" | "repoint" | "umbrella" | "merged", repos: [{ repo, paths, pr_number, state: "waiting" |
+"refused" | "merged", merged_sha?, reason? }] }`; `expected_head_sha` may name the published or the repointed tip.
 `merge_event.reason` gains `no_checks_reported`. The step machine is persisted in `submodule_merge` (steps
-`submodule_merged`, `submodule_refused`, `gitlinks_repointed`).
+`submodule_merged`, `submodule_refused`, `gitlinks_repointed`) and recomputed from it on every call; the umbrella's own
+decisions stay `merge_event` rows. Step refusals beyond the gate's reasons (**Delegated**): `merge_failed` (a failed
+G12; the poller does not retry that head), `store_unavailable`, `merge_commit_missing`,
+`merge_commit_off_default_branch`, `gitlink_mismatch`, `repoint_not_fast_forward`, `repoint_push_failed`,
+`secret_scan_blocked`, `submodule_merge_unavailable`; the fetch, push and G12 failures among them are `TOOL_FAILURE`,
+retryable. The repoint commit has one parent (the published tip), changes the linked gitlinks only (checked before
+the push and again before the umbrella gate), carries the context identity and the newest `submodule_merged` time (a
+retry writes the same commit), and has a `git_commit` row (`origin: finalize_only`, event `via: submodule_repoint`);
+the meta-session's publish ref moves to it (compare-and-swap) and the controller pusher pushes it. New
+`submodule_merged` and `gitlinks_repointed` steps are also `ref_event` run events of those kinds on the publishing
+run.
 
 **Audited `gh` argv** (ADR-0050 amendment 1 item 10 continues after G15, §20.7): G16 `pr checks <n> --repo <o>/<r>
 --json bucket` (every reported check, no `--required`; used only for `merge_policy.checks: all_reported`; the §20.7
