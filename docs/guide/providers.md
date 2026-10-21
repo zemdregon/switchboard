@@ -1032,6 +1032,10 @@ Other versions still report `ADAPTER_VERSION_UNVERIFIED` in `doctor`, and the ad
 (T4.68 closed Partial-by-ruling 2026-10-19 without a pass; permission gating is Deferred — see ROADMAP T4.68,
 FR-ADP-09).
 
+Plan usage: `get_capacity` and `switchboard capacity` show the 5 hour, weekly and monthly windows that Kimi's own
+`/usage` display reports, as `provider_reported` (see [MCP server](mcp-server.md) and
+[ADR-0079](../adr/0079-provider-reported-usage-via-cli-usage-display.md)). Switchboard reads no Kimi credential for it.
+
 ### Login
 
 See the [login table](getting-started.md#log-in-to-the-providers-natively) above. Switchboard never runs `kimi login` or

@@ -1447,6 +1447,16 @@ async function runDaemon(
       useCheckRunsFallback: config.ciTrigger.useCheckRunsFallback,
     });
 
+  // FR-CAP-13 (ADR-0079): provider-reported usage for `get_capacity`, one service (one cache) shared by every MCP
+  // session. Only when the entry point supplies it, and never with the test fake switch on (Delegated: a test run
+  // must not start a real provider CLI).
+  const providerUsage = fake.enabled
+    ? undefined
+    : io.providerUsage?.(
+        registry.list().map((a) => a.id),
+        { dataDir: config.dataDir },
+      );
+
   let code = 0;
   try {
     const mcpDeps = {
@@ -1474,6 +1484,7 @@ async function runDaemon(
         modelGroups: config.modelGroups,
       },
       ...(now ? { now } : {}),
+      ...(providerUsage !== undefined ? { providerUsage } : {}),
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
       // T14.8 (FR-CTL-08, ADR-0047 2f): proxied decisions the transition hook does not announce reach the same sinks.
       ...(sinks !== undefined

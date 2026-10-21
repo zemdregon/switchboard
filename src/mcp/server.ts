@@ -145,7 +145,12 @@ import {
   type ResolvedProfile,
 } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
-import { capacityProjection, capacityProviders } from "../capacity/index.js";
+import {
+  attachProviderUsage,
+  capacityProjection,
+  capacityProviders,
+  type ProviderUsageService,
+} from "../capacity/index.js";
 import {
   type CapacitySettings,
   CONTAINER_NOT_IMPLEMENTED,
@@ -407,6 +412,12 @@ export interface McpServerDeps {
   readonly candidateOrder?: readonly ProviderId[];
   /** Clock for `get_capacity` (T6.3) and the routing window (T7.2); defaults to the system clock. */
   readonly now?: () => Date;
+  /**
+   * FR-CAP-13 (ADR-0079): provider-reported plan usage read through each provider CLI's own usage display. When present,
+   * `get_capacity` adds `provider_usage` to every enabled provider the service has a reader for; absent leaves the
+   * output unchanged.
+   */
+  readonly providerUsage?: ProviderUsageService;
   /**
    * T14.8 (FR-CTL-08, ADR-0047 2f): announces a `decide_approval` decision to the notification sinks when the
    * lifecycle's transition hook does not (see `src/control/approval-proxy.ts`). Absent means no sink is configured.
@@ -1994,7 +2005,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
   /**
    * LLD §16.3 `get_capacity` (T6.3; FR-MCP-02, FR-CAP-02, FR-CAP-03): the one capacity projection, for every registered
-   * provider in candidate order or for the one named. Read-only; it never probes or calls a provider.
+   * provider in candidate order or for the one named. Read-only; it never probes or calls a provider, except that a
+   * configured `providerUsage` service (FR-CAP-13, ADR-0079) asks a provider CLI for its own usage display.
    */
   const getCapacity = async (args: Args) => {
     const registered = deps.registry.list().map((a) => a.id);
@@ -2021,7 +2033,15 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
     });
     // T6.7: the affinity block shows this client's own runs only.
-    return capacityProjection(ledger, providers, settings, (deps.now ?? (() => new Date()))(), deps.clientId);
+    const projection = capacityProjection(
+      ledger,
+      providers,
+      settings,
+      (deps.now ?? (() => new Date()))(),
+      deps.clientId,
+    );
+    // FR-CAP-13 (ADR-0079): provider-reported usage, read in parallel and cached by the service.
+    return attachProviderUsage(projection, deps.providerUsage);
   };
 
   /**

@@ -31,7 +31,7 @@ Only one `serve` can hold a data directory at a time.
 | `cancel_run` | run | Requests cancellation of a run (asynchronous; poll `get_run`). | Always (orchestrator only) |
 | `get_artifacts` | run | Lists a run's artifacts (diff, changed files, test report, ...) with hashes; small ones inline. | Always (orchestrator only) |
 | `list_capabilities` | capability | Lists providers with adapter status, version, validated range, auth state and supported trust profiles. | Always (orchestrator only) |
-| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription. Read-only; it never calls a provider. | Always (orchestrator only) |
+| `get_capacity` | capability | Per-provider capacity: controller estimates (`capacity_score`, `confidence`, `throttle_risk`) with their sources, free slots, the circuit breaker, and `reset_at` or `explicit_remaining` only when the provider itself reported them; reported cache token counts where a source names the keys; per-project counts of runs that kept or switched provider and model; one `pacing` entry per configured subscription; for Kimi Code, a `provider_usage` object with the plan usage the CLI itself displays (see below). Read-only; it calls no provider API and makes no model call, but for Kimi Code it starts the `kimi` CLI at most once per cache period to read its own usage display. | Always (orchestrator only) |
 | `explain_route` | capability | Why a run went to its provider, from Switchboard's stored route decision: candidates with eligibility reasons, the recorded task features, weights and per-candidate scores, the selection rule and short deciding factors. Price, model quality and sandbox strength are not sourced, so those terms are equal for every provider. Read-only; no model is asked. | Always (orchestrator only) |
 | `list_runs` | control | Runs visible to this client, newest first, with optional project, status and time filters. | Always; `console` sees it |
 | `get_digest` | control | A per-project digest since a cursor: paused state, budgets, needs-attention runs, finished and failed runs, pending approvals and untrusted summaries. | Always; `console` sees it |
@@ -143,6 +143,20 @@ Switchboard's own records when you ask:
   (see [Routing and affinity](#routing-and-affinity)), or `unrecorded` for a change no affinity reason covers: a
   decision written before milestone 7, a `continue_task` to another provider, a change of reported model alone, or
   affinity turned off.
+- **Provider-reported plan usage (Kimi Code).** For a provider with a usage reader (today only `kimi`), each
+  `get_capacity` entry and `switchboard capacity` (text and `--json`) carries `provider_usage`: `{ status: "ok",
+  provider, source: "provider_reported", observed_at, via, windows, balances }`, where each window has `id`, `label`,
+  `used_fraction`, `remaining_fraction` (provider_reported), `precision`, `reset_at`, `reset_precision_seconds` and an
+  optional `breakdown`, and each balance (the "Extra Usage" booster wallet) has `id`, `label`, `amount`, `currency` and
+  `unlimited`. When the reading cannot be taken or parsed it is `{ status: "unavailable", provider, source, observed_at,
+  via, reason }`, never a guessed figure. Switchboard runs `kimi` under a pseudo-terminal in a private probe directory
+  (`<data_dir>/probes/kimi-usage`) with only `PATH`, `HOME` and terminal variables, types `/usage` and exits; it makes
+  no model call, reads no Kimi token file and calls no Kimi API
+  ([ADR-0079](../adr/0079-provider-reported-usage-via-cli-usage-display.md)). The reading is cached for 300 s (60 s
+  after a failure). Precision is a whole percent and a reset time to the minute. Side effect in Kimi's own state: the
+  probe directory is trusted and listed once (Switchboard answers Kimi's "Trust this folder?" dialog for that directory
+  only), and each read adds one `/usage` line to its input history. `doctor` does not read usage, and the figures are
+  not used by the estimator, pacing or routing. Providers without a reader are unchanged.
 - **Pacing (subscriptions).** When `capacity.subscriptions` are configured, the same projection carries one `pacing`
   entry per subscription: each window's used share, reset and time left with its source (`provider_reported`,
   `operator_declared`, `controller_estimated` or `unknown`), `deferred_until` and the gate verdict (`deferred`,

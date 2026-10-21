@@ -1,5 +1,6 @@
 import type { AdapterRegistry } from "../adapters/index.js";
 import type { LoadReader } from "../capacity/host-load.js";
+import type { ProviderUsageService } from "../capacity/provider-usage.js";
 import type { ContainerRuntime } from "../environment/runtime.js";
 import type { GraderExec } from "../eval/grader.js";
 import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
@@ -40,6 +41,15 @@ export interface CliIo {
   readonly graderExec?: GraderExec;
   /** Test seam (T3.24): the load reader `doctor` uses for `host.max_load1` instead of `os.loadavg()`. */
   readonly loadReader?: LoadReader;
+  /**
+   * FR-CAP-13 (ADR-0079): builds the provider-reported usage service `capacity` and `serve` use, for the registered
+   * adapter ids and the configured data directory (probe directories live under it). Only the real entry point
+   * (`bin.ts`) sets it, so a test calling `main` never starts a provider CLI; absent means no `provider_usage` field.
+   */
+  readonly providerUsage?: (
+    adapterIds: readonly string[],
+    ctx: { readonly dataDir: string },
+  ) => ProviderUsageService | undefined;
 }
 
 /** Stable `--json` schema version for every command (Proposed). */

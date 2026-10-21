@@ -12,8 +12,14 @@ import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeAdapter } from "../adapters/fake/adapter.js";
 import { AdapterRegistry, type ProviderId, type ResolvedProfile } from "../adapters/index.js";
+import { KimiAdapter } from "../adapters/kimi/adapter.js";
 import { ArtifactStore } from "../artifacts/index.js";
-import { CAPACITY_NOTE } from "../capacity/index.js";
+import {
+  CAPACITY_NOTE,
+  type ProviderUsageReader,
+  type ProviderUsageReport,
+  ProviderUsageService,
+} from "../capacity/index.js";
 import { main } from "../cli/index.js";
 import type { CliIo } from "../cli/io.js";
 import { type CapacitySettings, loadConfig } from "../config/index.js";
@@ -54,6 +60,8 @@ let lifecycle: RunLifecycle | undefined;
 const servers: { mcp: SwitchboardMcpServer; client: Client }[] = [];
 
 const registry = () => new AdapterRegistry().register(new FakeAdapter({ script: "/nonexistent/fake-cli.mjs" }));
+/** Fake plus a Kimi adapter on a path that does not exist (its id only; nothing is run). */
+const registryWithKimi = () => registry().register(new KimiAdapter({ executable: "/nonexistent/kimi" }));
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(path.join(tmpdir(), "sb-cap-")));
@@ -115,10 +123,14 @@ function finished(state: "SUCCEEDED" | "FAILED", code: string | null = null, fin
 
 async function connect(
   capacity?: Pick<CapacitySettings, "windowSeconds" | "confidenceRuns" | "subscriptions" | "pacing">,
-  opts?: { candidateOrder?: readonly ProviderId[] },
+  opts?: {
+    candidateOrder?: readonly ProviderId[];
+    providerUsage?: ProviderUsageService;
+    registry?: () => AdapterRegistry;
+  },
 ): Promise<Client> {
   if (!db) openData();
-  const reg = registry();
+  const reg = (opts?.registry ?? registry)();
   const artifacts = new ArtifactStore(path.join(dataDir, "artifacts"));
   const workspace = new WorkspaceManager({
     db: db as Database.Database,
@@ -149,6 +161,7 @@ async function connect(
     artifacts,
     registry: reg,
     ...(opts?.candidateOrder !== undefined ? { candidateOrder: opts.candidateOrder } : {}),
+    ...(opts?.providerUsage !== undefined ? { providerUsage: opts.providerUsage } : {}),
     config: {
       allowedRoots: [root],
       mcpClients: new Map([["c1", { id: "c1", maxTrustProfile: "edit-untrusted" as TrustProfile }]]),
@@ -211,23 +224,28 @@ function expectHonestText(text: string): void {
   expect(text).not.toMatch(/quota left|available quota|%/i);
 }
 
-/** FR-CAP-03 over a JSON surface: the only "remaining" key is explicit_remaining, null or provider-reported. */
+/**
+ * FR-CAP-03 over a JSON surface: the only "remaining" keys are explicit_remaining (null or provider-reported) and, under
+ * a provider_reported `provider_usage` report (FR-CAP-13), a window's remaining_fraction.
+ */
 function expectHonestJson(value: unknown): void {
-  const walk = (v: unknown): void => {
+  const walk = (v: unknown, inReportedUsage: boolean): void => {
     if (Array.isArray(v)) {
-      for (const item of v) walk(item);
+      for (const item of v) walk(item, inReportedUsage);
       return;
     }
     if (v === null || typeof v !== "object") return;
     for (const [k, child] of Object.entries(v)) {
       if (/remaining/i.test(k)) {
+        if (inReportedUsage && k === "remaining_fraction") continue;
         expect(k).toBe("explicit_remaining");
         if (child !== null) expect((child as Json).source).toBe("provider_reported");
       }
-      walk(child);
+      const reported = k === "provider_usage" && (child as Json | null)?.source === "provider_reported";
+      walk(child, inReportedUsage || reported);
     }
   };
-  walk(value);
+  walk(value, false);
 }
 
 describe("get_capacity on the MCP server (T6.3; FR-MCP-02, LLD §16.3)", () => {
@@ -559,5 +577,132 @@ describe("pacing block on get_capacity, capacity and doctor (T6.14, LLD §16.9)"
     expect(Object.keys((inputSchema("get_capacity").properties ?? {}) as object)).toEqual(["provider"]);
     const success = (outputSchema("get_capacity") as { anyOf: { required?: string[] }[] }).anyOf[0];
     expect(success?.required).not.toContain("pacing");
+  });
+});
+
+/** A stub reader with fixed figures (FR-CAP-13); counts its reads. */
+function stubKimiUsage(status: "ok" | "unavailable" = "ok"): { service: ProviderUsageService; reads: () => number } {
+  let reads = 0;
+  const reader: ProviderUsageReader = {
+    provider: "kimi",
+    via: "stub via",
+    async read(at): Promise<ProviderUsageReport> {
+      reads += 1;
+      const base = {
+        provider: "kimi",
+        source: "provider_reported" as const,
+        observed_at: at.toISOString(),
+        via: "stub via",
+      };
+      if (status === "unavailable") return { status, ...base, reason: "Kimi Code is not logged in; run `kimi login`" };
+      return {
+        status,
+        ...base,
+        windows: [
+          {
+            id: "5h",
+            label: "5h limit",
+            used_fraction: 0,
+            remaining_fraction: 1,
+            precision: 0.01,
+            reset_at: "2026-10-14T12:59:00.000Z",
+            reset_precision_seconds: 60,
+          },
+          {
+            id: "monthly",
+            label: "Monthly limit",
+            used_fraction: 0.25,
+            remaining_fraction: 0.75,
+            precision: 0.01,
+            reset_at: null,
+            reset_precision_seconds: null,
+            breakdown: { kimi: 0.05, code: 0.2 },
+          },
+        ],
+        balances: [
+          { id: "balance", label: "Balance", amount: 5, currency: "USD" },
+          { id: "monthly_limit", label: "Monthly limit", amount: null, currency: null, unlimited: true },
+        ],
+      };
+    },
+  };
+  return { service: new ProviderUsageService([reader], { now }), reads: () => reads };
+}
+
+describe("provider-reported usage on get_capacity and capacity (FR-CAP-13, ADR-0079, BR-50)", () => {
+  it("adds provider_usage to kimi only, schema-valid, and leaves the other entries unchanged", async () => {
+    const before = (await capacityTool(await connect(undefined, { registry: registryWithKimi }))).body;
+    expect(before.providers.map((p: Json) => p.provider_usage)).toEqual([undefined, undefined]);
+
+    const stub = stubKimiUsage();
+    const client = await connect(undefined, { registry: registryWithKimi, providerUsage: stub.service });
+    const res = await capacityTool(client); // checked against the published output schema by the SDK
+    expect(res.isError).toBe(false);
+    const byId = Object.fromEntries(res.body.providers.map((p: Json) => [p.provider, p]));
+    expect(byId.fake).toEqual(before.providers.find((p: Json) => p.provider === "fake"));
+    expect(byId.kimi.provider_usage).toMatchObject({
+      status: "ok",
+      provider: "kimi",
+      source: "provider_reported",
+      windows: [{ id: "5h" }, { id: "monthly", breakdown: { kimi: 0.05, code: 0.2 } }],
+    });
+    const { provider_usage: _usage, ...kimiRest } = byId.kimi;
+    expect(kimiRest).toEqual(before.providers.find((p: Json) => p.provider === "kimi"));
+    expectHonestJson(res.body);
+
+    const ajv = new Ajv2020({ strict: false });
+    expect(ajv.validate(outputSchema("get_capacity"), res.body), JSON.stringify(ajv.errors)).toBe(true);
+    const bad = structuredClone(res.body);
+    bad.providers[1].provider_usage.windows[0].quota_left = 1;
+    expect(ajv.validate(outputSchema("get_capacity"), bad)).toBe(false);
+
+    // Cached: a second call does not read again; a provider filter for fake does not read at all.
+    await capacityTool(client);
+    await capacityTool(client, { provider: "fake" });
+    expect(stub.reads()).toBe(1);
+  });
+
+  it("an unavailable report is schema-valid too", async () => {
+    const client = await connect(undefined, {
+      registry: registryWithKimi,
+      providerUsage: stubKimiUsage("unavailable").service,
+    });
+    const res = await capacityTool(client);
+    expect(res.isError).toBe(false);
+    expect(res.body.providers[1].provider_usage).toMatchObject({ status: "unavailable", reason: /kimi login/ });
+  });
+
+  it("capacity --json and the text view show it only when the entry point supplies the service", async () => {
+    const plain = await cli(["capacity", "--json"], { adapters: registryWithKimi() });
+    expect(JSON.parse(plain.out).providers.some((p: Json) => "provider_usage" in p)).toBe(false);
+
+    const stub = stubKimiUsage();
+    const extra = { adapters: registryWithKimi(), providerUsage: () => stub.service };
+    const json = await cli(["capacity", "--json"], extra);
+    expect(json.code).toBe(0);
+    const parsed = JSON.parse(json.out) as Json;
+    expect(parsed.providers[1].provider_usage.status).toBe("ok");
+    expect(parsed.providers[0].provider_usage).toBeUndefined();
+    expectHonestJson(parsed);
+
+    const text = await cli(["capacity"], extra);
+    expect(text.code).toBe(0);
+    expect(text.out).toContain(
+      "  provider-reported usage (via stub via, observed 2026-10-14T12:00:00.000Z):\n" +
+        "    5h limit used 0.00 (remaining 1.00, provider-reported), reset 2026-10-14T12:59:00.000Z\n" +
+        "    Monthly limit used 0.25 (kimi 0.05, code 0.20) (remaining 0.75, provider-reported), reset not reported\n" +
+        "    Balance: 5 USD (provider-reported)\n" +
+        "    Monthly limit: unlimited (provider-reported)\n",
+    );
+    expectHonestText(text.out);
+
+    const down = await cli(["capacity"], {
+      adapters: registryWithKimi(),
+      providerUsage: () => stubKimiUsage("unavailable").service,
+    });
+    expect(down.out).toMatch(
+      /provider-reported usage \(via stub via, observed [^)]+\): unavailable: Kimi Code is not logged in/,
+    );
+    expectHonestText(down.out);
   });
 });

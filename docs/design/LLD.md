@@ -6354,9 +6354,13 @@ the tool covers every registered provider. Output:
 T6.7 adds an optional per-provider `cache` block and a top-level `affinity` block (§16.8). `switchboard capacity
 [--provider <id>] [--json]` prints the same projection: `--json` is the same object, and the text view prints one block
 per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surface, any line or key containing
-"remaining" also contains "provider_reported" or "provider-reported", and no surface prints "quota left", "available
+"remaining" also contains "provider_reported" or "provider-reported" (a `remaining_fraction` key counts as such inside a
+`provider_usage` object whose `source` is `provider_reported`, §16.10), and no surface prints "quota left", "available
 quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
 and `confidence`, labelled "estimate".
+
+FR-CAP-13 (T6.17) adds an optional per-provider `provider_usage` object, present only for a provider with a usage reader
+(§16.10); other providers' entries are byte-identical to before.
 
 T6.14 adds an optional top-level `pacing` array, one entry per subscription (§16.9). It is omitted when no subscription
 is configured, so an unconfigured projection stays byte-identical. `doctor` prints one pacing line per subscription.
@@ -6688,6 +6692,57 @@ breaker's probe): a queued run whose provider is deferred stays in `QUEUED`, one
 including `privileged` and `require_provider` runs and runs admitted to an undeferred provider whose subscription
 became deferred before dispatch. Nothing creates a run, a probe or a provider call. Tests:
 `src/lifecycle/pacing-gate.test.ts`, `src/routing/pacing-admission.test.ts`.
+
+### 16.10 Provider usage readers (FR-CAP-13)
+
+*Added 2026-10-21 by T6.17 ([ADR-0079](../adr/0079-provider-reported-usage-via-cli-usage-display.md), Delegated).*
+
+```ts
+interface ProviderUsageReader {
+  readonly provider: string;             // canonical adapter id, e.g. "kimi"
+  read(signal: AbortSignal): Promise<ProviderUsageReading>;
+}
+```
+
+`ProviderUsageService` (`src/capacity/provider-usage.ts`) holds the readers and an in-memory cache. A success is kept
+300 s and a failure 60 s; concurrent callers for one provider share one in-flight read (single-flight). Nothing is
+persisted. `get_capacity` and `switchboard capacity` call it for providers that have a reader; `doctor` does not.
+
+**Kimi reader** (`KimiUsageReader`, `src/adapters/kimi/usage.ts`). It runs `kimi` under a pseudo-terminal through
+util-linux or BSD `script`, in a stable, private probe directory `<data_dir>/probes/kimi-usage` (created 0700; refused
+unless it is a real, empty directory owned by the controller's user), with an environment of `PATH` and `HOME` (and
+`TERM`, `COLUMNS`, `LINES`). It types `/usage`, collects the terminal text, and ends the CLI with Ctrl-C. Kimi trusts
+folders one by one, so the first read meets its "Trust this folder?" dialog: the reader answers "Trust and continue"
+only when the dialog names the probe directory and that option is selected, and fails closed otherwise; it also fails
+closed, typing nothing, when the prompt does not appear. The pure parser `parseKimiUsagePanel` reads the "Plan usage"
+panel: rows `5h limit`, `Weekly limit` and `Monthly limit` with `N% used` and `resets in 1d 2h 3m`, a `kimi N% · code
+M%` breakdown on the monthly row, and an optional "Extra Usage" booster wallet. Pinned by
+`src/adapters/kimi/fixtures/usage-tui-2.1.1.raw`. No model call, no session, no credential read, no request to the
+provider's API. Side effects: one trust record and one workspace-list entry for the probe directory (once) and one
+`/usage` line of input history per read.
+
+Output, per provider with a reader:
+
+```jsonc
+"provider_usage": {
+  "status": "ok", "provider": "kimi", "source": "provider_reported",
+  "observed_at": "<ISO time>", "via": "Kimi Code TUI /usage (the CLI's own credentials; Switchboard reads terminal text only)",
+  "windows": [ { "id": "5h", "label": "5h limit",
+                 "used_fraction": 0.12, "remaining_fraction": 0.88,   // remaining_fraction is provider_reported
+                 "precision": 0.01,                                    // whole percent
+                 "reset_at": "<ISO time>", "reset_precision_seconds": 60,
+                 "breakdown": { "kimi": 0.1, "code": 0.02 } } ],       // optional
+  "balances": [ { "id": "booster", "label": "Extra Usage", "amount": 0, "currency": "<code>", "unlimited": false } ]
+}
+// or, when the reading cannot be taken or parsed:
+"provider_usage": { "status": "unavailable", "provider": "kimi", "source": "provider_reported",
+                    "observed_at": "<ISO time>", "via": "kimi tui /usage", "reason": "<short reason>" }
+```
+
+The reset time is the observation time plus the relative offset, so it is exact to the minute only. Wording rule
+(FR-CAP-03): any line or key with "remaining" also says `provider_reported` or provider-reported. The reading is
+shown only: it is not an input to the estimator, the pacing gate or routing (**Proposed** follow-up). Tests:
+`src/adapters/kimi/usage.test.ts`, `src/capacity/provider-usage.test.ts`, `src/mcp/get-capacity.test.ts`.
 
 ## 17. Routing (M7)
 

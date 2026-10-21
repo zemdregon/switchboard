@@ -1057,6 +1057,74 @@ const CAPABILITIES = {
 /** `list_projects` (LLD §3 project additions): no paths, remotes, identities or image references (FR-MCP-04). */
 /** T6.3 (LLD §16.3, ADR-0043 item 6): the capacity projection; estimates and provider-reported values kept apart. */
 const NULLABLE_NUMBER = { type: ["number", "null"] } as const;
+const FRACTION = { type: "number", minimum: 0, maximum: 1 } as const;
+/** FR-CAP-13 (ADR-0079): one provider-reported usage report (`src/capacity/provider-usage.ts`). */
+const PROVIDER_USAGE_BASE = {
+  provider: { type: "string" },
+  source: { const: "provider_reported" },
+  observed_at: { type: "string" },
+  via: { type: "string" },
+} as const;
+const PROVIDER_USAGE = {
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["status", "provider", "source", "observed_at", "via", "windows", "balances"],
+      properties: {
+        status: { const: "ok" },
+        ...PROVIDER_USAGE_BASE,
+        windows: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "id",
+              "label",
+              "used_fraction",
+              "remaining_fraction",
+              "precision",
+              "reset_at",
+              "reset_precision_seconds",
+            ],
+            properties: {
+              id: { type: "string" },
+              label: { type: "string" },
+              used_fraction: FRACTION,
+              remaining_fraction: FRACTION,
+              precision: { type: "number", exclusiveMinimum: 0 },
+              reset_at: { type: ["string", "null"] },
+              reset_precision_seconds: { type: ["integer", "null"], minimum: 1 },
+              breakdown: { type: "object", additionalProperties: FRACTION },
+            },
+          },
+        },
+        balances: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "label", "amount", "currency"],
+            properties: {
+              id: { type: "string" },
+              label: { type: "string" },
+              amount: NULLABLE_NUMBER,
+              currency: { type: ["string", "null"] },
+              unlimited: { const: true },
+            },
+          },
+        },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["status", "provider", "source", "observed_at", "via", "reason"],
+      properties: { status: { const: "unavailable" }, ...PROVIDER_USAGE_BASE, reason: { type: "string" } },
+    },
+  ],
+} as const;
 const CAPACITY = {
   type: "object",
   additionalProperties: false,
@@ -1159,6 +1227,8 @@ const CAPACITY = {
               key_source: { type: "string" },
             },
           },
+          // FR-CAP-13 (ADR-0079, BR-50): the provider's own plan usage, present only for a provider with a reader.
+          provider_usage: PROVIDER_USAGE,
           concurrency_available: { type: "integer", minimum: 0 },
           concurrency_limit: { type: "integer", minimum: 1 },
           breaker: {

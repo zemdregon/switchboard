@@ -11,6 +11,7 @@
  */
 
 import { type CacheObservation, cacheObservation } from "./cache.js";
+import type { ProviderUsageReport } from "./provider-usage.js";
 
 /** Breaker states as stored in `provider_health` (LLD §1, §16.4). */
 export type BreakerState = "CLOSED" | "OPEN" | "HALF_OPEN";
@@ -91,6 +92,11 @@ export interface ProviderCapacity {
   };
   /** T6.7 (FR-CAP-08): reported cache counts over the window; absent when no sourced key or no row holds one. */
   cache?: CacheObservation;
+  /**
+   * FR-CAP-13 (ADR-0079): the provider's own plan usage, read through its CLI's usage display. Present only when a
+   * usage reader is configured for this provider (`get_capacity`, `switchboard capacity`); never from the ledger.
+   */
+  provider_usage?: ProviderUsageReport;
 }
 
 /** Failure codes that signal throttling (`elevated`, LLD §16.2 step 3) and that the breaker counts (§16.4). */
