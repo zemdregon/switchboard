@@ -6817,7 +6817,7 @@ under `~/.codex` (ADR-0003).
 
 `accountId` and every other field are dropped.
 
-**Optional report fields** (ADR-0085). A report may also carry `period` (`kind`: `weekly`, `monthly`, `daily` or
+**Optional report fields** (ADR-0083). A report may also carry `period` (`kind`: `weekly`, `monthly`, `daily` or
 `unknown`; `starts_at`; `resets_at`), the provider's current usage period even when no used share is reported;
 `amounts[]` (`id`, `value`, `unit: "unspecified"`, `key`), reported amounts whose unit the provider does not state; and
 `unreported[]`, keys the reader knows but the answer omitted (unreported, never 0). Codex sets none of them.
