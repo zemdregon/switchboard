@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AdapterRegistry } from "../adapters/registry.js";
+import type { ProviderAdapter } from "../adapters/types.js";
 import { renderDoctor, resolveGroupMemberForDoctor, runDoctor } from "../cli/doctor.js";
 import type { CliIo } from "../cli/io.js";
 import { ModelRegistry } from "../models/registry.js";
@@ -418,12 +419,14 @@ describe("doctor model groups reporting (T7.13)", () => {
         code: "CAPABILITY_MISSING",
       });
 
-      // Member 4: adapter rejects model -> CAPABILITY_MISSING
+      // Member 4 (ADR-0077): Codex passes a requested model in its approved bypass cell only, so the member resolves
+      // with that limit named (before ADR-0077 it was CAPABILITY_MISSING).
       expect(members[3]).toMatchObject({
         provider: "codex",
         model: "any-model",
-        status: "unresolvable",
-        code: "CAPABILITY_MISSING",
+        status: "resolved",
+        code: null,
+        resolution: "any-model (approved bypass cell only)",
       });
 
       // Text render check
@@ -431,7 +434,27 @@ describe("doctor model groups reporting (T7.13)", () => {
       expect(rendered).toContain("claude-code/direct-placeholder: direct-placeholder");
       expect(rendered).toContain("claude-code/fast-alias: alias -> direct-placeholder");
       expect(rendered).toContain("claude-code/unresolvable-placeholder: CAPABILITY_MISSING");
-      expect(rendered).toContain("codex/any-model: CAPABILITY_MISSING");
+      expect(rendered).toContain("codex/any-model: any-model (approved bypass cell only)");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("resolveGroupMemberForDoctor: without requestedModelFlag a not_accepted reportedModelFlag is CAPABILITY_MISSING", () => {
+    const { configPath, cleanup } = makeTempConfig({});
+    try {
+      const loaded = loadConfig({ configPath });
+      const adapters = new AdapterRegistry();
+      // An adapter without the ADR-0077 declaration: the pre-ADR-0077 rule still applies.
+      const legacy = { id: "codex", reportedModelFlag: { kind: "not_accepted", detail: "legacy adapter" } };
+      adapters.register(legacy as unknown as ProviderAdapter);
+      const result = resolveGroupMemberForDoctor(
+        { provider: "codex", model: "m-1" },
+        loaded,
+        adapters,
+        new ModelRegistry(),
+      );
+      expect(result).toMatchObject({ status: "unresolvable", code: "CAPABILITY_MISSING", detail: "legacy adapter" });
     } finally {
       cleanup();
     }

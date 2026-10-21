@@ -166,6 +166,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
   readonly gitWriteControl = OPENCODE_GIT_WRITE_CONTROL;
   /** TDD §4.10: `Unverified: T4.51` (`--session <id>` resumed from another directory, [LIVE] 15a). */
   readonly resumeCwd = "unverified" as const;
+  /** ADR-0077: a requested model reaches the CLI only in the approved bypass cell. */
+  readonly requestedModelFlag = {
+    cells: "bypass",
+    detail: "--model <id> in the approved bypass cell, the only compiled cell (ADR-0077; opencode run --help: --model)",
+  } as const;
   readonly gitCapabilities = OPENCODE_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];
