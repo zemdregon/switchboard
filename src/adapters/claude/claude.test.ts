@@ -1237,8 +1237,21 @@ describe("claude parseEvent", () => {
     expect(events.filter((e) => e.kind === "session_bound")).toEqual([
       { kind: "session_bound", nativeSessionId: DEFAULT_SESSION_ID, model: "synthetic-model" },
     ]);
-    expect(events).toContainEqual({ kind: "tool_call", tool: "read", name: "Read", target: "README.md" });
-    expect(events).toContainEqual({ kind: "tool_call", tool: "edit", name: "Edit", target: "hello.txt" });
+    // ADR-0096: `callId` is the provider's `tool_use.id`, kept in memory only to match a later denial of the same call.
+    expect(events).toContainEqual({
+      kind: "tool_call",
+      tool: "read",
+      name: "Read",
+      target: "README.md",
+      callId: "toolu_synthetic_1",
+    });
+    expect(events).toContainEqual({
+      kind: "tool_call",
+      tool: "edit",
+      name: "Edit",
+      target: "hello.txt",
+      callId: "toolu_synthetic_2",
+    });
     expect(events).toContainEqual({ kind: "message", role: "assistant", text: "Updated hello.txt." });
     expect(events).toContainEqual({
       kind: "usage",
@@ -1271,14 +1284,28 @@ describe("claude parseEvent", () => {
     });
     expect(rl).toContainEqual({ kind: "provider_error", category: "rate_limit", message: "rate_limit" });
     const pd = parseAll("permission-denied.jsonl").events;
-    expect(pd).toContainEqual({ kind: "permission_denied", tool: "Bash" });
+    // ADR-0096: the call id (to match the guard's view of the same call) and what was denied, both in memory only.
+    expect(pd).toContainEqual({
+      kind: "permission_denied",
+      tool: "Bash",
+      callId: "toolu_synthetic_3",
+      detail: "`synthetic-command`",
+    });
     // the command line is a transient field for the tool-call guard (ADR-0039); `startAdapterRun` drops it before storage
-    expect(pd).toContainEqual({ kind: "tool_call", tool: "shell", name: "Bash", command: "synthetic-command" });
+    expect(pd).toContainEqual({
+      kind: "tool_call",
+      tool: "shell",
+      name: "Bash",
+      command: "synthetic-command",
+      callId: "toolu_synthetic_3",
+    });
   });
 
   it("maps system/permission_denied once, de-duplicated against result.permission_denials (C-10)", () => {
     const { events, state } = parseAll("permission-denied-system.jsonl");
-    expect(events.filter((e) => e.kind === "permission_denied")).toEqual([{ kind: "permission_denied", tool: "Bash" }]);
+    expect(events.filter((e) => e.kind === "permission_denied")).toEqual([
+      { kind: "permission_denied", tool: "Bash", callId: "toolu_scrubbed_1" },
+    ]);
     expect(state.unknownEvents).toBe(0);
     // Without the system event, the result's entry is still reported (the existing fixture).
     expect(parseAll("permission-denied.jsonl").events.filter((e) => e.kind === "permission_denied")).toHaveLength(1);

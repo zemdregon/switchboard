@@ -4,6 +4,9 @@
   tool-call guard has a bypass mode) and [ADR-0027](0027-ref-snapshots-and-violation-handling.md) in part (refs an
   agent's own fetch updates are expected, and an approved bypass run's own run-branch and `HEAD` changes are restored
   without a violation). The ADR-0072 follow-up list of local Git verbs gains `pull`. The rest of those ADRs stands.
+  Amended in part 2026-10-22 by [ADR-0096](0096-git-guard-reads-and-refused-local-verbs.md): redirections are not
+  arguments, the path form of `git checkout` (not only `--`) is `local` in every run, the remote read forms are reads
+  in every run, and a guard `write` on a call the provider refused as a local Git verb does not fail the run.
 - Date: 2026-10-21
 - Decided by: owner ruling of 2026-10-21, relayed in the operator task `fix/bypass-git-read` (Linus, who holds standing
   design authority), for the outcome: Ampere prod runs in bypass, and bypass may act outside its worktree; Git

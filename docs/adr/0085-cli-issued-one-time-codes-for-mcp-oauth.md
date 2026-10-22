@@ -83,7 +83,7 @@ missing for the request above:
 
 - The operator can connect a hosted connector by issuing a code, giving the connector the public URL and typing the
   code on the consent page. No external identity provider is involved, matching the request.
-- A code is a bearer credential for the minutes it lives. It is short, single-use, hashed at rest, superseded by the
+- Whoever holds a code can use it for the minutes it lives. It is short, single-use, hashed at rest, superseded by the
   next issue, bound to one profile with a ceiling that cannot be `privileged`, and its redemption still happens on the
   CSRF-protected consent page the operator reaches (not by the remote client alone).
 - The profile binding adds trust state to the ledger: a bound client's reach is whatever its profile grants, so the

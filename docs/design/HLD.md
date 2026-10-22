@@ -497,7 +497,7 @@ projects (Q-78); and a refused cross-subject lookup writes no audit event, becau
 with T13.11 (ADR-0065): a Client Identifier URL on a public host makes Switchboard send one bounded `GET` there, so a
 host the operator would not want contacted learns that a metadata document was asked for; the address policy decides
 by the resolved address, so a host that is meant to be private cannot be a CIMD client (it registers through DCR).
-Added with T13.12 (ADR-0085): an unexpired profile-bound code is a bearer credential for at most 60 minutes (10 by
+Added with T13.12 (ADR-0085): an unexpired profile-bound code works for whoever holds it for at most 60 minutes (10 by
 default), so a code that leaks before it is typed lets its holder approve a client bound to that profile's ceiling
 (never `privileged`); the lockout counters live in memory and reset on restart; and a wrong `client_ip_header`
 configuration (a proxy that forwards a client-supplied header) lets one attacker spread attempts over many apparent

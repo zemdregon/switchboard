@@ -1,6 +1,9 @@
 # ADR-0039: Switchboard-side tool-call guard, provider-state reach and repository agent config refusal
 
-- Status: Proposed
+- Status: Proposed.
+  Amended in part 2026-10-22 by [ADR-0096](0096-git-guard-reads-and-refused-local-verbs.md): a `git_write` verdict on a
+  call the provider itself refused as a local Git verb does not fail the run, and every adapter fails a flagged call
+  the provider did not refuse.
 - Date: 2026-10-14
 - Decided by: Delegated (agent, 2026-10-14, at the orchestrator's request), under [owner decision
   25](../ROADMAP.md#42-owner-decisions) for everything outside bypass mode. Not a zemdregon quote and not

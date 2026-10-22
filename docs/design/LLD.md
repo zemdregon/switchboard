@@ -4795,6 +4795,21 @@ tool-call guard's bypass mode (`gitWriteInCommand(command, { bypass: true })`, `
 fetch`, `git remote update`, `git ls-remote` and remote reads run; `commit`, `merge`, `cherry-pick`, `revert`, `reset`,
 a plain `pull` and `checkout -- <path>` are the non-fatal verdict `local`; everything else stays `write`.
 
+*Amended 2026-10-22 ([ADR-0096](../adr/0096-git-guard-reads-and-refused-local-verbs.md), operator task, mechanism
+Delegated):* `gitWriteInCommand` splits with `splitSimpleCommands(command, { redirections: "drop" })`, so redirections
+and their targets are not arguments. In every run, `isCheckoutPathForm` makes the path form of `git checkout` (only
+path-safe options; `--` with a path, two or more positional words, or one word that cannot be a ref name or names a
+file) the verdict `local`, and `git remote` / `-v` / `show` / `get-url` are reads (`update` stays bypass-only). For
+the deny-rule classifier `gitDenyRuleSecurityReason`, those remote reads and read-only `gh` forms (`GH_READ_FORMS`:
+`pr view|list|checks|diff|status`, `issue view|list|status`, `run view|list`, `repo view`, `release view|list`,
+`workflow view|list`, `gh status`) are local. `tool_call` and `permission_denied` carry the provider's call id as the
+in-memory `callId` (Claude Code), never stored; `recoveredDenialWarnings` and `classifyCommon` skip a `git_write`
+violation whose `callId` matches a `permission_denied` of class `git_rule_local`. Claude Code and the fake adapter
+judge violations whenever one exists (`hasDenialOrViolation`), and Codex's clean success excludes a flagged call.
+A Claude Code `permission_denied` also carries an in-memory `detail` from `deniedCommandSummary` (program and
+subcommand words only, other words as `…`); `classifyCommon` reports the first blocking denial as `denied: <tool>
+(<class>: <detail>)`.
+
 ### 12.6 Push algorithm
 
 1. Policy `branch`; the BR-31 credential-reach rule holds; the run (or, for an operator command, the meta-session) has a

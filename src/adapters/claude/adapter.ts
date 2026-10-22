@@ -78,7 +78,7 @@ import { DEFAULT_IDLE_MS, DEFAULT_KILL_GRACE_MS, DEFAULT_WALL_CLOCK_MS } from ".
 import { CHANNEL_MCP_CONFIG_FILE, TOOL_NAMES, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../../git/tool-protocol.js";
 import type { PrivilegedScope } from "../../policy/types.js";
 import { channelToolRule, SAFE_MODE_FLAG } from "../audit.js";
-import { classifyCommon, recoveredDenialWarnings } from "../failure.js";
+import { classifyCommon, hasDenialOrViolation, recoveredDenialWarnings } from "../failure.js";
 import {
   GIT_GLOBAL_FLAGS,
   GIT_GLOBAL_OPTIONS_WITH_VALUE,
@@ -883,7 +883,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       ...(summary ? { summary } : {}),
     };
     // ADR-0072: recovered `profile`-class denials do not fail a run that otherwise succeeded; they become warnings.
-    const warnings = events.some((e) => e.kind === "permission_denied") ? recoveredDenialWarnings(events) : [];
+    // ADR-0096: a guard-flagged call with no denial is judged too (it blocks unless the provider refused it).
+    const warnings = hasDenialOrViolation(events) ? recoveredDenialWarnings(events) : [];
     const clean =
       exit.outcome === "exited" &&
       exit.exitCode !== null &&

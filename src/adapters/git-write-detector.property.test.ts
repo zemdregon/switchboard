@@ -21,9 +21,16 @@ const filler = () =>
 
 /**
  * The words that make `sub` a write: every subcommand in the list is one on its own except `git branch`, whose bare
- * and listing forms are read-only, so it is given a delete (`-D x`).
+ * and listing forms are read-only, so it is given a delete (`-D x`); `git remote`, whose bare form lists remotes
+ * (ADR-0096), so it is given an `add`; and `git checkout`, whose path form only rewrites files (ADR-0096), so it is
+ * given a branch creation (`-b x`).
  */
-const writeForm = (sub: string): string => (sub === "branch" ? "branch -D x" : sub);
+const WRITE_FORMS: Readonly<Record<string, string>> = {
+  branch: "branch -D x",
+  remote: "remote add x",
+  checkout: "checkout -b x",
+};
+const writeForm = (sub: string): string => WRITE_FORMS[sub] ?? sub;
 
 describe("gitWriteInCommand properties (T8.11)", () => {
   it("every generated write subcommand is refused, however its words are quoted", () => {

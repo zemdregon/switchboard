@@ -654,7 +654,8 @@ export class CodexAdapter implements ProviderAdapter {
       ...(nativeSessionId ? { nativeSessionId } : {}),
       ...(summary ? { summary } : {}),
     };
-    // Proposed, fail closed: any error, denial or sandbox event fails the run even if a later turn completed.
+    // Proposed, fail closed: any error, denial or sandbox event, or a call the tool-call guard flagged (ADR-0039,
+    // ADR-0096), fails the run even if a later turn completed.
     const clean =
       exit.outcome === "exited" &&
       exit.exitCode !== null &&
@@ -666,7 +667,8 @@ export class CodexAdapter implements ProviderAdapter {
           e.kind === "provider_error" ||
           e.kind === "permission_denied" ||
           e.kind === "sandbox_violation" ||
-          e.kind === "rate_limit",
+          e.kind === "rate_limit" ||
+          (e.kind === "tool_call" && e.violation !== undefined),
       );
     if (clean) return { ok: true, ...base };
     const c = this.classifyFailure({

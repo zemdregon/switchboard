@@ -295,7 +295,7 @@ describe("security-class or unclassified denials still fail (ADR-0072)", () => {
     await failsAsToday(
       plan({ denials: [DENIED_BASH, { tool: "Bash", class: "git_write" }] }),
       "PERMISSION_BLOCKED",
-      /^denied: Bash$/,
+      /^denied: Bash \(git_write\)$/,
     );
   });
 
@@ -308,7 +308,7 @@ describe("security-class or unclassified denials still fail (ADR-0072)", () => {
     await failsAsToday(
       plan({ denials: [{ tool: "Write", class: "outside_worktree" }] }),
       "PERMISSION_BLOCKED",
-      /^denied: Write$/,
+      /^denied: Write \(outside_worktree\)$/,
     );
   });
 

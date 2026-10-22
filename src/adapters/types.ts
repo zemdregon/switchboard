@@ -344,6 +344,11 @@ export type NormalizedEvent =
       command?: string;
       /** Set by `startAdapterRun` when Switchboard's own tool-call guard fired (Q-62 to Q-65, ADR-0039). */
       violation?: { kind: "git_write" | "provider_state"; reason: string };
+      /**
+       * ADR-0096: the provider's own id of this call (Claude Code `tool_use.id`), in memory only, never stored: it lets
+       * a later `permission_denied` of the same call be matched (`recoveredDenialWarnings`).
+       */
+      callId?: string;
     }
   | { kind: "message"; role: "assistant"; text: string }
   | { kind: "usage"; source: "provider_reported"; metrics: Record<string, number | string | null> }
@@ -357,6 +362,14 @@ export type NormalizedEvent =
        * absent class, keeps failing the run (fail closed).
        */
       denial?: DenialClass;
+      /** ADR-0096: the denied call's provider id (Claude Code `tool_use_id`), in memory only, never stored. */
+      callId?: string;
+      /**
+       * ADR-0096: what was denied, for the run's failure detail only (never stored as an event): the denied command's
+       * program and subcommand words (`gh pr create`, `git push`; no option, path or value) and the reason the denial is
+       * or is not recoverable, built by `deniedCommandSummary` (`git-write.ts`). Absent when the command is unknown.
+       */
+      detail?: string;
     }
   | { kind: "sandbox_violation"; detail: string }
   | { kind: "provider_error"; category: string; message: string }

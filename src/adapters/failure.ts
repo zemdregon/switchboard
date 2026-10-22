@@ -56,16 +56,26 @@ export function classifyCommon(
   if (exit.outcome === "crashed" || exit.outcome === "spawn_error") {
     return { code: "PROCESS_CRASH", detail: exit.signal ? `signal ${exit.signal}` : exit.outcome };
   }
-  // ADR-0039: Switchboard's own tool-call guard fired, whatever the provider's policy did.
+  // ADR-0039: Switchboard's own tool-call guard fired, whatever the provider's policy did (ADR-0096: except a local Git
+  // verb the provider itself refused, which never ran).
+  const refused = refusedLocalGitCalls(events);
   for (const e of events) {
-    if (e.kind !== "tool_call" || e.violation === undefined) continue;
+    if (e.kind !== "tool_call" || e.violation === undefined || isRefusedLocalGit(e, refused)) continue;
     if (e.violation.kind === "git_write") {
       return { code: "PERMISSION_BLOCKED", detail: `git write attempted: ${e.violation.reason}` };
     }
     return { code: "SANDBOX_VIOLATION", detail: `provider state reached: ${e.violation.reason}` };
   }
+  // ADR-0096: the detail names the denial that blocks (the first one of a class that is not recoverable, else the first)
+  // and what was denied (program and subcommand words only), so the run history says what was refused.
+  const denials = events.filter((e) => e.kind === "permission_denied");
+  const blocking = denials.find((e) => e.denial === undefined || RECOVERABLE_DENIALS[e.denial] === undefined);
   for (const e of events) {
-    if (e.kind === "permission_denied") return { code: "PERMISSION_BLOCKED", detail: `denied: ${e.tool}` };
+    if (e.kind === "permission_denied") {
+      const d = blocking ?? e;
+      const what = [d.denial, d.detail].filter((x) => x !== undefined).join(": ");
+      return { code: "PERMISSION_BLOCKED", detail: `denied: ${d.tool}${what === "" ? "" : ` (${what})`}` };
+    }
     if (e.kind === "sandbox_violation") return { code: "SANDBOX_VIOLATION", detail: e.detail };
   }
   for (const e of events) {
@@ -97,9 +107,10 @@ const WARNING_TOOL = /^[A-Za-z0-9_.:-]{1,64}$/;
  */
 export function recoveredDenialWarnings(events: readonly NormalizedEvent[]): RunWarning[] | undefined {
   const counts = new Map<string, RunWarning>();
+  const refused = refusedLocalGitCalls(events);
   for (const e of events) {
     if (e.kind === "provider_error" || e.kind === "sandbox_violation") return undefined;
-    if (e.kind === "tool_call" && e.violation !== undefined) return undefined;
+    if (e.kind === "tool_call" && e.violation !== undefined && !isRefusedLocalGit(e, refused)) return undefined;
     if (e.kind !== "permission_denied") continue;
     const code = e.denial !== undefined ? RECOVERABLE_DENIALS[e.denial] : undefined;
     if (code === undefined) return undefined;
@@ -109,6 +120,38 @@ export function recoveredDenialWarnings(events: readonly NormalizedEvent[]): Run
     counts.set(`${code} ${tool}`, w);
   }
   return [...counts.values()];
+}
+
+/**
+ * ADR-0096: whether {@link recoveredDenialWarnings} has anything to judge: a `permission_denied` event or a `tool_call`
+ * the tool-call guard flagged. Adapters that call it only when a denial exists let a flagged call with no denial (a Git
+ * write the provider's deny rules did not stop) through as a success; this closes that gap.
+ */
+export function hasDenialOrViolation(events: readonly NormalizedEvent[]): boolean {
+  return events.some((e) => e.kind === "permission_denied" || (e.kind === "tool_call" && e.violation !== undefined));
+}
+
+/**
+ * ADR-0096: the provider ids of calls the provider reported refusing with a Git deny rule whose every Git invocation is
+ * a read or a local ref verb (`git_rule_local`: `git checkout <path>`, `git branch feature`, never a push, remote
+ * change, configuration, `gh` write or repository redirect). Such a call never ran.
+ */
+function refusedLocalGitCalls(events: readonly NormalizedEvent[]): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const e of events) {
+    if (e.kind === "permission_denied" && e.denial === "git_rule_local" && e.callId !== undefined) ids.add(e.callId);
+  }
+  return ids;
+}
+
+/**
+ * ADR-0096: a tool-call guard `git_write` violation on a call the provider refused as a local Git verb (matched by the
+ * provider's call id) does not block: the command never ran, its denial is already a `GIT_RULE_DENIED_RECOVERED`
+ * warning, and had it run anyway its only effect is on refs the FR-GIT-03 ref check sees (a ref change then still fails
+ * a run with recovered denials). A `provider_state` violation, or a call with no matching refusal, still blocks.
+ */
+function isRefusedLocalGit(e: NormalizedEvent, refused: ReadonlySet<string>): boolean {
+  return e.kind === "tool_call" && e.violation?.kind === "git_write" && e.callId !== undefined && refused.has(e.callId);
 }
 
 /** ADR-0072: the recoverable denial classes and their warning codes; every other class (and none) blocks. */

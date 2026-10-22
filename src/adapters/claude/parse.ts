@@ -26,7 +26,7 @@
  * `rate_limit_event` whose `unifiedWindows` carry the account's 5-hour and 7-day used share and reset; they become a
  * `provider_reported` `usage` event (`./usage.ts`).
  */
-import { GIT_RULE_COMMAND_MAX_CHARS, gitDenyRuleSecurityReason } from "../git-write.js";
+import { deniedCommandSummary, GIT_RULE_COMMAND_MAX_CHARS, gitDenyRuleSecurityReason } from "../git-write.js";
 import type { DenialClass, NormalizedEvent, ParseState } from "../types.js";
 import { claudeUsageMetrics } from "./usage.js";
 
@@ -90,7 +90,15 @@ function toolCall(block: Json): NormalizedEvent {
   // `startAdapterRun` evaluates (ADR-0039) and drops before the event is stored.
   const target = tool === "read" || tool === "edit" ? (str(input?.file_path) ?? str(input?.path)) : undefined;
   const command = tool === "shell" ? str(input?.command) : undefined;
-  return { kind: "tool_call", tool, name, ...(target ? { target } : {}), ...(command ? { command } : {}) };
+  const callId = str(block.id);
+  return {
+    kind: "tool_call",
+    tool,
+    name,
+    ...(target ? { target } : {}),
+    ...(command ? { command } : {}),
+    ...(callId ? { callId } : {}),
+  };
 }
 
 /** Proposed bound on remembered `Bash` commands per parse; past it a `rule` denial finds no command (fail closed). */
@@ -153,7 +161,18 @@ function systemDenialEvents(e: Json, state: ParseState): NormalizedEvent[] {
   const command = id !== undefined ? state.claudeBashCommands?.get(id) : undefined;
   if (id !== undefined) state.claudeBashCommands?.delete(id);
   const denial = claudeDenialClass(tool, str(e.decision_reason_type), command);
-  return [...bindSession(e, state), { kind: "permission_denied", tool, ...(denial ? { denial } : {}) }];
+  // ADR-0096: the failure detail names what was denied (program and subcommand words only; the event is not stored).
+  const detail = deniedCommandSummary(command, { reason: denial === "git_write" });
+  return [
+    ...bindSession(e, state),
+    {
+      kind: "permission_denied",
+      tool,
+      ...(denial ? { denial } : {}),
+      ...(id !== undefined ? { callId: id } : {}),
+      ...(detail !== undefined ? { detail } : {}),
+    },
+  ];
 }
 
 /**
@@ -192,7 +211,14 @@ function resultEvents(e: Json, state: ParseState): NormalizedEvent[] {
     const d = obj(raw);
     const id = str(d?.tool_use_id);
     if (id !== undefined && state.claudeDeniedToolUseIds?.has(id)) continue; // already reported from system/permission_denied
-    out.push({ kind: "permission_denied", tool: str(d?.tool_name) ?? "unknown" });
+    // Unclassified (no decision reason here: fail closed); ADR-0096: the failure detail still names the command.
+    const detail = deniedCommandSummary(id !== undefined ? state.claudeBashCommands?.get(id) : undefined);
+    out.push({
+      kind: "permission_denied",
+      tool: str(d?.tool_name) ?? "unknown",
+      ...(id !== undefined ? { callId: id } : {}),
+      ...(detail !== undefined ? { detail } : {}),
+    });
   }
   out.push(...errorEvent(e));
   const subtype = str(e.subtype);

@@ -80,8 +80,20 @@ describe("claudeDenialClass (ADR-0072 mapping)", () => {
     const state = createParseState();
     const events: NormalizedEvent[] = fixtureLines().flatMap((l) => parseClaudeLine(l, state));
     expect(events.filter((e) => e.kind === "permission_denied")).toEqual([
-      { kind: "permission_denied", tool: "Bash", denial: "profile" },
-      { kind: "permission_denied", tool: "Bash", denial: "profile" },
+      {
+        kind: "permission_denied",
+        tool: "Bash",
+        denial: "profile",
+        callId: "toolu_recovered_1",
+        detail: "`synthetic-build-step-1`",
+      },
+      {
+        kind: "permission_denied",
+        tool: "Bash",
+        denial: "profile",
+        callId: "toolu_recovered_2",
+        detail: "`synthetic-build-step-2`",
+      },
     ]);
     expect(state.unknownEvents).toBe(1); // the `_fixture` comment line only
   });
@@ -149,7 +161,9 @@ describe("Claude subcommandResults denials by command (ADR-0072 follow-up 2)", (
   it("maps subcommandResults like rule: a local Git read is recoverable, anything else fails", () => {
     expect(claudeDenialClass("Bash", "subcommandResults", PROD_SUBCOMMAND_COMMAND)).toBe("git_rule_local");
     expect(claudeDenialClass("Bash", "subcommandResults", "git log -1 && git push origin x")).toBe("git_write");
-    expect(claudeDenialClass("Bash", "subcommandResults", "gh pr list")).toBe("git_write");
+    // ADR-0096: a denied read-only `gh` never ran; a `gh` that could write stays security-class.
+    expect(claudeDenialClass("Bash", "subcommandResults", "gh pr list")).toBe("git_rule_local");
+    expect(claudeDenialClass("Bash", "subcommandResults", "gh pr create --fill")).toBe("git_write");
     expect(claudeDenialClass("Bash", "subcommandResults", "curl https://example.test")).toBe("git_write");
     expect(claudeDenialClass("Write", "subcommandResults", PROD_SUBCOMMAND_COMMAND)).toBe("git_write");
   });
@@ -226,7 +240,8 @@ describe("Claude Git deny-rule denials by command (ADR-0072 follow-up)", () => {
     expect(r).toMatchObject({
       ok: false,
       failureCode: "PERMISSION_BLOCKED",
-      failureDetail: "denied: Bash",
+      // ADR-0096: the blocking denial's class; no command is named, since none was seen.
+      failureDetail: "denied: Bash (git_write)",
     });
   });
 });
@@ -246,7 +261,9 @@ describe("Claude Code replay of a recovered run (ADR-0072)", () => {
     ["mode on a file-write tool (unclassified)", "mode", "Write"],
   ])("%s -> PERMISSION_BLOCKED as before", async (_name, reason, tool) => {
     const r = await replay({ lines: withSecondReason(reason, tool) });
-    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED", failureDetail: "denied: Bash" });
+    expect(r).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
+    // ADR-0096: the detail names the blocking denial (the second one), not the recovered one before it.
+    expect(r.failureDetail).toMatch(new RegExp(`^denied: ${tool}\\b`));
     expect(r.warnings).toBeUndefined();
   });
 

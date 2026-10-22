@@ -2,6 +2,8 @@
 
 - Status: Accepted (built 2026-10-20). Amended 2026-10-20 by Linus: the `rule` mapping, see
   [Follow-up](#follow-up-2026-10-20-git-deny-rule-hits-on-local-verbs).
+  Amended in part 2026-10-22 by [ADR-0096](0096-git-guard-reads-and-refused-local-verbs.md): the read forms of `git
+  remote` and read-only `gh` forms are local for the `rule` mapping.
 - Date: 2026-10-20
 - Decided by: Linus (design authority), 2026-10-20. The ruling (items 1 to 4 below) is Linus's; the exact class
   mapping (item 5) and the details marked **Delegated** were made while building it and are not owner-approved.

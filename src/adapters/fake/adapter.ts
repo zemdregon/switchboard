@@ -8,7 +8,7 @@ import {
   DEFAULT_MAX_LINE_BYTES,
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
-import { classifyCommon, recoveredDenialWarnings } from "../failure.js";
+import { classifyCommon, hasDenialOrViolation, recoveredDenialWarnings } from "../failure.js";
 import { renderObjective } from "../prompt.js";
 import type {
   AcpMessage,
@@ -370,8 +370,7 @@ export class FakeAdapter implements ProviderAdapter {
       ...(summary ? { summary } : {}),
     };
     // ADR-0072 (JSONL mode, as Claude Code): recovered `profile`-class denials become warnings, not a failure.
-    const warnings =
-      !this.#acp && events.some((e) => e.kind === "permission_denied") ? recoveredDenialWarnings(events) : [];
+    const warnings = !this.#acp && hasDenialOrViolation(events) ? recoveredDenialWarnings(events) : [];
     const clean = this.#acp
       ? acpRunSucceeded(events, exit)
       : exit.outcome === "exited" &&

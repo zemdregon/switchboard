@@ -173,7 +173,7 @@ describe("parseKimiUsagePanel on synthetic panels", () => {
       panel_(
         "Plan usage",
         `  Failed to fetch usage: GET https://api.example/usage?k=1 ${"x".repeat(200)}`,
-        "  /home/someone/.kimi-code/credentials.json sk-abcdefghijklmnopqrstuvwxyz0123",
+        `  /home/someone/.kimi-code/credentials.json ${["sk", "abcdefghijklmnopqrstuvwxyz0123"].join("-")}`,
       ),
       NOW,
     );

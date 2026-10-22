@@ -193,6 +193,15 @@ const LS_REMOTE_EXEC = /^(-u|--upload-pack)/;
 const REMOTE_READ_FORMS = new Set(["show", "get-url", "update"]);
 
 /**
+ * ADR-0096: `git remote`, `git remote -v`, `git remote show ...` and `git remote get-url ...` (not `update`, which
+ * fetches into remote-tracking refs): they only read configuration, so they are reads in every run, not only bypass.
+ */
+function isRemoteReadForm(args: readonly string[]): boolean {
+  const form = args.find((w) => !w.startsWith("-"));
+  return form !== "update" && gitBypassReadVerdict("remote", args) === undefined;
+}
+
+/**
  * ADR-0094: `undefined` when `git <sub> <args>` (sub in {@link GIT_BYPASS_READ_SUBCOMMANDS}) only downloads objects
  * into the repository, updates `FETCH_HEAD`, remote-tracking refs (`refs/remotes/`) or new tags, or reads; otherwise a
  * `write` verdict. Fails closed: an unknown option, a refspec with a destination (`main:main`), a force `+`, a pattern,
@@ -278,11 +287,8 @@ function gitBypassLocalVerdict(sub: string, args: readonly string[]): GitCommand
   const write = (reason: string): GitCommandVerdict => ({ level: "write", reason });
   const risky = args.find((w) => BYPASS_LOCAL_RISKY_ARGS.test(w));
   if (risky !== undefined) return write(`\`git ${sub} ${risky.split("=", 1)[0]}\` runs a program or writes elsewhere`);
-  if (sub === "checkout") {
-    const sep = args.indexOf("--");
-    if (sep === -1 || args.slice(0, sep).some((w) => /^-[bB]|^--orphan|^--ignore-other-worktrees/.test(w))) {
-      return write("`git checkout` of a branch can move HEAD to, or create, another branch");
-    }
+  if (sub === "checkout" && !isCheckoutPathForm(args)) {
+    return write("`git checkout` of a branch can move HEAD to, or create, another branch");
   }
   if (sub === "pull") {
     const bad = args.find((w) => PULL_RISKY_OPTIONS.test(w));
@@ -293,6 +299,41 @@ function gitBypassLocalVerdict(sub: string, args: readonly string[]): GitCommand
     }
   }
   return { level: "local", reason: `\`git ${sub}\` changes the run's own checkout; the ref check puts it back` };
+}
+
+/** `git checkout` options that keep its path form (Git 2.43.0 `git checkout -h`); any other option is not a path form. */
+const CHECKOUT_PATH_OPTIONS =
+  /^(-q|--quiet|-f|--force|--ours|--theirs|-m|--merge|--conflict=.*|-p|--patch|--overlay|--no-overlay|--progress|--no-progress|--ignore-skip-worktree-bits)$/;
+
+/**
+ * ADR-0096: a word that cannot be a branch or tag name (`git check-ref-format`: no `..`, no component starting with `.`,
+ * no trailing `/` or `.lock`, no backslash or space) or that names a file (`visitor.js`, `docs/a.md`: a last component
+ * with an extension). Revision syntax (`HEAD~1`, `main^`, `@{-1}`) is not a path. Lexical; a branch called `fix.js`
+ * reads as a path, and the FR-GIT-03 ref check backs that up (a moved worktree `HEAD` is put back: without a violation
+ * in an approved bypass run, as a `git_policy_violation` otherwise).
+ */
+function isPathWord(w: string): boolean {
+  if (w === "." || w.endsWith("/") || w.endsWith(".lock") || w.includes("..")) return true;
+  if (/(^|\/)\./.test(w) || /[\\\s]/.test(w)) return true;
+  return /\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(w.slice(w.lastIndexOf("/") + 1));
+}
+
+/**
+ * ADR-0096: whether `git checkout <args>` is its path form, which only rewrites files in the index and working tree
+ * and never moves `HEAD` or creates a branch: options only from {@link CHECKOUT_PATH_OPTIONS} and either a `--`
+ * separator with at least one path after it, two or more positional words (Git then reads the first as a tree-ish and
+ * the rest as paths), or one positional word that {@link isPathWord} accepts. `-b`, `-B`, `--orphan`, `--detach`,
+ * `--track`, `--recurse-submodules` and a single branch-like word (`git checkout main`) are not.
+ */
+export function isCheckoutPathForm(args: readonly string[]): boolean {
+  const sep = args.indexOf("--");
+  const before = sep === -1 ? args : args.slice(0, sep);
+  const after = sep === -1 ? [] : args.slice(sep + 1);
+  if (before.some((w) => isDynamic(w) || (w.startsWith("-") && !CHECKOUT_PATH_OPTIONS.test(w)))) return false;
+  const positional = before.filter((w) => !w.startsWith("-"));
+  if (sep !== -1) return after.length > 0 && positional.length <= 1;
+  if (positional.length >= 2) return true;
+  return positional.length === 1 && isPathWord(positional[0] as string);
 }
 
 /** Options of read-only subcommands that run another program (`git grep -O<cmd>`). Refused in allowlist entries. */
@@ -409,30 +450,61 @@ const RISKY_GIT_CONFIG =
 const RISKY_GIT_ENV =
   /^GIT_(CONFIG|EXEC_PATH|SSH|ASKPASS|EDITOR|PAGER|EXTERNAL_DIFF|PROXY_COMMAND|DIR$|WORK_TREE$|COMMON_DIR$|OBJECT_DIRECTORY|ALTERNATE)/;
 
+/** Options of {@link splitSimpleCommands}. */
+export interface SplitOptions {
+  /**
+   * ADR-0096: drop unquoted redirections (`2>/dev/null`, `2>&1`, `> out.txt`, `<in`, `>>log`) with their target, as
+   * the shell removes them from a command's arguments, instead of keeping them as words. Used by the Git verdict, where
+   * `git branch --show-current 2>/dev/null` must not read as `git branch <name>`. A target that contains a substitution
+   * (`$(...)`, backtick) is kept as a word (it is dynamic, so the verdict stays cautious). Off by default: the
+   * provider-state check needs redirect targets (`cat > ~/.claude/x`).
+   */
+  readonly redirections?: "keep" | "drop";
+}
+
 /**
  * Split one command string into simple commands (arrays of words): shell quoting, backslash escapes, and the
  * separators `; & | newline ( ) { }` plus command substitution (`$(`, backtick), whose contents become further simple
  * commands. Lexical only: no variable or glob expansion (a word containing `$` or a backtick is left as written, and
- * callers treat it as dynamic). Redirections stay as words.
+ * callers treat it as dynamic). Redirections stay as words unless `opts.redirections` is `drop`.
  */
-export function splitSimpleCommands(command: string): string[][] {
+export function splitSimpleCommands(command: string, opts: SplitOptions = {}): string[][] {
+  const drop = opts.redirections === "drop";
   const out: string[][] = [];
   let words: string[] = [];
   let cur = "";
   let has = false;
+  let quoted = false;
+  let skipTarget = false;
   const endWord = (): void => {
-    if (has) words.push(cur);
+    if (has && !(skipTarget && !/\$\(|`/.test(cur))) words.push(cur);
+    if (has) skipTarget = false;
     cur = "";
     has = false;
+    quoted = false;
   };
   const endCommand = (): void => {
     endWord();
+    skipTarget = false;
     if (words.length > 0) out.push(words);
     words = [];
   };
   for (let i = 0; i < command.length; i++) {
     const c = command[i] as string;
-    if (c === "\\") {
+    if (drop && (c === ">" || c === "<") && command[i + 1] !== "(") {
+      // An unquoted digit word right before the operator is its file descriptor (`2>`); any other word ends here.
+      if (has && !quoted && /^[0-9]+$/.test(cur)) {
+        cur = "";
+        has = false;
+      } else endWord();
+      let j = i + 1;
+      if (c === ">" && (command[j] === ">" || command[j] === "|")) j++;
+      else if (c === "<" && command[j] === "<") j += command[j + 1] === "<" ? 2 : 1;
+      else if (c === "<" && command[j] === ">") j++;
+      if (command[j] === "&") j++; // `>&2`, `2>&1`, `<&0`: the target is a descriptor
+      i = j - 1;
+      skipTarget = true;
+    } else if (c === "\\") {
       if (i + 1 < command.length) {
         cur += command[i + 1];
         has = true;
@@ -443,9 +515,11 @@ export function splitSimpleCommands(command: string): string[][] {
       const stop = end === -1 ? command.length : end;
       cur += command.slice(i + 1, stop);
       has = true;
+      quoted = true;
       i = stop;
     } else if (c === '"') {
       has = true;
+      quoted = true;
       i++;
       for (; i < command.length && command[i] !== '"'; i++) {
         const d = command[i] as string;
@@ -599,6 +673,17 @@ function gitVerdict(words: readonly string[], bypass: boolean): GitCommandVerdic
     if (GIT_BYPASS_LOCAL_SUBCOMMANDS.includes(sub)) return gitBypassLocalVerdict(sub, args);
   }
   if (sub === "branch") return branchVerdict(args);
+  // ADR-0096: in every mode, the path form of `git checkout` changes only files (no ref, no `HEAD`), and the read forms
+  // of `git remote` (bare, `-v`, `show`, `get-url`; not `update`, which fetches) only read configuration.
+  if (
+    sub === "checkout" &&
+    !globalWithValue &&
+    isCheckoutPathForm(args) &&
+    !args.some((w) => BYPASS_LOCAL_RISKY_ARGS.test(w))
+  ) {
+    return { level: "local", reason: "`git checkout` of paths changes only the run's own working tree" };
+  }
+  if (sub === "remote" && !globalWithValue && isRemoteReadForm(args)) return undefined;
   if (GIT_WRITE_SUBCOMMANDS.includes(sub))
     return { level: "write", reason: `\`git ${sub}\` can create commits, change refs or push` };
   if (!GIT_READ_ONLY_SUBCOMMANDS.includes(sub)) {
@@ -676,7 +761,7 @@ function programVerdict(words: readonly string[], depth: number, bypass: boolean
 function commandVerdict(command: string, depth: number, bypass: boolean): GitCommandVerdict | undefined {
   let local: GitCommandVerdict | undefined;
   let uncertain: GitCommandVerdict | undefined;
-  for (const words of splitSimpleCommands(command)) {
+  for (const words of splitSimpleCommands(command, { redirections: "drop" })) {
     const v = simpleVerdict(words, depth, bypass);
     if (v?.level === "write") return v;
     if (v?.level === "local") local ??= v;
@@ -738,6 +823,28 @@ const GIT_RULE_LOCAL_SUBCOMMANDS: readonly string[] = [
   // FR-GIT-03 ref check restores. Pushes and remote changes stay out of this list.
   "pull",
 ];
+/**
+ * ADR-0096: `gh <group> <verb>` forms that only read from the Git host (`gh pr view 12`, `gh pr checks`, `gh run view
+ * --log-failed`). A denied one never ran and could not have pushed, so its Git deny-rule denial is recoverable. `gh
+ * api` (any method), `gh pr checkout`, `gh repo clone`, `gh auth`, every create, edit, merge, close or comment form,
+ * and an option that runs a program or names a token stay security-class.
+ */
+const GH_READ_FORMS: Readonly<Record<string, readonly string[]>> = {
+  pr: ["view", "list", "checks", "diff", "status"],
+  issue: ["view", "list", "status"],
+  run: ["view", "list"],
+  repo: ["view"],
+  release: ["view", "list"],
+  workflow: ["view", "list"],
+};
+const GH_RISKY_ARGS = /^(--show-token|--hostname|-w$|--web|--exec)/;
+
+function isGhRead(args: readonly string[]): boolean {
+  const [group, verb, ...rest] = args;
+  if (group === undefined || verb === undefined) return group === "status" && args.length === 1;
+  return (GH_READ_FORMS[group]?.includes(verb) ?? false) && !rest.some((w) => isDynamic(w) || GH_RISKY_ARGS.test(w));
+}
+
 /** Git global options that change nothing about which repository is used (`--bare` and every option with a value do). */
 const GIT_RULE_HARMLESS_GLOBALS = GIT_GLOBAL_FLAGS.filter((f) => f !== "--bare");
 /** Options of a local subcommand that run another program or write a file anywhere. */
@@ -768,6 +875,46 @@ export function gitDenyRuleSecurityReason(command: string | undefined): string |
   return scan.reason ?? (scan.sawGit ? undefined : "no git invocation found");
 }
 
+/** A word {@link deniedCommandSummary} may show: a short name or option name, never a path, value or token. */
+const SUMMARY_WORD = /^-{0,2}[A-Za-z][A-Za-z0-9.-]{0,23}$/;
+
+/**
+ * ADR-0096: a summary of a denied shell command for a run's failure detail, which the run history keeps while the
+ * command line itself is never stored: for each of the first three simple commands, the program's name and, for `git`
+ * its subcommand, for `gh` its group and verb (`git push; gh pr create`), then, with `opts.reason` (a Git deny-rule
+ * denial), the reason {@link gitDenyRuleSecurityReason} gives when it is security-class. Words that are not short names (paths, values,
+ * anything token-like) are shown as `…`, so no argument value reaches the ledger. `undefined` when
+ * the command is unknown.
+ */
+export function deniedCommandSummary(
+  command: string | undefined,
+  opts: { readonly reason?: boolean } = {},
+): string | undefined {
+  if (command === undefined || command.trim() === "") return undefined;
+  const safe = (w: string): string => (SUMMARY_WORD.test(w) ? w : "…");
+  const heads: string[] = [];
+  const all = splitSimpleCommands(command.slice(0, GIT_RULE_COMMAND_MAX_CHARS), { redirections: "drop" });
+  for (const words of all.slice(0, 3)) {
+    let i = 0;
+    while (
+      i < words.length &&
+      (SHELL_KEYWORDS.has(words[i] as string) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i] as string))
+    )
+      i++;
+    const program = words[i];
+    if (program === undefined) continue;
+    const name = basename(program);
+    const rest = words.slice(i + 1).filter((w) => !w.startsWith("-"));
+    const subs = name === "git" ? rest.slice(0, 1) : name === "gh" ? rest.slice(0, 2) : [];
+    heads.push([name, ...subs].map(safe).join(" "));
+  }
+  if (all.length > 3) heads.push("…");
+  if (heads.length === 0) return undefined;
+  const reason = opts.reason === true ? gitDenyRuleSecurityReason(command) : undefined;
+  const why = reason === undefined ? "" : `: ${reason.replace(/[^\s`]+/g, safe)}`;
+  return `\`${heads.join("; ")}\`${why}`;
+}
+
 function ruleScan(command: string, depth: number): { reason?: string; sawGit: boolean } {
   if (depth > 4) return { reason: "command nesting too deep to check", sawGit: false };
   let sawGit = false;
@@ -790,6 +937,10 @@ function ruleScan(command: string, depth: number): { reason?: string; sawGit: bo
     if (program === undefined) continue;
     const name = basename(program);
     if (isDynamic(program)) return { reason: `dynamic program \`${program}\``, sawGit };
+    if (name === "gh" && isGhRead(words.slice(1))) {
+      sawGit = true;
+      continue;
+    }
     if (GIT_PUBLISHING_PROGRAMS.includes(name)) return { reason: `\`${name}\` can push to a Git host`, sawGit };
     if (name.startsWith("git-")) return { reason: `\`${name}\` is a git subprogram`, sawGit };
     if (name !== "git") {
@@ -817,6 +968,7 @@ function ruleScan(command: string, depth: number): { reason?: string; sawGit: bo
     const sub = words[j];
     if (sub === undefined) continue;
     if (isDynamic(sub)) return { reason: `dynamic git subcommand \`${sub}\``, sawGit };
+    if (sub === "remote" && j === 1 && isRemoteReadForm(words.slice(j + 1))) continue;
     if (!GIT_RULE_LOCAL_SUBCOMMANDS.includes(sub)) return { reason: `\`git ${sub}\` is not a local git verb`, sawGit };
     const risky = words.slice(j + 1).find((w) => GIT_RULE_RISKY_ARGS.test(w));
     if (risky !== undefined) {

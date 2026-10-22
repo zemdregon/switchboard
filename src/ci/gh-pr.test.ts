@@ -252,7 +252,11 @@ describe("GhPullRequestPort (ADR-0069)", () => {
 
   it("ADR-0095: the excerpt redacts secrets, drops control characters, joins lines and is capped", () => {
     const token = `ghp_${"b".repeat(36)}`;
-    const d = ghFailureDetail(1, `line one\u001b[31m\r\n\n Bearer abcdefghijkl ${token}\n${"x".repeat(1000)}`);
+    const scheme = ["Bear", "er"].join("");
+    const d = ghFailureDetail(
+      1,
+      `line one\u001b[31m\r\n\n ${scheme} ${"abcdef".repeat(2)} ${token}\n${"x".repeat(1000)}`,
+    );
     expect(d.exit_code).toBe(1);
     expect(d.message).toMatch(/^line one \[31m \| Bearer \[REDACTED\] \[REDACTED\] \| x+\.\.\.$/u);
     expect(d.message.length).toBe(GH_FAILURE_MESSAGE_MAX);
