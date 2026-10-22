@@ -91,8 +91,9 @@ export function consentPage(v: ConsentView): string {
     `<input type="hidden" name="csrf" value="${escapeHtml(v.csrf)}">` +
     '<p><label>Operator passphrase <input type="password" name="passphrase" autocomplete="current-password">' +
     "</label></p>" +
-    '<p><label>or one-time pairing code (<code>switchboard consent pair</code>) <input type="text" name="pairing_code" ' +
-    'autocomplete="off" spellcheck="false"></label></p>' +
+    // The field keeps its name `pairing_code`: the production gate's bootstrap posts it.
+    "<p><label>or one-time code (from <code>switchboard mcp oauth issue-code</code>, or <code>switchboard consent " +
+    'pair</code>) <input type="text" name="pairing_code" autocomplete="off" spellcheck="false"></label></p>' +
     '<p><button type="submit" name="decision" value="approve">Approve</button> ' +
     '<button type="submit" name="decision" value="deny">Deny</button></p>' +
     "</form>";

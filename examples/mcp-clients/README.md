@@ -3,7 +3,7 @@
 Configuration examples that register Switchboard's stdio server (`switchboard serve`) with three MCP clients.
 Each file is strict JSON and is parse-checked by `src/config/examples.test.ts`. Replace the `/path/to/...`
 placeholders with your checkout, config file and client id (the `--client` id must match an `mcp_clients` entry;
-see the README's [Run as an MCP server](../../README.md#run-as-an-mcp-server) section).
+see the README's [Run as an MCP server](../../docs/guide/mcp-server.md#run-as-an-mcp-server) section).
 
 | File | Client |
 | --- | --- |

@@ -358,7 +358,7 @@ function useManifest(provider: string): string {
 interface FallbackEntry {
   readonly provider: string;
   readonly make: () => ProviderAdapter;
-  /** The cell's declared bypass flag, or null when the cell declares none (OpenCode, Q-83). */
+  /** The cell's declared bypass flag, or null when the cell declares none (no cell since OpenCode's `--auto`, ADR-0077). */
   readonly flag: string | null;
   readonly failFixture: string;
   readonly note: string;
@@ -394,10 +394,10 @@ const FALLBACK: FallbackEntry[] = [
   {
     provider: "opencode",
     make: () => opencodeReplay("success_edit"),
-    flag: null,
+    flag: "--auto",
     failFixture: "task_failure",
     note: CELL_NOTE_60,
-    planted: "--auto",
+    planted: "--yolo",
   },
   {
     provider: "antigravity",
@@ -414,15 +414,12 @@ describe("adapters validate: compiled-cell fallback (owner decisions 59 and 60)"
     expect(Object.keys(COMPILED_CELL_FALLBACK).sort()).toEqual(["antigravity", "cursor", "grok", "kimi", "opencode"]);
   });
 
-  it("opencode's cell declares no bypass flag while every other cell declares exactly one", () => {
+  it("every cell declares exactly one bypass flag, OpenCode's being --auto (ADR-0077, 2026-10-21)", () => {
     for (const entry of FALLBACK) {
       const cell = COMPILED_CELL_FALLBACK[entry.provider as keyof typeof COMPILED_CELL_FALLBACK];
-      if (entry.provider === "opencode") {
-        expect(cell?.bypassFlag).toBeNull();
-      } else {
-        expect(cell?.bypassFlag).toBe(entry.flag);
-      }
+      expect(cell?.bypassFlag).toBe(entry.flag);
     }
+    expect(COMPILED_CELL_FALLBACK.opencode?.bypassFlag).toBe("--auto");
   });
 
   for (const entry of FALLBACK) {
@@ -445,7 +442,7 @@ describe("adapters validate: compiled-cell fallback (owner decisions 59 and 60)"
       expect(r.json.steps.find((s: { id: string }) => s.id === "conformance").detail).toContain(note);
       expect(parseManifest(readFileSync(f, "utf8")).notes).toContain(`one structured-output smoke call ok (${note})`);
       // The smoke argv carries exactly the cell's declared bypass flag and nothing else bypass-class
-      // (OpenCode declares none, so none may appear).
+      // (OpenCode's is `--auto`, ADR-0077).
       const spawned = calls.filter((c) => c.profile.name === "privileged" && c.request.bypassApproved === true);
       const inv = spawned.at(-1)?.inv as Invocation;
       expect(findBypassFlags(inv, provider)).toEqual(flag === null ? [] : [flag]);

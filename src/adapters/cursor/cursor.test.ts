@@ -68,9 +68,6 @@ afterAll(() => {
 });
 
 const EXE = "/opt/synthetic/cursor-agent";
-const BWRAP = "/opt/synthetic/bwrap";
-/** The Cursor argv inside the bwrap wrapper (ADR-0059): everything after the wrapper's `--`. */
-const cursorArgv = (inv: Invocation): string[] => inv.argv.slice(inv.argv.indexOf("--") + 1);
 const request = (over: Partial<CompileRequest> = {}): CompileRequest => ({
   runId: "run_01M4WBZSXSCWYKTKJN77A7MFJQ",
   objective: "--yolo fix the failing test",
@@ -78,7 +75,7 @@ const request = (over: Partial<CompileRequest> = {}): CompileRequest => ({
   workspace: { cwd: "/work/tree", writable: true },
   ...over,
 });
-const adapter = () => new CursorAdapter({ executable: EXE, bwrap: BWRAP });
+const adapter = () => new CursorAdapter({ executable: EXE });
 const PROFILES: TrustProfile[] = ["inspect-untrusted", "edit-untrusted", "test-sandboxed", "trusted-development"];
 const profileOf = (name: TrustProfile): ResolvedProfile => resolveTrustProfile(name);
 const BYPASS_SCOPE = {
@@ -142,8 +139,7 @@ describe("cursor compile matrix (T4.42)", () => {
 
   it("puts the prompt on stdin, never on the argv, and never emits a flag the TDD §4.5 rules exclude", () => {
     const r = compiled();
-    expect(r.argv[0]).toBe(BWRAP);
-    expect(cursorArgv(r)).toEqual([EXE, "--print", "--output-format", "stream-json", "--trust", "--force"]);
+    expect(r.argv).toEqual([EXE, "--print", "--output-format", "stream-json", "--trust", "--force"]);
     expect(r.stdin).toEqual({ kind: "text", value: "--yolo fix the failing test" });
     expect(r.argv.join(" ")).not.toContain("fix the failing test");
     const never = [
@@ -169,7 +165,7 @@ describe("cursor compile matrix (T4.42)", () => {
       "--model",
       "--mode",
     ];
-    for (const a of cursorArgv(r).slice(1)) expect(never.includes(a), a).toBe(false);
+    for (const a of r.argv.slice(1)) expect(never.includes(a), a).toBe(false);
     expect(r.envAllowlist).toEqual(["PATH", "HOME"]);
     expect(r.env).toEqual({});
     expect(r.transport).toBe("subprocess-jsonl");
@@ -177,12 +173,60 @@ describe("cursor compile matrix (T4.42)", () => {
     expect(r.cwd).toBe("/work/tree");
   });
 
-  it("a requested model, an unapproved bypass and a missing binary are Ineligible with a reason", () => {
+  it("the approved bypass cell starts the executable directly: no bwrap, policyFlags --trust --force", () => {
+    const r = compiled();
+    expect(r.argv[0]).toBe(EXE);
+    expect(r.argv.join(" ")).not.toContain("bwrap");
+    expect(r.policyFlags).toEqual(["--trust", "--force"]);
+    expect(r.cwd).toBe("/work/tree");
+  });
+
+  it("a requested plain model id compiles to --model <id> after --force; an option-like id is refused", () => {
+    const profile = { ...privilegedProfile(BYPASS_SCOPE), bypassApproved: true };
+    const r = adapter().compile(request({ model: "sonnet-4-thinking", bypassApproved: true }), profile);
+    if ("ineligible" in r) throw new Error(r.detail);
+    expect(r.argv).toEqual([
+      EXE,
+      "--print",
+      "--output-format",
+      "stream-json",
+      "--trust",
+      "--force",
+      "--model",
+      "sonnet-4-thinking",
+    ]);
+    expect(r.policyFlags).toEqual(["--trust", "--force", "--model", "sonnet-4-thinking"]);
+    expect(auditInvocation(r, { profile, bypassApproved: true })).toEqual([]);
+    for (const model of ["-x", "--yolo", "a b", ""]) {
+      expect(adapter().compile(request({ model, bypassApproved: true }), profile), model).toEqual({
+        ineligible: true,
+        reason: "CAPABILITY_MISSING",
+        detail: "requested model is not a plain model id",
+      });
+    }
+  });
+
+  it("every non-bypass cell stays Ineligible and carries no bypass flag", () => {
+    const cells: Array<[string, ResolvedProfile, boolean]> = [
+      ...PROFILES.flatMap(
+        (n): Array<[string, ResolvedProfile, boolean]> => [
+          [n, profileOf(n), false],
+          [`${n} approved`, { ...profileOf(n), bypassApproved: true }, true],
+        ],
+      ),
+      ["privileged without bypass", privilegedProfile({ ...BYPASS_SCOPE, bypass: false }), true],
+      ["bypass without approval", privilegedProfile(BYPASS_SCOPE), false],
+    ];
+    for (const [label, profile, approved] of cells) {
+      const r = adapter().compile(request({ bypassApproved: approved }), profile);
+      expect(r, label).toMatchObject({ ineligible: true });
+      expect(r, label).not.toHaveProperty("argv");
+    }
+  });
+
+  it("an unapproved bypass and a missing binary are Ineligible with a reason", () => {
     const profile = privilegedProfile(BYPASS_SCOPE);
     const approved = { ...profile, bypassApproved: true };
-    expect(adapter().compile(request({ model: "x", bypassApproved: true }), approved)).toMatchObject({
-      reason: "CAPABILITY_MISSING",
-    });
     expect(adapter().compile(request(), profile)).toMatchObject({ reason: "PROFILE_UNSUPPORTED" });
     const none = new CursorAdapter({ pathEnv: "/nonexistent" });
     expect(none.compile(request({ bypassApproved: true }), approved)).toMatchObject({
@@ -250,11 +294,6 @@ describe("cursor probe and auth preflight (T4.42, T4.44)", () => {
   const runner =
     (table: Record<string, { stdout: string; exitCode: number }>): ProbeRunner =>
     async (argv) => {
-      // The confinement probe (ADR-0059) under the synthetic bwrap: answered as a host where the wrapper holds.
-      if (argv[0] === BWRAP) {
-        writeFileSync(argv[argv.length - 2] ?? "", "");
-        return { stdout: "", stderr: "", exitCode: 0, timedOut: false } as ProbeOutput;
-      }
       const key = argv.slice(1).join(" ");
       const hit = table[key] ?? { stdout: "", exitCode: 2 };
       return { stdout: hit.stdout, stderr: "", exitCode: hit.exitCode, timedOut: false } as ProbeOutput;
@@ -263,7 +302,7 @@ describe("cursor probe and auth preflight (T4.42, T4.44)", () => {
     "Usage: agent [options] [command] [prompt...]\n  -p, --print\n  --output-format <format>\n  --resume [chatId]\n" +
     "  -f, --force\n  --sandbox <mode>\n  --trust\n";
 
-  it("passes the five steps and the confinement step on the live-check shapes and reports the version line", async () => {
+  it("passes exactly the five steps (no confinement step) on the live-check shapes and reports the version line", async () => {
     const r = await adapter().probe(
       runner({
         "--version": { stdout: "2026.10.12-d47ca18\n", exitCode: 0 },
@@ -277,7 +316,6 @@ describe("cursor probe and auth preflight (T4.42, T4.44)", () => {
       ["command", true],
       ["output_format", true],
       ["flags", true],
-      ["confinement", true],
     ]);
   });
 
@@ -637,7 +675,7 @@ describe("cursor parser and result (T4.43)", () => {
       profile,
     );
     if ("ineligible" in r) throw new Error(r.detail);
-    expect(cursorArgv(r).slice(1)).toEqual([
+    expect(r.argv.slice(1)).toEqual([
       "--print",
       "--output-format",
       "stream-json",
@@ -2498,7 +2536,7 @@ describe("cursor parser hardening (T4.43, synthetic shapes)", () => {
     const lines2 = [
       INIT(),
       TOOL("started", { shellToolCall: {} }),
-      TOOL("completed", { shellToolCall: { result: { permissionDenied: { command: "git commit -m x" } } } }),
+      TOOL("completed", { shellToolCall: { result: { permissionDenied: { command: "git push origin HEAD" } } } }),
       RESULT(),
     ];
     const events2 = lines2.flatMap((l) => a.parseEvent(l, state2)).map((e) => guardEvent(e, ctx));
@@ -2763,15 +2801,15 @@ describe("cursor parser residual branches (T4.43, synthetic)", () => {
     const r = parse([
       INIT,
       TOOL("started", { shellToolCall: { args: { command: "ls" } } }),
-      TOOL("started", { shellToolCall: { args: { command: "git commit -am x" } } }),
-      TOOL("started", { shellToolCall: { args: { command: "git commit -am x" } } }),
+      TOOL("started", { shellToolCall: { args: { command: "git push origin HEAD" } } }),
+      TOOL("started", { shellToolCall: { args: { command: "git push origin HEAD" } } }),
       RESULT,
     ]);
     // `started` always reports (its set only feeds `completed` de-duplication), so the repeat is reported too.
     expect(calls(r.events).map((e) => (e.kind === "tool_call" ? e.command : undefined))).toEqual([
       "ls",
-      "git commit -am x",
-      "git commit -am x",
+      "git push origin HEAD",
+      "git push origin HEAD",
     ]);
     expect(r.result).toMatchObject({ ok: false, failureCode: "PERMISSION_BLOCKED" });
   });

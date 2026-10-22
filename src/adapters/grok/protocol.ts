@@ -27,6 +27,14 @@ export const SANDBOX_FLAG = "--sandbox";
 export const SANDBOX_STRICT = "strict";
 export const SANDBOX_READ_ONLY = "read-only";
 export const SANDBOX_WORKSPACE = "workspace";
+/**
+ * The built-in `off` profile ([SBX]: built-ins `off` (default), `workspace`, `devbox`, `read-only`, `strict`), given
+ * explicitly so no `GROK_SANDBOX` or config default can confine the run: the worktree-files bypass cell (ADR-0077).
+ */
+export const SANDBOX_OFF = "off";
+
+/** Model flag (`grok --help` 1.0.50: "-m, --model <MODEL>  Model ID to use"); emitted only from a request's model. */
+export const MODEL_FLAG = "--model";
 
 /** Permission rule flags ([PERM], [LIVE] 8c, 9: syntax accepted, deny wins, prefix match only). */
 export const ALLOW_FLAG = "--allow";

@@ -105,7 +105,7 @@ export function kimiConformanceCases(makeCwd: () => string): ConformanceCase[] {
       expect: {
         ok: false,
         failureCode: "PERMISSION_BLOCKED",
-        failureDetail: "git write attempted: `git commit` can create commits, change refs or push",
+        failureDetail: "git write attempted: `git push` can create commits, change refs or push",
         nativeSessionId: DEFAULT_SESSION_ID,
       },
     },

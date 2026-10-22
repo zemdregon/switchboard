@@ -123,7 +123,23 @@ export interface RegisteredClient extends ClientMetadata {
    * Document (`oauth_cimd_client`, migration 0028); absent for a client registered through RFC 7591.
    */
   readonly cimdUrl?: string;
+  /**
+   * Migration 0036: the `mcp_clients` id a profile-bound one-time code bound this client to on the consent page, and
+   * when. The config map (`transport.http.clients`) still wins over it.
+   */
+  readonly mcpClient?: string;
+  readonly boundAt?: string;
+  /** When the client was approved, denied or revoked last. */
+  readonly decidedAt?: string;
 }
+
+/**
+ * The outcome of {@link OAuthClientStore.approveAndBind}: `not_approvable` for a denied, revoked or unknown client,
+ * `bound_elsewhere` when the client is already bound to another profile. Nothing changed on a refusal.
+ */
+export type ApproveBindResult =
+  | { ok: true; client: RegisteredClient; approved: boolean; bound: boolean }
+  | { ok: false; reason: "not_approvable" | "bound_elsewhere" };
 
 export type RegisterResult = { ok: true; client: RegisteredClient } | { ok: false; reason: "too_many_pending" };
 
@@ -140,12 +156,15 @@ interface ClientRow {
   status: ClientStatus;
   created_at: string;
   cimd_url: string | null;
+  mcp_client: string | null;
+  bound_at: string | null;
+  decided_at: string | null;
 }
 
-const SELECT_CLIENT = `SELECT c.client_id, c.client_name, c.redirect_uris_json, c.grant_types_json, c.status, c.created_at,
-       m.url AS cimd_url
-  FROM oauth_client c LEFT JOIN oauth_cimd_client m ON m.client_id = c.client_id
- WHERE c.client_id = ?`;
+const SELECT_CLIENTS = `SELECT c.client_id, c.client_name, c.redirect_uris_json, c.grant_types_json, c.status, c.created_at,
+       m.url AS cimd_url, c.mcp_client, c.bound_at, c.decided_at
+  FROM oauth_client c LEFT JOIN oauth_cimd_client m ON m.client_id = c.client_id`;
+const SELECT_CLIENT = `${SELECT_CLIENTS} WHERE c.client_id = ?`;
 
 function fromRow(row: ClientRow): RegisteredClient {
   return {
@@ -156,6 +175,9 @@ function fromRow(row: ClientRow): RegisteredClient {
     status: row.status,
     createdAt: row.created_at,
     ...(row.cimd_url !== null ? { cimdUrl: row.cimd_url } : {}),
+    ...(row.mcp_client !== null ? { mcpClient: row.mcp_client } : {}),
+    ...(row.bound_at !== null ? { boundAt: row.bound_at } : {}),
+    ...(row.decided_at !== null ? { decidedAt: row.decided_at } : {}),
   };
 }
 
@@ -262,9 +284,60 @@ export class OAuthClientStore {
     );
   }
 
+  /**
+   * A successful consent with a one-time code or the passphrase, in one transaction: a `pending` client becomes
+   * `approved`; with `bindTo` (a profile-bound code) an unbound client is bound to that profile, and a client bound to
+   * another profile is refused with nothing changed. A denied or revoked client is never approved here.
+   */
+  approveAndBind(clientId: string, bindTo?: string): ApproveBindResult {
+    const now = this.now().toISOString();
+    return this.db.transaction((): ApproveBindResult => {
+      const c = this.get(clientId);
+      if (c === undefined || (c.status !== "pending" && c.status !== "approved")) {
+        return { ok: false, reason: "not_approvable" };
+      }
+      if (bindTo !== undefined && c.mcpClient !== undefined && c.mcpClient !== bindTo) {
+        return { ok: false, reason: "bound_elsewhere" };
+      }
+      const approved = c.status === "pending";
+      if (approved) {
+        this.db
+          .prepare(
+            "UPDATE oauth_client SET status = 'approved', decided_at = ? WHERE client_id = ? AND status = 'pending'",
+          )
+          .run(now, clientId);
+      }
+      const bound = bindTo !== undefined && c.mcpClient === undefined;
+      if (bound) {
+        this.db
+          .prepare("UPDATE oauth_client SET mcp_client = ?, bound_at = ? WHERE client_id = ? AND mcp_client IS NULL")
+          .run(bindTo, now, clientId);
+      }
+      const after = this.get(clientId);
+      if (after === undefined) throw new Error("OAuth client vanished inside its own transaction");
+      return { ok: true, client: after, approved, bound };
+    })();
+  }
+
+  /** Operator revocation: any status but `revoked` becomes `revoked`. Returns whether the status changed. */
+  revoke(clientId: string): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE oauth_client SET status = 'revoked', decided_at = ? WHERE client_id = ? AND status <> 'revoked'",
+        )
+        .run(this.now().toISOString(), clientId).changes === 1
+    );
+  }
+
   get(clientId: string): RegisteredClient | undefined {
     const row = this.db.prepare(SELECT_CLIENT).get(clientId) as ClientRow | undefined;
     return row ? fromRow(row) : undefined;
+  }
+
+  /** Every client, oldest first (operator views only). */
+  list(): RegisteredClient[] {
+    return (this.db.prepare(`${SELECT_CLIENTS} ORDER BY c.created_at, c.client_id`).all() as ClientRow[]).map(fromRow);
   }
 }
 

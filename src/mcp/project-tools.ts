@@ -22,29 +22,61 @@
  * configured project of the same id always wins (the dynamic one is then ignored); a dynamic project resolves only for
  * its creator, only while that client still has `manage_projects` (Delegated, fail closed), to its in-force revision;
  * the in-force revision is re-checked against the client's current limits and the filesystem rules at every request.
+ *
+ * ADR-0068 (MCP-only onboarding): a repository context may give `clone_url` instead of `path` (`./schemas.ts`). The URL
+ * is checked against `project_sources` right after id ownership (`INVALID_REQUEST` for syntax, `PERMISSION_BLOCKED`
+ * when not allowed or not configured), the planned clone target stands in for `path` in the structure, limit and quota
+ * checks, and only then is the repository cloned or reused (`src/projects/clone.ts`), just before the filesystem
+ * checks run on the result as for any `path`. The stored definition keeps the resolved `path` and the normalised
+ * `clone_url`. Every clone attempt adds `clone` (`cloned`, `reused`, `failed`, `refused`) and `clone_sources`
+ * (`host/owner/repo`, lower case) to the call's `project_event` payload.
  */
 import type { ErrorObject, ValidateFunction } from "ajv";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import type { ProjectConfig, ResolvedMcpClient, ResolvedProject, TrustProfile } from "../config/index.js";
+import { configIdForProviderName } from "../adapters/providers.js";
+import type {
+  ProjectConfig,
+  ProjectSourcesSettings,
+  ResolvedContext,
+  ResolvedMcpClient,
+  ResolvedProject,
+  TrustProfile,
+} from "../config/index.js";
 import { effectiveMaxProfile, PROJECT_ID_PATTERN } from "../config/index.js";
+import type { ProjectSetupSnapshot } from "../policy/index.js";
 import {
   approvalReasons,
   BriefError,
+  type CloneAudit,
+  CloneError,
+  checkBaseRemote,
   checkClientLimits,
+  checkCloneUrl,
   checkFilesystem,
   checkRagSharing,
   checkStrings,
   checkStructure,
+  cloneTarget,
   type DynamicProjectState,
   type DynamicProjectStore,
+  ensureClone,
   freezeBrief,
+  type GitRunner,
   MAX_LIVE_PROJECTS_PER_CLIENT,
   MAX_REVISIONS_PER_PROJECT,
+  normalizedUrl,
   PROJECT_BRIEF_UNAVAILABLE,
   ProjectRuleError,
+  ProjectSourceError,
+  type ProjectSourceGrantStore,
+  type ProjectSourcesGetter,
   ProjectStoreError,
+  type RepositorySource,
+  sourceKey,
   toResolved,
 } from "../projects/index.js";
+import { SubmoduleError, type SubmoduleManifest } from "../submodules/index.js";
+import { planManifest } from "../workspace/submodules.js";
 import { invalid, ToolError, toToolError } from "./errors.js";
 import { inputSchema, PROJECT_TOOL_NAMES, type ProjectToolName } from "./schemas.js";
 
@@ -55,6 +87,19 @@ export interface ProjectToolsDeps {
   readonly allowedRoots: readonly string[];
   /** The controller data directory; no context may lie inside it. */
   readonly dataDir?: string;
+  /** ADR-0068: where a `clone_url` may be cloned. Absent: every `clone_url` is refused (`CLONE_NOT_CONFIGURED`). */
+  readonly projectSources?: ProjectSourcesSettings | ProjectSourcesGetter;
+  /**
+   * ADR-0087 item 8: runtime owner grants. Absent: `request_project_source` is refused (`NOT_CONFIGURED`); the server
+   * offers the tool only when this and `projectSources` are both present.
+   */
+  readonly sourceGrants?: ProjectSourceGrantStore;
+  /** ADR-0087: called after a new owner request was written (serve announces `approval_pending`). Must not throw. */
+  readonly onPendingSource?: (a: PendingSourceAnnouncement) => void;
+  /** ADR-0068: the Git runner for clones (tests inject one; default `git` from `PATH`, no shell). */
+  readonly git?: GitRunner;
+  /** ADR-0068: clone and fetch timeout; default `DEFAULT_CLONE_TIMEOUT_MS`. */
+  readonly cloneTimeoutMs?: number;
   /** Ids of the configured projects, read at each call (configuration owns them, never MCP). */
   readonly configuredIds: () => ReadonlySet<string>;
   /** Providers the operator disabled in `providers` (outside every client's provider set). */
@@ -84,8 +129,19 @@ export interface PendingRevisionAnnouncement {
   readonly kind: "dynamic_project" | "push_revision";
 }
 
+/** ADR-0087: what {@link ProjectToolsDeps.onPendingSource} receives. Ids and the closed kind only. */
+export interface PendingSourceAnnouncement {
+  readonly requestId: string;
+  readonly kind: "project_source";
+}
+
 /** Approval reasons that make a revision a `push_revision` (mirrors the approval proxy's kind rule, LLD §3.4.8). */
-const PUSH_APPROVAL_REASONS: ReadonlySet<string> = new Set(["push_policy", "commit_identity", "commit_signing"]);
+const PUSH_APPROVAL_REASONS: ReadonlySet<string> = new Set([
+  "push_policy",
+  "commit_identity",
+  "commit_signing",
+  "submodule_write",
+]);
 
 export interface DynamicResolution {
   readonly project: ResolvedProject;
@@ -97,6 +153,14 @@ export interface DynamicListEntry {
   readonly revision: number;
   readonly status: "ACTIVE" | "PENDING_APPROVAL" | "REJECTED";
   readonly pendingRevision?: number;
+  /** ADR-0068: context id to the normalised `clone_url` of the shown revision (no path). */
+  readonly sourceUrls?: ReadonlyMap<string, string>;
+}
+
+/** ADR-0068: what one call records about its clone attempts (bounded: closed codes and `host/owner/repo` keys). */
+interface CloneAuditState {
+  clone?: CloneAudit;
+  sources: string[];
 }
 
 export interface ProjectTools {
@@ -119,6 +183,9 @@ const ID_RE = new RegExp(PROJECT_ID_PATTERN, "u");
 
 export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
   const { store, clientId, client } = deps;
+  /** ADR-0087: the live `project_sources` (configured owners plus approved grants), read at each check. */
+  const sources = (): ProjectSourcesSettings | undefined =>
+    typeof deps.projectSources === "function" ? deps.projectSources() : deps.projectSources;
   const clientMax: TrustProfile = client.maxTrustProfile;
   const limits = { maxTrustProfile: clientMax, maxPushPolicy: client.maxPushPolicy ?? "none" } as const;
   const ajv = new Ajv2020({ allErrors: true, strict: true });
@@ -133,6 +200,16 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
       project: id,
       reason: "NOT_MANAGEABLE",
     });
+
+  /** ADR-0068: the fixed clone text and reason code; never Git output. `CLONE_FAILED` may succeed later. */
+  const fromClone = (err: CloneError): ToolError => {
+    const te = new ToolError(err.code, err.message, {
+      reason: err.reason,
+      ...(err.field !== undefined ? { field: err.field } : {}),
+    });
+    if (err.reason === "CLONE_FAILED") te.retryable = true;
+    return te;
+  };
 
   const fromRule = (err: ProjectRuleError) =>
     new ToolError(err.code, err.message, {
@@ -154,7 +231,12 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
     return typeof candidate === "string" && ID_RE.test(candidate) ? candidate : undefined;
   };
 
-  const refused = (name: ProjectToolName, rawArgs: unknown, err: ToolError) => {
+  const auditPayload = (audit: CloneAuditState | undefined): Record<string, unknown> =>
+    audit?.clone !== undefined ? { clone: audit.clone, clone_sources: [...audit.sources] } : {};
+
+  const refused = (name: ProjectToolName, rawArgs: unknown, err: ToolError, audit?: CloneAuditState) => {
+    // `project_event.action` is a closed list (migration 0004); an owner request is audited by its own table.
+    if (name === "request_project_source") return;
     const pid = namedId(name, rawArgs);
     const reason = typeof err.details.reason === "string" ? err.details.reason : "INVALID_ARGUMENTS";
     const field = typeof err.details.field === "string" ? err.details.field.slice(0, 200) : undefined;
@@ -166,7 +248,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
       outcome: "REFUSED",
       code: err.code,
       reason,
-      payload: field !== undefined ? { field } : {},
+      payload: { ...(field !== undefined ? { field } : {}), ...auditPayload(audit) },
     });
   };
 
@@ -178,25 +260,138 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
     return st;
   };
 
+  /**
+   * ADR-0087 item 1 (**Delegated**): a recursive context's explicit `writable_paths` are checked against the umbrella's
+   * manifest at `base_ref` (after the filesystem checks, so the repository and the commit exist): an entry naming no
+   * declared submodule is `SUBMODULE_PATH_UNKNOWN`, one naming a wiki `SUBMODULE_WIKI_READ_ONLY`, and a manifest the
+   * library refuses (URL syntax, source not allowed, undeclared or unsafe path, too large) is refused with its reason
+   * and path, never the URL. `["*"]` and an empty list read nothing.
+   */
+  const checkSubmodulePaths = async (def: ProjectConfig): Promise<void> => {
+    const resolved = toResolved(def);
+    for (const [i, c] of def.contexts.entries()) {
+      const s = c.submodules;
+      const writable = s?.writable_paths ?? [];
+      if (s?.mode !== "recursive" || writable.length === 0 || (writable.length === 1 && writable[0] === "*")) continue;
+      const field = `$.project.contexts[${i}].submodules`;
+      const baseRemote = resolved.contexts[i]?.baseRemote;
+      let manifest: SubmoduleManifest;
+      try {
+        manifest = await planManifest(
+          c.path,
+          c.base_ref,
+          { writablePaths: [], exclude: s.exclude ?? [], ...(baseRemote !== undefined ? { baseRemote } : {}) },
+          { sources },
+        );
+      } catch (err) {
+        if (!(err instanceof SubmoduleError)) throw err;
+        throw new ToolError(err.code, err.message, {
+          reason: err.reason,
+          field,
+          ...(err.path !== undefined ? { path: err.path } : {}),
+        });
+      }
+      const byPath = new Map(manifest.entries.map((e) => [e.path, e]));
+      for (const [k, p] of writable.entries()) {
+        const e = byPath.get(p);
+        const at = { field: `${field}.writable_paths[${k}]`, path: p };
+        if (e === undefined) {
+          throw invalid("a writable_paths entry names no submodule declared at base_ref", {
+            reason: "SUBMODULE_PATH_UNKNOWN",
+            ...at,
+          });
+        }
+        if (e.wiki) {
+          throw invalid("a writable_paths entry names a wiki, which is never writable", {
+            reason: "SUBMODULE_WIKI_READ_ONLY",
+            ...at,
+          });
+        }
+      }
+    }
+  };
+
   const checkDefinition = (def: ProjectConfig): void => {
     checkStructure(def);
+    checkBaseRemote(def);
     checkClientLimits(def, limits, deps.disabledProviders);
     checkRagSharing(def);
   };
 
   const pendingMessage = (revision: number, inForce: number | undefined) =>
-    `revision ${revision} waits for the operator's approval (switchboard projects approve) and cannot start runs ` +
-    `until then${inForce !== undefined ? `; revision ${inForce} stays in force` : ""}`;
+    `revision ${revision} waits for approval and cannot start runs until then: approve it with decide_approval ` +
+    `from an approver client (list_pending_approvals), or the operator runs \`switchboard projects approve\`` +
+    `${inForce !== undefined ? `; revision ${inForce} stays in force` : ""}`;
+
+  /**
+   * ADR-0068: check every `clone_url` context and put its planned target in `path`, so the structure, limit and quota
+   * checks see a complete definition before anything is cloned. Throws CloneError (recorded as `refused`).
+   */
+  const planClones = (def: ProjectConfig, audit: CloneAuditState): { index: number; src: RepositorySource }[] => {
+    const plan: { index: number; src: RepositorySource }[] = [];
+    for (const [i, c] of def.contexts.entries()) {
+      if (c.clone_url === undefined) continue;
+      const field = `$.project.contexts[${i}].clone_url`;
+      let src: RepositorySource;
+      try {
+        src = checkCloneUrl(c.clone_url, sources(), field);
+      } catch (err) {
+        if (err instanceof CloneError) audit.clone = err.audit;
+        throw err;
+      }
+      audit.sources.push(sourceKey(src));
+      c.clone_url = normalizedUrl(src);
+      c.path = cloneTarget(src, sources() as ProjectSourcesSettings);
+      plan.push({ index: i, src });
+    }
+    return plan;
+  };
+
+  /** ADR-0068: clone or reuse each planned repository; `path` becomes the canonical clone. */
+  const runClones = async (
+    def: ProjectConfig,
+    plan: readonly { index: number; src: RepositorySource }[],
+    audit: CloneAuditState,
+  ): Promise<void> => {
+    for (const { index, src } of plan) {
+      try {
+        const r = await ensureClone(
+          src,
+          {
+            settings: sources() as ProjectSourcesSettings,
+            ...(deps.git !== undefined ? { git: deps.git } : {}),
+            ...(deps.cloneTimeoutMs !== undefined ? { timeoutMs: deps.cloneTimeoutMs } : {}),
+          },
+          `$.project.contexts[${index}].clone_url`,
+        );
+        (def.contexts[index] as { path: string }).path = r.path;
+        if (audit.clone !== "cloned") audit.clone = r.outcome;
+      } catch (err) {
+        if (err instanceof CloneError) audit.clone = err.audit;
+        throw err;
+      }
+    }
+  };
 
   const write = (
     action: "create_project" | "update_project",
     def: ProjectConfig,
     seenLatest: number | undefined,
     reasons: string[],
+    audit: CloneAuditState,
   ) => {
     const status = reasons.length > 0 ? "PENDING_APPROVAL" : "ACTIVE";
+    const payload = auditPayload(audit);
     const row = store.appendRevision(
-      { projectId: def.id, clientId, definition: def, status, approvalReasons: reasons, action },
+      {
+        projectId: def.id,
+        clientId,
+        definition: def,
+        status,
+        approvalReasons: reasons,
+        action,
+        ...(Object.keys(payload).length > 0 ? { payload } : {}),
+      },
       (cur) => {
         if (deps.configuredIds().has(def.id)) throw notManageable(def.id);
         if (cur !== undefined && cur.clientId !== clientId) throw notManageable(def.id);
@@ -233,7 +428,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
     };
   };
 
-  const createProject = async (a: Record<string, unknown>) => {
+  const createProject = async (a: Record<string, unknown>, audit: CloneAuditState) => {
     const def = a.project as ProjectConfig;
     checkStrings(def);
     const existing = ownState(def.id);
@@ -245,12 +440,15 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
         { reason: existing.deleted ? "ID_DELETED" : "ID_EXISTS", field: "$.project.id" },
       );
     }
+    const clones = planClones(def, audit);
     checkDefinition(def);
     if (store.countLive(clientId) >= MAX_LIVE_PROJECTS_PER_CLIENT) {
       throw quotaError("PROJECT_QUOTA", `this client already has ${MAX_LIVE_PROJECTS_PER_CLIENT} dynamic projects`);
     }
+    await runClones(def, clones, audit);
     await checkFilesystem(def, deps.allowedRoots, deps.dataDir);
-    return write("create_project", def, undefined, approvalReasons(def, undefined, clientMax));
+    await checkSubmodulePaths(def);
+    return write("create_project", def, undefined, approvalReasons(def, undefined, clientMax), audit);
   };
 
   const liveOwn = (id: string): DynamicProjectState => {
@@ -260,7 +458,7 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
     return st;
   };
 
-  const updateProject = async (a: Record<string, unknown>) => {
+  const updateProject = async (a: Record<string, unknown>, audit: CloneAuditState) => {
     const id = a.id as string;
     const def = a.project as ProjectConfig;
     checkStrings(def);
@@ -271,12 +469,21 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
         field: "$.project.id",
       });
     }
+    const clones = planClones(def, audit);
     checkDefinition(def);
     if (st.revisions.length >= MAX_REVISIONS_PER_PROJECT) {
       throw quotaError("REVISION_QUOTA", `project ${id} already has ${MAX_REVISIONS_PER_PROJECT} revisions`);
     }
+    await runClones(def, clones, audit);
     await checkFilesystem(def, deps.allowedRoots, deps.dataDir);
-    return write("update_project", def, st.latest.revision, approvalReasons(def, st.inForce?.definition, clientMax));
+    await checkSubmodulePaths(def);
+    return write(
+      "update_project",
+      def,
+      st.latest.revision,
+      approvalReasons(def, st.inForce?.definition, clientMax),
+      audit,
+    );
   };
 
   const deleteProject = async (a: Record<string, unknown>) => {
@@ -317,26 +524,82 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
     return { id, revision: row.revision, status: "DELETED" };
   };
 
-  const handlers: Record<ProjectToolName, (a: Record<string, unknown>) => Promise<object>> = {
+  /** ADR-0087 item 8: ask for an owner to be added to `project_sources.allowed_owners` (decided elsewhere). */
+  const requestProjectSource = async (a: Record<string, unknown>): Promise<object> => {
+    const grants = deps.sourceGrants;
+    if (grants === undefined || sources() === undefined) {
+      throw new ToolError("PERMISSION_BLOCKED", "this server has no project_sources to extend", {
+        reason: "NOT_CONFIGURED",
+      });
+    }
+    const host = typeof a.host === "string" ? a.host : "github.com";
+    const owner = a.owner as string;
+    try {
+      const { row, created } = grants.requestOutcome({ clientId, host, owner });
+      if (created) {
+        try {
+          deps.onPendingSource?.({ requestId: row.id, kind: "project_source" });
+        } catch {
+          // Best effort (ADR-0048 item 6): an announcement never undoes the write.
+        }
+      }
+      return {
+        request_id: row.id,
+        host: row.host,
+        owner: row.owner,
+        status: row.status === "PENDING" ? "PENDING_APPROVAL" : row.status,
+        message:
+          row.status === "PENDING"
+            ? `request ${row.id} waits for approval: an approver client whose approval_proxy_kinds lists ` +
+              "project_source decides it with decide_approval (list_pending_approvals), or the operator runs " +
+              `\`switchboard projects sources approve ${row.id}\``
+            : row.status === "APPROVED"
+              ? `owner ${row.owner} on ${row.host} is approved: create_project may use its clone_url`
+              : `request ${row.id} was rejected`,
+      };
+    } catch (err) {
+      if (!(err instanceof ProjectSourceError)) throw err;
+      if (err.reason === "OWNER_ALREADY_ALLOWED") {
+        return {
+          host: host.toLowerCase(),
+          owner: owner.toLowerCase(),
+          status: "ALREADY_ALLOWED",
+          message: `owner ${owner.toLowerCase()} is already allowed by this server's project_sources`,
+        };
+      }
+      const field = err.reason === "OWNER_INVALID" ? "owner" : err.reason === "HOST_NOT_ALLOWED" ? "host" : undefined;
+      throw new ToolError(err.reason === "OWNER_INVALID" ? "INVALID_REQUEST" : "PERMISSION_BLOCKED", err.message, {
+        reason: err.reason,
+        ...(field !== undefined ? { field } : {}),
+      });
+    }
+  };
+
+  const handlers: Record<ProjectToolName, (a: Record<string, unknown>, audit: CloneAuditState) => Promise<object>> = {
+    request_project_source: requestProjectSource,
     create_project: createProject,
     update_project: updateProject,
     delete_project: deleteProject,
   };
 
   const call = async (name: ProjectToolName, rawArgs: unknown): Promise<object> => {
+    const audit: CloneAuditState = { sources: [] };
     try {
       const args = structuredClone(rawArgs ?? {}) as Record<string, unknown>;
       const validate = validators[name];
       if (!validate(args)) throw schemaError(validate.errors ?? []);
-      return await handlers[name](args);
+      normaliseAllowedProviders(args);
+      return await handlers[name](args, audit);
     } catch (err) {
       const te =
         err instanceof ProjectRuleError
           ? fromRule(err)
-          : err instanceof ProjectStoreError
-            ? notManageable(namedId(name, rawArgs) ?? "")
-            : toToolError(err);
-      refused(name, rawArgs, te);
+          : err instanceof CloneError
+            ? fromClone(err)
+            : err instanceof ProjectStoreError
+              ? notManageable(namedId(name, rawArgs) ?? "")
+              : toToolError(err);
+      refused(name, rawArgs, te, audit);
       throw te;
     }
   };
@@ -360,7 +623,8 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
     if (rev === undefined) {
       throw new ToolError(
         "PERMISSION_BLOCKED",
-        `project ${projectId} has no approved revision yet; the operator must approve it (projects approve)`,
+        `project ${projectId} has no approved revision yet: approve it with decide_approval from an approver client, ` +
+          "or the operator runs `switchboard projects approve`",
         {
           project: projectId,
           reason: st.latest.state === "rejected" ? "revision_rejected" : "approval_required",
@@ -405,10 +669,16 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
       const shown = st.inForce ?? st.latest;
       const status =
         st.inForce !== undefined ? "ACTIVE" : st.latest.state === "rejected" ? "REJECTED" : "PENDING_APPROVAL";
+      const sourceUrls = new Map(
+        shown.definition.contexts.flatMap((c) =>
+          typeof c.clone_url === "string" ? [[c.id, c.clone_url] as const] : [],
+        ),
+      );
       out.push({
         project: toResolved(shown.definition),
         revision: shown.revision,
         status,
+        ...(sourceUrls.size > 0 ? { sourceUrls } : {}),
         ...(st.pending !== undefined && st.pending.revision !== shown.revision
           ? { pendingRevision: st.pending.revision }
           : {}),
@@ -420,6 +690,95 @@ export function createProjectTools(deps: ProjectToolsDeps): ProjectTools {
   return { call, recordNotOffered, resolveForRequest, listForClient };
 }
 
+/** ADR-0070: `list_projects`' `merge_policy` of a project, present only when it sets one (absent means off). */
+/**
+ * ADR-0076: `project.allowed_providers` in the config spelling (`claude` → `claude-code`), later duplicates dropped,
+ * after the schema accepted either spelling; the stored definition, the limit checks and the approval reasons then
+ * see one spelling, as in configured projects. A name with no config id is left for the checks to refuse.
+ */
+function normaliseAllowedProviders(args: Record<string, unknown>): void {
+  const def = args.project as { allowed_providers?: unknown } | undefined;
+  if (def === undefined || !Array.isArray(def.allowed_providers)) return;
+  const out: string[] = [];
+  for (const n of def.allowed_providers as string[]) {
+    const id = configIdForProviderName(n) ?? n;
+    if (!out.includes(id)) out.push(id);
+  }
+  def.allowed_providers = out;
+}
+
+export function mergePolicyItem(p: Pick<ResolvedProject, "mergePolicy">) {
+  const m = p.mergePolicy;
+  if (m === undefined) return {};
+  return {
+    merge_policy: {
+      enabled: m.enabled,
+      method: m.method,
+      required_reports: [...m.requiredReports],
+      require_verification: m.requireVerification !== false,
+      checks: m.checks ?? "required",
+    },
+  };
+}
+
+/**
+ * ADR-0087 item 8 (G2): one `list_projects` context item, shared by configured and dynamic projects: the effective
+ * definition a client can read back. A remote is its NAME, never a URL or path; no secret is held in any field.
+ */
+export function contextListItem(c: ResolvedContext) {
+  return {
+    id: c.id,
+    kind: c.kind,
+    primary: c.primary,
+    push_policy: c.push.policy,
+    base_ref: c.baseRef,
+    ...(c.push.remote !== undefined ? { push_remote: c.push.remote } : {}),
+    ...(c.push.branchPrefix !== undefined ? { branch_prefix: c.push.branchPrefix } : {}),
+    ...(c.identity !== undefined ? { identity: { name: c.identity.name, email: c.identity.email } } : {}),
+    sign: c.sign,
+    finalize_commit: c.finalizeCommit,
+    ...(c.submodules !== undefined
+      ? {
+          submodules: {
+            mode: c.submodules.mode,
+            writable_paths: [...c.submodules.writablePaths],
+            exclude: [...c.submodules.exclude],
+          },
+        }
+      : {}),
+  };
+}
+
+/** ADR-0071: `list_projects`' `setup` of a project, present only when it sets one (defaults filled in). */
+export function setupItem(p: Pick<ResolvedProject, "setup">) {
+  const s = p.setup;
+  if (s === undefined) return {};
+  return {
+    setup: {
+      commands: s.commands.map((argv) => [...argv]),
+      network: { hosts: [...s.hosts] },
+      cache: s.cache,
+      timeout_seconds: s.timeoutSeconds,
+      ...(Object.keys(s.env).length > 0 ? { env: { ...s.env } } : {}),
+    },
+  };
+}
+
+/** ADR-0071: the project's setup step frozen into the run's project snapshot at admission; nothing when it has none. */
+export function snapshotSetup(p: Pick<ResolvedProject, "setup">): { setup?: ProjectSetupSnapshot } {
+  const s = p.setup;
+  if (s === undefined) return {};
+  return {
+    setup: {
+      commands: s.commands.map((argv) => [...argv]),
+      network_hosts: [...s.hosts],
+      cache: s.cache,
+      timeout_seconds: s.timeoutSeconds,
+      env: Object.fromEntries(Object.entries(s.env).filter((e): e is [string, string] => e[1] !== undefined)),
+    },
+  };
+}
+
 /** `list_projects` entry of a dynamic project: the configured shape plus `source`, `revision`, `status`. */
 export function dynamicListItem(e: DynamicListEntry, clientMax: TrustProfile) {
   const p = e.project;
@@ -427,10 +786,18 @@ export function dynamicListItem(e: DynamicListEntry, clientMax: TrustProfile) {
     id: p.id,
     name: p.name,
     environment_kind: p.environment.kind,
-    contexts: p.contexts.map((c) => ({ id: c.id, kind: c.kind, primary: c.primary, push_policy: c.push.policy })),
+    contexts: p.contexts.map((c) => {
+      const source = e.sourceUrls?.get(c.id);
+      return {
+        ...contextListItem(c),
+        ...(source !== undefined ? { source_url: source } : {}),
+      };
+    }),
     ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
     effective_max_profile: effectiveMaxProfile(clientMax, p),
     ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
+    ...mergePolicyItem(p),
+    ...setupItem(p),
     source: "dynamic" as const,
     revision: e.revision,
     status: e.status,

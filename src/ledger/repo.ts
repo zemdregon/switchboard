@@ -2,6 +2,15 @@ import type Database from "better-sqlite3";
 import { approvalCausePrefix, type DecisionInput, renderDecisionSummary } from "../continuity/decisions.js";
 import { deriveOpenWork, type OpenWorkRun } from "../continuity/open-work.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
+import {
+  getSubmodulePush,
+  listSubmoduleMergeSteps,
+  listSubmoduleMergeStepsForRun,
+  listSubmodulePullRequestsForRun,
+  type SubmoduleMergeRow,
+  type SubmodulePullRequestRow,
+  type SubmodulePushRow,
+} from "../submodules/ledger.js";
 import { insertChainedRunEvent, nextChainLink } from "./chain.js";
 import { type ControlPlaneLedgerSlice, createControlPlaneLedgerSlice } from "./control-plane.js";
 import { createDecisionLedgerSlice, type DecisionLedgerSlice } from "./decisions.js";
@@ -233,7 +242,8 @@ export type ArtifactKind =
   | "pr_draft" // T11.8, migration 0009
   | "handoff_condense" // T11.10, migration 0016
   | "seed_log" // T9.13, migration 0022
-  | "docs_alignment"; // T8.10, migration 0027
+  | "docs_alignment" // T8.10, migration 0027
+  | "setup_log"; // ADR-0071, migration 0034
 
 export interface NewArtifactRow {
   /** Pre-allocated with {@link Ledger.newArtifactId} when a row written first must name it (T5.5, LLD §15.2). */
@@ -652,9 +662,57 @@ export interface GitPushRow {
   outcome: "ACCEPTED" | "REFUSED_POLICY" | "REJECTED_REMOTE" | "ERROR";
   /** Short reason code from a fixed vocabulary (`src/git/push.ts`); never Git's own output. */
   detail: string | null;
-  requested_by: "agent_tool" | "operator";
+  /** ADR-0069 (migration 0033): `mcp_client:<id>` for a `publish_run` push. */
+  requested_by: GitPushRequester;
   created_at: string;
 }
+
+/** Who asked for a push (FR-GIT-05): the agent `push` tool, the operator CLI, or an MCP client's `publish_run`. */
+export type GitPushRequester = "agent_tool" | "operator" | `mcp_client:${string}`;
+
+/** One `pull_request` row (ADR-0069, migration 0033). Append-only. Controller facts only; never a title or body. */
+export interface PullRequestRow {
+  id: string;
+  run_id: string;
+  meta_session_id: string;
+  push_id: string;
+  client_id: string;
+  /** `owner/repo` on github.com. */
+  repo: string;
+  number: number;
+  url: string;
+  /** Head branch (the pushed `refs/heads/<branch>` without the prefix). */
+  branch: string;
+  base_ref: string;
+  head_sha: string;
+  draft: 0 | 1;
+  action: "created" | "reused";
+  created_at: string;
+}
+
+export type NewPullRequest = Omit<PullRequestRow, "id" | "created_at">;
+
+/** ADR-0078 `close_pr` outcomes (migration 0036). */
+export type PullRequestCloseOutcome = "closed" | "already_closed" | "refused" | "failed";
+
+/** One `pull_request_close` row (ADR-0078, migration 0036). Append-only: one per `close_pr` call, allowed or denied. */
+export interface PullRequestCloseRow {
+  id: string;
+  client_id: string;
+  project_id: string | null;
+  number: number | null;
+  replacement_number: number | null;
+  delete_branch: 0 | 1;
+  pull_request_id: string | null;
+  run_id: string | null;
+  repo: string | null;
+  outcome: PullRequestCloseOutcome;
+  /** A closed code (`NOT_SWITCHBOARD_PR`, `GH_FAILED`, ...); null when closed. */
+  reason: string | null;
+  created_at: string;
+}
+
+export type NewPullRequestClose = Omit<PullRequestCloseRow, "id" | "created_at">;
 
 /** Everything `recordGitPush` needs; `id` and `created_at` are assigned by the ledger. */
 export interface NewGitPush {
@@ -859,6 +917,16 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, De
   /** `provider_reported` usage rows of `provider` observed at or after `sinceIso`, oldest first (never `inner_agent`). */
   listProviderReportedUsageSince(provider: string, sinceIso: string): ProviderUsageRow[];
   /**
+   * ADR-0088: the newest `limit` `provider_reported` usage rows of `provider` observed at or after `sinceIso` whose
+   * metrics hold `key` (a declared usage key), newest first.
+   */
+  listLatestProviderReportedUsageWithKey(
+    provider: string,
+    key: string,
+    sinceIso: string,
+    limit: number,
+  ): ProviderUsageRow[];
+  /**
    * T14.4 (FR-CTL-06): run rows created at or after `sinceIso` (every admission that wrote a row, whatever its state);
    * only the runs of `projectId` when it is given.
    */
@@ -1022,10 +1090,43 @@ export interface Ledger extends ControlPlaneLedgerSlice, ScheduleLedgerSlice, De
    */
   hasBaseRefreshFetch(repoRoot: string, trackingRef: string, sha: string): boolean;
   /**
+   * ADR-0094: whether a run of the repository at `repoRoot` recorded an approved bypass dispatch (`privileged_dispatch`
+   * with `bypass_approved` true) and had not finished at `since` (`finished_at` NULL or not before it), so its agent may
+   * have fetched into the shared repository after `since`.
+   */
+  hasBypassRunOnRepoSince(repoRoot: string, since: string): boolean;
+  /**
    * Payload JSON of the newest `git_push` run events across every run of a meta-session, NEWEST FIRST, at most
    * `limit` (T9.14, FR-CTL-03 `secret_scan_blocked`: operator pushes record on a run of the meta-session too).
    */
   listGitPushEventPayloadsForMetaSession(metaSessionId: string, limit: number): string[];
+  /**
+   * ADR-0069: in ONE `BEGIN IMMEDIATE` transaction insert the append-only `pull_request` row and append the
+   * `pull_request_opened` run event on its run (payload: the row's facts, never a title or body).
+   */
+  recordPullRequest(input: NewPullRequest): PullRequestRow;
+  /** ADR-0069: the `pull_request` rows of one run, oldest first. */
+  listPullRequestsForRun(runId: string): PullRequestRow[];
+  /** ADR-0069: the `pull_request` rows of every run of a meta-session, oldest first. */
+  listPullRequestsForMetaSession(metaSessionId: string): PullRequestRow[];
+  /**
+   * ADR-0087 item 6 (read side of `src/submodules/ledger.ts`): one run's linked pull requests (`submodule_pull_request`),
+   * each with the `submodule_push` row it was opened for, and the run's `submodule_merge` steps; oldest first.
+   */
+  listSubmodulePullRequestsForRun(runId: string): (SubmodulePullRequestRow & { push: SubmodulePushRow | undefined })[];
+  listSubmoduleMergeStepsForRun(runId: string): SubmoduleMergeRow[];
+  /** ADR-0087 item 7: every step of the ordered merge of one umbrella publish ref of a project, oldest first. */
+  listSubmoduleMergeSteps(projectId: string, umbrellaRef: string): SubmoduleMergeRow[];
+  /**
+   * ADR-0078: the `pull_request` rows `publish_run` CREATED (never `reused`) as pull request `number` of `repo`
+   * (`owner/repo`, compared case-insensitively as GitHub does) for a run of `projectId`, newest first.
+   */
+  listCreatedPullRequests(q: { projectId: string; repo: string; number: number }): PullRequestRow[];
+  /**
+   * ADR-0078: in ONE `BEGIN IMMEDIATE` transaction insert the append-only `pull_request_close` row and, when it names a
+   * run, append the `pull_request_close` run event on that run (payload: the row's facts).
+   */
+  recordPullRequestClose(input: NewPullRequestClose): PullRequestCloseRow;
   /**
    * `push_id`s named by the `secret_scan_acknowledged` run events of a meta-session (T9.14, operator
    * `git ack-secret-scan`, LLD §20.9). Unreadable payloads are skipped.
@@ -1610,6 +1711,17 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
            ORDER BY observed_at, id`,
         )
         .all(provider, sinceIso) as ProviderUsageRow[];
+    },
+
+    listLatestProviderReportedUsageWithKey(provider, key, sinceIso, limit) {
+      return db
+        .prepare(
+          `SELECT metrics_json, observed_at FROM usage_observation
+           WHERE provider = ? AND source = 'provider_reported' AND observed_at >= ?
+             AND json_extract(metrics_json, ?) IS NOT NULL
+           ORDER BY observed_at DESC, id DESC LIMIT ?`,
+        )
+        .all(provider, sinceIso, `$.${JSON.stringify(key)}`, limit) as ProviderUsageRow[];
     },
 
     countRunsCreatedSince(sinceIso, projectId) {
@@ -2258,6 +2370,20 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
       return hasBaseRefreshFetch(db, repoRoot, trackingRef, sha);
     },
 
+    hasBypassRunOnRepoSince(repoRoot, since) {
+      return (
+        db
+          .prepare(
+            `SELECT 1 FROM run r JOIN meta_session m ON m.id = r.meta_session_id JOIN run_event e ON e.run_id = r.id
+             WHERE m.repo_root = ? AND e.type = 'privileged_dispatch'
+               AND json_extract(e.payload_json, '$.bypass_approved') = 1
+               AND (r.finished_at IS NULL OR r.finished_at >= ?)
+             LIMIT 1`,
+          )
+          .get(repoRoot, since) !== undefined
+      );
+    },
+
     listGitPushEventPayloadsForMetaSession(metaSessionId, limit) {
       return (
         db
@@ -2267,6 +2393,133 @@ export function createLedger(db: Database.Database, deps: LedgerDeps = {}): Ledg
           )
           .all(metaSessionId, limit) as { payload_json: string }[]
       ).map((row) => row.payload_json);
+    },
+
+    recordPullRequest(input) {
+      return immediate(() => {
+        const when = ts();
+        const id = ids.id("prq");
+        db.prepare(
+          `INSERT INTO pull_request (id, run_id, meta_session_id, push_id, client_id, repo, number, url, branch, base_ref,
+             head_sha, draft, action, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          id,
+          input.run_id,
+          input.meta_session_id,
+          input.push_id,
+          input.client_id,
+          input.repo,
+          input.number,
+          input.url,
+          input.branch,
+          input.base_ref,
+          input.head_sha,
+          input.draft,
+          input.action,
+          when,
+        );
+        insertEvent(
+          input.run_id,
+          "pull_request_opened",
+          {
+            pull_request_id: id,
+            push_id: input.push_id,
+            repo: input.repo,
+            number: input.number,
+            url: input.url,
+            branch: input.branch,
+            base_ref: input.base_ref,
+            head_sha: input.head_sha,
+            draft: input.draft === 1,
+            action: input.action,
+            requested_by: `mcp_client:${input.client_id}`,
+          },
+          when,
+        );
+        return db.prepare("SELECT * FROM pull_request WHERE id = ?").get(id) as PullRequestRow;
+      });
+    },
+
+    listPullRequestsForRun(runId) {
+      return db
+        .prepare("SELECT * FROM pull_request WHERE run_id = ? ORDER BY created_at, id")
+        .all(runId) as PullRequestRow[];
+    },
+
+    listPullRequestsForMetaSession(metaSessionId) {
+      return db
+        .prepare("SELECT * FROM pull_request WHERE meta_session_id = ? ORDER BY created_at, id")
+        .all(metaSessionId) as PullRequestRow[];
+    },
+
+    listSubmodulePullRequestsForRun(runId) {
+      return listSubmodulePullRequestsForRun(db, runId).map((pr) => ({
+        ...pr,
+        push: getSubmodulePush(db, pr.push_id),
+      }));
+    },
+
+    listSubmoduleMergeStepsForRun(runId) {
+      return listSubmoduleMergeStepsForRun(db, runId);
+    },
+
+    listSubmoduleMergeSteps(projectId, umbrellaRef) {
+      return listSubmoduleMergeSteps(db, projectId, umbrellaRef);
+    },
+
+    listCreatedPullRequests(q) {
+      return db
+        .prepare(
+          `SELECT p.* FROM pull_request p JOIN run r ON r.id = p.run_id
+           WHERE r.project_id = ? AND p.number = ? AND lower(p.repo) = lower(?) AND p.action = 'created'
+           ORDER BY p.created_at DESC, p.id DESC`,
+        )
+        .all(q.projectId, q.number, q.repo) as PullRequestRow[];
+    },
+
+    recordPullRequestClose(input) {
+      return immediate(() => {
+        const when = ts();
+        const id = ids.id("prc");
+        db.prepare(
+          `INSERT INTO pull_request_close (id, client_id, project_id, number, replacement_number, delete_branch,
+             pull_request_id, run_id, repo, outcome, reason, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(
+          id,
+          input.client_id,
+          input.project_id,
+          input.number,
+          input.replacement_number,
+          input.delete_branch,
+          input.pull_request_id,
+          input.run_id,
+          input.repo,
+          input.outcome,
+          input.reason,
+          when,
+        );
+        if (input.run_id !== null) {
+          insertEvent(
+            input.run_id,
+            "pull_request_close",
+            {
+              pull_request_close_id: id,
+              pull_request_id: input.pull_request_id,
+              repo: input.repo,
+              number: input.number,
+              replacement_number: input.replacement_number,
+              delete_branch: input.delete_branch === 1,
+              outcome: input.outcome,
+              ...(input.reason !== null ? { reason: input.reason } : {}),
+              requested_by: `mcp_client:${input.client_id}`,
+            },
+            when,
+          );
+        }
+        return db.prepare("SELECT * FROM pull_request_close WHERE id = ?").get(id) as PullRequestCloseRow;
+      });
     },
 
     listSecretScanAcknowledgedPushIds(metaSessionId) {

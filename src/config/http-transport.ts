@@ -28,6 +28,24 @@
  *   `https` URL as `client_id`, fetched under the limits in `src/mcp/oauth-cimd.ts`. `false` turns the fetch off, so
  *   such a `client_id` is an unknown client. `oauth_client_id` in `clients` may then be that URL as well; it is mapped
  *   under the `sbc_` identifier derived from it (`cimdInternalClientId`). Stdio is unaffected either way.
+ * - `client_ip_header` (optional, lower case, e.g. `cf-connecting-ip`) names the request header that carries the real
+ *   client address when a trusted reverse proxy on the same host forwards to the listener. It is honoured only when
+ *   the TCP peer is a loopback address (the proxy), and only when its value is one IP literal; otherwise the socket
+ *   peer is used. It keys the per-address lockout for wrong pairing codes and passphrases on the consent pages.
+ *
+ * A profile-bound one-time code (`switchboard mcp oauth issue-code`) binds an OAuth client to an `mcp_clients` entry in
+ * the ledger. Resolution at the MCP endpoint is: the config `clients` map, then that ledger binding, then
+ * `default_mcp_client` ({@link resolveMcpClientFor}). Delegated (ADR-0086, superseding ADR-0085 in part): a ledger
+ * binding follows the same rule as an explicit `clients` mapping ({@link httpProfileProblem} with `bound`): a
+ * `privileged` ceiling is allowed (its privileged runs still wait for the operator) and `privileged_approval:
+ * not_required` is refused, checked when the code is issued and again on every request. Issuing a code on the host is
+ * an operator act equivalent to editing the config map. `default_mcp_client` stays strict.
+ *
+ * ADR-0091 (owner ruling 2026-10-21, mechanism Delegated): `allow_unattended_privileged` (default false) lets a `mapped`
+ * or `bound` entry carry `privileged_approval: not_required`, so that HTTP client's privileged runs are admitted
+ * pre-approved by client policy exactly as on stdio (ADR-0019). It is the operator's explicit opt-in; absent, every
+ * source refuses `not_required` as before. `default_mcp_client` is never relaxed by it: it still refuses a privileged
+ * ceiling and `not_required`.
  */
 import net from "node:net";
 import { checkCimdClientId, cimdInternalClientId, looksLikeCimdClientId } from "../mcp/oauth-cimd.js";
@@ -44,6 +62,8 @@ export interface HttpTransportConfig {
   clients?: { oauth_client_id: string; mcp_client: string }[];
   default_mcp_client?: string;
   cimd?: boolean;
+  client_ip_header?: string;
+  allow_unattended_privileged?: boolean;
 }
 
 /** The `oauth_client_id` of a mapping as the token store keys it: a URL's derived identifier, else as written. */
@@ -82,6 +102,9 @@ export const httpTransportSchema = {
     },
     default_mcp_client: { type: "string", minLength: 1, maxLength: 128 },
     cimd: { type: "boolean" },
+    client_ip_header: { type: "string", minLength: 1, maxLength: 64, pattern: "^[a-z0-9][a-z0-9-]*$" },
+    // ADR-0091: default false; see the module comment.
+    allow_unattended_privileged: { type: "boolean" },
   },
 } as const;
 
@@ -90,7 +113,12 @@ export const DEFAULT_HTTP_BIND = "127.0.0.1";
 /** Well-known paths (RFC 9728 §3, RFC 8414 §3) and the embedded authorization server's endpoints (ADR-0041 items 3, 4). */
 export const PROTECTED_RESOURCE_WELL_KNOWN = "/.well-known/oauth-protected-resource";
 export const AUTHORIZATION_SERVER_WELL_KNOWN = "/.well-known/oauth-authorization-server";
-export const AS_ENDPOINT_PATHS = { authorization: "/authorize", token: "/token", registration: "/register" } as const;
+export const AS_ENDPOINT_PATHS = {
+  authorization: "/authorize",
+  token: "/token",
+  registration: "/register",
+  revocation: "/revoke",
+} as const;
 
 export interface HttpTransportSettings {
   bind: string;
@@ -111,6 +139,81 @@ export interface HttpTransportSettings {
   defaultMcpClient?: string;
   /** Client ID Metadata Documents accepted as `client_id` (T13.11, FR-MCP-19); default true. */
   cimd: boolean;
+  /** `client_ip_header`: honoured only from a loopback TCP peer; undefined uses the socket peer. */
+  clientIpHeader?: string;
+  /**
+   * The `mcp_clients` ids a ledger binding may name (exist, approval required unless `allowUnattendedPrivileged`; a privileged ceiling is allowed as for a mapping). Undefined or
+   * empty: every ledger binding is refused at the MCP endpoint (fail closed).
+   */
+  bindableMcpClients?: ReadonlySet<string>;
+  /**
+   * ADR-0091: `allow_unattended_privileged: true`. Present only when true; absent keeps every source refusing
+   * `privileged_approval: not_required` ({@link httpProfileProblem}).
+   */
+  allowUnattendedPrivileged?: true;
+}
+
+/** The part of an `mcp_clients` entry the HTTP eligibility rules read. */
+export interface HttpProfileEntry {
+  readonly maxTrustProfile: string;
+  /** Absent reads as `required` (the default). */
+  readonly privilegedApproval?: string | undefined;
+}
+
+/** Why an `mcp_clients` entry may not serve HTTP requests from the given source, or undefined when it may. */
+export type HttpProfileProblem = "unknown" | "privileged_ceiling" | "approval_not_required";
+
+/**
+ * The HTTP eligibility rule for an `mcp_clients` entry (T13.4, FR-MCP-14). `mapped` is an explicit config mapping (a
+ * privileged ceiling is allowed, its runs still need the operator) and `bound` (a ledger binding made by a
+ * profile-bound one-time code, ADR-0086) follow the same rule; only `default` refuses a privileged ceiling. Every
+ * source refuses `privileged_approval: not_required`, except a `mapped` or `bound` one when the operator set
+ * `allow_unattended_privileged` (ADR-0091, FR-MCP-27); `default` never accepts it.
+ */
+export function httpProfileProblem(
+  entry: HttpProfileEntry | undefined,
+  source: "mapped" | "default" | "bound",
+  opts: { readonly allowUnattendedPrivileged?: boolean | undefined } = {},
+): HttpProfileProblem | undefined {
+  if (entry === undefined) return "unknown";
+  if (source === "default" && entry.maxTrustProfile === "privileged") return "privileged_ceiling";
+  if (entry.privilegedApproval === "not_required") {
+    return source !== "default" && opts.allowUnattendedPrivileged === true ? undefined : "approval_not_required";
+  }
+  return undefined;
+}
+
+/** Where an OAuth client's MCP client came from: the config map, the ledger binding, or `default_mcp_client`. */
+export type McpClientSource = "config_map" | "ledger_binding" | "default";
+
+export interface ResolvedMcpClientFor {
+  readonly mcpClient: string;
+  readonly source: McpClientSource;
+  /** False for a ledger binding that no longer names a bindable entry: the MCP endpoint refuses the request. */
+  readonly eligible: boolean;
+}
+
+/**
+ * The configured MCP client an OAuth client acts as: the config `clients` map, then the ledger binding, then
+ * `default_mcp_client`. A ledger binding is eligible only while it names an entry in `bindableMcpClients`; it never
+ * falls through to the default when it is not (fail closed). Undefined: no mapping at all.
+ */
+export function resolveMcpClientFor(
+  s: Pick<HttpTransportSettings, "clientMap" | "defaultMcpClient" | "bindableMcpClients">,
+  oauthClientId: string,
+  ledgerBinding: string | undefined,
+): ResolvedMcpClientFor | undefined {
+  const mapped = s.clientMap.get(oauthClientId);
+  if (mapped !== undefined) return { mcpClient: mapped, source: "config_map", eligible: true };
+  if (ledgerBinding !== undefined) {
+    return {
+      mcpClient: ledgerBinding,
+      source: "ledger_binding",
+      eligible: s.bindableMcpClients?.has(ledgerBinding) === true,
+    };
+  }
+  if (s.defaultMcpClient !== undefined) return { mcpClient: s.defaultMcpClient, source: "default", eligible: true };
+  return undefined;
 }
 
 const loopback = new net.BlockList();
@@ -196,10 +299,24 @@ export function checkHttpTransport(cfg: HttpTransportConfig | undefined): string
   return errs;
 }
 
-/** Resolve a checked section (call {@link checkHttpTransport} first). Undefined means off: no listener. */
-export function resolveHttpTransport(cfg: HttpTransportConfig | undefined): HttpTransportSettings | undefined {
+/** One raw `mcp_clients` entry as {@link resolveHttpTransport} reads it. */
+export interface RawMcpClientEntry {
+  readonly id: string;
+  readonly max_trust_profile: string;
+  readonly privileged_approval?: string | undefined;
+}
+
+/**
+ * Resolve a checked section (call {@link checkHttpTransport} first). Undefined means off: no listener. `mcpClients`
+ * (the config's `mcp_clients`) decides which entries a ledger binding may name; without it none may.
+ */
+export function resolveHttpTransport(
+  cfg: HttpTransportConfig | undefined,
+  mcpClients: readonly RawMcpClientEntry[] = [],
+): HttpTransportSettings | undefined {
   if (cfg?.enabled !== true || cfg.public_url === undefined || cfg.port === undefined) return undefined;
   const url = new URL(cfg.public_url);
+  const unattended = cfg.allow_unattended_privileged === true;
   return {
     bind: cfg.bind ?? DEFAULT_HTTP_BIND,
     port: cfg.port,
@@ -211,5 +328,19 @@ export function resolveHttpTransport(cfg: HttpTransportConfig | undefined): Http
     clientMap: new Map((cfg.clients ?? []).map((c) => [mappedClientId(c.oauth_client_id), c.mcp_client])),
     ...(cfg.default_mcp_client !== undefined ? { defaultMcpClient: cfg.default_mcp_client } : {}),
     cimd: cfg.cimd ?? true,
+    ...(cfg.client_ip_header !== undefined ? { clientIpHeader: cfg.client_ip_header } : {}),
+    ...(unattended ? { allowUnattendedPrivileged: true as const } : {}),
+    bindableMcpClients: new Set(
+      mcpClients
+        .filter(
+          (c) =>
+            httpProfileProblem(
+              { maxTrustProfile: c.max_trust_profile, privilegedApproval: c.privileged_approval },
+              "bound",
+              { allowUnattendedPrivileged: unattended },
+            ) === undefined,
+        )
+        .map((c) => c.id),
+    ),
   };
 }

@@ -6,6 +6,7 @@
 import type { PrivilegedScopeBinding } from "../policy/types.js";
 import type { FailureCode } from "./failure.js";
 import type { PromptSkill } from "./prompt.js";
+import type { ProviderUsageResult } from "./provider-usage.js";
 import type { BuiltinProviderId } from "./providers.js";
 
 /** Adapter ids, derived from the provider registry table `BUILTIN_PROVIDERS` (`./providers.ts`, T4.1, LLD §2). */
@@ -57,6 +58,49 @@ export type ProbeRunner = (
     readonly holdStdinUntil?: (message: unknown) => boolean;
   },
 ) => Promise<ProbeOutput>;
+
+/**
+ * ADR-0079 (FR-CAP-13): what a {@link TerminalRunner} hands its `drive` callback. Output is the child's terminal text
+ * (ANSI included), newest 1 MiB kept; offsets from `mark()` stay valid when older text is dropped.
+ */
+export interface TerminalIo {
+  /** Real path of the probe directory the child runs in. */
+  readonly cwd: string;
+  /** All output still held. */
+  output(): string;
+  /** An offset for {@link outputSince}: the end of the output so far. */
+  mark(): number;
+  outputSince(mark: number): string;
+  /** Writes to the child's terminal input (ignored once it has exited). */
+  write(text: string): void;
+  exited(): boolean;
+  /** Milliseconds left of the run's time budget (may be negative). */
+  remaining(): number;
+  /** Resolves true as soon as `pred` holds (checked on every output chunk and on exit), or `pred()` after `ms`. */
+  waitFor(pred: () => boolean, ms: number): Promise<boolean>;
+}
+
+/** A terminal run's result: the drive callback's value, or a fixed reason the run could not happen. */
+export type TerminalRunResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * ADR-0079 (FR-CAP-13): runs `argv` under a pseudo-terminal (`script`) in a stable private probe directory
+ * (`<probeRoot>/<probeDirName>`, checked empty before every run) and lets `drive` talk to it; the process group is
+ * always stopped before the promise settles. For a provider whose usage display exists only in its interactive TUI.
+ * Production: `createTerminalRunner` (`src/adapters/terminal-run.ts`); tests inject a fake or a temporary probe root.
+ */
+export type TerminalRunner = <T>(
+  argv: readonly string[],
+  opts: {
+    readonly probeDirName: string;
+    readonly timeoutMs: number;
+    /** The child's whole environment (the caller applies its allowlist). */
+    readonly env: Readonly<Record<string, string>>;
+    readonly drive: (io: TerminalIo) => Promise<T>;
+  },
+) => Promise<TerminalRunResult<T>>;
 
 export interface ProbeResult {
   binaryPath: string;
@@ -304,7 +348,16 @@ export type NormalizedEvent =
   | { kind: "message"; role: "assistant"; text: string }
   | { kind: "usage"; source: "provider_reported"; metrics: Record<string, number | string | null> }
   | { kind: "rate_limit"; resetAt?: string; reportedCategory?: string }
-  | { kind: "permission_denied"; tool: string }
+  | {
+      kind: "permission_denied";
+      tool: string;
+      /**
+       * ADR-0072: what kind of denial the adapter positively identified. Only `profile` (a tool or command the trust
+       * profile does not allow, e.g. Claude Code's dontAsk `mode` denial) is recoverable; every other class, and an
+       * absent class, keeps failing the run (fail closed).
+       */
+      denial?: DenialClass;
+    }
   | { kind: "sandbox_violation"; detail: string }
   | { kind: "provider_error"; category: string; message: string }
   | { kind: "result"; ok: boolean; summary?: string }
@@ -319,6 +372,11 @@ export interface ParseState {
   resumeNativeSessionId?: string;
   /** Claude Code only (C-10): `tool_use_id`s already reported from a `system/permission_denied` event, so the `result` event's `permission_denials` entry for the same call is not reported twice. */
   claudeDeniedToolUseIds?: Set<string>;
+  /**
+   * Claude Code only (ADR-0072 follow-up): the command line of each `Bash` `tool_use` by id, kept only until a
+   * `rule` denial of that id is classified (bounded; a missing entry classifies as security-class).
+   */
+  claudeBashCommands?: Map<string, string>;
   /** ACP only (T4.8): scratch state of the shared `session/update` mapper (`src/exec/acp/events.ts`). */
   acp?: AcpParseState;
 }
@@ -359,6 +417,29 @@ export interface FailureClassification {
 }
 
 /** Proposed: the normalized outcome of one provider invocation. */
+/**
+ * ADR-0072: closed denial classes of a `permission_denied` event. `profile` is the recoverable class; `git_write` (a
+ * Switchboard Git deny rule, FR-GIT-01) and `outside_worktree` (a file tool confined to the worktree or a location
+ * outside the allowed roots) are security-class. No class means unknown, which is treated as security-class.
+ * `git_rule_local` (ADR-0072 follow-up) is also recoverable: a Git deny rule blocked a command whose Git invocations
+ * are only reads or local ref verbs (`git branch -a`, `git log`), never a push, remote, config or repository redirect.
+ */
+export const DENIAL_CLASSES = ["profile", "git_write", "outside_worktree", "git_rule_local"] as const;
+export type DenialClass = (typeof DENIAL_CLASSES)[number];
+
+/**
+ * ADR-0072: closed warning codes of a run result. `PERMISSION_DENIED_RECOVERED` for `profile` denials,
+ * `GIT_RULE_DENIED_RECOVERED` for `git_rule_local` denials.
+ */
+export const RUN_WARNING_CODES = ["PERMISSION_DENIED_RECOVERED", "GIT_RULE_DENIED_RECOVERED"] as const;
+
+/** ADR-0072: one run-result warning; `tool` is a sanitised tool name, never agent text. */
+export interface RunWarning {
+  code: (typeof RUN_WARNING_CODES)[number];
+  tool: string;
+  count: number;
+}
+
 export interface RunResult {
   ok: boolean;
   failureCode?: FailureCode;
@@ -366,6 +447,8 @@ export interface RunResult {
   summary?: string;
   nativeSessionId?: string;
   unknownEventCount: number;
+  /** ADR-0072: present only on a successful result whose recovered, non-security denials did not fail it. */
+  warnings?: RunWarning[];
 }
 
 /** Proposed: bind to a provider-native session for resume (FR-SES-03). */
@@ -502,6 +585,17 @@ export function acceptsReportedModel(adapter: { readonly reportedModelFlag?: unk
   return typeof d === "object" && d !== null && (d as { kind?: unknown }).kind === "accepted";
 }
 
+/**
+ * ADR-0077: which compiled cells pass a *requested* model (`CompileRequest.model`, for example a model-group member) to
+ * the CLI's model flag; separate from {@link ReportedModelFlag}, which is about pinning a model the session reported.
+ * - `all`: every compiled cell; `bypass`: only the approved privileged bypass cell (the other cells refuse a model).
+ * Absent: doctor falls back to the {@link ReportedModelFlag} check (its pre-ADR-0077 behaviour).
+ */
+export interface RequestedModelFlag {
+  cells: "all" | "bypass";
+  detail: string;
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly transports: readonly Transport[];
@@ -513,6 +607,8 @@ export interface ProviderAdapter {
   readonly gitCapabilities: GitCapabilities;
   /** T7.12 declaration ({@link ReportedModelFlag}); absent means `not_accepted`. */
   readonly reportedModelFlag?: ReportedModelFlag;
+  /** ADR-0077 declaration ({@link RequestedModelFlag}); used by doctor's model-group check. */
+  readonly requestedModelFlag?: RequestedModelFlag;
   /** T16.5/T16.6 declaration ({@link SkillDelivery}), pure, per compiled cell; absent means `prompt_prefix` for every cell. */
   skillDelivery?(request: CompileRequest, profile: ResolvedProfile): SkillDelivery;
 
@@ -520,6 +616,16 @@ export interface ProviderAdapter {
   probe(runner: ProbeRunner): Promise<ProbeResult>;
   /** Provider's own status command or a harmless headless call; never reads credentials (FR-AUTH-02). */
   authPreflight(runner: ProbeRunner): Promise<AuthResult>;
+  /**
+   * ADR-0079 (FR-CAP-13): optional. The account's quota windows as the provider's own CLI reports them, read through
+   * the runner with no model call and no credential read by Switchboard. Absent means the provider has no such reader.
+   * `opts.terminal` is for a reader that needs a pseudo-terminal (Kimi Code); without it such a reader returns `unknown`.
+   */
+  readProviderUsage?(
+    runner: ProbeRunner,
+    now?: Date,
+    opts?: { readonly terminal?: TerminalRunner },
+  ): Promise<ProviderUsageResult>;
   /** Pure. Returns Ineligible (never a downgraded profile) when the profile cannot be satisfied (FR-POL-02). */
   compile(request: CompileRequest, profile: ResolvedProfile): Invocation | Ineligible;
   /** One stdout line (JSONL) or one ACP message -> zero or more events. Stateful via ParseState. */

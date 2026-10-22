@@ -350,7 +350,10 @@ describe("cli inner backend (T11.13; FR-INN-04, FR-ADP-03, FR-ADP-08)", () => {
     );
     expect(isIneligible(compiled)).toBe(false);
     if (isIneligible(compiled)) return;
-    expect(auditInvocation(compiled)).toEqual([]);
+    // The bypass cell carries OpenCode's `--auto` since 2026-10-21 (ADR-0077); the tool-free argv never does, so the
+    // backend refuses it at the argv audit (it would have stopped at the flag gate before).
+    expect(auditInvocation(compiled)).toEqual(["--auto"]);
+    expect(compiled.argv).toContain("--auto");
     expect(compiled.argv).toContain("--standalone");
     expect(compiled.argv).not.toContain("--pure");
     expect(compiled.argv).not.toContain("--model");
@@ -363,7 +366,7 @@ describe("cli inner backend (T11.13; FR-INN-04, FR-ADP-03, FR-ADP-08)", () => {
         compile: () => compiled,
         spawn,
       }),
-      "FLAGS_UNVERIFIED",
+      "ARGV_AUDIT",
       calls,
     );
   });

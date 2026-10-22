@@ -389,14 +389,24 @@ describe("Switchboard makes no pull-request API call (FR-INN-11, BR-38)", () => 
   };
   walk(SRC);
 
-  it("no source module is, or names, a pull-request API client", () => {
+  // ADR-0069 (owner decision 78, FRD BR-38 note 2026-10-20): the one module allowed to build a pull-request argv is the
+  // audited operator-`gh` template module, used only by MCP `publish_run` (and `close_pr`, ADR-0078); the inner agent
+  // never reaches it.
+  const PR_ARGV_ALLOWED = new Set(["ci/gh-argv.ts"]);
+
+  it("no source module is, or names, a pull-request API client (except the audited gh argv of ADR-0069)", () => {
     expect(files.length).toBeGreaterThan(50);
     const nameRe = /(octokit|github|gitlab|bitbucket|gitea)[^/]*\.ts$|pull[-_]?request|merge[-_]?request/iu;
     expect(files.filter((f) => nameRe.test(path.relative(SRC, f)))).toEqual([]);
     const contentRe =
       /api\.github\.com|gitlab\.com\/api|api\.bitbucket\.org|\/repos\/[^"'`\s]*\/pulls|\/merge_requests|\/pull-requests\b|gh\s+pr\s+(?:create|edit|comment)|"pr",\s*"create"/iu;
     const hits = files.filter((f) => contentRe.test(readFileSync(f, "utf8"))).map((f) => path.relative(SRC, f));
-    expect(hits).toEqual([]);
+    expect(hits).toEqual([...PR_ARGV_ALLOWED]);
+    // No module under src/inner imports the gh argv, the gh ports or the publish tool.
+    const inner = files.filter((f) => path.relative(SRC, f).startsWith(`inner${path.sep}`));
+    for (const f of inner) {
+      expect(readFileSync(f, "utf8"), f).not.toMatch(/ci\/gh-(?:argv|port|pr)\.js|mcp\/publish\.js/u);
+    }
   });
 
   it("no dependency is a forge client, and the pr_draft module imports no network or process API", () => {

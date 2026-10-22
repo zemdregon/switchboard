@@ -831,9 +831,7 @@ describe("adapter malicious leg: grok compiled cells", () => {
   };
 
   it("each cell compiles one --sandbox with its value, web search off exactly with network off, and one --always-approve", () => {
-    expect(new Set(grokCompiledCells.map((cell) => cell.sandbox))).toEqual(
-      new Set(["strict", "workspace", "read-only"]),
-    );
+    expect(new Set(grokCompiledCells.map((cell) => cell.sandbox))).toEqual(new Set(["off", "read-only"]));
     for (const cell of grokCompiledCells) expect(grokCellProblems(compileCell(cell), cell), cell.label).toEqual([]);
   });
 
@@ -865,7 +863,7 @@ describe("adapter malicious leg: grok compiled cells", () => {
   });
 
   it("refuses repository configuration disabled or approved in every cell, and every other unsupported scope", () => {
-    expect(grokRefusedScopes.filter((s) => s.label.includes("repository_config"))).toHaveLength(6);
+    expect(grokRefusedScopes.filter((s) => s.label.includes("repository_config"))).toHaveLength(4);
     for (const s of grokRefusedScopes) {
       const inv = c
         .makeAdapter(path.join(fx.base, "unused.jsonl"), 0)

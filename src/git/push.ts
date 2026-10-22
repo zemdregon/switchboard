@@ -47,9 +47,11 @@ import { spawn } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import type Database from "better-sqlite3";
-import { primaryContext, type ResolvedProject } from "../config/projects.js";
+import type { ResolvedMcpClient } from "../config/index.js";
+import { primaryContext, type ResolvedProject, resolveProjects } from "../config/projects.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
-import { createLedger, type GitPushRow, type Ledger } from "../ledger/index.js";
+import { createLedger, type GitPushRequester, type GitPushRow, type Ledger } from "../ledger/index.js";
+import type { DynamicProjectStore } from "../projects/store.js";
 import { git, gitText } from "../workspace/git.js";
 import { nativeSkillPresent } from "../workspace/native-skills.js";
 import type { CredentialReach } from "./credential-reach.js";
@@ -60,6 +62,7 @@ import {
   SECRET_SCAN_HIT_EVENT,
   type SecretScanAllow,
   type SecretScanAllowEntry,
+  type SecretScanHit,
   type SecretScanReport,
   scanOutgoingDiff,
 } from "./secret-scan.js";
@@ -120,6 +123,21 @@ export interface PushContextConfig {
   readonly policy: "none" | "branch";
   readonly remote?: string;
   readonly branchPrefix?: string;
+  /** ADR-0069: set when the context is an approved dynamic project's in-force revision: its creating MCP client. */
+  readonly dynamicCreator?: string;
+}
+
+function contextConfig(project: ResolvedProject): PushContextConfig {
+  const c = primaryContext(project);
+  return {
+    projectId: project.id,
+    contextId: c.id,
+    path: c.path,
+    baseRef: c.baseRef,
+    policy: c.push.policy,
+    ...(c.push.remote !== undefined ? { remote: c.push.remote } : {}),
+    ...(c.push.branchPrefix !== undefined ? { branchPrefix: c.push.branchPrefix } : {}),
+  };
 }
 
 /** {@link GitPusherOptions.resolveContext} over the loaded configuration's projects (primary context). */
@@ -128,17 +146,40 @@ export function pushContextResolver(
 ): (projectId: string) => PushContextConfig | undefined {
   return (projectId) => {
     const project = projects.find((p) => p.id === projectId);
-    if (!project) return undefined;
-    const c = primaryContext(project);
-    return {
-      projectId: project.id,
-      contextId: c.id,
-      path: c.path,
-      baseRef: c.baseRef,
-      policy: c.push.policy,
-      ...(c.push.remote !== undefined ? { remote: c.push.remote } : {}),
-      ...(c.push.branchPrefix !== undefined ? { branchPrefix: c.push.branchPrefix } : {}),
-    };
+    return project === undefined ? undefined : contextConfig(project);
+  };
+}
+
+/**
+ * ADR-0069 (supersedes the Q-46 answer of owner decision 62 for approved branch-policy dynamic projects): the
+ * configuration first (a configured id always wins, as at admission), then the dynamic project store's IN-FORCE
+ * revision of the project, read at push time. Fail closed (undefined, so the push is refused `CONTEXT_UNKNOWN` before
+ * any Git call) unless the project is not deleted, has a revision in force (a pending, rejected or never-approved
+ * create has none), and its creating client is still configured with `manage_projects` and `max_push_policy: branch`.
+ * The in-force revision's own push policy is returned as is, so a revision that sets `none` is refused `POLICY_NONE`.
+ * An in-force revision that sets `branch` was approved by the operator for exactly that (approval reason
+ * `push_policy`, FR-PRJ-10), which is what makes it pushable.
+ */
+export function projectPushContextResolver(deps: {
+  readonly projects: readonly ResolvedProject[];
+  readonly store: Pick<DynamicProjectStore, "state">;
+  readonly clients: ReadonlyMap<string, Pick<ResolvedMcpClient, "manageProjects" | "maxPushPolicy">>;
+}): (projectId: string) => PushContextConfig | undefined {
+  const configured = pushContextResolver(deps.projects);
+  return (projectId) => {
+    if (deps.projects.some((p) => p.id === projectId)) return configured(projectId);
+    const state = deps.store.state(projectId);
+    if (state === undefined || state.deleted || state.inForce === undefined) return undefined;
+    const creator = deps.clients.get(state.clientId);
+    if (creator?.manageProjects !== true || creator.maxPushPolicy !== "branch") return undefined;
+    let project: ResolvedProject;
+    try {
+      // As `toResolved` (src/projects/rules.ts), without importing the project-rule module (and the CLI) here.
+      project = resolveProjects({ projects: [state.inForce.definition] } as never)[0] as ResolvedProject;
+    } catch {
+      return undefined;
+    }
+    return { ...contextConfig(project), dynamicCreator: state.clientId };
   };
 }
 
@@ -163,8 +204,9 @@ export interface GitPusherOptions {
 
 export interface PushRequest {
   readonly metaSessionId: string;
-  readonly requestedBy: "agent_tool" | "operator";
-  /** The calling run (agent pushes only). */
+  /** ADR-0069: `mcp_client:<id>` is an MCP client's `publish_run`; it follows the operator rules (no BR-31 check). */
+  readonly requestedBy: GitPushRequester;
+  /** The calling run (agent pushes), or the run an MCP client publishes (`publish_run`). */
   readonly runId?: string;
   /** BR-31 verdict for the calling run, evaluated by the channel at call time (agent pushes only). */
   readonly agentReach?: CredentialReach;
@@ -184,6 +226,11 @@ export interface PushResult {
   /** The run whose events hold the `git_push` record. */
   readonly eventRunId: string;
   readonly toolCode?: PushToolCode;
+  /**
+   * ADR-0075: on a `SECRET_SCAN_BLOCKED` refusal only, the findings as the `secret_scan_hit` events hold them (rule id,
+   * path, line; at most `MAX_SECRET_SCAN_HITS` with the exact count). Never the value or the line.
+   */
+  readonly secretScan?: { readonly hits: readonly SecretScanHit[]; readonly hitCount: number };
 }
 
 /** Thrown when there is nothing to record against (unknown meta-session, or no run in it). Nothing is written. */
@@ -290,6 +337,26 @@ export function pushArgs(remote: string, sha: string, ref: string): string[] {
   ];
 }
 
+/**
+ * ADR-0087 item 6: command-scope configuration of a submodule repository push. {@link PUSH_CONFIG} with the `https`
+ * transport only: a store's `origin` is its ADR-0068 https source, so `ssh` and `file` are never needed there.
+ */
+export const SUBMODULE_PUSH_CONFIG: readonly string[] = [
+  ...PUSH_CONFIG.slice(0, PUSH_CONFIG.indexOf("protocol.allow=never") - 1),
+  "-c",
+  "protocol.allow=never",
+  "-c",
+  "protocol.https.allow=always",
+];
+
+/**
+ * ADR-0087 item 6: argv (after `git`) of one submodule repository push from its store: `<sha>:<ref>` to the store's
+ * `origin`, never forced, with the {@link pushArgs} flags. Throws on anything that is not a plain branch update.
+ */
+export function submodulePushArgs(sha: string, ref: string): string[] {
+  return [...SUBMODULE_PUSH_CONFIG, ...pushArgs("origin", sha, ref).slice(PUSH_CONFIG.length)];
+}
+
 /** Remote target ref of a meta-session: `refs/heads/<branchPrefix><sess>`. */
 export function remoteTargetRef(branchPrefix: string, metaSessionId: string): string {
   return `refs/heads/${branchPrefix}${metaSessionId}`;
@@ -366,9 +433,22 @@ export class GitPusher {
 
   /** Push a meta-session's publish ref (LLD §12.6). Pushes of one meta-session run one at a time in this process. */
   async push(req: PushRequest): Promise<PushResult> {
-    const key = req.metaSessionId;
+    return (await this.serialised(req.metaSessionId, () => this.pushOnce(req, false))) as PushResult;
+  }
+
+  /**
+   * ADR-0087 item 6: the push's policy and repository checks (step 1 and 2: everything before the secret scan and the
+   * remote write) without pushing, so a caller can refuse before writing anything elsewhere (the linked submodule
+   * pushes). A refusal is recorded and returned exactly as {@link push} would record and return it; undefined when the
+   * push would go on to its scan. Serialised with the meta-session's pushes.
+   */
+  async preflight(req: PushRequest): Promise<PushResult | undefined> {
+    return this.serialised(req.metaSessionId, () => this.pushOnce(req, true));
+  }
+
+  private async serialised<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.locks.get(key) ?? Promise.resolve();
-    const p = prev.catch(() => {}).then(() => this.pushOnce(req));
+    const p = prev.catch(() => {}).then(fn);
     this.locks.set(key, p);
     try {
       return await p;
@@ -377,12 +457,12 @@ export class GitPusher {
     }
   }
 
-  private async pushOnce(req: PushRequest): Promise<PushResult> {
+  private async pushOnce(req: PushRequest, checkOnly: boolean): Promise<PushResult | undefined> {
     const session = this.options.db
       .prepare("SELECT id, project_id, repo_root, base_commit FROM meta_session WHERE id = ?")
       .get(req.metaSessionId) as SessionRow | undefined;
     if (!session) throw new PushError(`unknown meta-session ${req.metaSessionId}`);
-    if (req.requestedBy === "agent_tool" && req.runId === undefined) throw new PushError("an agent push needs its run");
+    if (req.requestedBy !== "operator" && req.runId === undefined) throw new PushError("this push needs its run");
     const eventRunId = req.runId ?? this.operatorEventRun(session.id);
     const att: Attempt = {
       projectId: session.project_id ?? "",
@@ -393,7 +473,8 @@ export class GitPusher {
       commits: [],
     };
     try {
-      const outcome = await this.checkAndPush(req, session, att);
+      const outcome = await this.checkAndPush(req, session, att, checkOnly);
+      if (outcome === undefined) return undefined;
       return this.record(req, att, eventRunId, outcome.outcome, outcome.reason);
     } catch (err) {
       if (err instanceof Refusal) return this.record(req, att, eventRunId, "REFUSED_POLICY", err.reason);
@@ -406,7 +487,8 @@ export class GitPusher {
     req: PushRequest,
     session: SessionRow,
     att: Attempt,
-  ): Promise<{ outcome: GitPushRow["outcome"]; reason: PushReason }> {
+    checkOnly = false,
+  ): Promise<{ outcome: GitPushRow["outcome"]; reason: PushReason } | undefined> {
     // 1. Policy and BR-31 (no Git call yet).
     if (session.project_id === null) throw new Refusal("NO_PROJECT");
     const ctx = this.options.resolveContext(session.project_id);
@@ -458,6 +540,7 @@ export class GitPusher {
       if (cls === "credentials") throw new Refusal("REMOTE_URL_CREDENTIALS");
       if (cls === "transport") throw new Refusal("REMOTE_TRANSPORT_NOT_ALLOWED");
     }
+    if (checkOnly) return undefined;
 
     // 2b. T9.14 (FR-GIT-11, ADR-0061, LLD §20.9): the outgoing diff is scanned last, in every profile, before any
     // remote write. A Git failure here (including an oversized diff) propagates as GIT_FAILED: never a clean scan.
@@ -570,7 +653,7 @@ export class GitPusher {
       }
     }
     const { row } = this.ledger.recordGitPush({
-      runId: req.requestedBy === "agent_tool" ? (req.runId ?? null) : null,
+      runId: req.requestedBy !== "operator" ? (req.runId ?? null) : null,
       eventRunId,
       projectId: att.projectId,
       contextId: att.contextId,
@@ -616,6 +699,14 @@ export class GitPusher {
       commits,
       eventRunId,
       ...(toolCode !== undefined ? { toolCode } : {}),
+      ...(reason === "SECRET_SCAN_BLOCKED" && scan !== undefined
+        ? {
+            secretScan: {
+              hits: scan.report.hits.map(({ rule_id, path, line }) => ({ rule_id, path, line })),
+              hitCount: scan.report.hitCount,
+            },
+          }
+        : {}),
     };
   }
 }

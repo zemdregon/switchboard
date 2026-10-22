@@ -31,6 +31,13 @@ import { sql as sql0028 } from "./0028_oauth_cimd_client.js";
 import { sql as sql0029 } from "./0029_published_ref_conflicts.js";
 import { sql as sql0030 } from "./0030_decision_request.js";
 import { sql as sql0031 } from "./0031_merge_policy.js";
+import { sql as sql0032 } from "./0032_decision_onboarding.js";
+import { sql as sql0033 } from "./0033_mcp_publication.js";
+import { sql as sql0034 } from "./0034_setup_log_artifact.js";
+import { sql as sql0035 } from "./0035_merge_head_kind.js";
+import { sql as sql0036 } from "./0036_pr_close_audit.js";
+import { sql as sql0037 } from "./0037_oauth_profile_binding.js";
+import { sql as sql0038 } from "./0038_submodule_projects.js";
 
 export interface Migration {
   readonly version: number;
@@ -80,4 +87,11 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 29, name: "published_ref_conflicts", sql: sql0029 },
   { version: 30, name: "decision_request", sql: sql0030, foreignKeysOff: true },
   { version: 31, name: "merge_policy", sql: sql0031 },
+  { version: 32, name: "decision_onboarding", sql: sql0032 },
+  { version: 33, name: "mcp_publication", sql: sql0033, foreignKeysOff: true },
+  { version: 34, name: "setup_log_artifact", sql: sql0034, foreignKeysOff: true },
+  { version: 35, name: "merge_head_kind", sql: sql0035 },
+  { version: 36, name: "pull_request_close", sql: sql0036 },
+  { version: 37, name: "oauth_profile_binding", sql: sql0037 },
+  { version: 38, name: "submodule_projects", sql: sql0038, foreignKeysOff: true },
 ];

@@ -8,7 +8,8 @@ import { validateOperatorPatterns } from "../git/safe-pattern.js";
 import { compileSecretScanAllow, type SecretScanAllowEntry, SecretScanAllowError } from "../git/secret-scan.js";
 import type { ModelConfig } from "../models/registry.js";
 import { ProfileOverrideError, validateProfileOverrides } from "../policy/profiles.js";
-import type { ProfileOverride, ProfileOverrides } from "../policy/types.js";
+import { parsePrivilegedScope } from "../policy/scope.js";
+import type { PrivilegedScope, ProfileOverride, ProfileOverrides } from "../policy/types.js";
 import { BriefError, briefBlockTokens, readBriefFile } from "../projects/brief.js";
 import {
   DEFAULT_MAX_BODY_BYTES,
@@ -20,7 +21,12 @@ import { type CapacitySettings, checkCapacity, resolveCapacity } from "./capacit
 import { type CiTriggerSettings, checkCiTrigger, resolveCiTrigger } from "./ci-trigger.js";
 import { type ControlPlaneSettings, checkControlPlane, resolveControlPlane } from "./control-plane.js";
 import { ConfigError } from "./errors.js";
-import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "./http-transport.js";
+import {
+  checkHttpTransport,
+  type HttpTransportSettings,
+  httpProfileProblem,
+  resolveHttpTransport,
+} from "./http-transport.js";
 import { checkInnerAgent, type InnerAgentSettings, resolveInnerAgent } from "./inner-agent.js";
 import {
   checkNotificationSinks,
@@ -34,6 +40,7 @@ import {
   resolveProjects,
   resolveSkillAssignment,
 } from "./projects.js";
+import { normaliseConfigProviderNames } from "./provider-names.js";
 import { checkRag, type RagSettings, resolveRag } from "./rag.js";
 import {
   checkRouting,
@@ -43,12 +50,15 @@ import {
   resolveRouting,
 } from "./routing.js";
 import {
+  APPROVAL_PROXY_DEFAULT_KINDS,
+  type ApprovalProxyKind,
   currentConfigSchema,
   DEFAULT_CONTINUITY_MAX_BUNDLE_BYTES,
   DEFAULT_CONTINUITY_MAX_DIFF_EXCERPT_BYTES,
   DEFAULT_CONTINUITY_MAX_TEXT_CHARS,
   DEFAULT_PREFLIGHT_TTL_SECONDS,
   DEFAULT_PRIVILEGED_APPROVAL,
+  DEFAULT_PROJECT_SOURCE_HOSTS,
   DEFAULT_RETENTION_DAYS,
   DEFAULT_RETENTION_INTERVAL,
   DEFAULT_SKILL_DELIVERY,
@@ -91,6 +101,14 @@ function resolveVerificationLimits(limits: SwitchboardConfig["limits"]): {
       env: { ...env },
     },
   };
+}
+
+/** Resolved `project_sources` (ADR-0068). */
+export interface ProjectSourcesSettings {
+  readonly cloneRoot: string;
+  readonly allowedHosts: readonly string[];
+  /** Lower case. */
+  readonly allowedOwners: readonly string[];
 }
 
 export interface ResolvedConfig {
@@ -157,6 +175,18 @@ export interface ResolvedConfig {
   confinedVerification: boolean;
   /** Validated `projects[]` (FR-PRJ-01; T9.1); empty when the config has none. Paths are as written, not yet canonical. */
   projects: ResolvedProject[];
+  /**
+   * ADR-0091 (FR-POL-12): `default_trust_profile`, the profile a `delegate_task` / `enqueue_work` request without
+   * `trust_profile` resolves to (a configured project's own `default_trust_profile` overrides it), clamped to the
+   * effective ceiling at request time. Absent: `trust_profile` stays required, exactly as before.
+   */
+  defaultTrustProfile?: TrustProfile;
+  /**
+   * ADR-0091 (FR-POL-12): `default_privileged_scope`, parsed (defaults filled) at load. A request whose resolved profile
+   * is `privileged` and that names no `privileged_scope` uses it. Absent: V13 as before. Required when any default
+   * profile is `privileged` (load fails closed otherwise).
+   */
+  defaultPrivilegedScope?: PrivilegedScope;
   /** Validated `git.sanitize_patterns` (FR-GIT-04; T9.3): sources in the safe subset, in configuration order. */
   sanitizePatterns: string[];
   /** Validated `git.secret_scan.allow` (FR-GIT-11; T9.14): every rule id known, every glob non-empty; empty by default. */
@@ -197,6 +227,12 @@ export interface ResolvedConfig {
    * outbound notification is made. Holds operator destinations and tokens: never log or serialise it (FR-TEL-03).
    */
   notificationSinks: NotificationSinkSettings[];
+  /**
+   * `project_sources` (ADR-0068): where `create_project` / `update_project` may clone a `clone_url`. Absent unless the
+   * config sets the section; absent means every clone is refused. `cloneRoot` is canonical and under an allowed root;
+   * hosts are lower case, owners are compared case-insensitively (kept lower case here).
+   */
+  projectSources?: ProjectSourcesSettings;
   /** `ci_trigger` (T15.3; FR-QUE-03, LLD §18.6), always set; disabled unless the operator turns it on. */
   ciTrigger: CiTriggerSettings;
   /** Validated OTLP settings (LLD §7, LLD §20.13); absent means no export, no per-run receiver, no dependency load. */
@@ -258,6 +294,11 @@ export interface ResolvedMcpClient {
    */
   readonly approvalProxyTargets?: readonly string[];
   /**
+   * `approval_proxy_kinds` (ADR-0068): the approval kinds this proxy may list and decide. `loadConfig` sets it with
+   * `approvalProxy` (default: all three, ADR-0047 as before); a hand-built proxy entry without it means all three.
+   */
+  readonly approvalProxyKinds?: readonly ApprovalProxyKind[];
+  /**
    * `tool_profile` (FR-CTL-11, T14.11, LLD §3.4.10): which tools `tools/list` offers. `loadConfig` always sets it
    * (default `orchestrator`); a hand-built entry without it is read as `orchestrator`, today's set.
    */
@@ -272,6 +313,12 @@ export interface ResolvedMcpClient {
    * `loadConfig` sets it only when the key is true; absent is read as false (least privilege).
    */
   readonly allowLight?: boolean;
+  /**
+   * `promote_trust_profile` (FR-POL-13, ADR-0093): this client's explicit `trust_profile` below the default an omitted
+   * one would resolve to (ADR-0091, clamped to the request's ceiling) is resolved as if omitted. `loadConfig` sets it
+   * only when the key is true; absent is read as false (no promotion).
+   */
+  readonly promoteTrustProfile?: boolean;
 }
 
 const INTERVAL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
@@ -407,10 +454,51 @@ export function validateConfig(
   source = "config",
   opts: { readonly testFakeAdapter?: boolean } = {},
 ): SwitchboardConfig {
+  // ADR-0076: either spelling of a provider name is accepted; the loaded config holds the config spelling.
+  const named = normaliseConfigProviderNames(value);
+  if (named.problems.length > 0) {
+    throw new ConfigError(`Invalid ${source}:\n${named.problems.map((l) => `  ${l}`).join("\n")}`);
+  }
+  const normalised = named.value;
   const validate = validator(opts.testFakeAdapter === true);
-  if (validate(value)) return value;
+  if (validate(normalised)) return normalised;
   const lines = (validate.errors ?? []).map(describe);
   throw new ConfigError(`Invalid ${source}:\n${lines.map((l) => `  ${l}`).join("\n")}`);
+}
+
+/**
+ * ADR-0068 (fail closed, NFR-SEC-06): `project_sources` as the schema cannot check it. `clone_root` must be written as
+ * an absolute path, resolve (it must exist) under an allowed root and not lie inside the data directory; an owner may
+ * not be `.` or `..`. Owners are kept lower case (GitHub owners are case-insensitive).
+ */
+function resolveProjectSources(
+  src: SwitchboardConfig["project_sources"],
+  allowedRoots: readonly string[],
+  dataDir: string,
+  baseDir: string,
+): ProjectSourcesSettings | undefined {
+  if (src === undefined) return undefined;
+  if (!path.isAbsolute(src.clone_root)) {
+    throw new ConfigError("Invalid config: $.project_sources.clone_root: must be an absolute path");
+  }
+  const cloneRoot = canonical(src.clone_root, "$.project_sources.clone_root", baseDir);
+  if (!isUnderAllowedRoot(cloneRoot, allowedRoots)) {
+    throw new ConfigError("Invalid config: $.project_sources.clone_root: must lie under one of allowed_roots");
+  }
+  if (isUnderAllowedRoot(cloneRoot, [dataDir])) {
+    throw new ConfigError("Invalid config: $.project_sources.clone_root: may not lie inside data_dir");
+  }
+  for (const [i, o] of src.allowed_owners.entries()) {
+    if (o === "." || o === "..") {
+      throw new ConfigError(`Invalid config: $.project_sources.allowed_owners[${i}]: not a repository owner`);
+    }
+  }
+  const owners = [...new Set(src.allowed_owners.map((o) => o.toLowerCase()))];
+  return {
+    cloneRoot,
+    allowedHosts: [...(src.allowed_hosts ?? DEFAULT_PROJECT_SOURCE_HOSTS)],
+    allowedOwners: owners,
+  };
 }
 
 function canonical(p: string, label: string, baseDir: string): string {
@@ -486,12 +574,31 @@ export function loadConfig(
           `true (client ${JSON.stringify(c.id)}); remove it or set approval_proxy`,
       );
     }
+    // ADR-0068 (Delegated, fail closed): approval kinds mean nothing without approval_proxy.
+    if (c.approval_proxy_kinds !== undefined && c.approval_proxy !== true) {
+      throw new ConfigError(
+        `Invalid config: $.mcp_clients[${i}].approval_proxy_kinds: applies only to a client with approval_proxy: ` +
+          `true (client ${JSON.stringify(c.id)}); remove it or set approval_proxy`,
+      );
+    }
     // T14.11 (Delegated, fail closed): the console set has no project-admin tools, so manage_projects there would be a
     // silent no-op.
     if (c.tool_profile === "console" && c.manage_projects === true) {
       throw new ConfigError(
         `Invalid config: $.mcp_clients[${i}].tool_profile: console offers no project-admin tools (client ` +
           `${JSON.stringify(c.id)} sets manage_projects: true); remove manage_projects or use orchestrator`,
+      );
+    }
+  }
+  // ADR-0093 (FR-POL-13, fail closed): promotion means nothing without a default to promote to, so it is a mistake
+  // rather than a silent no-op.
+  const anyDefault =
+    cfg.default_trust_profile !== undefined || (cfg.projects ?? []).some((p) => p.default_trust_profile !== undefined);
+  for (const [i, c] of cfg.mcp_clients.entries()) {
+    if (c.promote_trust_profile === true && !anyDefault) {
+      throw new ConfigError(
+        `Invalid config: $.mcp_clients[${i}].promote_trust_profile: needs a default_trust_profile (top level or in a ` +
+          `project) to promote to (client ${JSON.stringify(c.id)}); add one or remove promote_trust_profile`,
       );
     }
   }
@@ -595,25 +702,38 @@ export function loadConfig(
       ? [["default_mcp_client", cfg.transport.http.default_mcp_client] as [string, string]]
       : []),
   ];
+  // ADR-0091: `allow_unattended_privileged` admits `not_required` for an explicit mapping (never for the default).
+  const allowUnattendedPrivileged = cfg.transport?.http?.allow_unattended_privileged === true;
   for (const [where, id] of httpTargets) {
     const entry = mcpById.get(id);
-    if (entry === undefined) httpErrors.push(`$.transport.http.${where}: unknown mcp_clients id ${JSON.stringify(id)}`);
-    else if (where === "default_mcp_client" && entry.max_trust_profile === "privileged") {
+    const problem = httpProfileProblem(
+      entry === undefined
+        ? undefined
+        : { maxTrustProfile: entry.max_trust_profile, privilegedApproval: entry.privileged_approval },
+      where === "default_mcp_client" ? "default" : "mapped",
+      { allowUnattendedPrivileged },
+    );
+    if (problem === "unknown") {
+      httpErrors.push(`$.transport.http.${where}: unknown mcp_clients id ${JSON.stringify(id)}`);
+    } else if (problem === "privileged_ceiling") {
       httpErrors.push(
         `$.transport.http.default_mcp_client: ${JSON.stringify(id)} has a privileged ceiling; map each OAuth client ` +
           "to a privileged entry explicitly in transport.http.clients instead",
       );
-    } else if (entry.privileged_approval === "not_required") {
+    } else if (problem === "approval_not_required") {
       httpErrors.push(
         `$.transport.http.${where}: ${JSON.stringify(id)} has privileged_approval not_required; an HTTP client's ` +
-          "privileged runs must wait for the operator (FR-MCP-14)",
+          (where === "default_mcp_client"
+            ? "privileged runs must wait for the operator (FR-MCP-14)"
+            : "privileged runs must wait for the operator (FR-MCP-14) unless transport.http.allow_unattended_privileged " +
+              "is true (ADR-0091)"),
       );
     }
   }
   if (httpErrors.length > 0) {
     throw new ConfigError(`Invalid config:\n${httpErrors.map((l) => `  ${l}`).join("\n")}`);
   }
-  const httpTransport = resolveHttpTransport(cfg.transport?.http);
+  const httpTransport = resolveHttpTransport(cfg.transport?.http, cfg.mcp_clients);
 
   const routingErrors = checkRouting(cfg.routing);
   if (routingErrors.length > 0) {
@@ -664,11 +784,16 @@ export function loadConfig(
     throw new ConfigError(`Invalid config:\n${sinkErrors.map((l) => `  ${l}`).join("\n")}`);
   }
 
+  const projectSources = resolveProjectSources(cfg.project_sources, allowedRoots, dataDir, baseDir);
+  const trustDefaults = resolveTrustDefaults(cfg);
+
   return {
     configPath,
     dataDir,
     ...(httpTransport !== undefined ? { httpTransport } : {}),
+    ...(projectSources !== undefined ? { projectSources } : {}),
     projects: resolveProjects(cfg, briefFiles),
+    ...trustDefaults,
     sanitizePatterns: [...(cfg.git?.sanitize_patterns ?? [])],
     secretScanAllow,
     ...(cfg.inner_agent !== undefined ? { innerAgent: resolveInnerAgent(cfg.inner_agent) } : {}),
@@ -684,10 +809,16 @@ export function loadConfig(
           manageProjects: c.manage_projects === true,
           maxPushPolicy: c.max_push_policy ?? "none",
           approvalProxy: c.approval_proxy === true,
-          ...(c.approval_proxy === true ? { approvalProxyTargets: [...(c.approval_proxy_targets ?? [c.id])] } : {}),
+          ...(c.approval_proxy === true
+            ? {
+                approvalProxyTargets: [...(c.approval_proxy_targets ?? [c.id])],
+                approvalProxyKinds: [...(c.approval_proxy_kinds ?? APPROVAL_PROXY_DEFAULT_KINDS)],
+              }
+            : {}),
           toolProfile: c.tool_profile ?? DEFAULT_TOOL_PROFILE,
           ...(c.skills !== undefined ? { skills: [...c.skills] } : {}),
           ...(c.allow_light === true ? { allowLight: true } : {}),
+          ...(c.promote_trust_profile === true ? { promoteTrustProfile: true } : {}),
         },
       ]),
     ),
@@ -749,6 +880,42 @@ export function loadConfig(
       ),
     ),
     skills: resolveSkills(cfg),
+  };
+}
+
+/**
+ * ADR-0091 (FR-POL-12, fail closed, NFR-SEC-06): the configured request defaults. `default_privileged_scope` is checked
+ * by the same closed schema and list rules as a request's `privileged_scope` (LLD §3.1), with the error naming its JSON
+ * path; a `privileged` default (top level or in any project) without it is refused, so a defaulted privileged request
+ * can never reach V13 with nothing to run under.
+ */
+function resolveTrustDefaults(cfg: SwitchboardConfig): {
+  defaultTrustProfile?: TrustProfile;
+  defaultPrivilegedScope?: PrivilegedScope;
+} {
+  let scope: PrivilegedScope | undefined;
+  if (cfg.default_privileged_scope !== undefined) {
+    const parsed = parsePrivilegedScope(cfg.default_privileged_scope, "$.default_privileged_scope");
+    if (!parsed.ok) throw new ConfigError(`Invalid config: ${parsed.field}: ${parsed.message}`);
+    scope = parsed.scope;
+  }
+  if (scope === undefined) {
+    const where =
+      cfg.default_trust_profile === "privileged"
+        ? "$.default_trust_profile"
+        : (cfg.projects ?? [])
+            .map((p, i) => (p.default_trust_profile === "privileged" ? `$.projects[${i}].default_trust_profile` : ""))
+            .find((w) => w !== "");
+    if (where !== undefined) {
+      throw new ConfigError(
+        `Invalid config: ${where}: privileged needs default_privileged_scope (the scope a defaulted privileged request ` +
+          "runs under); add it or choose another profile",
+      );
+    }
+  }
+  return {
+    ...(cfg.default_trust_profile !== undefined ? { defaultTrustProfile: cfg.default_trust_profile } : {}),
+    ...(scope !== undefined ? { defaultPrivilegedScope: scope } : {}),
   };
 }
 

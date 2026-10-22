@@ -29,17 +29,20 @@
  *   the mapping only through `FailureEvidence.stderrTail`, which `extractResult` cannot supply (see there).
  */
 
+import { tmpdir } from "node:os";
 import {
   DEFAULT_IDLE_MS,
   DEFAULT_KILL_GRACE_MS,
   DEFAULT_MAX_LINE_BYTES,
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
+import { MODEL_ID_PATTERN } from "../../models/registry.js";
 import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import { renderObjective } from "../prompt.js";
+import type { ProviderUsageResult } from "../provider-usage.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -82,6 +85,7 @@ import {
   GIT_WRITE_CONTROL_DETAIL,
   GO_FLAG_UNDEFINED_RE,
   HELP_FLAG,
+  MODEL_FLAG,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
   OUTPUT_FORMAT_FLAG,
   OUTPUT_FORMAT_PROBE_ARGS,
@@ -94,6 +98,7 @@ import {
   USAGE_KEYS,
   VERSION_ARGS,
 } from "./protocol.js";
+import { AGY_USAGE_METHOD, readAgyUsage } from "./usage.js";
 
 /**
  * Environment names passed through to Antigravity (FR-EXE-07, NFR-SEC-02). Proposed: `PATH` for the binary and `HOME`,
@@ -103,6 +108,8 @@ import {
  */
 export const ANTIGRAVITY_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
+/** A model id passed as one argv word (the registry's `MODEL_ID_PATTERN` shape; never read as a flag). */
+const MODEL_ID_RE = new RegExp(MODEL_ID_PATTERN);
 const PROBE_TIMEOUT_MS = 10_000;
 const AUTH_UNKNOWN_REASON = "`agy models` output is not a recognised login state";
 /** One `agy models` line ([LIVE] C3b): a slug with no whitespace, a tab, then a display name. */
@@ -191,6 +198,11 @@ export class AntigravityAdapter implements ProviderAdapter {
   readonly gitWriteControl = ANTIGRAVITY_GIT_WRITE_CONTROL;
   /** TDD §4.10 ([RS]): "Histories are scoped to the working directory", so `bound` (registry entry agrees). */
   readonly resumeCwd = "bound" as const;
+  /** ADR-0077: a requested model reaches the CLI only in the approved bypass cell. */
+  readonly requestedModelFlag = {
+    cells: "bypass",
+    detail: "--model <id> in the approved bypass cell, the only compiled cell (ADR-0077; agy --help: --model)",
+  } as const;
   readonly gitCapabilities = ANTIGRAVITY_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];
@@ -303,6 +315,25 @@ export class AntigravityAdapter implements ProviderAdapter {
   }
 
   /**
+   * T6.20 (FR-CAP-13, ADR-0082 on the ADR-0079 reader): the CLI's own `/usage` and `/credits` answers, read only after
+   * `authPreflight` reports a login (signed out, `/usage` waits for a sign-in). Run from the system temporary
+   * directory, never a workspace. See `usage.ts`.
+   */
+  async readProviderUsage(runner: ProbeRunner, now: Date = new Date()): Promise<ProviderUsageResult> {
+    const exe = this.#exe;
+    if (exe === undefined) {
+      return {
+        provider: this.id,
+        source: "unknown",
+        observed_at: now.toISOString(),
+        method: AGY_USAGE_METHOD,
+        error: `${AGY_BINARY} not found on PATH`,
+      };
+    }
+    return readAgyUsage([exe, ...this.#launcher], runner, () => this.authPreflight(runner), now, tmpdir());
+  }
+
+  /**
    * T16.7 (TDD §3.16.1, LLD §19.6, ADR-0056 items 5, 6 and 8): every cell delivers skills as the prompt prefix. A cell
    * may name `native` only with the evidence id of a T16.8 live check; the conformance suite fails one without it.
    */
@@ -346,8 +377,7 @@ export class AntigravityAdapter implements ProviderAdapter {
    * 6. network other than `on`: CAPABILITY_MISSING (`--sandbox` is not compiled; under bypass not confined, [H]);
    * 7. repository_config `disabled` or `approved`: CAPABILITY_MISSING (`GEMINI.md`, `AGENTS.md` and `.agents/*` load
    *    and run with no approval, [LIVE] C11; no flag disables them); only `enabled` compiles (owner decision 26, Q-37);
-   * 8. a requested model: CAPABILITY_MISSING (the model registry has no Antigravity data yet, T4.5; `--model` is not
-   *    emitted).
+   * 8. a requested model that is not a plain id: CAPABILITY_MISSING; otherwise it is `--model <id>` (ADR-0077).
    */
   #build(request: CompileRequest, profile: ResolvedProfile, tail: string[]): Invocation | Ineligible {
     const gitWrites = gitWriteRisks(profile.shellAllowlist ?? []);
@@ -400,15 +430,12 @@ export class AntigravityAdapter implements ProviderAdapter {
           "owner decision 26 (Q-37) allows `enabled` in an approved bypass run",
       );
     }
-    if (request.model !== undefined) {
-      return ineligible(
-        "CAPABILITY_MISSING",
-        "no model registry data for Antigravity yet (T4.5; --model is not emitted)",
-      );
+    if (request.model !== undefined && !MODEL_ID_RE.test(request.model)) {
+      return ineligible("CAPABILITY_MISSING", "requested model is not a plain model id");
     }
     if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${AGY_BINARY} not found on PATH`);
 
-    const policyFlags = [SKIP_PERMISSIONS_FLAG];
+    const policyFlags = [SKIP_PERMISSIONS_FLAG, ...(request.model !== undefined ? [MODEL_FLAG, request.model] : [])];
     return {
       transport: "subprocess-jsonl",
       // `--prompt=<prompt>` is one argv word, so a prompt that starts with `-` is never read as a flag (Assumption: the

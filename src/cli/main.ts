@@ -2,7 +2,8 @@
  * Operator CLI entry (COMP-OPS, FR-OPS-01, FR-OPS-03). `main` returns the exit code and writes through injected
  * streams so tests call it directly. Exit codes (Proposed): 0 ok, 1 failure, 2 usage error; `skills add` refusals are 65 (LLD §19.1).
  * There is deliberately no `login`/`auth` command (FR-OPS-03, ADR-0003). `consent` (T13.8) manages only Switchboard's own
- * consent-page passphrase hash and pairing codes for the HTTP transport, never a provider sign-in. `serve` (T2.6) is the long-lived daemon: it
+ * consent-page passphrase hash and pairing codes for the HTTP transport, never a provider sign-in; `mcp oauth` manages the
+ * same embedded authorization server's one-time codes, clients and tokens, also never a provider sign-in. `serve` (T2.6) is the long-lived daemon: it
  * never writes to stdout itself (MCP framing only, TDD §3.3), so it rejects `--json` and reports every error on stderr.
  */
 import { parseArgs } from "node:util";
@@ -10,10 +11,11 @@ import { ConfigError } from "../config/index.js";
 import { DecisionError } from "../control/decisions.js";
 import { ApprovalRefusedError } from "../lifecycle/approval.js";
 import { LockError } from "../lock/index.js";
+import { UnknownOAuthClientError } from "../mcp/oauth-admin.js";
 import { renderValidate, runAdaptersValidate } from "./adapters-validate.js";
 import { renderAdaptersVersionCanary, runAdaptersVersionCanary } from "./adapters-version-canary.js";
 import { listAffinity, renderAffinityList, renderAffinityReset, resetAffinity } from "./affinity.js";
-import { renderCapacity, runCapacity } from "./capacity.js";
+import { renderCapacity, runCapacityWithUsage } from "./capacity.js";
 import { consentHashPassphrase, consentPair, renderPair, renderPassphraseHash } from "./consent.js";
 import {
   decideDecision,
@@ -38,6 +40,18 @@ import {
   renderInnerTest,
 } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, UsageError } from "./io.js";
+import {
+  mcpOAuthClient,
+  mcpOAuthClients,
+  mcpOAuthIssueCode,
+  mcpOAuthRevoke,
+  mcpOAuthTokens,
+  renderClient,
+  renderClients,
+  renderIssueCode,
+  renderRevoke,
+  renderTokens,
+} from "./mcp-oauth.js";
 import { UnknownRunError } from "./operator.js";
 import { pauseAll, renderPause } from "./pause.js";
 import { renderProject, renderValidation, UnknownProjectError, validateProjects } from "./projects.js";
@@ -50,6 +64,12 @@ import {
   renderProjectApproval,
   showAnyProject,
 } from "./projects-dynamic.js";
+import {
+  decideSourceRequest,
+  listSourceRequests,
+  renderSourceDecision,
+  renderSourceRequests,
+} from "./projects-sources.js";
 import { indexRequest, indexStatus, renderIndexRequest, renderIndexStatus } from "./rag-index.js";
 import {
   cancelRun,
@@ -100,6 +120,9 @@ const OPTIONS = {
   note: { type: "string" },
   option: { type: "string" },
   "live-budget": { type: "string" },
+  "client-profile": { type: "string" },
+  ttl: { type: "string" },
+  "tokens-only": { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -173,11 +196,18 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     // Re-pass the config flag to the loader in the form it parses.
     const loaderArgv = values.config !== undefined ? ["--config", values.config] : [];
     const [cmd, sub, ...rest] = positionals;
+    const oauthAction = cmd === "mcp" && sub === "oauth" ? rest[0] : undefined;
     if (cmd === "serve") {
       json = false; // stdout belongs to MCP framing; errors go to stderr
       if (values.json) throw new UsageError("serve does not take --json (stdout carries MCP framing only)");
-    } else if (values.client !== undefined) {
-      throw new UsageError("--client is only valid with serve");
+    } else if (values.client !== undefined && oauthAction !== "tokens") {
+      throw new UsageError("--client is only valid with serve and mcp oauth tokens");
+    }
+    if (oauthAction !== "issue-code" && (values["client-profile"] !== undefined || values.ttl !== undefined)) {
+      throw new UsageError("--client-profile and --ttl are only valid with mcp oauth issue-code");
+    }
+    if (oauthAction !== "revoke" && values["tokens-only"]) {
+      throw new UsageError("--tokens-only is only valid with mcp oauth revoke");
     }
 
     if (cmd !== "gc" && (values.apply || values["dry-run"]))
@@ -192,8 +222,11 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       throw new UsageError("--revision and --reject are only valid with projects approve");
     }
 
-    if (cmd !== "skills" && (values.all || values.body || values.file !== undefined || values["from-repository"])) {
-      throw new UsageError("--all, --body, --file and --from-repository are only valid with skills");
+    if (cmd !== "skills" && oauthAction !== "tokens" && values.all) {
+      throw new UsageError("--all is only valid with skills and mcp oauth tokens");
+    }
+    if (cmd !== "skills" && (values.body || values.file !== undefined || values["from-repository"])) {
+      throw new UsageError("--body, --file and --from-repository are only valid with skills");
     }
     if (cmd !== "skills" && !(cmd === "decisions" && sub === "decide") && values.note !== undefined) {
       throw new UsageError("--note is only valid with skills and decisions decide");
@@ -219,7 +252,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       }
       case "capacity": {
         if (sub !== undefined) throw new UsageError("capacity takes no positional arguments");
-        const projection = runCapacity(io, loaderArgv, values.provider);
+        const projection = await runCapacityWithUsage(io, loaderArgv, values.provider);
         emit({ schema_version: JSON_SCHEMA_VERSION, ...projection }, renderCapacity(projection));
         return 0;
       }
@@ -347,6 +380,28 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           emit(report, renderProjectApproval(report));
           return 0;
         }
+        if (sub === "sources") {
+          // ADR-0087 item 8: the operator's side of `request_project_source`.
+          const action = rest[0];
+          if (action === "list") {
+            if (rest.length > 1) throw new UsageError("projects sources list takes no arguments");
+            const requests = listSourceRequests(io, loaderArgv);
+            emit({ schema_version: JSON_SCHEMA_VERSION, requests }, renderSourceRequests(requests));
+            return 0;
+          }
+          if (action === "approve" || action === "reject") {
+            const id = rest[1];
+            if (id === undefined || rest.length > 2) {
+              throw new UsageError(`projects sources ${action} requires exactly one request id (psr_...)`);
+            }
+            const report = decideSourceRequest(io, loaderArgv, id, { reject: action === "reject" });
+            emit(report, renderSourceDecision(report));
+            return 0;
+          }
+          throw new UsageError(
+            `unknown projects sources subcommand ${JSON.stringify(action ?? "")}; expected list, approve or reject`,
+          );
+        }
         if (sub === "validate") {
           if (rest.length > 1) throw new UsageError("projects validate takes at most one project id");
           const report = await validateProjects(io, loaderArgv, rest[0], {
@@ -356,7 +411,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
           return report.ok ? 0 : 1;
         }
         throw new UsageError(
-          `unknown projects subcommand ${JSON.stringify(sub ?? "")}; expected list, show, validate or approve`,
+          `unknown projects subcommand ${JSON.stringify(sub ?? "")}; expected list, show, validate, approve or sources`,
         );
       }
       case "git": {
@@ -435,6 +490,56 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         }
         throw new UsageError(
           `unknown consent subcommand ${JSON.stringify(sub ?? "")}; expected hash-passphrase or pair`,
+        );
+      }
+      case "mcp": {
+        // The embedded OAuth authorization server of the HTTP transport (ADR-0041): Switchboard's own one-time codes,
+        // clients and tokens, never a provider sign-in (FR-OPS-03).
+        if (sub !== "oauth")
+          throw new UsageError(`unknown mcp subcommand ${JSON.stringify(sub ?? "")}; expected oauth`);
+        const [action, ...args] = rest;
+        if (action === "issue-code") {
+          if (args.length > 0) throw new UsageError("mcp oauth issue-code takes no positional arguments");
+          const report = mcpOAuthIssueCode(io, loaderArgv, {
+            clientProfile: values["client-profile"],
+            ttl: values.ttl,
+          });
+          emit(report, renderIssueCode(report));
+          return 0;
+        }
+        if (action === "clients") {
+          if (args.length > 0) throw new UsageError("mcp oauth clients takes no positional arguments");
+          const report = mcpOAuthClients(io, loaderArgv);
+          emit(report, renderClients(report));
+          return 0;
+        }
+        if (action === "client") {
+          const id = args[0];
+          if (id === undefined || args.length > 1)
+            throw new UsageError("mcp oauth client requires exactly one client id");
+          const report = mcpOAuthClient(io, loaderArgv, id);
+          emit(report, renderClient(report));
+          return 0;
+        }
+        if (action === "tokens") {
+          if (args.length > 0) throw new UsageError("mcp oauth tokens takes no positional arguments");
+          const report = mcpOAuthTokens(io, loaderArgv, {
+            ...(values.client !== undefined ? { clientId: values.client } : {}),
+            all: values.all === true,
+          });
+          emit(report, renderTokens(report));
+          return 0;
+        }
+        if (action === "revoke") {
+          const id = args[0];
+          if (id === undefined || args.length > 1)
+            throw new UsageError("mcp oauth revoke requires exactly one client id");
+          const report = mcpOAuthRevoke(io, loaderArgv, id, { tokensOnly: values["tokens-only"] === true });
+          emit(report, renderRevoke(report));
+          return 0;
+        }
+        throw new UsageError(
+          `unknown mcp oauth subcommand ${JSON.stringify(action ?? "")}; expected issue-code, clients, client, tokens or revoke`,
         );
       }
       case "schedule": {
@@ -574,7 +679,8 @@ function fail(err: unknown, io: CliIo, json: boolean): number {
     : err instanceof UnknownRunError ||
         err instanceof UnknownProjectError ||
         err instanceof UnknownScheduleError ||
-        err instanceof UnknownSkillError
+        err instanceof UnknownSkillError ||
+        err instanceof UnknownOAuthClientError
       ? "NOT_FOUND"
       : err instanceof ApprovalRefusedError || err instanceof SecretScanAckRefusedError
         ? "REFUSED"

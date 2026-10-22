@@ -29,6 +29,14 @@ export const FORMAT_JSON = "json";
  */
 export const STANDALONE_FLAG = "--standalone";
 
+/**
+ * Auto-approve flag (`opencode run --help` of v2.0.23, verbatim: "--auto  Auto-approve permissions that are not
+ * explicitly denied"). Bypass-class (declared in the registry): emitted in the approved privileged bypass cell only,
+ * the one compiled cell. Without it OpenCode refused an out-of-tree read in a non-interactive run ("This non-interactive
+ * run cannot ask the user for permission", 2026-10-21 production smoke), which ADR-0077 allows in a bypass run.
+ */
+export const AUTO_FLAG = "--auto";
+
 /** Resume by explicit id ([D-cli] `--session`/`-s`; [LIVE] 13a, 15a). `--continue` is never used ([LIVE] 13b). */
 export const SESSION_FLAG = "--session";
 
@@ -129,3 +137,21 @@ export const TOKEN_KEYS: readonly (readonly [path: readonly string[], metric: st
   [["cache", "read"], "cache_read"],
   [["cache", "write"], "cache_write"],
 ];
+
+/**
+ * Provider-reported spend (FR-CAP-16, ADR-0089; research `docs/research/opencode-usage-2026-10-21.md`, opencode
+ * v2.0.23 on the operator host, 2026-10-21): `opencode api --standalone experimental.session.stats --param from=<epoch
+ * ms> --param to=<epoch ms> --param tools=none` prints `{"data": SessionStats.Info}` (sessions, steps, tokens, USD `cost`
+ * and per-model figures from OpenCode's local session history). Bad input prints `HTTP 500 Internal Server Error` on
+ * stdout with exit 0, so the JSON shape decides, never the exit code. The operation is marked experimental by OpenCode.
+ * `--standalone` keeps the call off the host's shared service (as `AUTH_STATUS_ARGS`).
+ */
+export const USAGE_STATS_ARGS: readonly string[] = ["api", "--standalone", "experimental.session.stats"];
+export const USAGE_PARAM_FLAG = "--param";
+/** Per window: three private-server starts measured at about 3.7 s each (research note); 20 s is the ceiling. */
+export const USAGE_STATS_TIMEOUT_MS = 20_000;
+
+/**
+ * Model flag, emitted only from a request's model in the approved bypass cell (ADR-0077). `opencode run --help` 2.0.x on the operator host (2026-10-20): "--model, -m string  Model to use in the format provider/model#variant".
+ */
+export const MODEL_FLAG = "--model";

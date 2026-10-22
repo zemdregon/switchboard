@@ -78,7 +78,7 @@ import { DEFAULT_IDLE_MS, DEFAULT_KILL_GRACE_MS, DEFAULT_WALL_CLOCK_MS } from ".
 import { CHANNEL_MCP_CONFIG_FILE, TOOL_NAMES, TOOL_SHIM_MCP_SERVER, TOOL_TOKEN_ENV } from "../../git/tool-protocol.js";
 import type { PrivilegedScope } from "../../policy/types.js";
 import { channelToolRule, SAFE_MODE_FLAG } from "../audit.js";
-import { classifyCommon } from "../failure.js";
+import { classifyCommon, recoveredDenialWarnings } from "../failure.js";
 import {
   GIT_GLOBAL_FLAGS,
   GIT_GLOBAL_OPTIONS_WITH_VALUE,
@@ -181,12 +181,28 @@ export const CLAUDE_GIT_DENY_RULES: readonly string[] = [
   ...GIT_PUBLISHING_PROGRAMS.flatMap((p) => [`Bash(${p})`, `Bash(${p} *)`]),
 ];
 
+/**
+ * ADR-0094: the Git deny rules of an approved privileged bypass run: {@link CLAUDE_GIT_DENY_RULES} without the
+ * `git fetch` rules, with the `git remote` rules narrowed to the forms that change a remote (add, remove, rm, rename,
+ * set-url, set-head, set-branches, prune), so `git fetch`, `git remote update`, `git remote -v`, `git remote show` and
+ * `git remote get-url` run (`git ls-remote` was never denied). `git pull`, `git push` and every other write stay
+ * denied; the tool-call guard (bypass mode) still fails the run on a fetch into a local branch or a remote change.
+ */
+export const CLAUDE_BYPASS_GIT_DENY_RULES: readonly string[] = [
+  ...CLAUDE_GIT_DENY_RULES.filter((r) => !/^Bash\(git (fetch|remote)( \*)?\)$/.test(r)),
+  ...["add", "remove", "rm", "rename", "set-url", "set-head", "set-branches", "prune"].flatMap((v) => [
+    `Bash(git remote ${v})`,
+    `Bash(git remote ${v} *)`,
+  ]),
+];
+
 /** FR-GIT-01 declaration for `list_capabilities` and the manifest notes. */
 export const CLAUDE_GIT_WRITE_CONTROL: GitWriteControl = {
   kind: "provider-deny-rules",
   detail:
     "Layered, all from `claude --help` 2.1.296: (1) no Bash tool in --tools for inspect-untrusted and edit-untrusted " +
-    "unless the operator allowlists commands (exact; command prefixes in trusted-development), and any allowlist " +
+    "unless the operator allowlists commands (exact; command prefixes in trusted-development) or sets " +
+    "trusted-development shell broad (the allow rule `Bash`, ADR-0090), and any allowlist " +
     "entry that could write Git (commit, ref change, push, config, git global options, gh, command launchers, " +
     "non-read-only subcommands) makes the run Ineligible; " +
     "(2) --disallowedTools Git write deny rules on every invocation (`Bash(git commit)`, `Bash(git commit *)`, ...); " +
@@ -194,7 +210,8 @@ export const CLAUDE_GIT_WRITE_CONTROL: GitWriteControl = {
     "(`*` semantics, deny-over-allow) is an Assumption; deny rules are lexical and cannot see aliases, scripts run by " +
     "an allowlisted build tool, or absolute paths to git; no flag disables Claude's own commit attribution (only " +
     "--bare, unusable). An approved privileged bypass run (--dangerously-skip-permissions) keeps (2) and drops (3) " +
-    "(--restricted refuses bypass); whether deny rules hold under bypass is an Assumption (R-26). Live behaviour " +
+    "(--restricted refuses bypass) and, since ADR-0094, omits the `git fetch` rules and narrows the `git remote` " +
+    "rules to remote changes; whether deny rules hold under bypass is an Assumption (R-26). Live behaviour " +
     "unverified (live smoke test).",
   remainingControls: ["FR-GIT-03", "FR-GIT-06"],
 };
@@ -280,13 +297,16 @@ export const CLAUDE_BYPASS_NOT_APPROVED =
  * 3. A `scoped` dimension outside `privileged`: PROFILE_UNSUPPORTED (only the privileged scope may say `scoped`).
  * 4. `trusted-development` (owner decisions 10-12: operator overrides may loosen it):
  *    - network `allowlist` or `policy`: CAPABILITY_MISSING ([H] has no network or host control; R-36).
- *    - shell `broad` (network `off`): CAPABILITY_MISSING, because nothing in [H] stops a command's network use
- *      (Q-34 Proposed). With rule 4a this means `broad` never compiles for Claude today.
+ *    - shell `broad` (network `off`) compiles since ADR-0090: `Bash` in `--tools` with the allow rule `Bash`, under
+ *      the same dontAsk, `--restricted` and Git deny rules. Network `off` then holds at the tool level only (no
+ *      `WebFetch`), as it already did for allowlisted interpreters (R-36); it replaces the Q-34 refusal for this profile.
+ *      With file access `read-only` it stays CAPABILITY_MISSING (nothing in [H] stops a command writing files).
  *    - repository configuration `approved-only` or `allowlisted`: CAPABILITY_MISSING. [H] has no per-item control for
  *      approved hooks or instructions; `--setting-sources` selects whole sources, and `--mcp-config` (approved MCP
  *      servers) is barred by ADR-0015.
- *    What remains compiles as `edit-untrusted` (file access, shell allowlist as command prefixes per ADR-0066, network
- *    off at the tool level, repository configuration disabled with `--safe-mode --restricted --strict-mcp-config`).
+ *    What remains compiles as `edit-untrusted` (file access, shell allowlist as command prefixes per ADR-0066 or
+ *    `broad` per ADR-0090, network off at the tool level, repository configuration disabled with `--safe-mode
+ *    --restricted --strict-mcp-config`).
  * `inspect-untrusted` and `edit-untrusted` keep their M2 behaviour (T2.2; Q-34: network off at the tool level).
  */
 export function matrixIneligible(profile: ResolvedProfile, bypassApproved = false): Ineligible | undefined {
@@ -315,11 +335,11 @@ export function matrixIneligible(profile: ResolvedProfile, bypassApproved = fals
           "(TDD §4.1.1, R-36)",
       );
     }
-    if (profile.shell === "broad") {
+    if (profile.shell === "broad" && profile.fileAccess === "read-only") {
       return ineligible(
         "CAPABILITY_MISSING",
-        "trusted-development shell=broad with network=off: claude --help 2.1.296 documents nothing that stops a " +
-          "command's network use (Q-34, R-36)",
+        "trusted-development file_access=read-only with shell=broad: claude --help 2.1.296 documents nothing that " +
+          "stops a command writing files (ADR-0090)",
       );
     }
     if (profile.repoConfig !== "disabled") {
@@ -405,6 +425,19 @@ function standardPlan(request: CompileRequest, profile: ResolvedProfile): Claude
         tools.push("Bash");
         allow.push(...rules);
       }
+    } else if (profile.shell === "broad" && profile.name === "trusted-development") {
+      // ADR-0090: an allowlist under dontAsk denies ordinary shell (loops, `$?`, pipes into an unlisted program) for
+      // every model, so trusted-development may name `broad`: any command, with the Git deny rules still applied.
+      // A read-only workspace cannot take it: nothing stops a command writing files.
+      if (!request.workspace.writable) {
+        return ineligible(
+          "CAPABILITY_MISSING",
+          "trusted-development shell=broad on a read-only workspace: claude --help 2.1.296 documents nothing that " +
+            "stops a command writing files (ADR-0090)",
+        );
+      }
+      tools.push("Bash");
+      allow.push("Bash");
     } else if (profile.shell !== "none") {
       return ineligible("PROFILE_UNSUPPORTED", `${profile.name} with shell=${profile.shell} is not narrow`);
     }
@@ -798,8 +831,9 @@ export class ClaudeAdapter implements ProviderAdapter {
       "--allowedTools",
       ...plan.allow,
       // FR-GIT-01: on every invocation, bypass included (whether Claude honours them under bypass: Assumption, R-26).
+      // ADR-0094: an approved bypass run gets the narrower set that lets `git fetch` and remote reads run.
       "--disallowedTools",
-      ...CLAUDE_GIT_DENY_RULES,
+      ...(plan.bypass ? CLAUDE_BYPASS_GIT_DENY_RULES : CLAUDE_GIT_DENY_RULES),
     ];
     const argv = [
       this.#resolved,
@@ -848,16 +882,17 @@ export class ClaudeAdapter implements ProviderAdapter {
       ...(nativeSessionId ? { nativeSessionId } : {}),
       ...(summary ? { summary } : {}),
     };
+    // ADR-0072: recovered `profile`-class denials do not fail a run that otherwise succeeded; they become warnings.
+    const warnings = events.some((e) => e.kind === "permission_denied") ? recoveredDenialWarnings(events) : [];
     const clean =
       exit.outcome === "exited" &&
       exit.exitCode !== null &&
       exit.expectedExitCodes.includes(exit.exitCode) &&
       final?.kind === "result" &&
       final.ok &&
-      !events.some(
-        (e) => e.kind === "provider_error" || e.kind === "permission_denied" || e.kind === "sandbox_violation",
-      );
-    if (clean) return { ok: true, ...base };
+      !events.some((e) => e.kind === "provider_error" || e.kind === "sandbox_violation") &&
+      warnings !== undefined;
+    if (clean) return { ok: true, ...base, ...(warnings.length > 0 ? { warnings } : {}) };
     const c = this.classifyFailure({
       events,
       exit,

@@ -16,11 +16,10 @@
  * - `privileged` compiles only when its scope sets `bypass` and the run is approved (owner decision 46: the bypass
  *   cell does not wait for Git-write denial to be shown to hold), and only for the scope Cursor cannot narrow below:
  *   worktree files, shell `broad`, network `on` and repository configuration `enabled` (Q-79). No `--sandbox` flag is
- *   emitted, so Cursor itself confines nothing; the enforcing control is the bubblewrap wrapper of ADR-0059
- *   (`confinement.ts`): the provider process always starts inside `bwrap` (root read-only, worktree read-write, `$HOME`
- *   and the temp directories hidden), and a missing `bwrap` or a failed confinement probe makes the cell Ineligible
- *   (`ELIGIBILITY_NONE`), never an unconfined run. The tool-call guard (ADR-0039, detective only in a bypass run),
- *   FR-GIT-03 and FR-GIT-06 remain;
+ *   emitted, so Cursor itself confines nothing. Since ADR-0077 (owner ruling 2026-10-20) the bypass cell is not
+ *   confined to the worktree and starts without the ADR-0059 bubblewrap wrapper (the cell no longer needs `bwrap`);
+ *   the wrapper module (`confinement.ts`) stays for a future lower-tier cell. The tool-call guard (ADR-0039,
+ *   detective only in a bypass run), the FR-GIT-03 ref snapshot and FR-GIT-06 remain;
  * - the parser (T4.43) reads only the `stream-json` fields the 2026-10-14 live check recorded; a refused tool call is a
  *   `permission_denied` event because the final `result` still says `success`; resume is `--resume <id>` through the
  *   same matrix; a second `result`, a session id that changes mid-run or is not a safe argument, a tool call after the
@@ -34,6 +33,7 @@ import {
   DEFAULT_MAX_LINE_BYTES,
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
+import { MODEL_ID_PATTERN } from "../../models/registry.js";
 import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
@@ -61,14 +61,6 @@ import type {
   SkillDelivery,
 } from "../types.js";
 import {
-  CURSOR_CONFINEMENT_FAILED,
-  type CursorConfinementPlan,
-  cursorBwrapArgs,
-  cursorConfinementPlan,
-  hostConfinementDefaults,
-  probeConfinement,
-} from "./confinement.js";
-import {
   API_KEY_SOURCE_LOGIN,
   AUTH_STATUS_ARGS,
   AUTH_STATUS_KEY,
@@ -80,6 +72,7 @@ import {
   FORCE_FLAG,
   GIT_WRITE_CONTROL_DETAIL,
   HELP_FLAG,
+  MODEL_FLAG,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
   OUTPUT_FORMAT_FLAG,
   OUTPUT_STREAM_JSON,
@@ -100,6 +93,7 @@ import {
   USAGE_KEYS,
   VERSION_ARGS,
 } from "./protocol.js";
+import { type CursorUsageResult, readCursorUsage } from "./usage.js";
 
 /**
  * Environment names passed through to Cursor (FR-EXE-07, NFR-SEC-02). Proposed: `PATH` for the binary and `HOME` so
@@ -111,6 +105,8 @@ export const CURSOR_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 const PROBE_TIMEOUT_MS = 10_000;
 const MAX_SUMMARY_CHARS = 2_000;
 const MAX_TARGET_CHARS = 512;
+/** A model id passed as one argv word (the registry's `MODEL_ID_PATTERN` shape; never read as a flag). */
+const MODEL_ID_RE = new RegExp(MODEL_ID_PATTERN);
 /** Native ids are passed as one argv element; refuse anything that could be read as a flag (Proposed). */
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
@@ -149,17 +145,8 @@ export interface CursorAdapterOptions {
   /** Test-only: arguments inserted between the executable and the flags (replay launcher). Empty in production. */
   launcherArgs?: readonly string[];
   timeouts?: Partial<Invocation["timeouts"]>;
-  /** PATH used to resolve `cursor-agent` (and `bwrap`) when not given. Defaults to process.env.PATH. */
+  /** PATH used to resolve `cursor-agent` when not given. Defaults to process.env.PATH. */
   pathEnv?: string;
-  /**
-   * Absolute path of the `bwrap` that confines every compiled run (ADR-0059), or null for none (the cell is then
-   * Ineligible). Defaults to the first executable `bwrap` on PATH, resolved once.
-   */
-  bwrap?: string | null;
-  /** `$HOME` the wrapper hides (ADR-0059). Defaults to process.env.HOME. */
-  home?: string;
-  /** Temp directory the wrapper hides and the confinement probe uses. Defaults to `os.tmpdir()`. */
-  tmpDir?: string;
 }
 
 type Json = Record<string, unknown>;
@@ -241,36 +228,26 @@ export class CursorAdapter implements ProviderAdapter {
   /** TDD §4.10: `--resume <id>` resumed from a second directory ([LIVE] 8c), still `Unverified: T4.41`. */
   readonly resumeCwd = "unverified" as const;
   /**
-   * T7.12 (FR-RTE-08, Q-90): init reports a display name, not a model id ([C2], [LIVE] 5b), and `compile` emits no
-   * `--model` (a requested model is CAPABILITY_MISSING), so a remembered model is never pinned for Cursor.
+   * T7.12 (FR-RTE-08, Q-90): init reports a display name, not a model id ([C2], [LIVE] 5b), so a remembered model is
+   * never pinned for Cursor. Only an explicitly requested model reaches `--model` (`compile`, plain ids only).
    */
   readonly reportedModelFlag = {
     kind: "not_accepted",
-    detail: "init reports a display name ([LIVE] 5b); --model is not emitted until the model registry has Cursor data",
+    detail: "init reports a display name ([LIVE] 5b), not a --model id; only an explicitly requested model is emitted",
+  } as const;
+  /** ADR-0077: a requested model reaches the CLI only in the approved bypass cell. */
+  readonly requestedModelFlag = {
+    cells: "bypass",
+    detail: "--model <id> in the approved bypass cell, the only compiled cell (ADR-0077; cursor-agent --help: --model)",
   } as const;
   readonly gitCapabilities = CURSOR_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];
   readonly #timeouts: Invocation["timeouts"];
-  readonly #confinement: CursorConfinementPlan | { refused: string } | undefined;
-  readonly #tmpDir: string;
-  /** The last confinement probe failed on this instance: compile refuses until a later probe passes (ADR-0059). */
-  #confinementFailed = false;
 
   constructor(opts: CursorAdapterOptions = {}) {
     const pathEnv = opts.pathEnv ?? process.env.PATH;
     this.#exe = opts.executable ?? resolveOnPath(CURSOR_BINARY, pathEnv);
-    const host = hostConfinementDefaults(pathEnv);
-    this.#tmpDir = opts.tmpDir ?? host.tmpDir;
-    this.#confinement =
-      this.#exe === undefined
-        ? undefined
-        : cursorConfinementPlan({
-            bwrap: opts.bwrap !== undefined ? opts.bwrap : host.bwrap,
-            home: opts.home ?? host.home,
-            tmpDir: this.#tmpDir,
-            executable: this.#exe,
-          });
     this.#launcher = [...(opts.launcherArgs ?? [])];
     this.#timeouts = {
       wallClockMs: DEFAULT_WALL_CLOCK_MS,
@@ -281,10 +258,9 @@ export class CursorAdapter implements ProviderAdapter {
   }
 
   /**
-   * FR-ADP-02 steps 1 to 5 with no model call: `cursor-agent --version`, then `--help` for the required flags, then the
-   * `confinement` step (ADR-0059): the bwrap wrapper must be shown to hold on this host, or the step fails and the run
-   * is `ELIGIBILITY_NONE`. Output is probe evidence only (FR-ADP-04). Step 7 (the structured-output smoke call) is not
-   * run here. The version string
+   * FR-ADP-02 steps 1 to 5 with no model call: `cursor-agent --version`, then `--help` for the required flags (no
+   * confinement step since ADR-0077). Output is probe evidence only (FR-ADP-04). Step 7 (the structured-output smoke
+   * call) is not run here. The version string
    * `2026.10.12-d47ca18` ([LIVE] 1a) carries a commit hash parsed as build metadata (T4.48), allowing manifest ranges
    * to gate the version once `adapters validate` is run by an operator (ADR-0009).
    */
@@ -329,9 +305,6 @@ export class CursorAdapter implements ProviderAdapter {
         ...(missing.length ? { detail: `missing ${missing.join(" ")}` } : {}),
       },
     );
-    const confinement = await probeConfinement(this.#confinement ?? { refused: "no plan" }, runner, this.#tmpDir);
-    this.#confinementFailed = !confinement.ok;
-    steps.push(confinement);
     return { binaryPath: exe, binaryVersion: version, steps };
   }
 
@@ -362,6 +335,19 @@ export class CursorAdapter implements ProviderAdapter {
     if (flag === true) return { state: "OK" };
     if (flag === false) return { state: "AUTH_REQUIRED", loginCommand: CURSOR_LOGIN_COMMAND };
     return unknown(`no boolean ${AUTH_STATUS_KEY}`);
+  }
+
+  /**
+   * ADR-0080 (FR-CAP-13): the account's plan and usage as the CLI's own `/usage` command shows them, read in a
+   * pseudo-terminal with no model call (`./usage.ts`). The CLI uses its own login; Switchboard reads no credential
+   * (FR-AUTH-02). The probe runner cannot give a terminal, so it is not used.
+   */
+  async readProviderUsage(_runner: ProbeRunner, now?: Date): Promise<CursorUsageResult> {
+    return await readCursorUsage({
+      exe: this.#exe,
+      launcherArgs: this.#launcher,
+      ...(now === undefined ? {} : { now: () => now }),
+    });
   }
 
   /**
@@ -404,9 +390,11 @@ export class CursorAdapter implements ProviderAdapter {
    * 7. repository_config `disabled` or `approved`: CAPABILITY_MISSING (`--trust`, needed to start, loads the
    *    repository's `AGENTS.md` and rules, [LIVE] 10c; no per-item approval); only `enabled` compiles (owner decision
    *    26, Q-37);
-   * 8. a requested model: CAPABILITY_MISSING (the model registry has no Cursor data yet, T4.5; `--model` is not emitted);
-   * 9. no usable bwrap wrapper (ADR-0059): CAPABILITY_MISSING when `bwrap` is missing, `HOME` is unusable, the last
-   *    confinement probe on this instance failed, or the worktree would re-expose what the wrapper hides or binds.
+   * 8. a requested model that is not a plain model id (`MODEL_ID_PATTERN`): CAPABILITY_MISSING; a plain one is passed
+   *    as `--model <id>` after the policy flags;
+   * 9. since ADR-0077 (owner ruling 2026-10-20) the bypass cell is not confined to the worktree and starts without the
+   *    ADR-0059 bwrap wrapper (`confinement.ts` stays for a future lower-tier cell); the tool-call guard (ADR-0039),
+   *    the FR-GIT-03 ref snapshot and FR-GIT-06 remain. Only a missing executable is CAPABILITY_MISSING.
    */
   #build(request: CompileRequest, profile: ResolvedProfile, tail: string[]): Invocation | Ineligible {
     const allowlist = profile.shellAllowlist ?? [];
@@ -460,34 +448,15 @@ export class CursorAdapter implements ProviderAdapter {
           "decision 26 (Q-37) allows `enabled` in an approved bypass run",
       );
     }
-    if (request.model !== undefined) {
-      return ineligible("CAPABILITY_MISSING", "no model registry data for Cursor yet (T4.5; --model is not emitted)");
+    if (request.model !== undefined && !MODEL_ID_RE.test(request.model)) {
+      return ineligible("CAPABILITY_MISSING", "requested model is not a plain model id");
     }
-    if (this.#exe === undefined || this.#confinement === undefined) {
-      return ineligible("CAPABILITY_MISSING", `${CURSOR_BINARY} not found on PATH`);
-    }
-    // ADR-0059: the bypass cell starts only inside the bwrap wrapper; every refusal here is Ineligible, never a fallback.
-    if ("refused" in this.#confinement) return ineligible("CAPABILITY_MISSING", this.#confinement.refused);
-    if (this.#confinementFailed) return ineligible("CAPABILITY_MISSING", CURSOR_CONFINEMENT_FAILED);
-    const wrapper = cursorBwrapArgs(this.#confinement, request.workspace.cwd);
-    if (!Array.isArray(wrapper)) return ineligible("CAPABILITY_MISSING", wrapper.refused);
+    if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${CURSOR_BINARY} not found on PATH`);
 
-    const policyFlags = [TRUST_FLAG, FORCE_FLAG];
-    // The executable's resolved path: a symlink under the hidden `$HOME` (`~/.local/bin`) is not visible inside.
-    const exe = this.#confinement.executable;
+    const policyFlags = [TRUST_FLAG, FORCE_FLAG, ...(request.model !== undefined ? [MODEL_FLAG, request.model] : [])];
     return {
       transport: "subprocess-jsonl",
-      argv: [
-        this.#confinement.bwrap,
-        ...wrapper,
-        exe,
-        ...this.#launcher,
-        PRINT_FLAG,
-        OUTPUT_FORMAT_FLAG,
-        OUTPUT_STREAM_JSON,
-        ...policyFlags,
-        ...tail,
-      ],
+      argv: [this.#exe, ...this.#launcher, PRINT_FLAG, OUTPUT_FORMAT_FLAG, OUTPUT_STREAM_JSON, ...policyFlags, ...tail],
       env: {},
       envAllowlist: [...CURSOR_ENV_ALLOWLIST],
       cwd: request.workspace.cwd,
@@ -771,9 +740,8 @@ export class CursorAdapter implements ProviderAdapter {
    * closed, as Grok Build; a guard verdict ends the run in every run, bypass included, ADR-0039), and no `tool_call`
    * after the `result` line. The summary is the joined assistant text, last {@link MAX_SUMMARY_CHARS} characters. A
    * failed run prints no stream at all ([LIVE] 4, 14), so it ends `TOOL_FAILURE` on its exit code; the stderr text is
-   * not read (the adapter contract passes none). The T6.15 `ActionRequiredError` quota mapping is not reached on this
-   * path either: it lives in `classifyFailure`, which a caller reaches with the stderr tail `startAdapterRun`
-   * (`src/adapters/run.ts`) already captures.
+   * not read (the adapter contract passes none). The T6.15 `ActionRequiredError` quota mapping lives in `classifyFailure`;
+   * `startAdapterRun` (`src/adapters/run.ts`) applies it to this result with the stderr tail it captured.
    */
   extractResult(events: readonly NormalizedEvent[], exit: ExitInfo): RunResult {
     const unknownEventCount = events.filter((e) => e.kind === "unknown").length;
@@ -843,7 +811,8 @@ export class CursorAdapter implements ProviderAdapter {
  * account identifier is matched. Requires an unexpected exit, so exit 0 never maps; a cancelled run never maps.
  * Replaces the common verdict only when it is `TOOL_FAILURE`: every more specific verdict (cancel, timeout, crash,
  * the tool-call guard, a denial, an auth or model error, a protocol anomaly) stands, as Antigravity's
- * `agyErrorClassification`. Reached only through `FailureEvidence.stderrTail`, which `extractResult` cannot supply.
+ * `agyErrorClassification`. Reached through `FailureEvidence.stderrTail`, which `extractResult` cannot supply: `startAdapterRun` re-asks
+ * `classifyFailure` with the captured tail when the folded result is `TOOL_FAILURE` (2026-10-21 fix).
  */
 export function cursorQuotaClassification(evidence: FailureEvidence): FailureClassification | undefined {
   const { exit } = evidence;

@@ -102,7 +102,12 @@ export function trackingRefOf(remote: string, branch: string): string {
 }
 
 export interface BaseRefreshInput {
-  readonly runId: string;
+  /**
+   * The run the `base_refresh` event is appended on. ADR-0074: `refresh_project_base` passes the client's newest run of
+   * the project in this repository; with none there is no event, so the fetched value is never trusted later (fail
+   * closed) and every other run holding a lease on the repository makes the refresh `REPO_BUSY`.
+   */
+  readonly runId?: string;
   readonly metaSessionId: string;
   readonly repoRoot: string;
   /** The project's `base_ref`. Only a local branch name (`main` or `refs/heads/main`) is refreshed. */
@@ -115,6 +120,12 @@ export interface BaseRefreshResult {
   readonly reason: BaseRefreshReason;
   /** The commit the run starts from instead of `baseRef`, or undefined to keep `baseRef`. */
   readonly baseCommit?: string;
+  /** ADR-0074: the facts the event records (`local_sha`, `tracking_before`, `tracking_after`), null when unknown. */
+  readonly facts?: {
+    readonly localSha: string | null;
+    readonly trackingBefore: string | null;
+    readonly trackingAfter: string | null;
+  };
 }
 
 export interface BaseRefreshOptions {
@@ -145,9 +156,13 @@ export async function refreshBase(
     after: null,
   };
   const record = (r: BaseRefreshResult): BaseRefreshResult => {
+    if (input.runId !== undefined) recordEvent(input.runId, r);
+    return { ...r, facts: { localSha: facts.local, trackingBefore: facts.before, trackingAfter: facts.after } };
+  };
+  const recordEvent = (runId: string, r: BaseRefreshResult): void => {
     insertChainedRunEvent(db, {
       id: options.ids.id("evt"),
-      runId: input.runId,
+      runId,
       ts: (options.now?.() ?? new Date()).toISOString(),
       type: BASE_REFRESH_EVENT,
       payloadJson: JSON.stringify({
@@ -164,7 +179,6 @@ export async function refreshBase(
         base_commit: r.baseCommit ?? null,
       }),
     });
-    return r;
   };
   const skip = (reason: BaseRefreshReason, outcome: BaseRefreshOutcome = "skipped") =>
     record({ outcome, reason, ...trusted() });
@@ -219,11 +233,11 @@ export async function refreshBase(
   }
 }
 
-function otherLeaseOnRepo(db: Database.Database, repoRoot: string, runId: string): boolean {
+function otherLeaseOnRepo(db: Database.Database, repoRoot: string, runId: string | undefined): boolean {
   return (
     db
       .prepare("SELECT 1 FROM meta_session WHERE repo_root = ? AND lease_run_id IS NOT NULL AND lease_run_id <> ?")
-      .get(repoRoot, runId) !== undefined
+      .get(repoRoot, runId ?? "") !== undefined
   );
 }
 

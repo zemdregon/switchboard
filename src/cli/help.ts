@@ -21,7 +21,8 @@ export interface CommandHelpEntry {
 }
 
 const OPT_JSON = "  --json              Machine-readable output (not for serve)";
-const OPT_CLIENT = "  --client <id>       serve only: the mcp_clients entry this stdio session is bound to";
+const OPT_CLIENT =
+  "  --client <id>       serve: the mcp_clients entry this stdio session is bound to; mcp oauth tokens: one OAuth client";
 const OPT_NOTE = "  --note <text>       skills add, approve and revoke: an operator note of at most 280 characters";
 const OPT_CONFIG =
   "  --config <path>     Config file (default: $SWITCHBOARD_CONFIG, then $XDG_CONFIG_HOME/switchboard/config.json)";
@@ -38,6 +39,13 @@ const OPT_APPLY = "  --apply             gc only: collect; refused while serve r
 const OPT_REVISION = "  --revision <n>      projects approve only: the revision to approve (required past the first)";
 const OPT_REJECT = "  --reject            projects approve only: reject the revision instead of approving it";
 const OPT_ALL = "  --all               skills list only: also list retired names";
+const OPT_OAUTH_CLIENT = "  --client <client_id> mcp oauth tokens only: tokens of this OAuth client";
+const OPT_OAUTH_ALL = "  --all               mcp oauth tokens only: also list expired and revoked tokens";
+const OPT_CLIENT_PROFILE =
+  "  --client-profile <id> mcp oauth issue-code only: the mcp_clients entry the code binds a client to";
+const OPT_TTL = "  --ttl <n>s|m|h      mcp oauth issue-code only: code lifetime, 1 to 60 minutes (default 10m)";
+const OPT_TOKENS_ONLY =
+  "  --tokens-only       mcp oauth revoke only: revoke the client's tokens and keep the client approved";
 const OPT_BODY = "  --body              skills show only: print the version body";
 const OPT_FILE = "  --file <path>       skills add only: the skill file to validate and store";
 const OPT_OPTION = "  --option <n>        decisions decide only: the 1-based option to choose";
@@ -149,6 +157,9 @@ export const COMMAND_HELP: readonly CommandHelpEntry[] = [
       "  projects approve <id> [--revision <n>] [--reject]",
       "                      Approve (or reject) the revision of a dynamic project that waits for approval; --revision is",
       "                      required once the project has more than one revision (review it with projects show first)",
+      "  projects sources list|approve <id>|reject <id>",
+      "                      List, approve or reject the owner requests of request_project_source (ADR-0087); an",
+      "                      approved owner joins project_sources.allowed_owners at once",
       "  projects validate [<id>]",
       "                      Check project configuration and repository paths; exit 1 if any check fails",
     ],
@@ -156,6 +167,7 @@ export const COMMAND_HELP: readonly CommandHelpEntry[] = [
       "switchboard projects list",
       "switchboard projects show <id>",
       "switchboard projects approve <id> [--revision <n>] [--reject]",
+      "switchboard projects sources list|approve <id>|reject <id>",
       "switchboard projects validate [<id>]",
     ],
     summary: "List, show, approve and validate projects (read-only except approve).",
@@ -260,6 +272,35 @@ export const COMMAND_HELP: readonly CommandHelpEntry[] = [
     summary: "Manage Switchboard's own HTTP consent-page secrets (never a provider sign-in).",
     options: [OPT_JSON, OPT_CONFIG],
     example: "switchboard consent pair",
+  },
+  {
+    name: "mcp",
+    global: [
+      "  mcp oauth issue-code --client-profile <id> [--ttl 10m]",
+      "                      Print a one-time code for the HTTP consent page that approves an OAuth client and binds it",
+      "                      to that mcp_clients entry (valid once, 1 to 60 minutes; Switchboard's own authorization",
+      "                      server, never a provider sign-in); privileged_approval not_required",
+      "                      is refused (a privileged ceiling is allowed; its runs still need operator approval)",
+      "  mcp oauth clients   List OAuth clients: status, profile and its source (config, binding, default), token counts",
+      "  mcp oauth client <client_id>",
+      "                      Show one OAuth client: metadata, status, profile and source, token counts, last issue time",
+      "  mcp oauth tokens [--client <client_id>] [--all]",
+      "                      Token metadata (row id, kind, client, issued, expires, revoked); never a token or its hash",
+      "  mcp oauth revoke <client_id> [--tokens-only]",
+      "                      Revoke an OAuth client and all its tokens, or only its tokens",
+    ],
+    usage: [
+      "switchboard mcp oauth issue-code --client-profile <id> [--ttl <n>s|m|h]",
+      "switchboard mcp oauth clients",
+      "switchboard mcp oauth client <client_id>",
+      "switchboard mcp oauth tokens [--client <client_id>] [--all]",
+      "switchboard mcp oauth revoke <client_id> [--tokens-only]",
+    ],
+    summary:
+      "Manage the HTTP transport's embedded OAuth authorization server: issue profile-bound one-time codes, inspect " +
+      "clients and token metadata, revoke clients or tokens (Switchboard's own, never a provider sign-in).",
+    options: [OPT_CLIENT_PROFILE, OPT_TTL, OPT_OAUTH_CLIENT, OPT_OAUTH_ALL, OPT_TOKENS_ONLY, OPT_JSON, OPT_CONFIG],
+    example: "switchboard mcp oauth issue-code --client-profile grok-bot --ttl 10m",
   },
   {
     name: "schedule",

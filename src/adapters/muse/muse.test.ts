@@ -950,7 +950,7 @@ describe("muse tool records and the ADR-0039 guard (T4.76; Assumption field spel
   const STARTED = JSON.stringify({ kind: "run_started", session_id: DEFAULT_SESSION_ID });
   const DONE = JSON.stringify({ kind: "run_terminal", terminal: "completed", text: "done", reason: null });
   const record = (kind: string, fields: Record<string, unknown>) => JSON.stringify({ kind, ...fields });
-  const GIT = "git commit -am synthetic";
+  const GIT = "git push origin HEAD";
 
   it("fixture git_write_guard: a command record with a Git write under a completed terminal at exit 0 ends PERMISSION_BLOCKED", () => {
     const { exitCode, lines } = readFixture("git_write_guard");

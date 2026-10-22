@@ -25,6 +25,11 @@ const RETRYABLE: ReadonlySet<FailureCode> = new Set(["RATE_LIMIT_TRANSIENT", "PR
 
 export class ToolError extends Error {
   override readonly name = "ToolError";
+  /**
+   * ADR-0068: set only where the LLD §4 column does not fit one refusal (`CLONE_FAILED` is `TOOL_FAILURE` but may
+   * succeed once the operator grants access). Absent: the code's own column.
+   */
+  retryable?: boolean;
   constructor(
     readonly code: FailureCode,
     message: string,
@@ -77,7 +82,7 @@ export function errorEnvelope(err: ToolError, scrub: (s: string) => string): Err
     error: {
       code: err.code,
       message: scrub(err.message).slice(0, 2000),
-      retryable: RETRYABLE.has(err.code),
+      retryable: err.retryable ?? RETRYABLE.has(err.code),
       ...(err.runId !== undefined ? { run_id: err.runId } : {}),
       ...(Object.keys(details).length > 0 ? { details } : {}),
     },

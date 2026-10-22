@@ -141,8 +141,8 @@ describe("grok conformance cases fail when the replay refuses the compile (T4.22
 describe("grok replay blind spots: argv slips the grok dialect accepts (T4.22 gap pins; unit argv tests are the only guard)", () => {
   it.each([
     [
-      "the sandbox profile swapped from strict to workspace",
-      (argv: string[]) => argv.map((w) => (w === "strict" ? "workspace" : w)),
+      "the sandbox profile swapped from off to workspace",
+      (argv: string[]) => argv.map((w) => (w === "off" ? "workspace" : w)),
     ],
     [
       "--disable-web-search dropped with network off",
@@ -158,11 +158,11 @@ describe("grok replay blind spots: argv slips the grok dialect accepts (T4.22 ga
     expect(report.ok).toBe(true);
   });
 
-  it("the compile those slips start from: `--sandbox strict --disable-web-search --always-approve` and no --deny", () => {
+  it("the compile those slips start from: `--sandbox off --always-approve` (ADR-0077) and no --deny", () => {
     const c = caseOf("success");
     const inv = c.adapter.compile(c.request, c.profile);
     if ("ineligible" in inv) throw new Error(inv.detail);
-    expect(inv.policyFlags).toEqual(["--sandbox", "strict", "--disable-web-search", "--always-approve"]);
+    expect(inv.policyFlags).toEqual(["--sandbox", "off", "--always-approve"]);
     expect(inv.argv.slice(-inv.policyFlags.length)).toEqual(inv.policyFlags);
     expect(inv.argv).not.toContain("--deny");
   });

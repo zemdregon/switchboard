@@ -5,9 +5,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkHttpTransport, type HttpTransportSettings, resolveHttpTransport } from "../config/index.js";
+import {
+  checkHttpTransport,
+  type HttpTransportConfig,
+  type HttpTransportSettings,
+  type RawMcpClientEntry,
+  resolveHttpTransport,
+} from "../config/index.js";
 import { openLedger } from "../ledger/index.js";
 import { type HttpTransportListener, startHttpTransport } from "./http.js";
+import { OAuthAuditLog } from "./oauth-audit.js";
 import { OAuthClientStore } from "./oauth-clients.js";
 import { normalizePairingCode, PAIRING_CODE_TTL_MS, PairingCodeStore } from "./oauth-pairing.js";
 import { hashPassphrase, isPassphraseHash, verifyPassphrase } from "./oauth-passphrase.js";
@@ -32,8 +39,19 @@ const OTHER_REDIRECT = "https://evil.example.test/cb";
 const PASSPHRASE = "correct horse battery staple";
 const FAKE_HASH = `scrypt$17$8$1$${"A".repeat(22)}$${"B".repeat(43)}`;
 
-const settings = (allowed_origins: string[] = []): HttpTransportSettings =>
-  resolveHttpTransport({ enabled: true, public_url: RESOURCE, port: 0, allowed_origins }) as HttpTransportSettings;
+/** Migration 0036 tests: `grok-bot` and `other` may be bound by a code; `root` (privileged ceiling, approval required) may too (ADR-0086); `auto` (approval not_required) may not. */
+const MCP_CLIENTS: RawMcpClientEntry[] = [
+  { id: "grok-bot", max_trust_profile: "edit-untrusted" },
+  { id: "other", max_trust_profile: "inspect-untrusted" },
+  { id: "root", max_trust_profile: "privileged" },
+  { id: "auto", max_trust_profile: "privileged", privileged_approval: "not_required" },
+];
+
+const settings = (allowed_origins: string[] = [], over: Partial<HttpTransportConfig> = {}): HttpTransportSettings =>
+  resolveHttpTransport(
+    { enabled: true, public_url: RESOURCE, port: 0, allowed_origins, ...over },
+    MCP_CLIENTS,
+  ) as HttpTransportSettings;
 
 let dir: string;
 let db: Database.Database;
@@ -194,8 +212,12 @@ function ledgerBytes(): string {
     .join("\n");
 }
 
-async function start(deps: { passphraseHash?: string | undefined; allowed?: string[] } = {}): Promise<void> {
-  const s = settings(deps.allowed ?? []);
+let audit: OAuthAuditLog;
+
+async function start(
+  deps: { passphraseHash?: string | undefined; allowed?: string[]; http?: Partial<HttpTransportConfig> } = {},
+): Promise<void> {
+  const s = settings(deps.allowed ?? [], deps.http ?? {});
   const authorizationServer = new AuthorizationServer(s, {
     clients,
     tokens,
@@ -208,6 +230,7 @@ async function start(deps: { passphraseHash?: string | undefined; allowed?: stri
     // scrypt's real cost is exercised in the passphrase tests below; here a constant-time stand-in keeps tests fast.
     verifyPassphrase: async (p, h) => p === PASSPHRASE && h === FAKE_HASH,
     now: () => clock,
+    audit,
     onEvent: (event, fields) => events.push({ event, fields }),
   });
   const l = await startHttpTransport(s, { tokens, clients, authorizationServer });
@@ -222,6 +245,7 @@ beforeEach(async () => {
   clients = new OAuthClientStore(db, { now: () => clock });
   tokens = new OAuthTokenStore(db, { now: () => clock });
   pairing = new PairingCodeStore(db, { now: () => clock });
+  audit = new OAuthAuditLog(db, { now: () => clock });
   events = [];
   secrets = [PASSPHRASE];
   await start();
@@ -639,15 +663,24 @@ describe("consent page authentication, lockout and CSRF (T13.8)", () => {
   });
 
   it("throttles wrong pairing codes without consuming or ending the live code", async () => {
+    // The stranger's wrong codes come from another address than the operator's (behind the loopback proxy), so the
+    // per-address lockout locks only the stranger; the global throttle still applies to everyone.
+    await listener.close();
+    await start({ http: { client_ip_header: "x-client-ip" } });
+    const stranger = { "x-client-ip": "198.51.100.7" };
     const clientId = register();
     const live = pairing.create();
     secrets.push(live.code, norm(live.code));
     let c = await openConsent(clientId, pkce().challenge);
-    for (let i = 0; i < MAX_PAIRING_FAILURES_PER_MINUTE; i++) {
-      const r = await submit(c, { decision: "approve", pairing_code: "AAAA-BBBB-CCCC" });
+    for (let i = 0; i < MAX_PAIRING_FAILURES_PER_MINUTE - 1; i++) {
+      const r = await submit(c, { decision: "approve", pairing_code: "AAAA-BBBB-CCCC" }, stranger);
       expect(r.status).toBe(401);
       c = consentFrom(r);
     }
+    // The tenth wrong code from one address within the window locks that address.
+    const lockedStranger = await submit(c, { decision: "approve", pairing_code: "AAAA-BBBB-CCCC" }, stranger);
+    expect(lockedStranger.status).toBe(429);
+    c = await openConsent(clientId, pkce().challenge);
     const throttled = await submit(c, { decision: "approve", pairing_code: live.code });
     expect(throttled.status).toBe(429);
     expect(db.prepare("SELECT used_at FROM oauth_pairing_code").get()).toEqual({ used_at: null });
@@ -805,5 +838,315 @@ describe("operator passphrase hash (Q-75)", () => {
       resolveHttpTransport({ enabled: true, public_url: RESOURCE, port: 0, passphrase_hash: FAKE_HASH })
         ?.passphraseHash,
     ).toBe(FAKE_HASH);
+  });
+});
+
+describe("profile-bound one-time codes on the consent page (migration 0037)", () => {
+  async function approveWithCode(clientId: string, code: string, headers: Record<string, string> = {}) {
+    const c = await openConsent(clientId, pkce().challenge);
+    return submit(c, { decision: "approve", pairing_code: code }, headers);
+  }
+
+  function liveCode(mcpClient?: string) {
+    const c = pairing.create(mcpClient !== undefined ? { mcpClient } : {});
+    secrets.push(c.code, norm(c.code));
+    return c;
+  }
+
+  it("labels the field as a one-time code from issue-code and keeps the pairing_code field name", async () => {
+    const c = await openConsent(register(), pkce().challenge);
+    expect(c.reply.text).toContain('name="pairing_code"');
+    expect(c.reply.text).toContain("switchboard mcp oauth issue-code");
+  });
+
+  it("approves a pending client and binds it to the code's profile, audited without the code", async () => {
+    const clientId = register();
+    const code = liveCode("grok-bot");
+    const r = await approveWithCode(clientId, code.code);
+    expect(r.status).toBe(303);
+    secrets.push(codeOf(r));
+    const stored = clients.get(clientId);
+    expect(stored?.status).toBe("approved");
+    expect(stored?.mcpClient).toBe("grok-bot");
+    expect(stored?.boundAt).toBe(clock.toISOString());
+    const approved = events.find((e) => e.event === "consent_approved");
+    expect(approved?.fields).toMatchObject({ client_id: clientId, method: "pairing_code", mcp_client: "grok-bot" });
+    expect(approved?.fields.ip).toBe("127.0.0.1");
+    expect(audit.list(clientId)).toEqual([
+      expect.objectContaining({
+        kind: "consent_approved",
+        client_id: clientId,
+        mcp_client: "grok-bot",
+        method: "bound_code",
+        actor: "endpoint",
+        ip: "127.0.0.1",
+        reason: "bound",
+      }),
+    ]);
+  });
+
+  it("binds an approved unbound client, and a legacy code or the passphrase binds nothing", async () => {
+    const clientId = register();
+    const legacy = liveCode();
+    const first = await approveWithCode(clientId, legacy.code);
+    expect(first.status).toBe(303);
+    secrets.push(codeOf(first));
+    expect(clients.get(clientId)?.mcpClient).toBeUndefined();
+    const viaPassphrase = await obtainCode(clientId);
+    expect(viaPassphrase.code).toBeDefined();
+    expect(clients.get(clientId)?.mcpClient).toBeUndefined();
+
+    const bound = liveCode("grok-bot");
+    const second = await approveWithCode(clientId, bound.code);
+    expect(second.status).toBe(303);
+    secrets.push(codeOf(second));
+    expect(clients.get(clientId)?.mcpClient).toBe("grok-bot");
+    // The same profile again is fine; nothing changes.
+    const again = await approveWithCode(clientId, liveCode("grok-bot").code);
+    expect(again.status).toBe(303);
+    secrets.push(codeOf(again));
+  });
+
+  it("refuses a client bound to another profile before spending the code", async () => {
+    const clientId = register();
+    const first = await approveWithCode(clientId, liveCode("grok-bot").code);
+    secrets.push(codeOf(first));
+    const other = liveCode("other");
+    const r = await approveWithCode(clientId, other.code);
+    expect(r.status).toBe(403);
+    expect(r.text).toContain("already bound to a different client profile");
+    expect(r.headers.location).toBeUndefined();
+    expect(pairing.lookup(other.code)).toEqual({ mcpClient: "other" }); // still live
+    expect(clients.get(clientId)?.mcpClient).toBe("grok-bot");
+    expect(events.some((e) => e.event === "consent_refused_profile" && e.fields.reason === "bound_elsewhere")).toBe(
+      true,
+    );
+  });
+
+  it("refuses a client the config maps to another profile, and does not ledger-bind a config-mapped client", async () => {
+    const mappedOther = register();
+    const mappedSame = register();
+    await listener.close();
+    await start({
+      http: {
+        clients: [
+          { oauth_client_id: mappedOther, mcp_client: "other" },
+          { oauth_client_id: mappedSame, mcp_client: "grok-bot" },
+        ],
+      },
+    });
+    const code = liveCode("grok-bot");
+    const refused = await approveWithCode(mappedOther, code.code);
+    expect(refused.status).toBe(403);
+    expect(pairing.lookup(code.code)).toBeDefined();
+    expect(clients.get(mappedOther)?.status).toBe("pending");
+
+    const ok = await approveWithCode(mappedSame, code.code);
+    expect(ok.status).toBe(303);
+    secrets.push(codeOf(ok));
+    expect(clients.get(mappedSame)?.status).toBe("approved");
+    expect(clients.get(mappedSame)?.mcpClient).toBeUndefined(); // the config mapping is the source
+  });
+
+  it("refuses a code whose profile is not eligible for a binding (approval not_required) and keeps it live", async () => {
+    const clientId = register();
+    const root = liveCode("auto"); // issue-code refuses this; the page checks again
+    const r = await approveWithCode(clientId, root.code);
+    expect(r.status).toBe(403);
+    expect(r.text).toContain("can no longer be used over HTTP");
+    expect(pairing.lookup(root.code)).toBeDefined();
+    expect(clients.get(clientId)?.status).toBe("pending");
+  });
+
+  it("refuses denied and revoked clients exactly as before", async () => {
+    const clientId = register();
+    const first = await approveWithCode(clientId, liveCode("grok-bot").code);
+    secrets.push(codeOf(first));
+    const c = await openConsent(clientId, pkce().challenge);
+    clients.revoke(clientId);
+    const code = liveCode("grok-bot");
+    const r = await submit(c, { decision: "approve", pairing_code: code.code });
+    expect(r.status).toBe(403);
+    expect(r.text).toContain("not approved");
+  });
+});
+
+describe("per-address lockout for wrong codes and passphrases", () => {
+  const from = (ip: string) => ({ "x-client-ip": ip });
+
+  beforeEach(async () => {
+    await listener.close();
+    await start({ http: { client_ip_header: "x-client-ip" } });
+  });
+
+  it("locks one address after ten wrong codes in five minutes, for fifteen minutes, without ending the live code", async () => {
+    const clientId = register();
+    const live = pairing.create({ mcpClient: "grok-bot" });
+    secrets.push(live.code, norm(live.code));
+    let last: Reply | undefined;
+    for (let i = 0; i < 10; i++) {
+      // 25 s apart: the global throttle (ten a minute) never trips, the per-address window (five minutes) does.
+      clock = new Date(clock.getTime() + 25_000);
+      const c = await openConsent(clientId, pkce().challenge);
+      last = await submit(c, { decision: "approve", pairing_code: "AAAA-BBBB-CCCC" }, from("198.51.100.7"));
+      if (i < 9) expect(last.status).toBe(401);
+    }
+    expect(last?.status).toBe(429);
+    expect(last?.headers["retry-after"]).toBe("900");
+    // The locked address is refused even with the right code, which stays live.
+    const c1 = await openConsent(clientId, pkce().challenge);
+    const blocked = await submit(c1, { decision: "approve", pairing_code: live.code }, from("198.51.100.7"));
+    expect(blocked.status).toBe(429);
+    expect(pairing.lookup(live.code)).toBeDefined();
+    // Another address is not affected.
+    const c2 = await openConsent(clientId, pkce().challenge);
+    const ok = await submit(c2, { decision: "approve", pairing_code: live.code }, from("203.0.113.20"));
+    expect(ok.status).toBe(303);
+    secrets.push(codeOf(ok));
+    // After the lock the address may try again.
+    clock = new Date(clock.getTime() + 15 * 60_000);
+    const c3 = await openConsent(clientId, pkce().challenge);
+    expect((await submit(c3, { decision: "approve", passphrase: PASSPHRASE }, from("198.51.100.7"))).status).toBe(303);
+  });
+
+  it("counts wrong passphrases too, and refuses the right passphrase from a locked address", async () => {
+    const clientId = register();
+    for (let i = 0; i < 4; i++) {
+      const c = await openConsent(clientId, pkce().challenge);
+      expect((await submit(c, { decision: "approve", passphrase: "wrong" }, from("198.51.100.8"))).status).toBe(401);
+    }
+    for (let i = 0; i < 6; i++) {
+      clock = new Date(clock.getTime() + 20_000);
+      const c = await openConsent(clientId, pkce().challenge);
+      await submit(c, { decision: "approve", pairing_code: "AAAA-BBBB-CCCC" }, from("198.51.100.8"));
+    }
+    const c = await openConsent(clientId, pkce().challenge);
+    const r = await submit(c, { decision: "approve", passphrase: PASSPHRASE }, from("198.51.100.8"));
+    expect(r.status).toBe(429);
+    expect(events.some((e) => e.event === "consent_refused_locked" && e.fields.reason === "address_locked")).toBe(true);
+    const other = await openConsent(clientId, pkce().challenge);
+    expect((await submit(other, { decision: "approve", passphrase: PASSPHRASE }, from("198.51.100.9"))).status).toBe(
+      303,
+    );
+  });
+});
+
+describe("RFC 7009 revocation endpoint", () => {
+  function revoke(fields: Record<string, string>, headers: Record<string, string> = {}): Promise<Reply> {
+    return call(
+      "POST",
+      "/revoke",
+      { "content-type": "application/x-www-form-urlencoded", ...headers },
+      new URLSearchParams(fields).toString(),
+    );
+  }
+
+  async function grant(clientId: string): Promise<{ access: string; refresh: string }> {
+    const { code, verifier } = await obtainCode(clientId);
+    const r = await exchange(clientId, code, verifier);
+    expect(r.status).toBe(200);
+    const body = JSON.parse(r.text) as { access_token: string; refresh_token: string };
+    secrets.push(body.access_token, body.refresh_token);
+    return { access: body.access_token, refresh: body.refresh_token };
+  }
+
+  it("advertises the endpoint with public-client authentication", async () => {
+    const meta = JSON.parse((await call("GET", "/.well-known/oauth-authorization-server")).text) as Record<
+      string,
+      unknown
+    >;
+    expect(meta.revocation_endpoint).toBe(`${ISSUER}/revoke`);
+    expect(meta.revocation_endpoint_auth_methods_supported).toEqual(["none"]);
+  });
+
+  it("revokes an access token alone, and a refresh token with its whole grant only", async () => {
+    const clientId = register();
+    const a = await grant(clientId);
+    const b = await grant(clientId);
+    const r1 = await revoke({ token: a.access, token_type_hint: "access_token", client_id: clientId });
+    expect(r1.status).toBe(200);
+    expect(r1.text).toBe("");
+    expect(r1.headers["cache-control"]).toBe("no-store");
+    expect(tokens.verify(a.access, "access", RESOURCE).ok).toBe(false);
+    expect(tokens.verify(a.refresh, "refresh", RESOURCE).ok).toBe(true);
+
+    // Rotate grant b once, then revoke the new refresh token: the rotated access token of the same grant goes too.
+    const rotated = await token({ grant_type: "refresh_token", client_id: clientId, refresh_token: b.refresh });
+    expect(rotated.status).toBe(200);
+    const nb = JSON.parse(rotated.text) as { access_token: string; refresh_token: string };
+    secrets.push(nb.access_token, nb.refresh_token);
+    expect((await revoke({ token: nb.refresh_token, client_id: clientId })).status).toBe(200);
+    expect(tokens.verify(nb.refresh_token, "refresh", RESOURCE).ok).toBe(false);
+    expect(tokens.verify(nb.access_token, "access", RESOURCE).ok).toBe(false);
+    // Grant a's refresh token is another grant: untouched.
+    expect(tokens.verify(a.refresh, "refresh", RESOURCE).ok).toBe(true);
+    expect(audit.list(clientId).filter((e) => e.kind === "token_revoked")).toHaveLength(2);
+  });
+
+  it("answers 200 and changes nothing for another client's token or an unknown one", async () => {
+    const mine = register();
+    const theirs = register();
+    const t = await grant(theirs);
+    expect((await revoke({ token: t.access, client_id: mine })).status).toBe(200);
+    expect(tokens.verify(t.access, "access", RESOURCE).ok).toBe(true);
+    expect((await revoke({ token: `sbat_${"A".repeat(43)}`, client_id: mine })).status).toBe(200);
+    expect((await revoke({ token: "garbage", client_id: mine })).status).toBe(200);
+    expect(audit.list(mine)).toEqual([]);
+    expect(events.filter((e) => e.event === "token_revoked").every((e) => e.fields.reason === "no_match")).toBe(true);
+  });
+
+  it("refuses a missing token, a missing or unknown client and malformed requests", async () => {
+    const clientId = register();
+    const missing = await revoke({ client_id: clientId });
+    expect(missing.status).toBe(400);
+    expect(JSON.parse(missing.text)).toEqual({ error: "invalid_request" });
+    const unknown = await revoke({ token: "x", client_id: `sbc_${"A".repeat(22)}` });
+    expect(unknown.status).toBe(401);
+    expect(JSON.parse(unknown.text)).toEqual({ error: "invalid_client" });
+    expect((await revoke({ token: "x" })).status).toBe(401);
+    expect(
+      (await call("POST", "/revoke", { "content-type": "application/json" }, JSON.stringify({ token: "x" }))).status,
+    ).toBe(400);
+    expect(
+      (
+        await call(
+          "POST",
+          "/revoke",
+          { "content-type": "application/x-www-form-urlencoded" },
+          `token=a&token=b&client_id=${clientId}`,
+        )
+      ).status,
+    ).toBe(400);
+    expect((await call("GET", "/revoke")).status).toBe(405);
+    expect(
+      (
+        await call(
+          "POST",
+          "/revoke",
+          { "content-type": "application/x-www-form-urlencoded" },
+          `client_id=${clientId}&token=${"a".repeat(9000)}`,
+        )
+      ).status,
+    ).toBe(413);
+    // The Origin rule of /token applies: a browser origin that is not allowed is refused before routing.
+    expect((await revoke({ token: "x", client_id: clientId }, { origin: "https://evil.example.test" })).status).toBe(
+      403,
+    );
+  });
+
+  it("audits token issue and refresh with the profile, never a token", async () => {
+    await listener.close();
+    await start({ http: { default_mcp_client: "grok-bot" } });
+    const clientId = register();
+    const g = await grant(clientId);
+    const r = await token({ grant_type: "refresh_token", client_id: clientId, refresh_token: g.refresh });
+    const body = JSON.parse(r.text) as { access_token: string; refresh_token: string };
+    secrets.push(body.access_token, body.refresh_token);
+    const kinds = audit.list(clientId).map((e) => [e.kind, e.mcp_client]);
+    expect(kinds).toEqual([
+      ["consent_approved", "grok-bot"],
+      ["token_issued", "grok-bot"],
+      ["token_refreshed", "grok-bot"],
+    ]);
   });
 });

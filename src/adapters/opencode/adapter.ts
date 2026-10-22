@@ -5,17 +5,20 @@
  * host's shared background service, [LIVE] ESCAPED). The adapter never reads OpenCode credential or configuration files
  * (`auth.json`, `mcp-auth.json`, `.env`), never runs `auth login`, `auth list` output into logs or `auth export`, never
  * writes provider configuration, never sets `OPENCODE_PERMISSION` or `OPENCODE_CONFIG_CONTENT` (ignored on v2.0.23, Q-64),
- * and never emits `--auto`, `--continue`, `--fork`, `--server`, `--attach`, `--share`, `--dir` or `--model`.
+ * and never emits `--continue`, `--fork`, `--server`, `--attach`, `--share`, `--dir` or `--model`.
  *
  * Compile matrix (Proposed, fail closed; Delegated decisions from the 2026-10-14 live check, Q-64 and Q-83):
  * - the four non-`privileged` profiles are `Ineligible: PROFILE_UNSUPPORTED`: no per-run deny took effect, the default
  *   runs every shell command, no sandbox is documented and repository configuration loads (FR-POL-02, FR-POL-06);
  * - `privileged` compiles only when its scope sets `bypass` and the run is approved (owner decision 46), and only for
  *   the scope OpenCode cannot narrow below: worktree files, shell `broad`, network `on` and repository configuration
- *   `enabled`. Its invocation adds no bypass flag: the observed default already runs shell and edits without asking,
- *   and `--auto` would only widen what is refused by default (out-of-tree paths, [LIVE] 11), so it is not emitted
- *   (Q-83). OpenCode confines nothing in that run; what remains is the controller's worktree, the tool-call guard
- *   (ADR-0039), FR-GIT-03 and FR-GIT-06;
+ *   `enabled`. Its invocation adds `--auto` (bypass-class, "Auto-approve permissions that are not explicitly
+ *   denied"; `opencode run --help` of v2.0.23) and nothing else. It was omitted until 2026-10-21 (Q-83) because it
+ *   only widens what is refused by default (out-of-tree paths, [LIVE] 11); ADR-0077 permits exactly that widening in
+ *   an approved bypass run, and the production smoke showed the refusal ("This non-interactive run cannot ask the
+ *   user for permission"). `--auto` is emitted in no other cell (none compiles) and the argv audit refuses it outside
+ *   an approved bypass run. What remains is the controller's worktree, the tool-call guard (ADR-0039), FR-GIT-03 and
+ *   FR-GIT-06;
  * - the parser (T4.53) reads only the `--format json` fields the 2026-10-14 live check recorded; success needs a
  *   `step_finish` with reason `stop`, or a text-only run without one (Q-85 as narrowed by owner decision 68); resume is `--session <id>` through the same matrix. The auth preflight
  *   (T4.54) reads the connection types of `auth list --format json --standalone`. The manifest range admits no version, so none of this runs before `adapters validate`
@@ -28,11 +31,13 @@ import {
   DEFAULT_MAX_LINE_BYTES,
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
+import { MODEL_ID_PATTERN } from "../../models/registry.js";
 import { resolveOnPath } from "../codex/adapter.js";
 import { classifyCommon, PROVIDER_ERROR_CATEGORY_CODES } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import { renderObjective } from "../prompt.js";
+import type { ProviderUsageResult } from "../provider-usage.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -58,6 +63,7 @@ import {
   AUTH_ENV_CONNECTION_TYPES,
   AUTH_STATUS_ARGS,
   AUTH_STATUS_TIMEOUT_MS,
+  AUTO_FLAG,
   DISABLE_AUTOUPDATE_ENV,
   END_OF_OPTIONS,
   ERROR_TYPE_CATEGORIES,
@@ -65,6 +71,7 @@ import {
   FORMAT_FLAG,
   FORMAT_JSON,
   GIT_WRITE_CONTROL_DETAIL,
+  MODEL_FLAG,
   NON_PRIVILEGED_UNSUPPORTED_DETAIL,
   OPENCODE_BINARY,
   OPENCODE_LOGIN_COMMAND,
@@ -78,6 +85,7 @@ import {
   TOOL_KINDS,
   VERSION_ARGS,
 } from "./protocol.js";
+import { readOpenCodeUsage } from "./usage.js";
 
 /**
  * Environment names passed through to OpenCode (FR-EXE-07, NFR-SEC-02). Proposed: `PATH` for the binary and `HOME` so
@@ -86,6 +94,8 @@ import {
  */
 export const OPENCODE_ENV_ALLOWLIST: readonly string[] = ["PATH", "HOME"];
 
+/** A model id passed as one argv word (the registry's `MODEL_ID_PATTERN` shape; never read as a flag). */
+const MODEL_ID_RE = new RegExp(MODEL_ID_PATTERN);
 const PROBE_TIMEOUT_MS = 10_000;
 const MAX_SUMMARY_CHARS = 2_000;
 const MAX_TARGET_CHARS = 512;
@@ -162,6 +172,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
   readonly gitWriteControl = OPENCODE_GIT_WRITE_CONTROL;
   /** TDD §4.10: `Unverified: T4.51` (`--session <id>` resumed from another directory, [LIVE] 15a). */
   readonly resumeCwd = "unverified" as const;
+  /** ADR-0077: a requested model reaches the CLI only in the approved bypass cell. */
+  readonly requestedModelFlag = {
+    cells: "bypass",
+    detail: "--model <id> in the approved bypass cell, the only compiled cell (ADR-0077; opencode run --help: --model)",
+  } as const;
   readonly gitCapabilities = OPENCODE_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];
@@ -228,6 +243,15 @@ export class OpenCodeAdapter implements ProviderAdapter {
       },
     );
     return { binaryPath: exe, binaryVersion: version, steps };
+  }
+
+  /**
+   * ADR-0089 (FR-CAP-16, LLD §16.13): OpenCode's own spend for three rolling windows, through
+   * `opencode api --standalone experimental.session.stats` (see ./usage.ts). No model call; OpenCode reads its own
+   * local history and Switchboard reads no file. Any failure is `unknown`, never headroom (BR-50).
+   */
+  readProviderUsage(runner: ProbeRunner, now: Date = new Date()): Promise<ProviderUsageResult> {
+    return readOpenCodeUsage(runner, this.#exe, this.#launcher, now);
   }
 
   /**
@@ -302,8 +326,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
    * 6. network other than `on`: CAPABILITY_MISSING (no network control and no sandbox, TDD §4.6);
    * 7. repository_config `disabled` or `approved`: CAPABILITY_MISSING (a repository's `opencode.json` and `AGENTS.md`
    *    load, [LIVE] 10a, 10c, and no documented flag ignores them); only `enabled` compiles (owner decision 26, Q-37);
-   * 8. a requested model: CAPABILITY_MISSING (the model registry has no OpenCode data yet, T4.5; `--model` is not
-   *    emitted, so the operator's configured default model runs).
+   * 8. a requested model that is not a plain id: CAPABILITY_MISSING; otherwise it is `--model <id>` (ADR-0077); with
+   *    none the operator's configured default model runs.
    */
   #build(request: CompileRequest, profile: ResolvedProfile, tail: string[]): Invocation | Ineligible {
     const allowlist = profile.shellAllowlist ?? [];
@@ -355,12 +379,16 @@ export class OpenCodeAdapter implements ProviderAdapter {
           "load and no documented flag ignores them; owner decision 26 (Q-37) allows `enabled` in an approved bypass run",
       );
     }
-    if (request.model !== undefined) {
-      return ineligible("CAPABILITY_MISSING", "no model registry data for OpenCode yet (T4.5; --model is not emitted)");
+    if (request.model !== undefined && !MODEL_ID_RE.test(request.model)) {
+      return ineligible("CAPABILITY_MISSING", "requested model is not a plain model id");
     }
     if (this.#exe === undefined) return ineligible("CAPABILITY_MISSING", `${OPENCODE_BINARY} not found on PATH`);
 
-    const policyFlags = [STANDALONE_FLAG];
+    const policyFlags = [
+      STANDALONE_FLAG,
+      AUTO_FLAG,
+      ...(request.model !== undefined ? [MODEL_FLAG, request.model] : []),
+    ];
     return {
       transport: "subprocess-jsonl",
       // The prompt is one argv word after `--` (Assumption, see protocol.ts); it is visible in the process list.

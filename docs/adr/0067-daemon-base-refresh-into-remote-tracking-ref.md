@@ -1,6 +1,7 @@
 # ADR-0067: The daemon refreshes a project's base branch into its remote-tracking ref
 
-- Status: Accepted (built 2026-10-20).
+- Status: Accepted (built 2026-10-20). Extended by [ADR-0074](0074-fresh-base-for-cloned-projects-and-session-rebase.md)
+  (default base remote for `clone_url` contexts; `refresh_project_base`, `rebase_session`).
 - Date: 2026-10-20
 - Decided by: Linus decision, Delegated, not owner-approved (agent, 2026-10-20). It does not change bypass runs, the
   Git-write denial or worktree isolation: the agent still cannot write a ref, and the new controller write is checked

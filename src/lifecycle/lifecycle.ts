@@ -71,7 +71,7 @@
  *   privileged approval check (T3.4) and a refused bypass flag in the argv audit.
  */
 
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import {
   AcpPlanAuditError,
   type AdapterRegistry,
@@ -171,7 +171,7 @@ import {
 } from "../environment/index.js";
 import type { OuterSandboxAvailability } from "../exec/outer-sandbox.js";
 import { procStartTicks } from "../exec/proc-info.js";
-import { ChannelOpenError, type GitToolService, type OpenChannel } from "../git/channel.js";
+import { ChannelOpenError, GIT_TOOL_DENIED, type GitToolService, type OpenChannel } from "../git/channel.js";
 import type { GitPublisher } from "../git/commit.js";
 import { credentialReachFromJson, signingReachFromJson } from "../git/credential-reach.js";
 import {
@@ -184,6 +184,7 @@ import {
 } from "../git/finalize.js";
 import { readHeadPin } from "../git/head-pin.js";
 import { RefGuard } from "../git/ref-guard.js";
+import { SECRET_SCAN_HIT_EVENT } from "../git/secret-scan.js";
 import { CHANNEL_MCP_CONFIG_FILE } from "../git/tool-protocol.js";
 import {
   AFFINITY_SWITCH_REASONS,
@@ -240,7 +241,11 @@ import {
   type DiskFloor,
   type DiskFloorStatus,
   type PreparedWorkspace,
+  type ProjectSetupRunner,
   ResumeDirectoryUnavailableError,
+  SubmodulePreparationError,
+  setupReport,
+  WORKSPACE_SETUP_EVENT,
   type WorkspaceManager,
 } from "../workspace/index.js";
 import {
@@ -328,6 +333,14 @@ export type RunPriority = "interactive" | "normal" | "batch";
 export const PRIORITY_VALUES: Readonly<Record<RunPriority, number>> = { interactive: 2, normal: 1, batch: 0 };
 
 /** Proposed default ingress bound (FR-CAP-04); configuration has no key for it yet. */
+/**
+ * ADR-0068 item 5: the one answer for every `workspace_path` the controller will not use (outside the allowed roots,
+ * missing, not a directory, not a Git repository for a write-capable profile). One text, so no existence oracle.
+ */
+export const NOT_AN_ALLOWED_WORKSPACE =
+  "workspace_path is not an allowed workspace (an existing directory under an allowed root; a Git repository for " +
+  "write-capable profiles)";
+
 export const DEFAULT_MAX_QUEUE_DEPTH = 64;
 /** Proposed: 2 x the 30-minute default wall clock (LLD §5). */
 export const DEFAULT_LEASE_TTL_MS = 60 * 60_000;
@@ -426,6 +439,11 @@ export interface SubmitRequest {
    * configured `allow_light: true`; the admission transaction records a `light_run` event, read at dispatch.
    */
   readonly light?: boolean;
+  /**
+   * ADR-0093 (FR-POL-13): the explicit `trust_profile` the request named when the caller promoted it to the configured
+   * default (`trustProfile`). The admission transaction records a `trust_profile_promoted` event with both.
+   */
+  readonly trustProfilePromotedFrom?: TrustProfile;
 }
 
 /**
@@ -499,6 +517,8 @@ export const REPO_CONFIG_WARNING_EVENT = "repo_config_warning";
 
 /** `run_event` type recording the dispatch-time approval verdict of a `privileged` run (`approval_id`, `bypass_approved`). */
 export const PRIVILEGED_DISPATCH_EVENT = "privileged_dispatch";
+/** ADR-0093 (FR-POL-13): admission event of a run whose explicit `trust_profile` was promoted to the default. */
+export const TRUST_PROFILE_PROMOTED_EVENT = "trust_profile_promoted";
 
 /** Admission-time eligibility question (FRD V11); answered by the shared stage-1 filter. */
 export interface EligibilityQuestion {
@@ -625,6 +645,12 @@ export interface RunLifecycleOptions {
     repoRoot: string;
     baseRef: string;
   }) => Promise<{ ok: true; mergeParentSha: string; conflictedPaths: number } | { ok: false; reason: string }>;
+  /**
+   * ADR-0071: the project setup runner (`createProjectSetup`, `src/workspace/setup.ts`). A run whose frozen project
+   * snapshot carries `setup` and finds no runner fails before spawn (`SETUP_FAILED`, fail closed); runs without
+   * `setup` never call it.
+   */
+  readonly projectSetup?: ProjectSetupRunner;
   /** Must share the ledger's database handle. */
   readonly workspace: WorkspaceManager;
   readonly artifacts: ArtifactStore;
@@ -1254,6 +1280,14 @@ export class RunLifecycle {
       }
       // T3.24 (FR-CAP-12): the honoured `light` flag, read by the host load hold at dispatch.
       if (req.light === true) this.ledger.appendRunEvent({ runId: run.id, type: LIGHT_RUN_EVENT, payload: {} });
+      // ADR-0093 (FR-POL-13): the run's profile is not the one the request named; say so on the run.
+      if (req.trustProfilePromotedFrom !== undefined) {
+        this.ledger.appendRunEvent({
+          runId: run.id,
+          type: TRUST_PROFILE_PROMOTED_EVENT,
+          payload: { requested: req.trustProfilePromotedFrom, resolved: req.trustProfile },
+        });
+      }
       // T16.4 (LLD §19.5 step 6, §19.11): the pinned set and its event, in this transaction. Nothing for an empty set.
       if (pinnedSkills?.event !== undefined) {
         pinnedSkills.write(run.id);
@@ -1651,28 +1685,38 @@ export class RunLifecycle {
     );
   }
 
-  /** FRD V3/V4 and C3: canonical path under an allowed root; write-capable profiles need a Git repository. */
+  /**
+   * FRD V3/V4 and C3: canonical path under an allowed root; write-capable profiles need a Git repository.
+   *
+   * ADR-0068 item 5 (no existence oracle): the resolved path must be under an allowed root before anything else is
+   * looked at (a symbolic link into a root still counts as inside), and every failure (outside the roots, missing, not a directory, not a Git repository,
+   * a repository root outside the roots) is the same {@link NOT_AN_ALLOWED_WORKSPACE} refusal, so a client cannot tell
+   * a missing path from an existing one anywhere on the host.
+   */
   private async checkWorkspace(workspace: string, profile: TrustProfile): Promise<string> {
     this.rootsCache ??= await Promise.all(this.opts.allowedRoots.map((r) => realpath(r)));
+    const refuse = () => new LifecycleError("INVALID_REQUEST", NOT_AN_ALLOWED_WORKSPACE);
     let canonical: string;
     try {
+      // Never normalise `..` lexically first: `link/..` must resolve through the link, as the kernel does.
       canonical = await realpath(workspace);
     } catch {
-      throw new LifecycleError("INVALID_REQUEST", "workspace does not exist");
+      throw refuse();
     }
-    if (!isUnderAllowedRoot(canonical, this.rootsCache)) {
-      throw new LifecycleError("INVALID_REQUEST", "workspace is not under an allowed root");
+    if (!isUnderAllowedRoot(canonical, this.rootsCache)) throw refuse();
+    try {
+      if (!(await stat(canonical)).isDirectory()) throw refuse();
+    } catch {
+      throw refuse();
     }
     if (profile !== "inspect-untrusted") {
       let top: string;
       try {
         top = await realpath(await gitText(["rev-parse", "--show-toplevel"], { cwd: canonical }));
       } catch {
-        throw new LifecycleError("INVALID_REQUEST", "write-capable profiles require a Git repository");
+        throw refuse();
       }
-      if (!isUnderAllowedRoot(top, this.rootsCache)) {
-        throw new LifecycleError("INVALID_REQUEST", "repository root is not under an allowed root");
-      }
+      if (!isUnderAllowedRoot(top, this.rootsCache)) throw refuse();
     }
     return canonical;
   }
@@ -2004,6 +2048,13 @@ export class RunLifecycle {
     } catch (err) {
       if (err instanceof ResumeDirectoryUnavailableError)
         return this.failResumeDirectory(runId, err.problem, err.message);
+      // ADR-0087 item 3: the submodule library's closed reason and path (never a URL), with its taxonomy code.
+      if (err instanceof SubmodulePreparationError) {
+        return this.fail(runId, err.failureCode, `workspace preparation failed: ${err.message}`, {
+          reason: err.reason,
+          ...(err.path !== undefined ? { path: err.path } : {}),
+        });
+      }
       return this.fail(runId, "TOOL_FAILURE", `workspace preparation failed: ${errorText(err)}`);
     }
     if (exec.cancelRequested) return this.cancelEarly(runId);
@@ -2038,6 +2089,18 @@ export class RunLifecycle {
         return this.fail(runId, "TOOL_FAILURE", `git ref snapshot failed: ${errorText(err)}`, {
           reason: "GIT_REF_SNAPSHOT_FAILED",
         });
+      }
+      // ADR-0071: the project's dependency setup, in the worktree, before anything reads it or the agent starts.
+      if (snapshotProject?.setup !== undefined) {
+        const go = await this.projectSetup(
+          exec,
+          runId,
+          run0.meta_session_id,
+          snapshotProject.id,
+          ws,
+          snapshotProject.setup,
+        );
+        if (!go) return;
       }
     }
 
@@ -2541,6 +2604,12 @@ export class RunLifecycle {
     // T8.10 (FR-SKL-11, LLD §20.6): a docs-alignment run's report leaves the worktree before verification and finalize.
     const alignment = await this.collectDocsAlignment(runId, meta, ws);
     let pending = pendingOf(exec, out);
+    // ADR-0072: recovered denials do not rescue a run in which the controller itself refused a security-class action.
+    const recovered = out.result.warnings ?? [];
+    const refusal = pending.kind === "success" && recovered.length > 0 ? this.securityRefusal(runId) : undefined;
+    if (refusal !== undefined) {
+      pending = { kind: "failure", code: "PERMISSION_BLOCKED", detail: `denied: ${recovered[0]?.tool}; ${refusal}` };
+    }
     const exitFields = { exit_code: out.exit.exitCode, exit_signal: out.exit.signal };
     const exitPayload = { exit_outcome: out.exit.outcome, group_empty: out.groupEmpty };
     const commands = req.verification_commands ?? [];
@@ -2834,6 +2903,26 @@ export class RunLifecycle {
     }
   }
 
+  /**
+   * ADR-0072: a security-class refusal the controller recorded for the run while it ran, or undefined. Fail closed:
+   * every tool-channel refusal (`git_tool_denied`: a path outside the worktree, a refused push, a token or binding
+   * mismatch, ...) and every secret-scan hit that is not the commit-stage warning (a blocked push) counts.
+   */
+  private securityRefusal(runId: string): string | undefined {
+    for (const e of this.ledger.listRunEvents(runId)) {
+      if (e.type === GIT_TOOL_DENIED) return "tool channel refusal";
+      if (e.type !== SECRET_SCAN_HIT_EVENT) continue;
+      let stage: unknown;
+      try {
+        stage = (JSON.parse(e.payload_json) as { stage?: unknown }).stage;
+      } catch {
+        stage = undefined;
+      }
+      if (stage !== "commit") return "secret scan block";
+    }
+    return undefined;
+  }
+
   /** FINALIZING → terminal (T15–T17): checkpoint, diff, head disposition (FRD §4.4), lease release. */
   private async finalize(
     runId: string,
@@ -2862,13 +2951,19 @@ export class RunLifecycle {
         // checkpoint, so an agent's commits end up as working-tree content of the checkpoint, never in its history.
         // It never throws for Git problems (recorded as a violation) and never changes the outcome.
         // T9.11: serialised per repository with other runs' ref checks and checkpoints (see `repoFinalizeQueue`).
-        const success = outcome.kind === "success";
         const { assessment, fin } = await this.serialisedPerRepo(ws.repoRoot, async () => {
           gitViolations = (await this.refGuard.checkAtFinalizing(runId)).violations;
+          // ADR-0072: a Git write that reached the refs (FR-GIT-03) keeps a run with recovered denials failed, as
+          // before; without recovered denials the violation does not change the outcome (unchanged).
+          if (outcome.kind === "success" && gitViolations > 0 && (out.result.warnings?.length ?? 0) > 0) {
+            const tool = out.result.warnings?.[0]?.tool;
+            outcome = { kind: "failure", code: "PERMISSION_BLOCKED", detail: `denied: ${tool}; git refs changed` };
+          }
           const assessment = await this.opts.workspace.assessMutation(runId);
-          const fin = await this.opts.workspace.finalize(runId, { advanceHead: success });
+          const fin = await this.opts.workspace.finalize(runId, { advanceHead: outcome.kind === "success" });
           return { assessment, fin };
         });
+        const success = outcome.kind === "success";
         artifacts.diff = fin.diffArtifactId;
         artifacts.changed_files = fin.changedFilesArtifactId;
         changedFiles = fin.changedFiles.length;
@@ -2943,6 +3038,10 @@ export class RunLifecycle {
       ...(out.result.summary ? { summary: out.result.summary.slice(0, SUMMARY_MAX) } : {}),
       ...(out.result.nativeSessionId ? { native_session_id: out.result.nativeSessionId } : {}),
       ...(verification ? { verification } : {}),
+      // ADR-0072: the recovered denials of a run that succeeded (closed codes, sanitised tool names, counts).
+      ...(outcome.kind === "success" && (out.result.warnings?.length ?? 0) > 0
+        ? { warnings: out.result.warnings }
+        : {}),
     };
     const finished = this.nowIso();
     let failedRun: RunRecord | undefined;
@@ -3214,6 +3313,135 @@ export class RunLifecycle {
   // ---- terminal helpers -----------------------------------------------------------------------------------------
 
   /** Direct failure from PREFLIGHT (T8) or LEASED (T10); releases any lease in the same transaction. */
+  /**
+   * ADR-0071: run the frozen setup step in the run's worktree (`src/workspace/setup.ts`). Every outcome is one
+   * `workspace_setup` event with codes and numbers only (`skipped` on a marker match, else `started` and then
+   * `succeeded`, `failed` or `cancelled`); the redacted output is the `setup_log` artifact. A failure or timeout ends
+   * the run FAILED `TOOL_FAILURE` before spawn (`reason` `SETUP_FAILED` or `SETUP_TIMEOUT`, `setup_reason` the step's
+   * code); `started_at` stays unset, so the provider's breaker is not touched (LLD §16.4). Returns false when the run
+   * ended here.
+   */
+  private async projectSetup(
+    exec: Execution,
+    runId: string,
+    metaSessionId: string,
+    projectId: string,
+    ws: Extract<PreparedWorkspace, { mode: "worktree" }>,
+    setup: NonNullable<ProjectSnapshot["setup"]>,
+  ): Promise<boolean> {
+    const event = (payload: Record<string, unknown>) =>
+      this.ledger.appendRunEvent({ runId, type: WORKSPACE_SETUP_EVENT, payload });
+    const failSetup = (reason: "SETUP_FAILED" | "SETUP_TIMEOUT", setupReason: string, detail: string, extra = {}) => {
+      this.fail(runId, "TOOL_FAILURE", detail, { reason, setup_reason: setupReason, ...extra });
+      return false;
+    };
+    const runner = this.opts.projectSetup;
+    if (runner === undefined) {
+      event({ phase: "failed", reason: "unavailable" });
+      return failSetup("SETUP_FAILED", "unavailable", "project setup failed (SETUP_FAILED): no setup runner is wired");
+    }
+    let plan: Awaited<ReturnType<ProjectSetupRunner["plan"]>>;
+    try {
+      plan = await runner.plan(ws.worktreePath, setup);
+    } catch {
+      event({ phase: "failed", reason: "internal_error" });
+      return failSetup(
+        "SETUP_FAILED",
+        "internal_error",
+        "project setup failed (SETUP_FAILED): the worktree could not be read",
+      );
+    }
+    if (plan.skip) {
+      event({ phase: "skipped", reason: "marker_match" });
+      return true;
+    }
+    event({
+      phase: "started",
+      commands: setup.commands.length,
+      network_hosts: setup.network_hosts.length,
+      cache: setup.cache,
+      timeout_seconds: setup.timeout_seconds,
+    });
+    // The step may take its whole timeout before the agent's own bound starts: keep the lease ahead of both.
+    this.opts.workspace.extendLease(runId, 2 * setup.timeout_seconds * 1000 + DEFAULT_LEASE_TTL_MS);
+    const handle = runner.start({
+      runId,
+      projectId,
+      worktreePath: ws.worktreePath,
+      setup,
+      plan,
+      onSpawn: (index, { pid, pgid }) => {
+        // LLD §8: recorded before any output is read, so a restart can kill an orphaned setup command.
+        this.ledger.updateRunFields(
+          runId,
+          { pid, pgid, proc_start_ticks: procStartTicks(pid) },
+          { type: WORKSPACE_SETUP_EVENT, payload: { phase: "command_started", index, pid, pgid } },
+        );
+      },
+    });
+    exec.handle = handle;
+    if (exec.cancelRequested) void handle.cancel();
+    const result = await handle.done;
+    exec.handle = undefined;
+    let artifactId: string | undefined;
+    if (result.commands.length > 0) {
+      try {
+        const stored = await this.opts.artifacts.put(
+          setupReport(result, (b) => this.opts.artifacts.redactContent(b), plan),
+        );
+        artifactId = this.ledger.insertArtifact({
+          runId,
+          metaSessionId,
+          kind: "setup_log",
+          sha256: stored.sha256,
+          sizeBytes: stored.sizeBytes,
+          mediaType: "application/json",
+        });
+      } catch {
+        artifactId = undefined; // the log is a record, not a condition of the step
+      }
+    }
+    const summary = {
+      duration_ms: result.durationMs,
+      exit_codes: result.commands.filter((c) => c.outcome !== "not_run").map((c) => c.exitCode),
+      confined: result.confined,
+      proxy_allowed: result.proxy.allowed,
+      proxy_refused: result.proxy.refused,
+      ...(artifactId !== undefined ? { artifact_id: artifactId } : {}),
+    };
+    if (result.outcome === "succeeded") {
+      event({ phase: "succeeded", ...summary });
+      return true;
+    }
+    if (result.outcome === "cancelled" || exec.cancelRequested) {
+      event({ phase: "cancelled", ...summary });
+      this.cancelEarly(runId);
+      return false;
+    }
+    const reason = result.reason ?? "internal_error";
+    event({ phase: "failed", reason, ...summary });
+    const extra = artifactId !== undefined ? { setup_log: artifactId } : {};
+    if (result.outcome === "timeout") {
+      return failSetup(
+        "SETUP_TIMEOUT",
+        reason,
+        `project setup timed out after ${setup.timeout_seconds} s (SETUP_TIMEOUT); output in the setup_log artifact`,
+        extra,
+      );
+    }
+    const first = result.commands.find((c) => c.outcome !== "passed" && c.outcome !== "not_run");
+    const what =
+      reason === "command_failed" && first !== undefined
+        ? `command ${first.index} ${first.outcome}${first.exitCode !== null ? ` (exit ${first.exitCode})` : ""}`
+        : reason;
+    return failSetup(
+      "SETUP_FAILED",
+      reason,
+      `project setup failed (SETUP_FAILED): ${what}; output in the setup_log artifact`,
+      extra,
+    );
+  }
+
   private fail(runId: string, code: FailureCode, detail: string, extra: Record<string, unknown> = {}): void {
     this.ledger.immediate(() => {
       this.opts.workspace.releaseLease(runId);
@@ -4025,6 +4253,8 @@ function compactEvent(ev: NormalizedEvent): Record<string, unknown> {
   switch (ev.kind) {
     case "tool_call":
       return { kind: ev.kind, tool: ev.tool, ...(ev.denied ? { denied: true } : {}) };
+    case "permission_denied":
+      return { kind: ev.kind, ...(ev.denial ? { denial: ev.denial } : {}) };
     case "provider_error":
       return { kind: ev.kind, category: ev.category.slice(0, 64) };
     case "result":

@@ -49,8 +49,14 @@ describe("usage windows (T6.13, LLD ยง16.9)", () => {
     expect(usageWindows([], PACING, EMPTY, NOW)).toBeUndefined();
   });
 
-  it("USAGE_KEYS is empty and frozen", () => {
-    expect(Object.keys(USAGE_KEYS)).toEqual([]);
+  it("USAGE_KEYS declares only Claude Code's captured window keys (ADR-0088) and is frozen", () => {
+    expect(Object.keys(USAGE_KEYS)).toEqual(["claude"]);
+    expect(USAGE_KEYS.claude?.map((d) => [d.key, d.carries, d.window?.lengthSeconds])).toEqual([
+      ["five_hour_used_fraction", "used_fraction", 18000],
+      ["five_hour_resets_at", "reset_at", 18000],
+      ["seven_day_used_fraction", "used_fraction", 604800],
+      ["seven_day_resets_at", "reset_at", 604800],
+    ]);
     expect(Object.isFrozen(USAGE_KEYS)).toBe(true);
     expect(() => {
       (USAGE_KEYS as Record<string, unknown>).fake = [];
@@ -475,6 +481,7 @@ describe("capacity.subscriptions and capacity.pacing configuration (T6.13, LLD ย
         queueHorizonSeconds: 0,
         breaker: { failureThreshold: 3, openSeconds: 300 },
         retry: { maxAttempts: 3, baseMs: 2000, capMs: 120000 },
+        copilotQuota: true,
       };
       const providers = [{ id: "fake", enabled: true, weight: null, concurrencyLimit: 1 }];
       const main = capacityJson(capacityProjection(ledger, providers, MAIN_SETTINGS, NOW));

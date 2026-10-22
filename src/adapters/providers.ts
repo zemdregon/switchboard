@@ -5,6 +5,8 @@
  *   (`src/config/schema.ts`), with the `providers.<id>` and `allowed_providers` parts of the config schema;
  * - `CONFIG_TO_ADAPTER_ID` (`src/routing/collect.ts`) and the runtime lookups {@link adapterIdForConfigId} and
  *   {@link configIdForAdapterId};
+ * - the provider-name aliases (ADR-0076): {@link canonicalProviderId} (canonical name = adapter id) and
+ *   {@link configIdForProviderName}, which every provider-name input boundary uses to accept either spelling;
  * - the adapters `serve` registers (`buildRegistry`) and `doctor` probes (`defaultAdapters`, with its labels);
  * - the bypass-class flags the argv audit refuses on top of the shared `BYPASS_FLAGS` ({@link declaredBypassFlags}),
  *   and the short spellings and flag values it refuses ({@link declaredBypassShortFlags},
@@ -35,7 +37,7 @@ import { GrokAdapter } from "./grok/adapter.js";
 import { KimiAdapter } from "./kimi/adapter.js";
 import { MuseAdapter } from "./muse/adapter.js";
 import { OpenCodeAdapter } from "./opencode/adapter.js";
-import type { AcpDeclarations, ProviderAdapter, ResumeCwd } from "./types.js";
+import type { AcpDeclarations, ProviderAdapter, ProviderId, ResumeCwd } from "./types.js";
 
 /** What `serve` and `doctor` pass to an entry's factory. Fields are named after the provider they configure. */
 export interface ProviderFactoryOptions {
@@ -136,7 +138,14 @@ export const BUILTIN_PROVIDERS = [
     kind: "real",
     label: "Codex (real provider)",
     // [R2] L28, L125 (`--yolo`, not to be built around) and L126 (`--full-auto`, deprecated compatibility option).
-    bypassFlags: ["--yolo", "--full-auto"],
+    // `codex exec --help` of codex-cli 0.162.0 (2026-10-20, ADR-0077): `--dangerously-bypass-approvals-and-sandbox`
+    // ("Skip all confirmation prompts and execute commands without sandboxing"), emitted only in the approved bypass
+    // cell; `--sandbox danger-full-access` is the same widening as a flag value. The adapter never emits that value.
+    bypassFlags: ["--yolo", "--full-auto", "--dangerously-bypass-approvals-and-sandbox"],
+    bypassValues: [
+      { flag: "--sandbox", value: "danger-full-access" },
+      { flag: "-s", value: "danger-full-access" },
+    ],
     // TDD §4.10: "Tied to the working directory" is `No` (T5.12 cell 2, codex-cli 0.162.0;
     // docs/research/live-checks-2026-10-19-codex-container-resume.md).
     resumeCwd: "independent",
@@ -220,8 +229,8 @@ export const BUILTIN_PROVIDERS = [
     configId: "opencode",
     kind: "real",
     // TDD §4.6.2 ([D-cli], [D-perm]; `run --help` of v2.0.23 in the T4.51 live check lists it): `--auto` "Auto-approve
-    // permissions that are not explicitly denied", bypass-class (Proposed, fail closed; the adapter never emits it,
-    // Q-83). The inline `allow` permission travels in `OPENCODE_PERMISSION`/`OPENCODE_CONFIG_CONTENT`, which the argv
+    // permissions that are not explicitly denied", bypass-class (Proposed, fail closed). The adapter emits it in
+    // the approved privileged bypass cell only (ADR-0077, 2026-10-21; it was omitted under Q-83). The inline `allow` permission travels in `OPENCODE_PERMISSION`/`OPENCODE_CONFIG_CONTENT`, which the argv
     // audit does not see (ADR-0037 limits); the adapter sets neither. Active since the adapter (T4.52) added `create`.
     bypassFlags: ["--auto"],
     // TDD §4.10: `Unverified: T4.51` (`--session <id>` resumed from another directory in the 2026-10-14 live check).
@@ -507,6 +516,52 @@ export function adapterIdForConfigId(configId: string): string | undefined {
 /** Config id for an adapter id; undefined for the test-only fake and unknown ids. */
 export function configIdForAdapterId(id: string): string | undefined {
   return providerEntries().find((e) => e.id === id)?.configId;
+}
+
+// ---- provider names and aliases (ADR-0076; LLD §2 "Provider ids") ------------------------------------------------
+
+/** The entry either spelling names: its adapter id or its config id. Exact, case-sensitive match (ids are lower case). */
+function entryForName(name: string): ProviderEntry | undefined {
+  return providerEntries().find((e) => e.id === name || e.configId === name);
+}
+
+/**
+ * ADR-0076: the canonical provider name for `name`, which may be either spelling of a provider: the adapter id (the
+ * canonical name, `claude`) or its config id (the alias, `claude-code`). Undefined when no entry has `name`. Every
+ * input boundary that accepts a provider name normalises through this (or {@link configIdForProviderName}); the
+ * registration check keeps the two namespaces disjoint across entries, so the answer is never ambiguous. The return
+ * type is the built-in union; a runtime-registered id is returned as is (tests only, as `registerProvider` notes).
+ */
+export function canonicalProviderId(name: string): ProviderId | undefined {
+  return entryForName(name)?.id as ProviderId | undefined;
+}
+
+/**
+ * ADR-0076: the config spelling (`providers.<config id>`, `allowed_providers`) for either spelling of a provider;
+ * undefined for an unknown name and for the test-only fake, which has no config id.
+ */
+export function configIdForProviderName(name: string): string | undefined {
+  return entryForName(name)?.configId;
+}
+
+/**
+ * ADR-0076: both spellings of every provider `ids` names (either spelling; default every entry), canonical name first,
+ * each once. A name no entry knows is kept as given (a test registry may hold an adapter outside the table). For the
+ * error messages that list the accepted names.
+ */
+export function acceptedProviderNames(ids?: readonly string[]): string[] {
+  const out = new Set<string>();
+  const names = ids ?? providerEntries().map((e) => e.id);
+  for (const n of names) {
+    const e = entryForName(n);
+    if (e === undefined) {
+      out.add(n);
+      continue;
+    }
+    out.add(e.id);
+    if (e.configId !== undefined) out.add(e.configId);
+  }
+  return [...out];
 }
 
 /** The ACP declarations of adapter id `id`, if its entry has any (ADR-0036 items 9 and 10). */

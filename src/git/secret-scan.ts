@@ -297,3 +297,100 @@ export function secretScanBlockedFromPushEvents(
   }
   return false;
 }
+
+/*
+ * Refusal findings (ADR-0075): what a caller of a refused push is told, so an agent can find and fix the lines. Rule
+ * id, path and line only, exactly what the `secret_scan_hit` events hold; never the value, never the line.
+ *
+ * Delegated choices (not owner-approved):
+ * - The structured list carries every hit the report kept (at most {@link MAX_SECRET_SCAN_HITS}) with the exact count;
+ *   `findings_truncated` is set when the list is shorter than the count.
+ * - A path longer than {@link MAX_SECRET_SCAN_FINDING_PATH} characters is cut (`path_truncated: true`), which bounds
+ *   the agent tool's answer well below the channel's response limit.
+ * - The message names at most {@link MAX_SECRET_SCAN_MESSAGE_FINDINGS} findings within
+ *   {@link SECRET_SCAN_MESSAGE_LIST_BUDGET} characters, then "and N more"; a path that is not plain printable ASCII
+ *   (control characters, quotes, separators, non-ASCII) is shown as a JSON string with every other character escaped,
+ *   so a path from the diff cannot inject a line break, a terminal sequence or a bidirectional override.
+ */
+
+/** Most findings named in a refusal message (the structured list keeps every recorded hit). */
+export const MAX_SECRET_SCAN_MESSAGE_FINDINGS = 20;
+/** Most characters the message's list of findings may take before "and N more". */
+export const SECRET_SCAN_MESSAGE_LIST_BUDGET = 1200;
+/** Most characters of one path in a refusal's findings (longer paths are cut and marked). */
+export const MAX_SECRET_SCAN_FINDING_PATH = 512;
+/** Most characters of one path shown in the message (before quoting). */
+const MESSAGE_PATH_MAX = 160;
+
+/** One finding as a refusal names it: rule id, repository-relative path and new-file line. Never the value. */
+export interface SecretScanFinding {
+  readonly rule_id: string;
+  readonly path: string;
+  readonly line: number;
+  readonly path_truncated?: true;
+}
+
+/** The findings of a refused push, as `publish_run`, the agent `push` tool and `switchboard git push` return them. */
+export interface SecretScanFindings {
+  readonly findings: readonly SecretScanFinding[];
+  /** Exact number of findings not covered by the allowlist. */
+  readonly finding_count: number;
+  readonly findings_truncated?: true;
+}
+
+/** The refusal view of a report's hits (`hits` as kept by the report, `hitCount` exact). */
+export function secretScanFindings(scan: {
+  readonly hits: readonly SecretScanHit[];
+  readonly hitCount: number;
+}): SecretScanFindings {
+  const findings = scan.hits.slice(0, MAX_SECRET_SCAN_HITS).map((h): SecretScanFinding => {
+    const cut = h.path.length > MAX_SECRET_SCAN_FINDING_PATH;
+    return {
+      rule_id: h.rule_id,
+      path: cut ? h.path.slice(0, MAX_SECRET_SCAN_FINDING_PATH) : h.path,
+      line: h.line,
+      ...(cut ? { path_truncated: true as const } : {}),
+    };
+  });
+  const count = Math.max(scan.hitCount, findings.length);
+  return { findings, finding_count: count, ...(findings.length < count ? { findings_truncated: true as const } : {}) };
+}
+
+/** A path as the message shows it: bare when plain printable ASCII, else a JSON string escaping every other character. */
+export function messagePath(p: string, truncated = false): string {
+  const cut = p.length > MESSAGE_PATH_MAX;
+  const shown = cut ? p.slice(0, MESSAGE_PATH_MAX) : p;
+  const suffix = cut || truncated ? "..." : "";
+  if (/^[A-Za-z0-9._/@+=,~-]+$/u.test(shown)) return `${shown}${suffix}`;
+  // Per UTF-16 code unit (no `u` flag), so an astral character becomes a valid surrogate-pair escape.
+  const quoted = JSON.stringify(shown).replace(
+    /[^\x20-\x7e]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+  return `${quoted}${suffix}`;
+}
+
+/** How to get past a refusal, in one sentence (appended to every refusal message). */
+export const SECRET_SCAN_FIX_HINT =
+  "Remove each value from the change (in tests, build fake values at run time instead of committing them); the " +
+  "operator can allow a rule at a path with git.secret_scan.allow.";
+
+/**
+ * The readable list for a refusal message: `2 secret-scan findings: github_token at test/a.ts:12; jwt at src/x.ts:4`,
+ * at most {@link MAX_SECRET_SCAN_MESSAGE_FINDINGS} entries within {@link SECRET_SCAN_MESSAGE_LIST_BUDGET} characters,
+ * then `; and N more`. Rule ids are the closed set; paths go through {@link messagePath}.
+ */
+export function describeSecretScanFindings(f: SecretScanFindings): string {
+  const parts: string[] = [];
+  let used = 0;
+  for (const x of f.findings) {
+    if (parts.length >= MAX_SECRET_SCAN_MESSAGE_FINDINGS) break;
+    const part = `${x.rule_id} at ${messagePath(x.path, x.path_truncated === true)}:${x.line}`;
+    if (parts.length > 0 && used + part.length + 2 > SECRET_SCAN_MESSAGE_LIST_BUDGET) break;
+    parts.push(part);
+    used += part.length + 2;
+  }
+  const more = f.finding_count - parts.length;
+  const noun = f.finding_count === 1 ? "finding" : "findings";
+  return `${f.finding_count} secret-scan ${noun}: ${parts.join("; ")}${more > 0 ? `; and ${more} more` : ""}`;
+}

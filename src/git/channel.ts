@@ -65,6 +65,7 @@ import { bypassApprovedFor } from "../lifecycle/approval.js";
 import { CommitError, type GitPublisher } from "./commit.js";
 import { credentialReachFromJson, signingReachFromJson } from "./credential-reach.js";
 import type { GitPusher } from "./push.js";
+import { describeSecretScanFindings, SECRET_SCAN_FIX_HINT, secretScanFindings } from "./secret-scan.js";
 import {
   CHANNEL_FILE_NAMES,
   type ChannelErrorCode,
@@ -721,7 +722,20 @@ export class GitToolService {
           : {}),
       });
       state.commits += 1;
-      return { ok: true, result: { sha: result.sha, files_changed: result.filesChanged } };
+      return {
+        ok: true,
+        result: {
+          sha: result.sha,
+          files_changed: result.filesChanged,
+          // ADR-0087 item 4: present only for a run with attached submodules, so every other result is unchanged.
+          ...(result.submodules !== undefined
+            ? {
+                submodules: result.submodules.map((s) => ({ paths: s.paths, repo: s.repo, commit_sha: s.commitSha })),
+                submodules_skipped: (result.submodulesSkipped ?? []).map((s) => ({ path: s.path, reason: s.reason })),
+              }
+            : {}),
+        },
+      };
     } catch (err) {
       if (err instanceof CommitError) {
         const message =
@@ -774,6 +788,19 @@ export class GitToolService {
       });
       if (result.pushed) {
         return { ok: true, result: { pushed: true, ref: result.ref, head_sha: result.headSha } };
+      }
+      // ADR-0075: a secret-scan refusal names each finding (rule id, path, line; never the value) so the agent can fix
+      // it; the paths are quoted by `messagePath` in the message and are bounded, so the answer stays small.
+      if (result.reason === "SECRET_SCAN_BLOCKED" && result.secretScan !== undefined) {
+        const findings = secretScanFindings(result.secretScan);
+        return {
+          ok: false,
+          error: {
+            code: result.toolCode ?? "SECRET_SCAN_BLOCKED",
+            message: `push refused: SECRET_SCAN_BLOCKED: ${describeSecretScanFindings(findings)}. ${SECRET_SCAN_FIX_HINT}`,
+            details: { ...findings },
+          },
+        };
       }
       // Recorded in `git_push` by the library; the answer names the code and the fixed reason word only.
       return {

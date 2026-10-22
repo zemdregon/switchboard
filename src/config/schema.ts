@@ -24,6 +24,13 @@
  * TDD §3.1): `approval_proxy: true` offers the client `list_pending_approvals` and `decide_approval` (default false: the
  * tools are absent). `approval_proxy_targets` (default: the client itself) lists the client ids whose approvals it may
  * decide; `load.ts` refuses it without `approval_proxy: true` and refuses an id that is not a configured client.
+ * `approval_proxy_kinds` (ADR-0068; default: all three kinds, as before) narrows which approval kinds the proxy lists
+ * and decides; `load.ts` refuses it without `approval_proxy: true`.
+ *
+ * `project_sources` (ADR-0068; FR-PRJ-10 note 2026-10-20): where `create_project` / `update_project` may clone a
+ * repository given as `clone_url`. Absent means no clone (fail closed). `clone_root` must be absolute and under an
+ * allowed root; `allowed_hosts` defaults to `["github.com"]`; `allowed_owners` is required and non-empty, matched
+ * case-insensitively. `load.ts` checks what the schema cannot.
  *
  * `mcp_clients[].tool_profile` (T14.11; FR-CTL-11, LLD §3.4.10): `orchestrator` (default, today's tool set) or `console`
  * (the closed console set; `src/mcp/tool-profile.ts`). `load.ts` refuses `console` with `manage_projects: true`.
@@ -104,6 +111,26 @@ export const PRIVILEGED_APPROVAL_MODES = ["required", "not_required"] as const;
 export type PrivilegedApprovalMode = (typeof PRIVILEGED_APPROVAL_MODES)[number];
 export const DEFAULT_PRIVILEGED_APPROVAL: PrivilegedApprovalMode = "required";
 
+/**
+ * `mcp_clients[].approval_proxy_kinds` values (ADR-0068, ADR-0087): LLD §3.4.1 `approval_kind`. Absent means
+ * {@link APPROVAL_PROXY_DEFAULT_KINDS}; `project_source` is opt-in and only served when listed explicitly.
+ */
+export const APPROVAL_PROXY_KINDS = ["privileged_scope", "dynamic_project", "push_revision", "project_source"] as const;
+export type ApprovalProxyKind = (typeof APPROVAL_PROXY_KINDS)[number];
+/** The kinds a proxy serves without `approval_proxy_kinds` (ADR-0047, unchanged by ADR-0087). */
+export const APPROVAL_PROXY_DEFAULT_KINDS: readonly ApprovalProxyKind[] = [
+  "privileged_scope",
+  "dynamic_project",
+  "push_revision",
+];
+
+/** `project_sources.allowed_hosts` default (ADR-0068). */
+export const DEFAULT_PROJECT_SOURCE_HOSTS = ["github.com"] as const;
+/** A host name (lower case, dot-separated labels) as `project_sources.allowed_hosts` accepts it (Delegated). */
+export const SOURCE_HOST_PATTERN = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$";
+/** A repository owner or name segment (ADR-0068): `[A-Za-z0-9._-]`, not `.` or `..` (checked in `load.ts`). */
+export const SOURCE_SEGMENT_PATTERN = "^[A-Za-z0-9._-]{1,100}$";
+
 /** `mcp_clients[].tool_profile` values (FR-CTL-11, LLD §3.4.10). `orchestrator` (today's full set) is the default. */
 export const TOOL_PROFILES = ["orchestrator", "console"] as const;
 export type ToolProfile = (typeof TOOL_PROFILES)[number];
@@ -127,6 +154,8 @@ export interface SwitchboardConfig {
     approval_proxy?: boolean;
     /** T14.8: client ids whose pending approvals this proxy may decide. Default: the client itself. */
     approval_proxy_targets?: string[];
+    /** ADR-0068: the approval kinds this proxy may list and decide. Default: all three. */
+    approval_proxy_kinds?: (typeof APPROVAL_PROXY_KINDS)[number][];
     /** T14.11 (FR-CTL-11): `orchestrator` (default) or `console`. */
     tool_profile?: ToolProfile;
     /**
@@ -136,6 +165,11 @@ export interface SwitchboardConfig {
     skills?: string[];
     /** T3.24 (FR-CAP-12, LLD §20.2): honour `light: true` on this client's requests during a host load hold. Default false. */
     allow_light?: boolean;
+    /**
+     * ADR-0093 (FR-POL-13): an explicit `trust_profile` below the configured default (ADR-0091) is treated as omitted.
+     * Default false; refused at load when no `default_trust_profile` is configured anywhere.
+     */
+    promote_trust_profile?: boolean;
   }[];
   limits?: {
     global_concurrency?: number;
@@ -170,6 +204,13 @@ export interface SwitchboardConfig {
   profiles?: Partial<Record<Exclude<TrustProfile, "privileged">, ProfileOverrideConfig>>;
   /** Projects (FR-PRJ-01, LLD §11.1; T9.1). Absent means no projects, and every other command behaves as before. */
   projects?: ProjectConfig[];
+  /**
+   * ADR-0091 (FR-POL-12): the profile of a request that names no `trust_profile`, clamped to the effective ceiling.
+   * Absent: `trust_profile` is required, as before. `privileged` needs `default_privileged_scope`.
+   */
+  default_trust_profile?: TrustProfile;
+  /** ADR-0091 (FR-POL-12): the `privileged_scope` (LLD §3.1) of a privileged request that names none. Absent: V13. */
+  default_privileged_scope?: unknown;
   /**
    * Commit-message sanitiser additions (FR-GIT-04, LLD §12.4, TDD §3.1; T9.3). Each pattern is a JavaScript regular
    * expression source in the restricted subset of `src/git/safe-pattern.ts` (at most 16, 200 characters each); a line
@@ -208,6 +249,8 @@ export interface SwitchboardConfig {
   notification_sinks?: NotificationSinkConfig[];
   /** CI-failure trigger (M15, T15.3; FR-QUE-03, LLD §18.6, ADR-0050). Absent or `enabled: false` means no `gh` call. */
   ci_trigger?: CiTriggerConfigInput;
+  /** ADR-0068: where `create_project` may clone a `clone_url`. Absent means cloning is refused. */
+  project_sources?: { clone_root: string; allowed_hosts?: string[]; allowed_owners: string[] };
   /** Optional OTLP/HTTP trace destination; absent or empty disables telemetry (LLD §7, T8.1). */
   telemetry?: { otlp_endpoint?: string; provider_otlp?: boolean };
   /**
@@ -271,6 +314,11 @@ export interface CapacityConfigInput {
   subscriptions?: Record<string, SubscriptionConfigInput>;
   /** T6.13 (FR-CAP-10, LLD §16.9): pacing parameters; every key defaults to its LLD value (Assumptions, Q-98). */
   pacing?: { mode?: PacingMode; target_fraction?: number; burst_fraction?: number; min_confidence?: number };
+  /**
+   * Read the operator's GitHub Copilot quota through their logged-in `gh` (`gh api /copilot_internal/user`) for
+   * `get_capacity` and `switchboard capacity`. Default true; false is the operator's opt-out.
+   */
+  copilot_quota?: boolean;
 }
 
 /** A `capacity.subscriptions.<name>` entry (LLD §16.9): config provider ids sharing 1..4 usage windows. */
@@ -316,6 +364,8 @@ export const DEFAULT_BREAKER_OPEN_SECONDS = 300;
 export const DEFAULT_RETRY_MAX_ATTEMPTS = 3;
 export const DEFAULT_RETRY_BASE_MS = 2000;
 export const DEFAULT_RETRY_CAP_MS = 120000;
+/** `capacity.copilot_quota` (Delegated: on, operator opt-out; it only reads the operator's own quota through `gh`). */
+export const DEFAULT_COPILOT_QUOTA = true;
 
 /**
  * LLD §15.4 defaults and the minimum of `continuity.max_bundle_bytes` (Assumptions, ADR-0038 item 5.5). They equal
@@ -392,6 +442,11 @@ export interface ContextConfig {
    * before a meta-session's first worktree is created. Primary context only; absent: no fetch (the local branch as is).
    */
   base_remote?: string;
+  /**
+   * ADR-0068: MCP-only. A dynamic definition stores the normalised `clone_url` its `path` was cloned from; the
+   * configuration file has no such key (`contextSchema` refuses it) and always names `path`.
+   */
+  clone_url?: string;
   primary?: boolean;
   writable?: boolean;
   push?: { policy: (typeof PUSH_POLICIES)[number]; remote?: string; branch_prefix?: string };
@@ -407,7 +462,28 @@ export interface ContextConfig {
   inner_agent?: ProjectInnerSetting;
   /** T12.1 (LLD §14.1, FR-RAG-01): narrowing-only retrieval settings for this context. */
   rag?: ContextRagConfig;
+  /**
+   * ADR-0087 item 1 (FR-PRJ-11): opt-in handling of submodules of the primary context. Absent or `off` is ADR-0022
+   * exactly. `writable_paths` (worktree-relative POSIX paths, or exactly `["*"]`) and `exclude` hold at most
+   * `MAX_SUBMODULE_PATHS` entries each.
+   */
+  submodules?: ContextSubmodulesConfig;
 }
+
+export const SUBMODULE_MODES = ["off", "recursive"] as const;
+/** ADR-0087 item 1: at most this many paths in each of `writable_paths` and `exclude`. */
+export const MAX_SUBMODULE_PATHS = 512;
+
+/** ADR-0087 item 1: `projects[].contexts[].submodules`. */
+export interface ContextSubmodulesConfig {
+  mode: (typeof SUBMODULE_MODES)[number];
+  writable_paths?: string[];
+  exclude?: string[];
+}
+
+/** ADR-0087 item 7: `projects[].merge_policy.checks`. */
+export const MERGE_POLICY_CHECKS = ["required", "all_reported"] as const;
+export type MergePolicyChecks = (typeof MERGE_POLICY_CHECKS)[number];
 
 export interface ProjectConfig {
   id: string;
@@ -415,6 +491,8 @@ export interface ProjectConfig {
   environment?: EnvironmentConfig;
   /** Shape only until T9.2 (FR-PRJ-06 enforcement). */
   max_trust_profile?: TrustProfile;
+  /** ADR-0091 (FR-POL-12): overrides the top-level `default_trust_profile` here. Configuration file only. */
+  default_trust_profile?: TrustProfile;
   allowed_providers?: ProviderId[];
   /** T11.3 (LLD §13.1, FR-INN-16): `off` or `local_only` restrict the inner agent for this project; default `inherit`. */
   inner_agent?: ProjectInnerSetting;
@@ -460,7 +538,54 @@ export interface ProjectConfig {
     enabled?: boolean;
     method?: MergePolicyMethod;
     required_reports?: MergePolicyReport[];
+    /**
+     * ADR-0070: the `verification_result` at the head must be `passed` (default true, T15.8's gate). False skips that
+     * one condition; `required_reports` still apply. Setting it false in a dynamic definition waits for approval.
+     */
+    require_verification?: boolean;
+    /**
+     * ADR-0087 item 7: which checks must pass. `required` (default) is today's gate; `all_reported` needs at least one
+     * check to have run and every reported check to pass. `all_reported` waits for approval (`merge_checks`).
+     */
+    checks?: MergePolicyChecks;
   };
+  /**
+   * ADR-0071: dependency setup commands the controller runs in each run's worktree after it is prepared and before the
+   * agent starts (argv, no shell), with network only to `network.hosts` through the controller's allowlisting proxy.
+   * `host` environments only. A dynamic definition may carry it, but turning it on or changing it waits for operator
+   * approval (`project_setup`, FR-PRJ-10).
+   */
+  setup?: ProjectSetupConfig;
+}
+
+/** ADR-0071: `projects[].setup.cache`, the shared package-manager cache under `<data_dir>/caches`. */
+export const SETUP_CACHES = ["pnpm", "npm", "none"] as const;
+export type SetupCache = (typeof SETUP_CACHES)[number];
+/** ADR-0071: the closed allowlist of non-secret variables `setup.env` may set. */
+export const SETUP_ENV_KEYS = ["CI", "NODE_ENV", "NO_COLOR"] as const;
+export type SetupEnvKey = (typeof SETUP_ENV_KEYS)[number];
+/** ADR-0071 bounds (Delegated): commands, argv length, argument length, hosts, timeout. */
+export const MAX_SETUP_COMMANDS = 8;
+export const MAX_SETUP_ARGS = 32;
+export const MAX_SETUP_ARG_LENGTH = 1024;
+export const MAX_SETUP_HOSTS = 8;
+export const DEFAULT_SETUP_TIMEOUT_SECONDS = 600;
+export const MAX_SETUP_TIMEOUT_SECONDS = 1800;
+export const DEFAULT_SETUP_HOSTS: readonly string[] = ["registry.npmjs.org"];
+/**
+ * A DNS hostname, lower case, at least two labels, the last starting with a letter (so never an IP literal), no port,
+ * no wildcard, no trailing dot (ADR-0071; Delegated).
+ */
+export const SETUP_HOST_PATTERN =
+  "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$";
+
+/** ADR-0071: one `projects[].setup` (configuration file and dynamic definitions). */
+export interface ProjectSetupConfig {
+  commands: string[][];
+  network?: { hosts?: string[] };
+  cache?: SetupCache;
+  timeout_seconds?: number;
+  env?: Partial<Record<SetupEnvKey, string>>;
 }
 
 /** T15.8: `projects[].merge_policy.method`, one `gh pr merge` flag each; `squash` by default (LLD §20.7). */
@@ -601,6 +726,22 @@ const profileOverrideSchema = {
   },
 } as const;
 
+/**
+ * ADR-0087 item 1: one worktree-relative path (or `*`): no leading `/`, no control character. The segment rules
+ * (empty, `.`, `..`, `.git`, backslash) are structural: `checkProjects`.
+ */
+const submodulePathList = {
+  type: "array",
+  maxItems: MAX_SUBMODULE_PATHS,
+  uniqueItems: true,
+  items: {
+    type: "string",
+    minLength: 1,
+    maxLength: 256,
+    pattern: "^[^/\\u0000-\\u001f\\u007f][^\\u0000-\\u001f\\u007f]*$",
+  },
+} as const;
+
 const contextSchema = {
   type: "object",
   additionalProperties: false,
@@ -633,6 +774,16 @@ const contextSchema = {
     finalize_commit: { type: "boolean" },
     inner_agent: { enum: [...PROJECT_INNER_SETTINGS] },
     rag: contextRagSchema,
+    submodules: {
+      type: "object",
+      additionalProperties: false,
+      required: ["mode"],
+      properties: {
+        mode: { enum: [...SUBMODULE_MODES] },
+        writable_paths: submodulePathList,
+        exclude: submodulePathList,
+      },
+    },
   },
 } as const;
 
@@ -683,6 +834,50 @@ export const projectSchema = {
         enabled: { type: "boolean" },
         method: { enum: [...MERGE_POLICY_METHODS] },
         required_reports: { type: "array", uniqueItems: true, items: { enum: [...MERGE_POLICY_REPORTS] } },
+        // ADR-0070: false skips the verification_result-at-head condition; turning it off waits for approval.
+        require_verification: { type: "boolean" },
+        // ADR-0087 item 7: `all_reported` waits for approval (`merge_checks`); the default is `required`.
+        checks: { enum: [...MERGE_POLICY_CHECKS] },
+      },
+    },
+    // ADR-0071: changing it in a dynamic definition waits for approval (`project_setup`).
+    setup: {
+      type: "object",
+      additionalProperties: false,
+      required: ["commands"],
+      properties: {
+        commands: {
+          type: "array",
+          minItems: 1,
+          maxItems: MAX_SETUP_COMMANDS,
+          items: {
+            type: "array",
+            minItems: 1,
+            maxItems: MAX_SETUP_ARGS,
+            items: { type: "string", minLength: 1, maxLength: MAX_SETUP_ARG_LENGTH, pattern: "^[^\\u0000]*$" },
+          },
+        },
+        network: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            hosts: {
+              type: "array",
+              maxItems: MAX_SETUP_HOSTS,
+              uniqueItems: true,
+              items: { type: "string", maxLength: 253, pattern: SETUP_HOST_PATTERN },
+            },
+          },
+        },
+        cache: { enum: [...SETUP_CACHES] },
+        timeout_seconds: { type: "integer", minimum: 1, maximum: MAX_SETUP_TIMEOUT_SECONDS },
+        env: {
+          type: "object",
+          additionalProperties: false,
+          properties: Object.fromEntries(
+            SETUP_ENV_KEYS.map((k) => [k, { type: "string", maxLength: 64, pattern: "^[A-Za-z0-9._-]{0,64}$" }]),
+          ),
+        },
       },
     },
     contexts: { type: "array", minItems: 1, items: contextSchema },
@@ -825,6 +1020,8 @@ const configProjectSchema = {
     critic: projectCriticSchema,
     // T5.14: a path; the file rules (outside the roots, at most 4 KiB, UTF-8) are `loadConfig`'s.
     brief_file: { type: "string", minLength: 1, maxLength: 4096 },
+    // ADR-0091: configuration file only (a dynamic project uses the top-level default, clamped to its ceiling).
+    default_trust_profile: { enum: [...TRUST_PROFILES] },
   },
 } as const;
 
@@ -885,6 +1082,9 @@ export const configSchema = {
     schema_version: { const: CONFIG_SCHEMA_VERSION },
     data_dir: { type: "string", minLength: 1 },
     allowed_roots: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string", minLength: 1 } },
+    // ADR-0091: request defaults; the scope's closed schema and list rules are checked by `loadConfig`.
+    default_trust_profile: { enum: [...TRUST_PROFILES] },
+    default_privileged_scope: { type: "object" },
     mcp_clients: {
       type: "array",
       items: {
@@ -905,9 +1105,16 @@ export const configSchema = {
             minItems: 1,
             items: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
           },
+          approval_proxy_kinds: {
+            type: "array",
+            uniqueItems: true,
+            minItems: 1,
+            items: { enum: [...APPROVAL_PROXY_KINDS] },
+          },
           tool_profile: { enum: [...TOOL_PROFILES] },
           skills: clientSkillListSchema(),
           allow_light: { type: "boolean" },
+          promote_trust_profile: { type: "boolean" },
         },
       },
     },
@@ -1017,6 +1224,7 @@ export const configSchema = {
         window_seconds: { type: "integer", minimum: 60, maximum: 604800 },
         confidence_runs: { type: "integer", minimum: 1, maximum: 1000 },
         queue_horizon_seconds: { type: "integer", minimum: 0, maximum: 86400 },
+        copilot_quota: { type: "boolean" },
         breaker: {
           type: "object",
           additionalProperties: false,
@@ -1168,6 +1376,29 @@ export const configSchema = {
     skills: skillsSectionSchema(),
     notification_sinks: notificationSinksSchema,
     ci_trigger: ciTriggerSchema,
+    // ADR-0068: bounds are Delegated sanity limits.
+    project_sources: {
+      type: "object",
+      additionalProperties: false,
+      required: ["clone_root", "allowed_owners"],
+      properties: {
+        clone_root: { type: "string", minLength: 1, maxLength: 4096 },
+        allowed_hosts: {
+          type: "array",
+          minItems: 1,
+          maxItems: 16,
+          uniqueItems: true,
+          items: { type: "string", maxLength: 253, pattern: SOURCE_HOST_PATTERN },
+        },
+        allowed_owners: {
+          type: "array",
+          minItems: 1,
+          maxItems: 64,
+          uniqueItems: true,
+          items: { type: "string", pattern: SOURCE_SEGMENT_PATTERN },
+        },
+      },
+    },
     telemetry: {
       type: "object",
       additionalProperties: false,

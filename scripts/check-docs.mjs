@@ -4,8 +4,8 @@
 // roadmap task status markers (NFR-MAINT-04, T8.8), and README reference
 // completeness: every MCP tool in the src/mcp/schemas.ts tool-name lists and
 // every top-level CLI command in the src/cli/main.ts dispatch (except
-// tool-shim) must have a row in README's MCP tools and command reference
-// tables.
+// tool-shim) must have a row in the MCP tools and command reference tables of
+// docs/guide/mcp-server.md (they moved out of README.md on 2026-10-20).
 // Usage: node scripts/check-docs.mjs   (exit code 1 on any error)
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
@@ -145,6 +145,7 @@ export const README_TOOL_LISTS = [
   "SEARCH_TOOL_NAMES",
   "WORK_QUEUE_TOOL_NAMES",
   "SKILL_TOOL_NAMES",
+  "PUBLISH_TOOL_NAMES",
 ];
 
 /** Every tool name in the `export const <LIST> = [...]` arrays of the schemas source text. */
@@ -380,16 +381,16 @@ export function runDocsCheck({ roadmapPathOverride, taskStatusesOnly = false } =
     }
   }
 
-  // 6. README reference completeness: every MCP tool in the schemas tool-name
+  // 6. Reference completeness: every MCP tool in the schemas tool-name
   // lists and every top-level CLI command in the main dispatch (except
-  // tool-shim) has a row in README's reference tables.
-  const readmePath = join(root, "README.md");
+  // tool-shim) has a row in the reference tables of the MCP server guide.
+  const readmePath = join(root, "docs/guide/mcp-server.md");
   const schemasPath = join(root, "src/mcp/schemas.ts");
   const mainPath = join(root, "src/cli/main.ts");
   if (existsSync(readmePath) && existsSync(schemasPath) && existsSync(mainPath)) {
     const toolNames = extractToolNames(readFileSync(schemasPath, "utf8"));
     const cliCommands = extractCliCommands(readFileSync(mainPath, "utf8"));
-    for (const e of checkReadmeReference(readFileSync(readmePath, "utf8"), toolNames, cliCommands)) {
+    for (const e of checkReadmeReference(readFileSync(readmePath, "utf8"), toolNames, cliCommands, "docs/guide/mcp-server.md")) {
       errors.push(e);
     }
   } else {

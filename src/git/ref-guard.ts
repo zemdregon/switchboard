@@ -35,6 +35,20 @@ import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish
  * - **Remote-tracking refs** updated by a controller base refresh (LLD §5.2, ADR-0067): `refs/remotes/<remote>/<branch>`
  *   at exactly the SHA the newest `base_refresh` event (outcome `fetched`) recorded for that ref of this repository is
  *   expected.
+ * - **Refs an agent's own fetch updates** (ADR-0094): an approved privileged bypass run may run `git fetch`, `git remote
+ *   update` and the other download forms the tool-call guard admits, into the repository every run of it shares. When
+ *   a run of this repository whose dispatch recorded an approved bypass (`privileged_dispatch`; this run or a concurrent
+ *   one) had not finished at this run's LEASED snapshot, a change to a remote-tracking ref (`refs/remotes/`: created,
+ *   moved or pruned) and a newly created tag (`refs/tags/`, never a moved or deleted one) are expected: they are counted
+ *   as `fetched_refs` in the `git_ref_check` event, are not violations and so do not stop the finalize commit or a
+ *   publish. Local branches, the publish ref and every other ref are judged exactly as below. In the approved bypass
+ *   run itself, a moved run branch and a moved worktree `HEAD` (the agent's own `git commit`, `reset`, `merge`, `pull`
+ *   or `checkout -- <path>`) are restored exactly as below but recorded in a `git_agent_refs_restored` event and the
+ *   `git_ref_check` field `agent_restored`, not as violations, so the agent's work reaches the controller's checkpoint
+ *   and finalize commit as working-tree content.
+ * - **The merge gate's fetch namespace** `refs/switchboard/merge-gate/` (ADR-0073): the controller force-fetches pull
+ *   request heads and base branches there and reads their SHAs from the fetch's own output, never from these refs, so
+ *   a change there is neither a violation nor trusted.
  * - **Every other ref** (default branch, other branches, tags, remote-tracking refs, notes, stash) and the main
  *   checkout's `HEAD`: any change is a violation. They are **reported, not restored** (Delegated): the controller
  *   cannot tell an agent's change from the operator's own concurrent work, and must never modify the operator's
@@ -56,9 +70,14 @@ import { DEFAULT_PUBLISH_PREFIX, isRunBranchRef, publishRefFor } from "./publish
  * remote-tracking ref (BR-27); prevention (BR-29) is the control.
  */
 
+/** ADR-0073: the controller-owned namespace of the merge gate's pull request fetch; ignored by the comparison. */
+export const MERGE_GATE_REF_PREFIX = "refs/switchboard/merge-gate/";
+
 export const GIT_REF_SNAPSHOT_EVENT = "git_ref_snapshot";
 export const GIT_REF_CHECK_EVENT = "git_ref_check";
 export const GIT_POLICY_VIOLATION_EVENT = "git_policy_violation";
+/** ADR-0094: an approved bypass run's own run-branch or worktree `HEAD` change, put back without a violation. */
+export const GIT_AGENT_REFS_RESTORED_EVENT = "git_agent_refs_restored";
 
 /** Bounds on what one snapshot or violation event stores (Proposed, Delegated; ADR-0027). */
 export interface RefGuardLimits {
@@ -213,7 +232,9 @@ export class RefGuard {
     const after = listed.at(-1)?.[0] ?? "";
     // The run's own refs are checked against the ledger, never through the tail digest (the publish ref moves legitimately).
     const own = new Set([facts.runBranchRef, facts.publishRef]);
-    const tailNames = truncated ? names.slice(listed.length).filter((n) => !own.has(n)) : [];
+    const tailNames = truncated
+      ? names.slice(listed.length).filter((n) => !own.has(n) && !n.startsWith(MERGE_GATE_REF_PREFIX))
+      : [];
     const snapshot: RefSnapshotV1 = {
       v: 1,
       phase: "leased",
@@ -254,6 +275,8 @@ export class RefGuard {
     }
     let violations: ViolationEntry[];
     let current: Map<string, string>;
+    const fetched: string[] = [];
+    let agentRestored: { scope: string; ref: string; to: string | null }[] = [];
     let linkViolations = 0;
     try {
       // T10.3: the worktree's `.git` link first; recorded (intent before effect), then restored, before anything is read
@@ -278,7 +301,25 @@ export class RefGuard {
         await restoreWorktreeGitLink(facts.worktreePath, link.adminDir);
       }
       current = await listRefs(facts.repoRoot);
-      violations = await this.compare(facts, snapshot, current);
+      violations = await this.compare(facts, snapshot, current, fetched);
+      // ADR-0094: in an approved bypass run the agent's own commit, reset, merge or pull on its run branch, and a moved
+      // worktree `HEAD`, are put back exactly as below but are not violations: the work stays as working-tree content
+      // of the controller's checkpoint and finalize commit, never in its history. Recorded (intent before effect) as a
+      // `git_agent_refs_restored` event; a restore that fails throws into the `check_failed` path below (fail closed).
+      if (this.bypassApproved(runId)) {
+        const own = violations.filter(isAgentOwnRef);
+        if (own.length > 0) {
+          violations = violations.filter((v) => !isAgentOwnRef(v));
+          const plan = restoresOf(own);
+          agentRestored = plan.map((r) => ({ scope: r.scope, ref: r.ref, to: r.to }));
+          this.ledger.appendRunEvent({
+            runId,
+            type: GIT_AGENT_REFS_RESTORED_EVENT,
+            payload: { v: 1, entries: own },
+          });
+          for (const r of plan) await this.restore(facts, r);
+        }
+      }
     } catch (err) {
       const entry: ViolationEntry = {
         scope: "guard",
@@ -312,6 +353,8 @@ export class RefGuard {
           result: "violation",
           violation_count: linkViolations,
           restored: [{ scope: "worktree_link", ref: ".git", to: null, ok: true }],
+          ...(fetched.length > 0 ? { fetched_refs: fetched.length } : {}),
+          ...(agentRestored.length > 0 ? { agent_restored: agentRestored } : {}),
         },
       });
       return { result: "violation", violations: linkViolations };
@@ -320,7 +363,14 @@ export class RefGuard {
       this.ledger.appendRunEvent({
         runId,
         type: GIT_REF_CHECK_EVENT,
-        payload: { v: 1, result: "clean", digest_before: snapshot?.digest ?? null, digest_after: afterDigest },
+        payload: {
+          v: 1,
+          result: "clean",
+          digest_before: snapshot?.digest ?? null,
+          digest_after: afterDigest,
+          ...(fetched.length > 0 ? { fetched_refs: fetched.length } : {}),
+          ...(agentRestored.length > 0 ? { agent_restored: agentRestored } : {}),
+        },
       });
       return { result: "clean", violations: 0 };
     }
@@ -352,7 +402,14 @@ export class RefGuard {
     this.ledger.appendRunEvent({
       runId,
       type: GIT_REF_CHECK_EVENT,
-      payload: { v: 1, result: "violation", violation_count: violations.length + linkViolations, restored },
+      payload: {
+        v: 1,
+        result: "violation",
+        violation_count: violations.length + linkViolations,
+        restored,
+        ...(fetched.length > 0 ? { fetched_refs: fetched.length } : {}),
+        ...(agentRestored.length > 0 ? { agent_restored: agentRestored } : {}),
+      },
     });
     return { result: "violation", violations: violations.length + linkViolations };
   }
@@ -394,8 +451,11 @@ export class RefGuard {
     facts: RunFacts,
     snapshot: RefSnapshotV1 | undefined,
     current: Map<string, string>,
+    fetched: string[],
   ): Promise<ViolationEntry[]> {
     const out: ViolationEntry[] = [];
+    // ADR-0094: looked up once, and only when a remote-tracking ref or a new tag changed.
+    let bypassFetch: boolean | undefined;
     const own = new Set([facts.runBranchRef, facts.publishRef]);
 
     if (!snapshot) {
@@ -407,7 +467,7 @@ export class RefGuard {
       const names = new Set<string>([...before.keys()]);
       for (const name of current.keys()) if (inRange(name)) names.add(name);
       for (const name of [...names].sort(compare)) {
-        if (own.has(name)) continue;
+        if (own.has(name) || name.startsWith(MERGE_GATE_REF_PREFIX)) continue;
         const b = before.get(name);
         const a = current.get(name);
         if (b === a) continue;
@@ -415,10 +475,17 @@ export class RefGuard {
         if (scope === "switchboard" && this.controllerMoved(name, a)) continue;
         if (scope === "other" && this.controllerPushed(name, a)) continue;
         if (scope === "other" && (await this.controllerFetchedBase(facts.repoRoot, name, a))) continue;
+        if (scope === "other" && isFetchedRef(name, b)) bypassFetch ??= this.bypassFetchWindow(facts);
+        if (scope === "other" && isFetchedRef(name, b) && bypassFetch === true) {
+          fetched.push(name);
+          continue;
+        }
         out.push(entry(scope, name, b ?? null, a ?? null, "report"));
       }
       if (snapshot.truncated && snapshot.tail) {
-        const tail = [...current.keys()].filter((n) => !inRange(n) && !own.has(n)).sort(compare);
+        const tail = [...current.keys()]
+          .filter((n) => !inRange(n) && !own.has(n) && !n.startsWith(MERGE_GATE_REF_PREFIX))
+          .sort(compare);
         const digest = digestOf(tail, current);
         if (tail.length !== snapshot.tail.count || digest !== snapshot.tail.digest) {
           out.push({
@@ -530,6 +597,23 @@ export class RefGuard {
     );
   }
 
+  /** ADR-0094: whether the run's own `privileged_dispatch` event recorded an approved bypass. */
+  private bypassApproved(runId: string): boolean {
+    return this.ledger.listRunEvents(runId).some((e) => {
+      if (e.type !== "privileged_dispatch") return false;
+      return (JSON.parse(e.payload_json) as { bypass_approved?: unknown }).bypass_approved === true;
+    });
+  }
+
+  /**
+   * ADR-0094: whether a run of this repository with an approved bypass dispatch (this run or another) had not finished
+   * when this run's LEASED snapshot was taken (the run's creation time when no snapshot event exists).
+   */
+  private bypassFetchWindow(facts: RunFacts): boolean {
+    const leased = this.ledger.listRunEvents(facts.run.id).find((e) => e.type === GIT_REF_SNAPSHOT_EVENT)?.ts;
+    return this.ledger.hasBypassRunOnRepoSince(facts.repoRoot, leased ?? facts.run.created_at);
+  }
+
   /** Whether a change to another run's or session's `switchboard/` ref matches what the controller records. */
   private controllerMoved(name: string, after: string | undefined): boolean {
     if (isRunBranchRef(name)) {
@@ -608,6 +692,19 @@ export class RefGuard {
 }
 
 // ---- helpers ------------------------------------------------------------------------------------------------------
+
+/** ADR-0094: a run-branch or worktree `HEAD` entry the check restores (the run's own checkout). */
+function isAgentOwnRef(v: ViolationEntry): boolean {
+  return (v.scope === "run_branch" || v.scope === "worktree_head") && v.action === "restore";
+}
+
+/**
+ * ADR-0094: a ref an agent's own `git fetch` may change: a remote-tracking ref (created, moved or pruned) or a tag that
+ * did not exist before (`before` undefined; a moved or deleted tag stays a violation).
+ */
+function isFetchedRef(name: string, before: string | undefined): boolean {
+  return name.startsWith("refs/remotes/") || (name.startsWith("refs/tags/") && before === undefined);
+}
 
 function entry(
   scope: ViolationScope,

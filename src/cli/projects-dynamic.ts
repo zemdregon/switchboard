@@ -202,7 +202,7 @@ export function approveProject(
   }
 }
 
-function osUser(io: CliIo): string {
+export function osUser(io: CliIo): string {
   if (io.user !== undefined) return io.user;
   try {
     return os.userInfo().username;

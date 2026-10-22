@@ -18,6 +18,35 @@ Grok bot, OpenClaw), parse-checked by `src/config/examples.test.ts`.
 | `http-transport.json` | Loopback HTTP transport with OAuth (M13): replace the placeholder `passphrase_hash` with the output of `switchboard consent hash-passphrase` before serving. | `public_url`, `port`, `passphrase_hash`, the OAuth client mapping and `cimd`. |
 | `approval-and-sinks.json` | A `privileged` client that still requires operator approval, plus a notification sink for approval events. | The sink `url` (and any `ntfy` server, topic or token you add). |
 
+## Cloning projects over MCP (no example file)
+
+`project_sources` and `mcp_clients[].approval_proxy_kinds` (ADR-0068) have no example file: `clone_root` must be an
+existing directory under an allowed root when the file loads, which a placeholder path cannot satisfy in
+`src/config/examples.test.ts`. Add them to your own config like this, with your own paths and owners:
+
+```json
+{
+  "project_sources": {
+    "clone_root": "/home/you/clones",
+    "allowed_hosts": ["github.com"],
+    "allowed_owners": ["your-org"]
+  },
+  "mcp_clients": [
+    {
+      "id": "chat-bot",
+      "max_trust_profile": "edit-untrusted",
+      "manage_projects": true,
+      "approval_proxy": true,
+      "approval_proxy_targets": ["chat-bot"],
+      "approval_proxy_kinds": ["dynamic_project", "push_revision"]
+    }
+  ]
+}
+```
+
+With this, `chat-bot` can `create_project` with a `clone_url`, then approve the revision itself with `decide_approval`
+(never a privileged run). Self-approval is a real trade-off; read R-83 in the roadmap first.
+
 ## Skills
 
 `skills/` holds example skill files (LLD §19.1). They are not configuration and are not enabled by default: an operator

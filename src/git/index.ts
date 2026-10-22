@@ -82,6 +82,7 @@ export {
   type PushRequest,
   type PushResult,
   type PushToolCode,
+  projectPushContextResolver,
   pushArgs,
   pushContextResolver,
   pushEnv,
@@ -98,6 +99,7 @@ export {
 } from "./rebase-prep.js";
 export {
   DEFAULT_REF_GUARD_LIMITS,
+  GIT_AGENT_REFS_RESTORED_EVENT,
   GIT_POLICY_VIOLATION_EVENT,
   GIT_REF_CHECK_EVENT,
   GIT_REF_SNAPSHOT_EVENT,
@@ -134,23 +136,41 @@ export {
 } from "./sanitize.js";
 export {
   compileSecretScanAllow,
+  describeSecretScanFindings,
   MAX_SECRET_SCAN_BINARY_PATHS,
   MAX_SECRET_SCAN_HITS,
   matchingRuleIds,
+  messagePath,
   outgoingDiffArgs,
   SECRET_SCAN_ACKNOWLEDGED_EVENT,
+  SECRET_SCAN_FIX_HINT,
   SECRET_SCAN_HIT_EVENT,
   SECRET_SCAN_RULE_IDS,
   SECRET_SCAN_RULES,
   type SecretScanAllow,
   type SecretScanAllowEntry,
   SecretScanAllowError,
+  type SecretScanFinding,
+  type SecretScanFindings,
   type SecretScanHit,
   type SecretScanReport,
   scanDiffText,
   scanOutgoingDiff,
   secretScanBlockedFromPushEvents,
+  secretScanFindings,
 } from "./secret-scan.js";
+export {
+  MAX_CONFLICT_PATHS,
+  MAX_REBASE_COMMITS,
+  MIN_SESSION_REBASE_GIT_VERSION,
+  rebaseSession,
+  SESSION_REBASED_EVENT,
+  SessionRebaseError,
+  type SessionRebaseInput,
+  type SessionRebaseOptions,
+  type SessionRebaseRefusal,
+  type SessionRebaseResult,
+} from "./session-rebase.js";
 export {
   DEFAULT_SIGN_TIMEOUT_MS,
   repoSigningConfigUnsafe,

@@ -5,6 +5,8 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { acceptedProviderNames, canonicalProviderId } from "../adapters/providers.js";
+import { createProbeRunner } from "../adapters/run.js";
 import {
   bindingPacingWindow,
   type CapacityProjection,
@@ -12,19 +14,85 @@ import {
   capacityProviders,
   type PacingSubscriptionView,
   type PacingWindowView,
+  providerUsageLines,
+  readProviderUsage,
+  usageReadTargets,
+  withProviderUsage,
 } from "../capacity/index.js";
 import { loadConfig, type ResolvedConfig } from "../config/index.js";
 import { createLedger, LEDGER_FILE_NAME, migrate } from "../ledger/index.js";
+import { COPILOT_PROVIDER, type CopilotQuotaWindow, type ProviderQuotaReport } from "../usage/copilot-quota.js";
 import { defaultAdapters } from "./doctor.js";
-import { type CliIo, UsageError } from "./io.js";
+import { type CliIo, PROBE_ENV_ALLOWLIST, probeRootFor, UsageError } from "./io.js";
 
-export function runCapacity(io: CliIo, argv: readonly string[], provider?: string): CapacityProjection {
+export async function runCapacity(io: CliIo, argv: readonly string[], provider?: string): Promise<CapacityProjection> {
+  return (await capacityFor(io, argv, provider)).projection;
+}
+
+async function capacityFor(
+  io: CliIo,
+  argv: readonly string[],
+  provider?: string,
+): Promise<{ projection: CapacityProjection; cfg: ResolvedConfig }> {
   const cfg = loadConfig({ argv, env: io.env, ...(io.homedir !== undefined ? { homedir: io.homedir } : {}) });
   const ids: string[] = (io.adapters ?? defaultAdapters()).list().map((a) => a.id);
-  if (provider !== undefined && !ids.includes(provider)) {
-    throw new UsageError(`unknown provider ${JSON.stringify(provider)}; expected one of ${ids.join(", ")}`);
+  // ADR-0076: `--provider` takes either spelling (`claude`, `claude-code`); the projection names the canonical one.
+  const named = provider === undefined ? undefined : (canonicalProviderId(provider) ?? provider);
+  // ADR-0081: the usage-only `copilot` quota, through the operator's own `gh` (`ci_trigger.gh_binary`), when on.
+  const quota =
+    cfg.capacity.copilotQuota && io.copilotQuota !== undefined
+      ? io.copilotQuota({ binary: cfg.ciTrigger.ghBinary, sourceEnv: io.env })
+      : undefined;
+  const usageOnly = quota !== undefined && named === COPILOT_PROVIDER && !ids.includes(named);
+  if (named !== undefined && !ids.includes(named) && !usageOnly) {
+    const accepted = [...acceptedProviderNames(ids), ...(quota !== undefined ? [COPILOT_PROVIDER] : [])];
+    throw new UsageError(`unknown provider ${JSON.stringify(provider)}; expected one of ${accepted.join(", ")}`);
   }
-  return projectCapacity(cfg, provider === undefined ? ids : [provider], (io.now ?? (() => new Date()))());
+  const projection = projectCapacity(
+    cfg,
+    usageOnly ? [] : named === undefined ? ids : [named],
+    (io.now ?? (() => new Date()))(),
+  );
+  if (quota === undefined || (named !== undefined && !usageOnly)) return { projection, cfg };
+  return { projection: { ...projection, provider_quota: [await quota()] }, cfg };
+}
+
+/** `runCapacity` plus the provider-reported usage of each enabled provider with a reader (ADR-0079, FR-CAP-13). */
+export async function runCapacityWithUsage(
+  io: CliIo,
+  argv: readonly string[],
+  provider?: string,
+): Promise<CapacityProjection> {
+  // ADR-0081 rides on `capacityFor` (top-level `provider_quota`); ADR-0079 adds `provider_usage` per adapter entry.
+  // A usage-only `--provider copilot` has no adapter entries, so there is nothing for the usage step to read.
+  const { projection, cfg } = await capacityFor(io, argv, provider);
+  return addProviderUsage(io, projection, new Date(projection.as_of), cfg.dataDir);
+}
+
+/**
+ * ADR-0079 (FR-CAP-13): lays the provider-reported usage over a projection (shared by `capacity` and `doctor`). Only
+ * enabled providers in the projection whose adapter has a reader are asked; the rest are unchanged.
+ */
+export async function addProviderUsage(
+  io: CliIo,
+  projection: CapacityProjection,
+  now: Date,
+  /** ADR-0079: probe directories for TUI-only readers live under `<dataDir>/probes`. */
+  dataDir?: string,
+): Promise<CapacityProjection> {
+  const named = new Set(projection.providers.map((p) => p.provider));
+  const adapters = (io.adapters ?? defaultAdapters()).list().filter((a) => named.has(a.id));
+  const targets = usageReadTargets(adapters, projection);
+  if (targets.length === 0) return projection;
+  const runner = io.providerUsageRunner ?? createProbeRunner(PROBE_ENV_ALLOWLIST);
+  const terminal =
+    dataDir !== undefined && io.providerUsageTerminal !== undefined
+      ? io.providerUsageTerminal(probeRootFor(dataDir))
+      : undefined;
+  return withProviderUsage(
+    projection,
+    await readProviderUsage(targets, { runner, ...(terminal !== undefined ? { terminal } : {}) }, now),
+  );
 }
 
 /** The projection for `ids` from the configured data directory (shared by `capacity` and `doctor`). */
@@ -81,9 +149,33 @@ function pacingWindowLine(w: PacingWindowView): string {
   );
 }
 
+/** One `copilot` quota line; every figure on it is the provider's own (ADR-0081). */
+function copilotWindowLine(q: CopilotQuotaWindow): string {
+  const overage = q.overage_permitted ? `overage permitted (${q.overage_count} used)` : "overage not permitted";
+  if (q.unlimited) return `${q.id} (provider-reported): unlimited ${q.unit}, ${overage}`;
+  const pct = q.percent_remaining === null ? "" : `, ${q.percent_remaining}% remaining`;
+  return (
+    `${q.id} (provider-reported): remaining ${figure(q.remaining)} of ${figure(q.entitlement)} ${q.unit} ` +
+    `(used ${figure(q.used)}${pct}), ${overage}`
+  );
+}
+
+/** The usage-only providers' section (ADR-0081): provider-reported quota, never an estimate. */
+export function providerQuotaLines(r: ProviderQuotaReport): string[] {
+  if (r.status === "unavailable") return [`${r.provider} (usage-only): quota unavailable (${r.reason})`];
+  const lines = [
+    `${r.provider} (usage-only, no run adapter; ${r.source} via ${r.via}, observed ${r.observed_at})`,
+    `  plan ${r.plan ?? "unknown"}${r.sku === null ? "" : ` (${r.sku})`}; ` +
+      `resets ${r.reset_at === null ? "unknown" : r.reset_at.at}`,
+  ];
+  for (const q of r.quotas) lines.push(`  ${copilotWindowLine(q)}`);
+  return lines;
+}
+
 /**
  * Text view. Wording rule (LLD §16.3, FR-CAP-03): "remaining" appears only on the provider-reported line, never next to
- * an estimate, and no line speaks of quota left or a percentage.
+ * an estimate, and no line speaks of quota left or a percentage. The one exception is the usage-only provider section
+ * (ADR-0081), where every figure, the percentage included, is the provider's own and each line says so.
  */
 export function renderCapacity(p: CapacityProjection): string {
   const lines = [`switchboard capacity (as of ${p.as_of}, window ${p.window_seconds} s)`, `Note: ${p.note}.`, ""];
@@ -102,6 +194,8 @@ export function renderCapacity(p: CapacityProjection): string {
       }`,
     );
     lines.push(`  provider-reported reset: ${c.reset_at === null ? "none" : c.reset_at.at}`);
+    // ADR-0079 (FR-CAP-13): the provider's own report, read live through its CLI, or (ADR-0088) from recorded run output.
+    if (c.provider_usage !== undefined) lines.push(...providerUsageLines(c.provider_usage, "  "));
     if (c.cache !== undefined) {
       // FR-CAP-08: reported counts with their source; never read as cache use.
       lines.push(
@@ -132,6 +226,10 @@ export function renderCapacity(p: CapacityProjection): string {
       );
       for (const w of sub.windows) lines.push(`    ${pacingWindowLine(w)}`);
     }
+  }
+  if (p.provider_quota !== undefined) {
+    lines.push("", "Usage-only providers (provider-reported quota; no run adapter, never routed to):");
+    for (const r of p.provider_quota) lines.push(...providerQuotaLines(r));
   }
   lines.push("", `Provider and model per project (${p.affinity.note}):`);
   if (p.affinity.projects.length === 0) lines.push("  no runs in the window");

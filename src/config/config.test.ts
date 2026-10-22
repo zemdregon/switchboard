@@ -13,6 +13,7 @@ import {
   MIN_CONTINUITY_MAX_BUNDLE_BYTES,
   projectsForClient,
   resolveConfigPath,
+  submodulesEnabled,
   TRUST_PROFILES,
 } from "./index.js";
 
@@ -169,7 +170,27 @@ describe("loadConfig", () => {
         allowedOrigins: [],
         clientMap: new Map(),
         cimd: true,
+        // Migration 0036: the mcp_clients entries a profile-bound code may bind (a privileged ceiling with approval required is allowed, ADR-0086).
+        bindableMcpClients: new Set(["main"]),
       });
+    });
+
+    it("takes a lower-case client_ip_header and computes which entries a one-time code may bind", () => {
+      const cfg = {
+        ...base(),
+        mcp_clients: [
+          { id: "main", max_trust_profile: "edit-untrusted" },
+          { id: "root", max_trust_profile: "privileged" },
+          { id: "auto", max_trust_profile: "privileged", privileged_approval: "not_required" },
+        ],
+        transport: { http: { ...on, client_ip_header: "cf-connecting-ip" } },
+      };
+      const resolved = loadConfig({ configPath: write(cfg) }).httpTransport;
+      expect(resolved?.clientIpHeader).toBe("cf-connecting-ip");
+      expect([...(resolved?.bindableMcpClients ?? [])]).toEqual(["main", "root"]);
+      for (const bad of ["CF-Connecting-IP", "x_forwarded", "", "-x", "a".repeat(65)]) {
+        expect(() => http({ ...on, client_ip_header: bad }), bad).toThrow(/client_ip_header/);
+      }
     });
 
     it("maps a Client Identifier URL under its derived id and takes cimd: false (T13.11, FR-MCP-19)", () => {
@@ -764,6 +785,88 @@ describe("projects[] (T9.1, FR-PRJ-01, 02, 04)", () => {
     ).toThrow(/\$\.projects\[0\]\.contexts\[1\]\.finalize_commit: only the primary, writable context/);
   });
 
+  it("contexts[].submodules (ADR-0087 item 1): resolved, primary-only recursive, safe paths, writable needs recursive", () => {
+    const load = (contexts: unknown[]) => () =>
+      loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts }) });
+    const absent = loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx] }) });
+    expect(absent.projects[0]?.contexts[0]?.submodules).toBeUndefined();
+    expect(submodulesEnabled(absent.projects[0]?.contexts[0])).toBe(false);
+    const on = loadConfig({
+      configPath: withProjects({
+        id: "web-app",
+        name: "W",
+        contexts: [
+          {
+            ...repoCtx,
+            submodules: { mode: "recursive", writable_paths: ["libs/a", "libs/b"], exclude: ["vendor/x"] },
+          },
+        ],
+      }),
+    });
+    expect(on.projects[0]?.contexts[0]?.submodules).toEqual({
+      mode: "recursive",
+      writablePaths: ["libs/a", "libs/b"],
+      exclude: ["vendor/x"],
+    });
+    expect(submodulesEnabled(on.projects[0]?.contexts[0])).toBe(true);
+    const star = loadConfig({
+      configPath: withProjects({
+        id: "web-app",
+        name: "W",
+        contexts: [{ ...repoCtx, submodules: { mode: "recursive", writable_paths: ["*"] } }],
+      }),
+    });
+    expect(star.projects[0]?.contexts[0]?.submodules?.writablePaths).toEqual(["*"]);
+    const off = loadConfig({
+      configPath: withProjects({ id: "web-app", name: "W", contexts: [{ ...repoCtx, submodules: { mode: "off" } }] }),
+    });
+    expect(off.projects[0]?.contexts[0]?.submodules).toEqual({ mode: "off", writablePaths: [], exclude: [] });
+    expect(submodulesEnabled(off.projects[0]?.contexts[0])).toBe(false);
+
+    expect(
+      load([
+        { ...repoCtx, primary: true },
+        { ...repoCtx, id: "docs", submodules: { mode: "recursive" } },
+      ]),
+    ).toThrow(/contexts\[1\]\.submodules\.mode: SUBMODULES_PRIMARY_ONLY/);
+    for (const bad of ["/abs", "a//b", "./a", "a/../b", "a/.git/b", ".GIT", "a\\b", ""]) {
+      expect(load([{ ...repoCtx, submodules: { mode: "recursive", exclude: [bad] } }]), bad).toThrow();
+    }
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", exclude: ["a/../b"] } }])).toThrow(
+      /submodules\.exclude\[0\]: SUBMODULE_PATH_UNSAFE/,
+    );
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", writable_paths: ["*", "a"] } }])).toThrow(
+      /SUBMODULE_PATH_UNSAFE: "\*" is only valid as the sole entry/,
+    );
+    expect(load([{ ...repoCtx, submodules: { mode: "off", writable_paths: ["a"] } }])).toThrow(
+      /submodules\.writable_paths: SUBMODULES_NOT_WRITABLE/,
+    );
+    expect(load([{ ...repoCtx, writable: false, submodules: { mode: "recursive", writable_paths: ["a"] } }])).toThrow(
+      /SUBMODULES_NOT_WRITABLE/,
+    );
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", writable_paths: ["a"], exclude: ["a"] } }])).toThrow(
+      /SUBMODULE_PATH_CONFLICT/,
+    );
+    // The JSON schema: unknown keys, bad mode, duplicates, too many and over-long paths.
+    expect(load([{ ...repoCtx, submodules: { mode: "all" } }])).toThrow(/submodules/);
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", extra: 1 } }])).toThrow(/submodules/);
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", exclude: ["a", "a"] } }])).toThrow(/submodules/);
+    expect(
+      load([
+        { ...repoCtx, submodules: { mode: "recursive", exclude: Array.from({ length: 513 }, (_, i) => `s/${i}`) } },
+      ]),
+    ).toThrow(/submodules/);
+    expect(load([{ ...repoCtx, submodules: { mode: "recursive", exclude: ["a".repeat(257)] } }])).toThrow(/submodules/);
+  });
+
+  it("merge_policy.checks (ADR-0087 item 7): default required, all_reported accepted, anything else refused", () => {
+    const cfg = (mp: unknown) =>
+      loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx], merge_policy: mp }) });
+    expect(cfg({ enabled: true }).projects[0]?.mergePolicy?.checks).toBe("required");
+    expect(cfg({ enabled: true, checks: "all_reported" }).projects[0]?.mergePolicy?.checks).toBe("all_reported");
+    expect(() => cfg({ enabled: true, checks: "some" })).toThrow(/checks/);
+  });
+
   it("projects[].queue.low_water (T15.4, FR-QUE-04): off by default, accepts integer >= 1, rejects invalid", () => {
     const off = loadConfig({ configPath: withProjects({ id: "web-app", name: "W", contexts: [repoCtx] }) });
     expect(off.projects[0]?.queue?.lowWater).toBeUndefined();
@@ -1131,6 +1234,7 @@ describe("capacity (T6.2; LLD §16.1, ADR-0043)", () => {
     queueHorizonSeconds: 0,
     breaker: { failureThreshold: 3, openSeconds: 300 },
     retry: { maxAttempts: 3, baseMs: 2000, capMs: 120000 },
+    copilotQuota: true,
   };
 
   it("defaults every key to the LLD §16.1 value (Assumptions; queue horizon 0 means never wait)", () => {
@@ -1149,6 +1253,7 @@ describe("capacity (T6.2; LLD §16.1, ADR-0043)", () => {
       queue_horizon_seconds: 86400,
       breaker: { failure_threshold: 100, open_seconds: 1 },
       retry: { max_attempts: 10, base_ms: 5, cap_ms: 5 },
+      copilot_quota: false,
     }).capacity;
     expect(c).toEqual({
       windowSeconds: 60,
@@ -1156,7 +1261,17 @@ describe("capacity (T6.2; LLD §16.1, ADR-0043)", () => {
       queueHorizonSeconds: 86400,
       breaker: { failureThreshold: 100, openSeconds: 1 },
       retry: { maxAttempts: 10, baseMs: 5, capMs: 5 },
+      copilotQuota: false,
     });
+  });
+
+  it("copilot_quota (ADR-0081): default true, a boolean opt-out, anything else refused", () => {
+    expect(load({}).capacity.copilotQuota).toBe(true);
+    expect(load({ copilot_quota: true }).capacity.copilotQuota).toBe(true);
+    expect(load({ copilot_quota: false }).capacity.copilotQuota).toBe(false);
+    for (const bad of ["false", 0, 1, null, {}]) {
+      expect(() => load({ copilot_quota: bad })).toThrow(/\$\.capacity\.copilot_quota/);
+    }
   });
 
   it("is strict: unknown keys, non-integers, out-of-range values and base_ms above cap_ms fail", () => {

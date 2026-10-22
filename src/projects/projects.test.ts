@@ -295,6 +295,24 @@ describe("definition rules", () => {
     expect(() => checkClientLimits(def({ max_trust_profile: "inspect-untrusted" }), client, new Set())).not.toThrow();
   });
 
+  it("submodule_write and merge_checks are approval reasons (ADR-0087 items 1 and 7)", () => {
+    const rec = { mode: "recursive" as const };
+    const reasons = (c: Record<string, unknown>, over: Record<string, unknown> = {}) =>
+      approvalReasons(def(over, c), undefined, "trusted-development");
+    expect(reasons({ submodules: rec })).toEqual([]);
+    expect(reasons({ submodules: { ...rec, writable_paths: [] } })).toEqual([]);
+    expect(reasons({ submodules: { ...rec, writable_paths: ["libs/a"] } })).toEqual(["submodule_write"]);
+    expect(reasons({ submodules: { ...rec, writable_paths: ["*"] } })).toEqual(["submodule_write"]);
+    expect(reasons({}, { merge_policy: { enabled: true, checks: "required" } })).toEqual(["merge_policy"]);
+    expect(reasons({}, { merge_policy: { enabled: false, checks: "all_reported" } })).toEqual(["merge_checks"]);
+    expect(
+      reasons(
+        { submodules: { ...rec, writable_paths: ["a"] } },
+        { merge_policy: { enabled: true, checks: "all_reported" } },
+      ),
+    ).toEqual(["merge_policy", "submodule_write", "merge_checks"]);
+  });
+
   it("names every reason a revision needs approval, and widening against the revision in force", () => {
     const branch = {
       push: { policy: "branch", remote: "origin", branch_prefix: "sb/" },

@@ -3,7 +3,9 @@
  * §12.6; ADR-0028). The operator route to publication: pushes the meta-session's publish ref under exactly the same
  * rules as the agent `push` tool (policy `branch`, configured remote name and prefix, controller commits only, never
  * forced, never the default or a checked-out branch, refused after a Git policy violation), except the BR-31
- * credential-reach rule, which is about the agent and does not apply to the operator.
+ * credential-reach rule, which is about the agent and does not apply to the operator. Since ADR-0069 the target of an
+ * approved dynamic project resolves too (its in-force revision, while its creator keeps `manage_projects` and
+ * `max_push_policy: branch`), exactly as for the daemon's push and `publish_run`.
  *
  * Locking (ADR-0005, same as `gc --apply`): the push is a side effect with the operator's Git configuration, so this
  * process performs it itself while holding the data-directory lock, and refuses (`LockError`) while a `serve` daemon
@@ -14,10 +16,12 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config/index.js";
-import { GitPusher, PushError, type PushResult, pushContextResolver } from "../git/push.js";
+import { GitPusher, PushError, type PushResult, projectPushContextResolver } from "../git/push.js";
+import { describeSecretScanFindings, type SecretScanFindings, secretScanFindings } from "../git/secret-scan.js";
 import { createIdGenerator } from "../ids/index.js";
 import { LEDGER_FILE_NAME, openLedger } from "../ledger/index.js";
 import { acquireDataDirLock } from "../lock/index.js";
+import { DynamicProjectStore } from "../projects/index.js";
 import { type CliIo, JSON_SCHEMA_VERSION } from "./io.js";
 import { UnknownRunError } from "./operator.js";
 
@@ -35,6 +39,10 @@ export interface GitPushReport {
   readonly commits: readonly string[];
   /** The run whose events hold the `git_push` record (`runs show <run>`). */
   readonly recorded_on_run: string;
+  /** ADR-0075: on `SECRET_SCAN_BLOCKED` only, each finding (rule id, path, line; never the value) and the exact count. */
+  readonly findings?: SecretScanFindings["findings"];
+  readonly finding_count?: number;
+  readonly findings_truncated?: true;
 }
 
 /** Thrown when the meta-session or run id is not in the ledger. */
@@ -50,7 +58,11 @@ export async function runGitPush(io: CliIo, argv: readonly string[], id: string)
       const sessionId = resolveSession(db, id);
       const pusher = new GitPusher({
         db,
-        resolveContext: pushContextResolver(config.projects),
+        resolveContext: projectPushContextResolver({
+          projects: config.projects,
+          store: new DynamicProjectStore(db),
+          clients: config.mcpClients,
+        }),
         sourceEnv: io.env,
         secretScanAllow: config.secretScanAllow,
         ids: createIdGenerator(),
@@ -75,6 +87,7 @@ export async function runGitPush(io: CliIo, argv: readonly string[], id: string)
         head_sha: r.headSha,
         commits: r.commits,
         recorded_on_run: r.eventRunId,
+        ...(r.reason === "SECRET_SCAN_BLOCKED" && r.secretScan !== undefined ? secretScanFindings(r.secretScan) : {}),
       };
     } finally {
       db.close();
@@ -105,7 +118,8 @@ function resolveSession(db: ReturnType<typeof openLedger>, id: string): string {
 const REASON_TEXT: Readonly<Record<string, string>> = {
   POLICY_NONE: "the context's push policy is none (set push.policy to branch to allow pushes)",
   NO_PROJECT: "the meta-session has no project, so it has no push policy",
-  CONTEXT_UNKNOWN: "the meta-session's project is no longer in the configuration",
+  CONTEXT_UNKNOWN:
+    "the meta-session's project is neither configured nor an approved dynamic project whose creator may still push",
   GIT_POLICY_VIOLATION: "a run of this meta-session has a recorded Git policy violation (see runs show)",
   SKILL_PATH_PRESENT:
     "a Switchboard skill file is still in a run's worktree (see runs show; retention GC or a restart removes it)",
@@ -126,6 +140,9 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   REMOTE_UNREACHABLE: "the remote could not be reached",
   TIMEOUT: "the push timed out",
   GIT_FAILED: "Git failed in the controller",
+  SECRET_SCAN_BLOCKED:
+    "the pre-push secret scan found credential-shaped values in the outgoing diff (remove them, or allow a rule at a " +
+    "path with git.secret_scan.allow)",
 };
 
 export function renderGitPush(r: GitPushReport): string {
@@ -134,8 +151,12 @@ export function renderGitPush(r: GitPushReport): string {
     const what = r.reason === "UP_TO_DATE" ? "already up to date" : `pushed ${r.commits.length} commit(s)`;
     return `${r.meta_session_id}: ${what} to ${target} at ${r.head_sha} [push ${r.push_id}; recorded on ${r.recorded_on_run}]\n`;
   }
+  const findings =
+    r.findings !== undefined && r.finding_count !== undefined
+      ? `${describeSecretScanFindings({ findings: r.findings, finding_count: r.finding_count })}; `
+      : "";
   return (
     `${r.meta_session_id}: push ${r.outcome === "REFUSED_POLICY" ? "refused" : "failed"} (${r.reason}): ` +
-    `${REASON_TEXT[r.reason] ?? "see runs show"} [target ${target}; push ${r.push_id}; recorded on ${r.recorded_on_run}]\n`
+    `${findings}${REASON_TEXT[r.reason] ?? "see runs show"} [target ${target}; push ${r.push_id}; recorded on ${r.recorded_on_run}]\n`
   );
 }

@@ -10,6 +10,7 @@
  * is `PERMISSION_BLOCKED` (FRD BR-32 "not allowed").
  */
 import { realpath } from "node:fs/promises";
+import { canonicalProviderId } from "../adapters/providers.js";
 import { checkProject } from "../cli/projects.js";
 import {
   checkProjects,
@@ -18,6 +19,8 @@ import {
   type ProjectConfig,
   type ResolvedProject,
   resolveProjects,
+  resolveSetup,
+  SUBMODULE_RULE_CODES,
   type SwitchboardConfig,
   TRUST_PROFILES,
   type TrustProfile,
@@ -60,6 +63,10 @@ export const APPROVAL_REASONS = [
   "widened_trust_ceiling",
   "widened_providers",
   "merge_policy",
+  "project_setup",
+  "base_remote",
+  "submodule_write",
+  "merge_checks",
 ] as const;
 export type ApprovalReason = (typeof APPROVAL_REASONS)[number];
 
@@ -118,18 +125,72 @@ export function checkStructure(def: ProjectConfig): void {
   if (first !== undefined) {
     const rewritten = first.replace("$.projects[0]", "$.project");
     const colon = rewritten.indexOf(": ");
+    // ADR-0087 item 1: submodule rules carry their own reason code as `<path>: <CODE>: <message>`.
+    const code = SUBMODULE_RULE_CODES.find((k) => rewritten.slice(colon + 2).startsWith(`${k}: `));
     throw new ProjectRuleError(
       "INVALID_REQUEST",
-      "INVALID_DEFINITION",
+      code ?? "INVALID_DEFINITION",
       `invalid project: ${rewritten}`,
       colon > 0 ? rewritten.slice(0, colon) : "$.project",
     );
   }
 }
 
-/** The definition as COMP-PRJ resolves configured projects. */
+/** ADR-0074: the remote name `ensureClone` gives the repository a `clone_url` context was cloned from. */
+export const CLONE_REMOTE = "origin";
+
+type BaseRemoteFields = Pick<ProjectConfig["contexts"][number], "base_remote" | "clone_url" | "push">;
+
+/**
+ * ADR-0074: the base remote a `clone_url` context refreshes from when it sets no `base_remote`: its push remote when it
+ * names one, else the clone's own remote ({@link CLONE_REMOTE}). A `path` context has no default (configured projects
+ * and `path` contexts keep ADR-0067: no `base_remote`, no fetch).
+ */
+export function defaultBaseRemote(c: BaseRemoteFields): string | undefined {
+  return c.clone_url !== undefined ? (c.push?.remote ?? CLONE_REMOTE) : undefined;
+}
+
+/** ADR-0074: the context's `base_remote`, else {@link defaultBaseRemote}. */
+export function effectiveBaseRemote(c: BaseRemoteFields): string | undefined {
+  return c.base_remote ?? defaultBaseRemote(c);
+}
+
+/**
+ * The definition as COMP-PRJ resolves configured projects. ADR-0074: a primary `clone_url` context without `base_remote`
+ * resolves with its {@link defaultBaseRemote}, so the LLD §5.2 refresh fetches it before a meta-session's first worktree.
+ */
 export function toResolved(def: ProjectConfig): ResolvedProject {
-  return resolveProjects({ projects: [def] } as SwitchboardConfig)[0] as ResolvedProject;
+  const resolved = resolveProjects({ projects: [def] } as SwitchboardConfig)[0] as ResolvedProject;
+  return {
+    ...resolved,
+    contexts: resolved.contexts.map((rc, i) => {
+      const c = def.contexts[i];
+      const remote = c !== undefined && rc.primary ? defaultBaseRemote(c) : undefined;
+      return rc.baseRemote === undefined && remote !== undefined ? { ...rc, baseRemote: remote } : rc;
+    }),
+  };
+}
+
+/**
+ * ADR-0074: a `clone_url` context may set `base_remote` only to the remote the clone was made from
+ * ({@link CLONE_REMOTE}), so the refresh reads from nowhere but the allowlisted clone source. Anything else is
+ * `PERMISSION_BLOCKED` `BASE_REMOTE_NOT_CLONE_REMOTE`. `path` contexts keep the configuration rule (a remote name).
+ */
+export function checkBaseRemote(def: ProjectConfig): void {
+  for (const [i, c] of def.contexts.entries()) {
+    if (c.clone_url === undefined || c.base_remote === undefined || c.base_remote === CLONE_REMOTE) continue;
+    throw new ProjectRuleError(
+      "PERMISSION_BLOCKED",
+      "BASE_REMOTE_NOT_CLONE_REMOTE",
+      `base_remote of a clone_url context must be ${CLONE_REMOTE}, the remote the repository was cloned from`,
+      `$.project.contexts[${i}].base_remote`,
+    );
+  }
+}
+
+/** ADR-0076: the comparison key of a provider name: its canonical name, or the name itself when no entry has it. */
+function providerKey(name: string): string {
+  return canonicalProviderId(name) ?? name;
 }
 
 /**
@@ -151,8 +212,10 @@ export function checkClientLimits(
       "$.project.max_trust_profile",
     );
   }
+  // ADR-0076: compared by canonical name, so an alias spelling can never name a disabled provider past this check.
+  const disabled = new Set([...disabledProviders].map(providerKey));
   for (const [i, p] of (def.allowed_providers ?? []).entries()) {
-    if (disabledProviders.has(p)) {
+    if (disabled.has(providerKey(p))) {
       throw new ProjectRuleError(
         "PERMISSION_BLOCKED",
         "PROVIDER_OUTSIDE_CLIENT",
@@ -208,7 +271,11 @@ export function checkRagSharing(def: ProjectConfig): void {
  * of published commits, LLD §11.2 says an orchestrator must not invent one; the `identities` list proposed there is not
  * built) and `sign: true` (it would make the controller sign with the operator's key, FR-GIT-10). Widening is measured
  * against the revision in force: a higher effective ceiling, or a provider set that is no longer a subset (absent means
- * every provider). T15.8 (FR-SUB-02): `merge_policy.enabled: true` (`merge_policy`).
+ * every provider). T15.8 (FR-SUB-02): `merge_policy.enabled: true` (`merge_policy`); ADR-0070:
+ * `merge_policy.require_verification: false` (`merge_policy`) as well. ADR-0071: a `setup` that is new or differs
+ * (after defaults) from the revision in force (`project_setup`); removing it narrows and needs no approval. ADR-0074
+ * (**Delegated**, fail closed): a `clone_url` context whose explicit `base_remote` differs from its default
+ * ({@link defaultBaseRemote}) waits (`base_remote`); the default, or an explicit value equal to it, does not.
  */
 export function approvalReasons(
   def: ProjectConfig,
@@ -221,22 +288,44 @@ export function approvalReasons(
     if ((c.push?.policy ?? "none") !== "none") out.add("push_policy");
     if (c.identity !== undefined) out.add("commit_identity");
     if (c.sign === true) out.add("commit_signing");
+    if (c.base_remote !== undefined && c.clone_url !== undefined && c.base_remote !== defaultBaseRemote(c)) {
+      out.add("base_remote");
+    }
+    // ADR-0087 item 1: writing into submodules publishes to other repositories, so it waits like a push policy.
+    if ((c.submodules?.writable_paths?.length ?? 0) > 0) out.add("submodule_write");
   }
+  // ADR-0087 item 7: `all_reported` changes which checks gate a merge, so it waits for the operator.
+  if (def.merge_policy?.checks === "all_reported") out.add("merge_checks");
   // T15.8 (FR-SUB-02, ADR-0060 item 1): an orchestrator that turns the merge policy on waits for the operator, on
   // every revision that keeps it on (Delegated: an approval is per revision, like a push policy other than `none`).
-  if (def.merge_policy?.enabled === true) out.add("merge_policy");
+  if (def.merge_policy?.enabled === true || def.merge_policy?.require_verification === false) out.add("merge_policy");
+  // ADR-0071: the controller runs these commands with network to the listed hosts, so a new or changed step waits.
+  if (
+    def.setup !== undefined &&
+    setupKey(def.setup) !== (inForce?.setup !== undefined ? setupKey(inForce.setup) : "")
+  ) {
+    out.add("project_setup");
+  }
   if (inForce !== undefined) {
     const now = effectiveMaxProfile(clientMax, toResolved(def));
     const before = effectiveMaxProfile(clientMax, toResolved(inForce));
     if (rank(now) > rank(before)) out.add("widened_trust_ceiling");
     if (inForce.allowed_providers !== undefined) {
-      const was = new Set(inForce.allowed_providers);
-      if (def.allowed_providers === undefined || def.allowed_providers.some((p) => !was.has(p))) {
+      // ADR-0076: by canonical name, so `claude` and `claude-code` are one provider (no false widening, no bypass).
+      const was = new Set<string>(inForce.allowed_providers.map(providerKey));
+      if (def.allowed_providers === undefined || def.allowed_providers.some((p) => !was.has(providerKey(p)))) {
         out.add("widened_providers");
       }
     }
   }
   return APPROVAL_REASONS.filter((r) => out.has(r));
+}
+
+/** ADR-0071: a comparable form of a `setup` with its defaults applied (host order and env key order normalised). */
+function setupKey(s: NonNullable<ProjectConfig["setup"]>): string {
+  const r = resolveSetup(s);
+  const env = Object.fromEntries(Object.entries(r.env).sort(([a], [b]) => a.localeCompare(b)));
+  return JSON.stringify({ ...r, hosts: [...r.hosts].sort(), env });
 }
 
 /**

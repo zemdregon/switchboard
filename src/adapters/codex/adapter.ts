@@ -2,13 +2,14 @@
  * Codex CLI adapter (T2.2, TDD §4.2, LLD §2). Native surface: `codex exec --json` (JSONL) and
  * `codex exec resume <SESSION_ID>` (R2). Every native spelling lives in ./protocol.ts with its citation or an
  * **Assumption** marker. The adapter never reads Codex credential or config files, never runs login, never writes
- * provider configuration and never emits a bypass flag (FR-AUTH-01/02, FR-POL-03, FR-POL-08).
+ * provider configuration and emits its one bypass flag only for an approved `privileged` scope that sets `bypass`
+ * (FR-AUTH-01/02, FR-POL-03, FR-POL-08).
  *
  * `privileged` (T3.6, T3.17): a scope with `bypass: false` compiles from the documented sandbox and harness flags only
- * (see #privileged). A scope with `bypass: true` is Ineligible whatever its approval: [R2] names `--yolo` only as a
- * posture the controller "should not be built around" (L28, L125) and `--full-auto` as "a deprecated compatibility
- * option" (L126), and documents neither what they disable nor a dangerous sandbox mode, which is not precise enough to
- * emit (AGENTS.md: no flag from memory). Verify live (T3.9) before any Codex bypass compiles.
+ * (see #privileged). A scope with `bypass: true` compiles, only when the run is approved, to
+ * `--dangerously-bypass-approvals-and-sandbox` (ADR-0077; `codex exec --help` of codex-cli 0.162.0): no sandbox, so
+ * the run is not confined to its worktree (owner ruling 2026-10-20), and the FR-GIT-03 ref snapshot, the tool-call
+ * guard (ADR-0039) and FR-GIT-06 still apply. `--yolo` and `--full-auto` are never emitted.
  */
 
 import { accessSync, constants, statSync } from "node:fs";
@@ -19,10 +20,12 @@ import {
   DEFAULT_MAX_LINE_BYTES,
   DEFAULT_WALL_CLOCK_MS,
 } from "../../exec/index.js";
+import { MODEL_ID_PATTERN } from "../../models/registry.js";
 import { classifyCommon } from "../failure.js";
 import { gitWriteRisks } from "../git-write.js";
 import { parseVersion } from "../manifest/index.js";
 import { renderObjective } from "../prompt.js";
+import type { ProviderUsageResult } from "../provider-usage.js";
 import type {
   AcpMessage,
   AuthResult,
@@ -48,6 +51,7 @@ import {
   AUTH_STATUS_LINE_MAX,
   AUTH_STATUS_TIMEOUT_MS,
   AUTH_UNKNOWN_REASON,
+  BYPASS_FLAG,
   CODEX_BINARY,
   CODEX_LOGIN_COMMAND,
   CODEX_LOGIN_STATUS_ARGS,
@@ -60,6 +64,7 @@ import {
   IGNORE_USER_CONFIG_FLAG,
   ITEM,
   JSON_FLAG,
+  MODEL_FLAG,
   RESUME_SUBCOMMAND,
   SANDBOX_FLAG,
   SANDBOX_READ_ONLY,
@@ -67,6 +72,14 @@ import {
   STATUS_DECLINED,
   VERSION_FLAG,
 } from "./protocol.js";
+import {
+  CODEX_USAGE_ARGS,
+  CODEX_USAGE_METHOD,
+  CODEX_USAGE_STDIN,
+  CODEX_USAGE_TIMEOUT_MS,
+  codexUsageFromStdout,
+  isCodexUsageAnswer,
+} from "./usage.js";
 
 /**
  * Environment names passed through to Codex (FR-EXE-07, NFR-SEC-02). Proposed: PATH for the binary and HOME so the
@@ -81,6 +94,8 @@ const MAX_SUMMARY_CHARS = 2_000;
 const MAX_TARGET_CHARS = 512;
 /** Native ids are passed as one argv element; refuse anything that could be read as a flag (Proposed). */
 const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
+/** A model id passed as one argv word (the registry's `MODEL_ID_PATTERN` shape; never read as a flag). */
+const MODEL_ID_RE = new RegExp(MODEL_ID_PATTERN);
 
 /** FR-GIT-01: Codex documents no Git write control, so the adapter declares that (see protocol.ts). */
 export const CODEX_GIT_WRITE_CONTROL: GitWriteControl = {
@@ -94,8 +109,10 @@ const UNTRUSTED_PROFILES = new Set(["inspect-untrusted", "edit-untrusted"]);
 /** Every non-privileged profile the compile matrix evaluates (T3.6, TDD §4.2.1). */
 const MATRIX_PROFILES = new Set([...UNTRUSTED_PROFILES, "test-sandboxed", "trusted-development"]);
 
-/** Ineligible detail for a privileged scope with `bypass: true` (T3.17): R2 does not document the flag precisely. */
-export const CODEX_BYPASS_UNDOCUMENTED = "bypass/privileged flag not documented in R2: verify live";
+/** Ineligible detail for a scope that sets `bypass` on a run whose `bypassApproved` is false (FR-POL-03). */
+export const CODEX_BYPASS_NOT_APPROVED =
+  "privileged scope sets bypass but the run's bypassApproved is false: --dangerously-bypass-approvals-and-sandbox is " +
+  "compiled only for an operator-approved scope (FR-POL-03, ADR-0017, ADR-0077)";
 /** Ineligible detail for a bypass approval on a profile other than `privileged` (FR-POL-03). */
 export const CODEX_BYPASS_OUTSIDE_PRIVILEGED =
   "bypassApproved is set on a profile other than privileged: a bypass applies only to an approved privileged scope " +
@@ -175,6 +192,11 @@ export class CodexAdapter implements ProviderAdapter {
   readonly resumeCwd = "independent" as const;
   /** T7.12 (FR-RTE-08, Q-90): no documented model flag (R2, TDD §4.2), so a remembered model is never pinned. */
   readonly reportedModelFlag = { kind: "not_accepted", detail: "no documented Codex model flag" } as const;
+  /** ADR-0077: a requested model reaches the CLI only in the approved bypass cell. */
+  readonly requestedModelFlag = {
+    cells: "bypass",
+    detail: "--model <id> in the approved bypass cell only (ADR-0077; codex exec --help: -m, --model)",
+  } as const;
   readonly gitCapabilities = CODEX_GIT_CAPABILITIES;
   readonly #exe: string | undefined;
   readonly #launcher: readonly string[];
@@ -261,6 +283,33 @@ export class CodexAdapter implements ProviderAdapter {
   }
 
   /**
+   * ADR-0079 (FR-CAP-13, LLD §16.10): the account's rate-limit windows as Codex reports them, through
+   * `codex app-server` `account/rateLimits/read` (see ./usage.ts). No model call; the CLI uses its own login and
+   * Switchboard reads no file. A spawn failure, timeout or missing answer is `unknown`, never headroom (BR-50).
+   */
+  async readProviderUsage(runner: ProbeRunner, now: Date = new Date()): Promise<ProviderUsageResult> {
+    const at = now.toISOString();
+    const unknown = (error: string): ProviderUsageResult => ({
+      provider: "codex",
+      source: "unknown",
+      observed_at: at,
+      method: CODEX_USAGE_METHOD,
+      error,
+    });
+    const exe = this.#exe;
+    if (exe === undefined) return unknown(`${CODEX_BINARY} not found on PATH`);
+    const r = await runner([exe, ...this.#launcher, ...CODEX_USAGE_ARGS], {
+      timeoutMs: CODEX_USAGE_TIMEOUT_MS,
+      stdinText: CODEX_USAGE_STDIN,
+      holdStdinUntil: isCodexUsageAnswer,
+    });
+    if (r.spawnError !== undefined) return unknown(`could not start ${CODEX_BINARY} app-server (${r.spawnError})`);
+    const read = codexUsageFromStdout(r.stdout, at);
+    if (read.source === "unknown" && r.timedOut) return unknown("codex app-server timed out before answering");
+    return read;
+  }
+
+  /**
    * T16.7 (TDD §3.16.1, LLD §19.6, ADR-0056 items 5, 6 and 8): every cell delivers skills as the prompt prefix. A cell
    * may name `native` only with the evidence id of a T16.8 live check; the conformance suite fails one without it.
    */
@@ -343,7 +392,8 @@ export class CodexAdapter implements ProviderAdapter {
    * `privileged` (T3.6, T3.17; TDD §4.2.1 `privileged` column; LLD §3.1; Proposed, Delegated). Compiles the approved
    * scope from the documented flags only; checks in this order, the first unmet one is the `Ineligible` reason:
    * 1. No scope binding: PROFILE_UNSUPPORTED.
-   * 2. `bypass: true` (approved or not): PROFILE_UNSUPPORTED {@link CODEX_BYPASS_UNDOCUMENTED}; no bypass is emitted.
+   * 2. `bypass: true`: the bypass cell ({@link #bypass}); PROFILE_UNSUPPORTED {@link CODEX_BYPASS_NOT_APPROVED} without
+   *    an approval.
    * 3. shell `none` or `allowlist`: CAPABILITY_MISSING ([R2] documents no way to disable or narrow commands; decision 10
    *    does not cover a scope). `broad` compiles: commands run inside the sandbox.
    * 4. network `allowlist` or `on`: CAPABILITY_MISSING (no documented switch, so `on` cannot be guaranteed either).
@@ -351,18 +401,16 @@ export class CodexAdapter implements ProviderAdapter {
    * 5. repository_config `approved`: CAPABILITY_MISSING (only all-or-nothing flags). `enabled`: CAPABILITY_MISSING
    *    (Proposed): it means omitting `--ignore-user-config`/`--ignore-rules`, and whether `--sandbox` still wins over a
    *    loaded user configuration is not in [R2]. `disabled` compiles with both flags.
-   * 6. A requested model: CAPABILITY_MISSING (no documented model flag).
+   * 6. A requested model: CAPABILITY_MISSING (no model flag outside the bypass cell, Delegated: unchanged).
    * Then files `read-only` (or a read-only workspace) is `--sandbox read-only`, `worktree` is `--sandbox workspace-write`.
    * `bypassApproved` true on a `bypass: false` scope changes nothing (no flag).
-   * Owner decision 26 (Q-37) allows repository_config `approved`/`enabled` in an approved bypass run; Codex bypass is
-   * undocumented (step 2 refuses it first), so those modes stay refused here until a Codex bypass is documented.
    */
   #privileged(request: CompileRequest, profile: ResolvedProfile): { policyFlags: string[] } | Ineligible {
     const scope = profile.privilegedScope?.scope;
     if (scope === undefined) {
       return ineligible("PROFILE_UNSUPPORTED", "privileged without an approved scope binding (LLD §3.1)");
     }
-    if (scope.bypass) return ineligible("PROFILE_UNSUPPORTED", CODEX_BYPASS_UNDOCUMENTED);
+    if (scope.bypass) return this.#bypass(request, profile, scope);
     if (scope.shell.mode !== "broad") {
       return ineligible(
         "CAPABILITY_MISSING",
@@ -380,11 +428,70 @@ export class CodexAdapter implements ProviderAdapter {
         "CAPABILITY_MISSING",
         `privileged repository_config=${scope.repository_config.mode}: Codex documents only all-or-nothing ` +
           "--ignore-user-config/--ignore-rules, and whether --sandbox wins over loaded configuration is not in R2; " +
-          "owner decision 26 (Q-37) allows it for bypass runs only, and Codex bypass is undocumented",
+          "owner decision 26 (Q-37) allows it for bypass runs only",
       );
     }
     if (request.model !== undefined) return ineligible("CAPABILITY_MISSING", "no documented Codex model flag");
     return { policyFlags: harnessFlags(scope.files.access === "read-only" || !request.workspace.writable) };
+  }
+
+  /**
+   * The approved bypass cell (ADR-0077; Delegated where marked). Checks in this order, the first unmet one is the reason:
+   * 1. no approval (`bypassApproved` on the profile or request): PROFILE_UNSUPPORTED {@link CODEX_BYPASS_NOT_APPROVED} (FR-POL-03);
+   * 2. read-only files (scope or workspace): CAPABILITY_MISSING: the bypass flag turns the sandbox off, so nothing keeps
+   *    the run read-only; a read-only scope without `bypass` compiles `--sandbox read-only` instead;
+   * 3. shell other than `broad`: CAPABILITY_MISSING (every command runs unprompted, no allowlist is documented);
+   * 4. network other than `on`: CAPABILITY_MISSING (with no sandbox the network is not restricted);
+   * 5. repository_config `approved`: CAPABILITY_MISSING (only the all-or-nothing harness flags). `disabled` keeps
+   *    `--ignore-user-config --ignore-rules`; `enabled` omits them (owner decision 26, Q-37).
+   * Then `--dangerously-bypass-approvals-and-sandbox` replaces `--sandbox`, and a requested model is `--model <id>`
+   * (`codex exec --help`: "-m, --model <MODEL>"; the id shape is the registry's, checked again here).
+   * The run is not confined to its worktree (owner ruling 2026-10-20); it still starts in it (FR-WS-01).
+   */
+  #bypass(
+    request: CompileRequest,
+    profile: ResolvedProfile,
+    scope: NonNullable<ResolvedProfile["privilegedScope"]>["scope"],
+  ): { policyFlags: string[] } | Ineligible {
+    if (!(profile.bypassApproved || request.bypassApproved === true)) {
+      return ineligible("PROFILE_UNSUPPORTED", CODEX_BYPASS_NOT_APPROVED);
+    }
+    if (scope.files.access === "read-only" || !request.workspace.writable) {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        "privileged read-only files with bypass: --dangerously-bypass-approvals-and-sandbox turns the sandbox off, so " +
+          "nothing keeps the run read-only (ADR-0077); use a scope without bypass",
+      );
+    }
+    if (scope.shell.mode !== "broad") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        `privileged shell=${scope.shell.mode} with bypass: every command runs unprompted and no Codex command ` +
+          "allowlist is documented (Q-11)",
+      );
+    }
+    if (scope.network.mode !== "on") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        `privileged network=${scope.network.mode} with bypass: no sandbox restricts the network (ADR-0077, R-36)`,
+      );
+    }
+    if (scope.repository_config.mode === "approved") {
+      return ineligible(
+        "CAPABILITY_MISSING",
+        "privileged repository_config=approved: Codex documents only all-or-nothing --ignore-user-config/--ignore-rules",
+      );
+    }
+    if (request.model !== undefined && !MODEL_ID_RE.test(request.model)) {
+      return ineligible("CAPABILITY_MISSING", "requested model is not a plain model id");
+    }
+    return {
+      policyFlags: [
+        BYPASS_FLAG,
+        ...(scope.repository_config.mode === "disabled" ? [IGNORE_USER_CONFIG_FLAG, IGNORE_RULES_FLAG] : []),
+        ...(request.model !== undefined ? [MODEL_FLAG, request.model] : []),
+      ],
+    };
   }
 
   #invocation(request: CompileRequest, policyFlags: string[], tail: string[]): Invocation | Ineligible {

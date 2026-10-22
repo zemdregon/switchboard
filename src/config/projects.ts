@@ -15,15 +15,23 @@ import type {
   ContextConfig,
   ContextKind,
   EnvironmentKind,
+  MergePolicyChecks,
   MergePolicyMethod,
   MergePolicyReport,
   ProjectConfig,
   ProviderId,
+  SetupCache,
+  SetupEnvKey,
   SkillAssignmentConfig,
   SwitchboardConfig,
   TrustProfile,
 } from "./schema.js";
-import { DEFAULT_CRITIC_MIN_DIFF_LINES, TRUST_PROFILES } from "./schema.js";
+import {
+  DEFAULT_CRITIC_MIN_DIFF_LINES,
+  DEFAULT_SETUP_HOSTS,
+  DEFAULT_SETUP_TIMEOUT_SECONDS,
+  TRUST_PROFILES,
+} from "./schema.js";
 
 /** T9.13 (FR-WS-10, LLD §5.1): `dependency_seeds[].timeout_seconds` when absent (Assumption, Delegated). */
 export const DEFAULT_SEED_TIMEOUT_SECONDS = 600;
@@ -79,7 +87,30 @@ export interface ResolvedContext {
   readonly innerAgent?: ProjectInnerSetting;
   /** T12.1 (LLD §14.1): present only when the context sets `rag`. */
   readonly rag?: ContextRagConfig;
+  /** ADR-0087 item 1 (FR-PRJ-11): present only when the context sets `submodules`. */
+  readonly submodules?: ResolvedSubmodules;
 }
+
+/** ADR-0087 item 1: a context's `submodules` setting, resolved (lists copied; absent lists are empty). */
+export interface ResolvedSubmodules {
+  readonly mode: "off" | "recursive";
+  /** Worktree-relative POSIX paths, or exactly `["*"]`. */
+  readonly writablePaths: readonly string[];
+  readonly exclude: readonly string[];
+}
+
+/** ADR-0087 item 1: true when the context sets `submodules.mode: "recursive"`. */
+export function submodulesEnabled(ctx: Pick<ResolvedContext, "submodules"> | undefined): boolean {
+  return ctx?.submodules?.mode === "recursive";
+}
+
+/** ADR-0087 item 1: the structural reason codes (`INVALID_REQUEST` for a dynamic definition). */
+export const SUBMODULE_RULE_CODES = [
+  "SUBMODULES_PRIMARY_ONLY",
+  "SUBMODULE_PATH_UNSAFE",
+  "SUBMODULES_NOT_WRITABLE",
+  "SUBMODULE_PATH_CONFLICT",
+] as const;
 
 export interface ResolvedProject {
   readonly id: string;
@@ -91,6 +122,8 @@ export interface ResolvedProject {
   };
   /** Shape only in T9.1; enforced from T9.2 (FR-PRJ-06). */
   readonly maxTrustProfile?: TrustProfile;
+  /** ADR-0091 (FR-POL-12): present only when a configured project sets `default_trust_profile`; never on a dynamic one. */
+  readonly defaultTrustProfile?: TrustProfile;
   readonly allowedProviders?: readonly ProviderId[];
   /** T11.3 (LLD §13.1): present only when the project sets `inner_agent`; absent reads as `inherit`. */
   readonly innerAgent?: ProjectInnerSetting;
@@ -117,6 +150,17 @@ export interface ResolvedProject {
   readonly critic?: ProjectCriticConfig;
   /** T15.8 (FR-SUB-02, LLD §20.7): present only when the project sets `merge_policy`. Absent means off. */
   readonly mergePolicy?: ProjectMergePolicy;
+  /** ADR-0071: present only when the project sets `setup`; defaults filled in. Absent means no setup step. */
+  readonly setup?: ProjectSetup;
+}
+
+/** ADR-0071: a project's dependency setup step, resolved (defaults applied, lists copied). */
+export interface ProjectSetup {
+  readonly commands: readonly (readonly string[])[];
+  readonly hosts: readonly string[];
+  readonly cache: SetupCache;
+  readonly timeoutSeconds: number;
+  readonly env: Readonly<Partial<Record<SetupEnvKey, string>>>;
 }
 
 /** T15.8 (FR-SUB-02, LLD §20.7, ADR-0060): the opt-in, head-pinned merge policy of a project. */
@@ -124,6 +168,10 @@ export interface ProjectMergePolicy {
   readonly enabled: boolean;
   readonly method: MergePolicyMethod;
   readonly requiredReports: readonly MergePolicyReport[];
+  /** ADR-0070: false skips the `verification_result`-at-head condition. Absent means true (T15.8's gate). */
+  readonly requireVerification?: boolean;
+  /** ADR-0087 item 7: `required` (default, today's gate; absent reads as `required`) or `all_reported`. Resolution always sets it. */
+  readonly checks?: MergePolicyChecks;
 }
 
 /** T14.17 (FR-CTL-15, LLD §20.13): the advisory critic of a project. */
@@ -152,6 +200,57 @@ export function resolveSkillAssignment(lists: SkillAssignmentConfig | undefined)
   const roles: Record<string, readonly string[]> = {};
   for (const [role, names] of Object.entries(lists?.roles ?? {})) roles[role] = [...names];
   return { defaults: [...(lists?.defaults ?? [])], roles };
+}
+
+/**
+ * ADR-0087 item 1: structural rules of one context's `submodules`. Each line is `<path>: <CODE>: <message>` so a
+ * dynamic definition reports the code as its reason (`checkStructure`). Never echoes a value.
+ */
+function checkSubmodules(c: ContextConfig, cat: string, isPrimary: boolean): string[] {
+  const s = c.submodules;
+  if (s === undefined) return [];
+  const errs: string[] = [];
+  if (s.mode === "recursive" && !isPrimary) {
+    errs.push(
+      `${cat}.submodules.mode: SUBMODULES_PRIMARY_ONLY: only the primary context can set submodules.mode recursive`,
+    );
+  }
+  const writable = s.writable_paths ?? [];
+  const lists = [
+    ["writable_paths", writable],
+    ["exclude", s.exclude ?? []],
+  ] as const;
+  for (const [key, list] of lists) {
+    for (const [k, entry] of list.entries()) {
+      const unsafe = key === "writable_paths" && entry === "*" ? undefined : submoduleSegmentProblem(entry);
+      if (unsafe !== undefined) errs.push(`${cat}.submodules.${key}[${k}]: SUBMODULE_PATH_UNSAFE: ${unsafe}`);
+    }
+  }
+  if (writable.includes("*") && writable.length > 1) {
+    errs.push(`${cat}.submodules.writable_paths: SUBMODULE_PATH_UNSAFE: "*" is only valid as the sole entry`);
+  }
+  if (writable.length > 0 && (s.mode !== "recursive" || !isPrimary || c.writable === false)) {
+    errs.push(
+      `${cat}.submodules.writable_paths: SUBMODULES_NOT_WRITABLE: needs submodules.mode recursive and a writable primary context`,
+    );
+  }
+  const excluded = new Set(s.exclude ?? []);
+  if (writable.some((w) => excluded.has(w))) {
+    errs.push(`${cat}.submodules: SUBMODULE_PATH_CONFLICT: a path is both in writable_paths and in exclude`);
+  }
+  return errs;
+}
+
+/** ADR-0087 item 1: problem of one submodule path, or undefined (no empty, `.`, `..` or `.git` segment, no leading `/`, no backslash). */
+function submoduleSegmentProblem(p: string): string | undefined {
+  if (p.length === 0) return "must not be empty";
+  if (p.includes("\\")) return "must not contain a backslash";
+  if (p.startsWith("/")) return "must be relative to the worktree (no leading '/')";
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === "." || seg === "..") return "must be normalised (no empty, '.' or '..' segment)";
+    if (seg.toLowerCase() === ".git") return "must not contain a .git segment";
+  }
+  return undefined;
 }
 
 /** Structural violations as `<json path>: <message>` lines, in the loader's format. */
@@ -227,8 +326,13 @@ export function checkProjects(cfg: SwitchboardConfig): string[] {
           errs.push(`${cat}.sign: only the primary, writable context can enable sign`);
         }
       }
+      if (c.submodules !== undefined) errs.push(...checkSubmodules(c, cat, isPrimary));
     }
     errs.push(...checkDependencySeeds(p, at));
+    // ADR-0071: the setup step runs on the host only (its sandbox and proxy are host mechanisms); refused, not ignored.
+    if (p.setup !== undefined && env.kind !== "host") {
+      errs.push(`${at}.setup: only valid for a host environment (ADR-0071)`);
+    }
     const primaries = p.contexts.filter((c) => isPrimaryContext(p, c)).length;
     if (primaries !== 1) {
       errs.push(`${at}.contexts: exactly one context must be primary ("primary": true); found ${primaries}`);
@@ -299,6 +403,7 @@ export function resolveProjects(
           : {}),
       },
       ...(p.max_trust_profile !== undefined ? { maxTrustProfile: p.max_trust_profile } : {}),
+      ...(p.default_trust_profile !== undefined ? { defaultTrustProfile: p.default_trust_profile } : {}),
       ...(p.allowed_providers !== undefined ? { allowedProviders: [...p.allowed_providers] } : {}),
       ...(p.inner_agent !== undefined ? { innerAgent: p.inner_agent } : {}),
       ...(p.rag !== undefined ? { rag: structuredClone(p.rag) } : {}),
@@ -322,6 +427,15 @@ export function resolveProjects(
           finalizeCommit: c.finalize_commit ?? false,
           ...(c.inner_agent !== undefined ? { innerAgent: c.inner_agent } : {}),
           ...(c.rag !== undefined ? { rag: structuredClone(c.rag) } : {}),
+          ...(c.submodules !== undefined
+            ? {
+                submodules: {
+                  mode: c.submodules.mode,
+                  writablePaths: [...(c.submodules.writable_paths ?? [])],
+                  exclude: [...(c.submodules.exclude ?? [])],
+                },
+              }
+            : {}),
         };
       }),
       ...(p.dependency_seeds !== undefined
@@ -359,11 +473,25 @@ export function resolveProjects(
               enabled: p.merge_policy.enabled === true,
               method: p.merge_policy.method ?? "squash",
               requiredReports: [...(p.merge_policy.required_reports ?? [])],
+              ...(p.merge_policy.require_verification === false ? { requireVerification: false } : {}),
+              checks: p.merge_policy.checks ?? "required",
             },
           }
         : {}),
+      ...(p.setup !== undefined ? { setup: resolveSetup(p.setup) } : {}),
     };
   });
+}
+
+/** ADR-0071: `setup` with its defaults (hosts `registry.npmjs.org`, cache `none`, 600 seconds, no variables). */
+export function resolveSetup(s: NonNullable<ProjectConfig["setup"]>): ProjectSetup {
+  return {
+    commands: s.commands.map((argv) => [...argv]),
+    hosts: [...(s.network?.hosts ?? DEFAULT_SETUP_HOSTS)],
+    cache: s.cache ?? "none",
+    timeoutSeconds: s.timeout_seconds ?? DEFAULT_SETUP_TIMEOUT_SECONDS,
+    env: { ...(s.env ?? {}) },
+  };
 }
 
 /** The lower of two trust profiles on the order `inspect-untrusted` < ... < `privileged` (FR-PRJ-06, LLD §11.2). */
@@ -377,6 +505,20 @@ export function lowerProfile(a: TrustProfile, b: TrustProfile): TrustProfile {
  */
 export function effectiveMaxProfile(clientMax: TrustProfile, project: ResolvedProject): TrustProfile {
   return project.maxTrustProfile === undefined ? clientMax : lowerProfile(clientMax, project.maxTrustProfile);
+}
+
+/**
+ * ADR-0091 (FR-POL-12, FR-MCP-26): the profile a request without `trust_profile` resolves to: the project's own
+ * default, else the configured top-level one, lowered to `ceiling` (the effective maximum of the request). Undefined
+ * when neither is configured (`trust_profile` is then required).
+ */
+export function defaultedProfile(
+  configured: TrustProfile | undefined,
+  project: Pick<ResolvedProject, "defaultTrustProfile"> | undefined,
+  ceiling: TrustProfile,
+): TrustProfile | undefined {
+  const wanted = project?.defaultTrustProfile ?? configured;
+  return wanted === undefined ? undefined : lowerProfile(wanted, ceiling);
 }
 
 /** The projects a client may use, in configuration order. A client with no list may use none (fail closed). */

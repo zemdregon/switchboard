@@ -13,13 +13,14 @@ import {
   evaluateVersionCanary,
   type ProbeResult,
   type ProviderId,
+  type ProviderUsageResult,
   providerEntries,
   providerEntry,
   readVersionCanaryStore,
   recordAdapterVersion,
 } from "../adapters/index.js";
 import { type LoadReader, osLoadReader, readLoad1 } from "../capacity/host-load.js";
-import type { CapacityProjection } from "../capacity/index.js";
+import { type CapacityProjection, providerUsageLines } from "../capacity/index.js";
 import {
   loadConfig,
   type ResolvedConfig,
@@ -55,7 +56,7 @@ import {
   planRetentionGc,
   statfsDiskProbe,
 } from "../workspace/index.js";
-import { pacingDoctorLine, projectCapacity } from "./capacity.js";
+import { addProviderUsage, pacingDoctorLine, projectCapacity } from "./capacity.js";
 import { type InnerDoctorSection, innerDoctorSection, renderInnerDoctor } from "./inner.js";
 import { type CliIo, JSON_SCHEMA_VERSION, PROBE_ENV_ALLOWLIST } from "./io.js";
 import { type RagDoctorSection, ragDoctorSection, renderRagDoctor } from "./rag-index.js";
@@ -172,6 +173,68 @@ function checkPrivilegedApproval(cfg: ResolvedConfig): DoctorCheck | undefined {
     "warn",
     `not required for client${loose.length > 1 ? "s" : ""} ${loose.join(", ")}: their privileged requests run ` +
       "without switchboard approve (scope still validated and recorded; Git-write denial and worktrees still apply)",
+  );
+}
+
+/**
+ * ADR-0091 (FR-POL-12): a warning when a configured default trust profile is `privileged` (top level or in a project):
+ * every request that names no `trust_profile` then runs privileged under the operator's default scope, where the
+ * client's and the project's ceilings allow it. Absent otherwise, so the check list is unchanged by default.
+ */
+function checkPrivilegedDefault(cfg: ResolvedConfig): DoctorCheck | undefined {
+  const where = [
+    ...(cfg.defaultTrustProfile === "privileged" ? ["default_trust_profile"] : []),
+    ...cfg.projects.filter((p) => p.defaultTrustProfile === "privileged").map((p) => `project ${p.id}`),
+  ];
+  if (where.length === 0) return undefined;
+  const bypass = cfg.defaultPrivilegedScope?.bypass === true ? " with bypass" : "";
+  return check(
+    "privileged_default",
+    "Privileged default",
+    "warn",
+    `${where.join(", ")}: requests without trust_profile run privileged${bypass} under default_privileged_scope ` +
+      "wherever the client's and project's ceilings allow (Git-write denial and worktrees still apply)",
+  );
+}
+
+/**
+ * ADR-0093 (FR-POL-13): a warning naming the clients configured `promote_trust_profile: true`: their explicit
+ * `trust_profile` below the configured default runs at the default instead (clamped to the ceilings). Absent when no
+ * client sets it.
+ */
+function checkTrustProfilePromotion(cfg: ResolvedConfig): DoctorCheck | undefined {
+  const promoting = [...cfg.mcpClients.values()].filter((c) => c.promoteTrustProfile === true).map((c) => c.id);
+  if (promoting.length === 0) return undefined;
+  return check(
+    "trust_profile_promotion",
+    "Trust profile promotion",
+    "warn",
+    `client${promoting.length > 1 ? "s" : ""} ${promoting.join(", ")}: an explicit trust_profile below the configured ` +
+      "default runs at the default instead (lowered to the client's and project's ceilings; continue_task unchanged)",
+  );
+}
+
+/**
+ * ADR-0091 (FR-MCP-27): a warning when `transport.http.allow_unattended_privileged` is on, naming the HTTP-mapped and
+ * bindable clients with `privileged_approval: not_required` (their privileged runs over HTTP need no `approve`).
+ * Absent when the switch is off or the HTTP transport is disabled.
+ */
+function checkUnattendedHttp(cfg: ResolvedConfig): DoctorCheck | undefined {
+  const http = cfg.httpTransport;
+  if (http?.allowUnattendedPrivileged !== true) return undefined;
+  const reachable = new Set([...http.clientMap.values(), ...(http.bindableMcpClients ?? [])]);
+  const loose = [...cfg.mcpClients.values()]
+    .filter((c) => reachable.has(c.id) && c.privilegedApproval === "not_required")
+    .map((c) => c.id);
+  return check(
+    "unattended_http_privileged",
+    "Unattended HTTP privileged",
+    "warn",
+    loose.length === 0
+      ? "transport.http.allow_unattended_privileged is on; no HTTP-mapped client has privileged_approval not_required"
+      : `transport.http.allow_unattended_privileged is on: privileged runs of HTTP client${
+          loose.length > 1 ? "s" : ""
+        } ${loose.join(", ")} need no switchboard approve (default_mcp_client stays strict)`,
   );
 }
 
@@ -644,6 +707,12 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
     if (overrides) checks.push(overrides);
     const approval = checkPrivilegedApproval(cfg);
     if (approval) checks.push(approval);
+    const privilegedDefault = checkPrivilegedDefault(cfg);
+    if (privilegedDefault) checks.push(privilegedDefault);
+    const promotion = checkTrustProfilePromotion(cfg);
+    if (promotion) checks.push(promotion);
+    const unattended = checkUnattendedHttp(cfg);
+    if (unattended) checks.push(unattended);
     const innerShared = checkInnerSharedSubscription(cfg);
     if (innerShared) checks.push(innerShared);
     const sinks = checkNotificationSinksDoctor(cfg);
@@ -694,7 +763,12 @@ export async function runDoctor(io: CliIo, argv: readonly string[]): Promise<Doc
   } catch {
     retrieval = undefined; // informational: an unreadable ledger or store never fails doctor
   }
-  const capacity = cfg ? capacitySection(cfg, registry, (io.now ?? (() => new Date()))()) : undefined;
+  const capacityNow = (io.now ?? (() => new Date()))();
+  let capacity = cfg ? capacitySection(cfg, registry, capacityNow) : undefined;
+  if (capacity !== undefined) {
+    // ADR-0079 (FR-CAP-13): informational, never changes `ok`; a failed read is an `unknown` entry, not an error.
+    capacity = await addProviderUsage({ ...io, adapters: registry }, capacity, capacityNow, cfg?.dataDir);
+  }
   const modelGroups = cfg ? modelGroupsSection(cfg, registry, models) : undefined;
   const ok = checks.every((c) => c.status !== "fail") && adapters.every((a) => a.status !== "fail");
   return {
@@ -761,8 +835,10 @@ export function resolveGroupMemberForDoctor(
     };
   }
 
-  // 3. Does adapter accept models?
-  if (adapter.reportedModelFlag !== undefined && !acceptsReportedModel(adapter)) {
+  // 3. Does adapter accept models? ADR-0077: a `requestedModelFlag` declaration decides when present (the reported-model
+  // pin flag is about remembered models, not requested ones); otherwise the pre-ADR-0077 check stands.
+  const requested = adapter.requestedModelFlag;
+  if (requested === undefined && adapter.reportedModelFlag !== undefined && !acceptsReportedModel(adapter)) {
     const detail = adapter.reportedModelFlag.detail;
     return {
       provider: member.provider,
@@ -798,7 +874,7 @@ export function resolveGroupMemberForDoctor(
       resolved_id: resolved.model,
       alias: member.model,
       code: null,
-      resolution: `alias -> ${resolved.model}`,
+      resolution: `alias -> ${resolved.model}${requested?.cells === "bypass" ? " (approved bypass cell only)" : ""}`,
     };
   }
 
@@ -808,7 +884,7 @@ export function resolveGroupMemberForDoctor(
     status: "resolved",
     resolved_id: resolved.model,
     code: null,
-    resolution: resolved.model,
+    resolution: requested?.cells === "bypass" ? `${resolved.model} (approved bypass cell only)` : resolved.model,
   };
 }
 
@@ -861,6 +937,17 @@ export function renderDoctor(r: DoctorReport): string {
         `       ${c.provider}: breaker ${c.breaker.state}, throttle risk ${c.throttle_risk}, ` +
           `estimate confidence ${c.confidence.toFixed(2)}`,
       );
+    }
+    // ADR-0079 (FR-CAP-13): each provider's own report, apart from the estimates above.
+    const reported = r.capacity.providers.filter((c) => c.provider_usage !== undefined);
+    if (reported.length > 0) {
+      lines.push("Provider-reported usage (read through each provider's own CLI):");
+      for (const c of reported) {
+        lines.push(
+          `       ${c.provider}:`,
+          ...providerUsageLines(c.provider_usage as ProviderUsageResult, "         "),
+        );
+      }
     }
     // T6.14 (LLD §16.9): one line per subscription from the same projection. Absent when nothing is configured.
     if (r.capacity.pacing !== undefined) {

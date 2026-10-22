@@ -7,6 +7,15 @@ import type { ArtifactStore } from "../artifacts/index.js";
 import { isUnderAllowedRoot } from "../config/index.js";
 import { defaultIds, type IdGenerator } from "../ids/index.js";
 import { insertChainedRunEvent, type TrustProfile } from "../ledger/index.js";
+import {
+  applyCheckpointGitlinks,
+  checkpointSkippedEventPayload,
+  checkpointSubmodules,
+  SUBMODULE_CHANGES_SKIPPED_EVENT,
+  type SubmoduleCheckpointResult,
+} from "../submodules/checkpoint.js";
+import { SubmoduleError, type SubmoduleReason } from "../submodules/errors.js";
+import { attachRecordFile, readAttachRecord } from "../submodules/worktree.js";
 import { git, gitText, MIN_GIT_VERSION, parseGitVersion, versionAtLeast } from "./git.js";
 import { ensureWorktreeGitLink } from "./git-link.js";
 import {
@@ -23,6 +32,13 @@ import {
 } from "./native-skills.js";
 import { findNestedRepositories, nestedPathspecArgs } from "./nested.js";
 import { type SeedEnvironment, type SeedSpec, type SeedStore, seedWorktree } from "./seeds.js";
+import {
+  attachRunSubmodules,
+  detachRunSubmodules,
+  resetRunSubmodules,
+  type SubmoduleDeps,
+  type SubmodulePlan,
+} from "./submodules.js";
 
 /**
  * Workspace manager (T1.5; LLD §5, ADR-0006, FR-WS-01..06). Order of every step is intent row, Git action, outcome row.
@@ -38,7 +54,8 @@ export type WorkspaceErrorCode =
   | "LEASE_NOT_HELD"
   | "INVALID_ID"
   | "NOT_FOUND"
-  | "RESUME_DIRECTORY_UNAVAILABLE";
+  | "RESUME_DIRECTORY_UNAVAILABLE"
+  | "SUBMODULE_FAILED";
 
 export class WorkspaceError extends Error {
   override readonly name = "WorkspaceError";
@@ -88,6 +105,27 @@ export class ResumeDirectoryUnavailableError extends WorkspaceError {
   }
 }
 
+/**
+ * ADR-0087 item 3: a run worktree's submodules could not be attached. Carries the library's closed reason, its taxonomy
+ * code and the umbrella-relative path (untrusted text, JSON-quoted in the message; never a URL). Nothing stays attached.
+ */
+export class SubmodulePreparationError extends WorkspaceError {
+  constructor(
+    readonly reason: SubmoduleReason,
+    readonly failureCode: SubmoduleError["code"],
+    readonly path: string | undefined,
+  ) {
+    super(
+      "SUBMODULE_FAILED",
+      `submodule preparation failed (${reason})${path !== undefined ? ` at ${JSON.stringify(path.slice(0, 300))}` : ""}`,
+    );
+  }
+
+  static from(err: SubmoduleError): SubmodulePreparationError {
+    return new SubmodulePreparationError(err.reason, err.code, err.path);
+  }
+}
+
 export interface WorkspaceManagerOptions {
   readonly db: Database.Database;
   readonly artifacts: ArtifactStore;
@@ -118,6 +156,12 @@ export interface WorkspaceManagerOptions {
   readonly baseRefresh?: (input: BaseRefreshRequest) => Promise<string | undefined>;
   /** T16.6 test seam: the unlink the native-skill cleaner uses (fault injection, TDD §3.16.2 property 5). */
   readonly nativeSkillFs?: NativeSkillFs;
+  /**
+   * ADR-0087 item 3: submodule worktrees of a recursive context. `plan` gives the run project's primary-context
+   * setting, or undefined when it does not set `submodules.mode: "recursive"`. Absent (or no plan): no call, no record,
+   * and the worktree is exactly as before.
+   */
+  readonly submodules?: SubmoduleDeps & { readonly plan: (projectId: string) => SubmodulePlan | undefined };
 }
 
 export interface BaseRefreshRequest {
@@ -298,6 +342,7 @@ export class WorkspaceManager {
 
       // Intent row first, then the Git action, then the outcome row.
       const baseCheckpointId = this.insertCheckpoint(input.metaSessionId, input.runId, "base", baseCommit, branch);
+      let reused = false;
       await serialisedWorktreeCreate(repoRoot, async () => {
         if (resumeIn) {
           // T5.7: re-check the origin path here, where no sibling can add or prune a worktree of this repository.
@@ -306,6 +351,7 @@ export class WorkspaceManager {
           if (verdict.exists) {
             // Clean against its own HEAD (checked above): start this run's branch at the head checkpoint in place.
             await git(["switch", "--no-guess", "-c", branch, baseCommit], { cwd: worktreePath });
+            reused = true;
             return;
           }
           // The directory is gone: re-create it at the same path from the head checkpoint (LLD §15.6 step 2).
@@ -316,6 +362,10 @@ export class WorkspaceManager {
       });
       const head = await gitText(["rev-parse", "HEAD"], { cwd: worktreePath });
       if (head !== baseCommit) throw new WorkspaceError("NOT_FOUND", "new worktree is not at the base commit");
+      const plan = this.submodulePlan(input.runId);
+      if (plan !== undefined) {
+        await this.attachSubmodules(plan.deps, { repoRoot, worktreePath, commit: baseCommit, plan: plan.plan }, reused);
+      }
       const preCheckpointId = this.insertCheckpoint(input.metaSessionId, input.runId, "pre", head, branch);
 
       const now = this.now().toISOString();
@@ -441,10 +491,15 @@ export class WorkspaceManager {
     await this.ensureGitLink(ws);
     const nested = await findNestedRepositories(ws.worktreePath);
     const scope = this.scanScope(runId, nested);
+    // ADR-0087 item 3: changed writable submodule worktrees are checkpointed in their stores first; their gitlinks are
+    // set in the umbrella index after its own `add -A` (the scan scope excludes the submodule paths).
+    const subCheckpoint = await this.checkpointSubmodules(runId, ws.worktreePath);
     await git(["add", "-A", ...scope], { cwd: ws.worktreePath });
+    if (subCheckpoint !== undefined) await applyCheckpointGitlinks(ws.worktreePath, subCheckpoint.gitlinks);
     await this.unstageNativeSkills(runId, ws.worktreePath, "HEAD");
     const clean =
-      (await git(["diff", "--cached", "--quiet", "HEAD", ...scope], { cwd: ws.worktreePath, okCodes: [1] })).code === 0;
+      (await git(["diff", "--cached", "--quiet", "HEAD", ...scope], { cwd: ws.worktreePath, okCodes: [1] })).code ===
+        0 && (subCheckpoint?.gitlinks.size ?? 0) === 0;
     let committed = false;
     if (!clean) {
       await git(["commit", "--no-verify", "--no-gpg-sign", "-m", `switchboard: checkpoint for ${runId}`], {
@@ -453,6 +508,16 @@ export class WorkspaceManager {
       committed = true;
     }
     const postCommit = await gitText(["rev-parse", "HEAD"], { cwd: ws.worktreePath });
+    const skippedPayload = subCheckpoint !== undefined ? checkpointSkippedEventPayload(subCheckpoint) : undefined;
+    if (skippedPayload !== undefined) {
+      insertChainedRunEvent(this.db, {
+        id: this.ids.id("evt"),
+        runId,
+        ts: this.now().toISOString(),
+        type: SUBMODULE_CHANGES_SKIPPED_EVENT,
+        payloadJson: JSON.stringify(skippedPayload),
+      });
+    }
     const { diffArtifactId, changedFilesArtifactId, changedFiles } = await this.storeDiff(
       runId,
       ws,
@@ -499,6 +564,10 @@ export class WorkspaceManager {
     const diffArtifactId = await this.putArtifact(runId, ws.metaSessionId, "diff", "text/x-diff", diff.stdout);
     await git(["reset", "--hard", ws.preCommit], { cwd: ws.worktreePath });
     await git(["clean", "-fd"], { cwd: ws.worktreePath });
+    // ADR-0087 item 3: attached submodule worktrees go back to their recorded commits too.
+    if (this.options.submodules !== undefined) {
+      await resetRunSubmodules(ws.worktreePath, this.options.submodules.sources()?.cloneRoot);
+    }
     this.db
       .prepare("UPDATE meta_session SET head_commit = ?, updated_at = ? WHERE id = ? AND head_commit != ?")
       .run(ws.preCommit, this.now().toISOString(), ws.metaSessionId, ws.preCommit);
@@ -567,6 +636,55 @@ export class WorkspaceManager {
     const paths = recordedNativePaths(this.db, runId);
     if (paths.length === 0) return;
     await git(["--literal-pathspecs", "reset", "-q", rev, "--", ...paths], { cwd });
+  }
+
+  /**
+   * ADR-0087 item 3 "Checkpoints", step 1 for a worktree that has an attach record; undefined otherwise (no
+   * `project_sources`, no record: nothing is read or run).
+   */
+  private async checkpointSubmodules(
+    runId: string,
+    worktreePath: string,
+  ): Promise<SubmoduleCheckpointResult | undefined> {
+    const cloneRoot = this.options.submodules?.sources()?.cloneRoot;
+    if (cloneRoot === undefined) return undefined;
+    const record = await readAttachRecord(attachRecordFile(worktreePath), cloneRoot).catch(() => undefined);
+    if (record === undefined) return undefined;
+    return checkpointSubmodules({
+      runId,
+      runWorktree: worktreePath,
+      record,
+      umbrellaHead: await gitText(["rev-parse", "HEAD"], { cwd: worktreePath }),
+      skillPaths: recordedNativePaths(this.db, runId),
+    });
+  }
+
+  /** ADR-0087 item 3: the run project's recursive submodule plan, or undefined (no option, no project, not recursive). */
+  private submodulePlan(
+    runId: string,
+  ): { plan: SubmodulePlan; deps: NonNullable<WorkspaceManagerOptions["submodules"]> } | undefined {
+    const deps = this.options.submodules;
+    if (deps === undefined) return undefined;
+    const row = this.db.prepare("SELECT project_id FROM run WHERE id = ?").get(runId) as
+      | { project_id: string | null }
+      | undefined;
+    if (!row?.project_id) return undefined;
+    const plan = deps.plan(row.project_id);
+    return plan === undefined ? undefined : { plan, deps };
+  }
+
+  /** ADR-0087 item 3: attach (or, in a reused worktree, refresh); a SubmoduleError fails `prepare` with its reason. */
+  private async attachSubmodules(
+    deps: SubmoduleDeps,
+    input: Parameters<typeof attachRunSubmodules>[0],
+    reuse: boolean,
+  ): Promise<void> {
+    try {
+      await attachRunSubmodules(input, deps, { reuse });
+    } catch (err) {
+      if (err instanceof SubmoduleError) throw SubmodulePreparationError.from(err);
+      throw new SubmodulePreparationError("SUBMODULE_ATTACH_FAILED", "TOOL_FAILURE", undefined);
+    }
   }
 
   /** T9.13: the run's project seeds, if any (the store records `seed_applied` or `seed_failed`; never throws). */
@@ -745,6 +863,10 @@ export class WorkspaceManager {
 
   /** A `git worktree add` interrupted mid-way leaves a registration or directory: remove and recreate (LLD §5). */
   private async repairPartialWorktree(repoRoot: string, worktreePath: string, branch: string): Promise<void> {
+    // ADR-0087 item 3: submodule worktrees an earlier attempt attached are detached first (their stores pruned).
+    if (this.options.submodules !== undefined) {
+      await detachRunSubmodules(worktreePath, this.options.submodules.sources()?.cloneRoot);
+    }
     await git(["worktree", "prune"], { cwd: repoRoot });
     const exists = await stat(worktreePath).then(
       () => true,

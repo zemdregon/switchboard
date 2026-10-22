@@ -32,7 +32,9 @@
  * - `list_capabilities` (T3.7): `supported_profiles` is each provider's compile matrix on this host: the
  *   profile-platform rule (`profilePlatformSupported`), then the adapter's own compile of each resolved profile
  *   (`compileCheck`, the same call the eligibility filter makes). `privileged` is listed only if the adapter compiles
- *   any scope of a small representative set (`REPRESENTATIVE_PRIVILEGED_SCOPES`, Proposed, LLD §3.1 "Listing").
+ *   any scope of a small representative set (`REPRESENTATIVE_PRIVILEGED_SCOPES`, Proposed, LLD §3.1 "Listing") or,
+ *   ADR-0092 (Delegated), any approved bypass cell (`REPRESENTATIVE_BYPASS_SCOPES`, compiled with a listing-only
+ *   `bypassApproved`; listing never dispatches). `privileged_bypass_only` says which of the two listed it.
  * - `verification_commands` (T3.10, FR-EXE-08): argv arrays run by the lifecycle after the agent (VERIFYING). V7
  *   refuses a non-empty list under `inspect-untrusted` (INVALID_REQUEST, `details.field`), and re-checks the shape
  *   (non-empty executable, no NUL). `minimum_capability` evaluates against operator-declared model capability in the
@@ -127,6 +129,15 @@
  *   PERMISSION_BLOCKED as in `delegate_task`; a project this client may not use is reported like an unknown one (as
  *   `search_project_context`); every `get_skill` miss (unknown, retired, invisible, version not injectable) is the same
  *   INVALID_REQUEST, which never names the skill; a stored file that fails its hash is TOOL_FAILURE.
+ * - Request defaults (ADR-0091; FR-POL-12, FR-MCP-26; owner ruling 2026-10-21, mechanism Delegated): `trust_profile` is
+ *   optional in `delegate_task`, in the `enqueue_work` request and in each decision enqueue entry. Absent, it is the
+ *   configured project's `default_trust_profile`, else the top-level `default_trust_profile`, lowered to the effective
+ *   ceiling (the client's maximum, and in a project the lower of it and the project's), so a default never fails V5; with
+ *   neither configured it is INVALID_REQUEST `trust_profile is required` (`details.field = "trust_profile"`), as before.
+ *   When the resolved profile (defaulted or requested) is `privileged` and the request names no `privileged_scope`,
+ *   the configured `default_privileged_scope` is the request's scope; an explicit scope always wins, and V13 is
+ *   otherwise unchanged. The idempotency hash, the eligibility question, admission and the stored `enqueue_work` request
+ *   all carry the resolved profile and scope, so a defaulted request and the same explicit one are one request.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -138,20 +149,30 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type Database from "better-sqlite3";
 import {
   type AdapterRegistry,
+  acceptedProviderNames,
   acceptsReportedModel,
-  adapterIdForConfigId,
+  canonicalProviderId,
   type ProviderId,
   type ResolvedProfile,
 } from "../adapters/index.js";
 import type { ArtifactStore } from "../artifacts/index.js";
-import { capacityProjection, capacityProviders } from "../capacity/index.js";
+import {
+  capacityProjection,
+  capacityProviders,
+  type ProviderUsageReaderDeps,
+  readProviderUsage,
+  usageReadTargets,
+  withProviderUsage,
+} from "../capacity/index.js";
 import {
   type CapacitySettings,
   CONTAINER_NOT_IMPLEMENTED,
   DEFAULT_CAPACITY_CONFIDENCE_RUNS,
   DEFAULT_CAPACITY_WINDOW_SECONDS,
+  defaultedProfile,
   effectiveMaxProfile,
   groupMembersFor,
+  lowerProfile,
   type ModelGroupsConfigInput,
   modelGroupsOf,
   primaryContext,
@@ -220,7 +241,16 @@ import {
   parsePrivilegedScope,
   privilegedEligibilityProfile,
 } from "../policy/index.js";
-import type { DynamicProjectStore } from "../projects/index.js";
+import {
+  type DynamicProjectStore,
+  effectiveProjectSources,
+  type GitRunner,
+  normalizedUrl,
+  type ProjectSourceGrantStore,
+  type ProjectSourcesGetter,
+  parseRepositoryUrl,
+  sourceAllowed,
+} from "../projects/index.js";
 import { hotPathsProblem, storedHotPaths } from "../queue/hot-paths.js";
 import { DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT, QUEUE_IDEMPOTENCY_PREFIX } from "../queue/scheduler.js";
 import { deleteRagStore } from "../retrieval/store.js";
@@ -264,7 +294,10 @@ import {
   storeCatalog,
   versionInjectable,
 } from "../skills/index.js";
+import { COPILOT_PROVIDER, type CopilotQuotaReader } from "../usage/copilot-quota.js";
 import { gitText } from "../workspace/git.js";
+import { type BaseToolDeps, rebaseSessionTool, refreshProjectBase } from "./base-tools.js";
+import { type ClosePrArgs, closePr, closePrOffered, recordClosePrRefusal } from "./close-pr.js";
 import {
   type AnyDecisionToolName,
   DECIDE_TOOL_NAMES,
@@ -276,18 +309,31 @@ import { assembleDigest, type OpenDecisionItem } from "./digest.js";
 import { buildEnvelope, compactEvents, type Envelope } from "./envelope.js";
 import { errorEnvelope, invalid, ToolError, toToolError } from "./errors.js";
 import type { SubjectBindings } from "./http-subjects.js";
+import { type MergeRunDeps, mergeRunPr, updateRunBranch, updateRunOffered } from "./merge-run-pr.js";
+import { type OAuthAdmin, UnknownOAuthClientError } from "./oauth-admin.js";
 import {
   admitBrief,
+  contextListItem,
   createProjectTools,
   dynamicListItem,
+  mergePolicyItem,
   type PendingRevisionAnnouncement,
+  type PendingSourceAnnouncement,
   type ProjectTools,
+  setupItem,
+  snapshotSetup,
 } from "./project-tools.js";
+import { type PublishDeps, publishRun } from "./publish.js";
 import {
+  BASE_TOOL_NAMES,
+  type BaseToolName,
   inputSchema,
   MCP_ARTIFACT_KINDS,
+  OAUTH_TOOL_NAMES,
   PROJECT_TOOL_NAMES,
   type ProjectToolName,
+  PUBLISH_TOOL_NAMES,
+  type PublishToolName,
   SCHEMA_DIALECT,
   SEARCH_TOOL_NAMES,
   SKILL_TOOL_NAMES,
@@ -338,8 +384,14 @@ export interface McpServerDeps {
   readonly config: Pick<ResolvedConfig, "allowedRoots" | "mcpClients"> & {
     /** Configured projects (FR-PRJ-01, T9.2). Absent is read as none. */
     readonly projects?: readonly ResolvedProject[];
+    /** ADR-0091 (FR-POL-12): the profile of a request without `trust_profile`. Absent: `trust_profile` is required. */
+    readonly defaultTrustProfile?: ResolvedConfig["defaultTrustProfile"];
+    /** ADR-0091 (FR-POL-12): the scope of a `privileged` request without one. Absent: V13 as before. */
+    readonly defaultPrivilegedScope?: ResolvedConfig["defaultPrivilegedScope"];
     /** T9.9: no dynamic project may lie inside the data directory. */
     readonly dataDir?: string;
+    /** ADR-0068: where `create_project` may clone a `clone_url`. Absent: every `clone_url` is refused. */
+    readonly projectSources?: ResolvedConfig["projectSources"];
     /** T9.9: providers the operator disabled are outside every client's provider set. */
     readonly providers?: ResolvedConfig["providers"];
     /** T5.6: handoff bundle bounds (`continuity.*`, LLD §15.4). Absent means the LLD defaults. */
@@ -361,6 +413,8 @@ export interface McpServerDeps {
   readonly models?: ModelRegistry;
   /** T9.9 (FR-PRJ-10): dynamic projects. Required when the client has `manage_projects`; absent means none resolve. */
   readonly projectStore?: DynamicProjectStore;
+  /** ADR-0068: the Git runner `create_project` clones with. Absent: `git` from `PATH` (tests inject a local one). */
+  readonly projectGit?: GitRunner;
   /**
    * T12.6 (FR-RAG-06): `search_project_context`. Absent (no embedding backend configured) means the tool is never
    * listed; present, it is listed only while retrieval is on for at least one project this client may use.
@@ -381,10 +435,20 @@ export interface McpServerDeps {
   readonly subject?: string;
   /** T13.5: meta-session to subject bindings. Absent on stdio means no HTTP-bound meta-session is filtered out. */
   readonly subjectBindings?: SubjectBindings;
+  /**
+   * The OAuth admin view behind `list_oauth_clients`. Offered only on stdio (no `subject`): a server built for an HTTP
+   * subject never lists or serves the tool, even when this is passed (fail closed).
+   */
+  readonly oauthAdmin?: Pick<OAuthAdmin, "listClients" | "getClient">;
   /** Routing candidate order (BR-4 tie-break). Defaults to registry registration order. */
   readonly candidateOrder?: readonly ProviderId[];
   /** Clock for `get_capacity` (T6.3) and the routing window (T7.2); defaults to the system clock. */
   readonly now?: () => Date;
+  /**
+   * ADR-0079 (FR-CAP-13): the probe runner and cache `get_capacity` reads provider-reported usage with. Absent means
+   * no provider is read and no entry carries `provider_usage`.
+   */
+  readonly providerUsage?: ProviderUsageReaderDeps;
   /**
    * T14.8 (FR-CTL-08, ADR-0047 2f): announces a `decide_approval` decision to the notification sinks when the
    * lifecycle's transition hook does not (see `src/control/approval-proxy.ts`). Absent means no sink is configured.
@@ -402,10 +466,40 @@ export interface McpServerDeps {
    */
   readonly announcePendingRevision?: (a: PendingRevisionAnnouncement) => void;
   /**
+   * ADR-0087 item 8: runtime owner grants for `project_sources.allowed_owners`. With `config.projectSources` it offers
+   * `request_project_source` to a `manage_projects` client, serves the `project_source` approval kind to an approver
+   * that lists it, and makes an approval effective at the next check. Absent: configured owners only.
+   */
+  readonly projectSourceGrants?: ProjectSourceGrantStore;
+  /** ADR-0087: announces a new owner request to the sinks (`approval_pending`, kind `project_source`). */
+  readonly announcePendingSource?: (a: PendingSourceAnnouncement) => void;
+  /**
    * T14.15 (FR-CTL-13, LLD §20.3): the decision service. Absent means `request_decision`, `list_decisions` and `decide`
    * do not exist for this server; `announce` tells the sinks a decision is waiting (`decision_requested`, no text).
    */
   readonly decisions?: { readonly announce?: (a: DecisionAnnouncement) => void };
+  /**
+   * ADR-0069 (LLD §3.4.12): the controller pusher, push-context resolver and `gh` pull-request port behind
+   * `publish_run`. Absent means the tool does not exist for this server; present, it is offered only to a client whose
+   * `max_push_policy` is `branch`.
+   */
+  readonly publish?: PublishDeps;
+  /**
+   * ADR-0070 (LLD §3.4.13): the T15.8 merge port and gate inputs behind `merge_run_pr`. Offered exactly when
+   * `publish_run` is and this is present; absent, the tool does not exist for this server.
+   */
+  readonly mergeRun?: MergeRunDeps;
+  /**
+   * ADR-0074 (LLD §3.4.15): the ledger handle and fetch environment behind `refresh_project_base` and
+   * `rebase_session`. Absent means the tools do not exist for this server; present, they are offered to a client whose
+   * ceiling is above `inspect-untrusted`.
+   */
+  readonly base?: BaseToolDeps;
+  /**
+   * ADR-0081: the usage-only `copilot` provider's quota reader (`capacity.copilot_quota`, the operator's own `gh`).
+   * Present: `get_capacity` accepts `provider: "copilot"` and attaches `provider_quota`. Absent: unchanged.
+   */
+  readonly copilotQuota?: CopilotQuotaReader;
 }
 
 /** T16.9: what the skill tools read. Nothing here is written. */
@@ -510,6 +604,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   }
   /** Project ids with a delegate_task/continue_task between resolution and admission (delete_project waits for them). */
   const admittingCount = new Map<string, number>();
+  // ADR-0087 item 8: configured owners plus approved grants, re-read at each check (no restart).
+  const liveProjectSources: ProjectSourcesGetter | undefined =
+    deps.config.projectSources === undefined
+      ? undefined
+      : effectiveProjectSources(deps.config.projectSources, deps.projectSourceGrants);
+  const sourceRequestsOffered = deps.config.projectSources !== undefined && deps.projectSourceGrants !== undefined;
   const projectTools: ProjectTools | undefined =
     deps.projectStore === undefined
       ? undefined
@@ -519,6 +619,12 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           client,
           allowedRoots: deps.config.allowedRoots,
           ...(deps.config.dataDir !== undefined ? { dataDir: deps.config.dataDir } : {}),
+          ...(liveProjectSources !== undefined ? { projectSources: liveProjectSources } : {}),
+          ...(sourceRequestsOffered && deps.projectSourceGrants !== undefined
+            ? { sourceGrants: deps.projectSourceGrants }
+            : {}),
+          ...(deps.announcePendingSource !== undefined ? { onPendingSource: deps.announcePendingSource } : {}),
+          ...(deps.projectGit !== undefined ? { git: deps.projectGit } : {}),
           configuredIds: () => new Set((deps.config.projects ?? []).map((p) => p.id)),
           disabledProviders: new Set(
             [...(deps.config.providers ?? new Map())].filter(([, v]) => !v.enabled).map(([id]) => id),
@@ -542,6 +648,9 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           clientId: deps.clientId,
           client,
           ...(deps.projectStore !== undefined ? { projectStore: deps.projectStore } : {}),
+          ...(sourceRequestsOffered && deps.projectSourceGrants !== undefined
+            ? { sourceGrants: deps.projectSourceGrants }
+            : {}),
           applyDecision: (req) => lifecycle.applyApprovalDecision(req),
           ...(deps.announceApproval !== undefined ? { announce: deps.announceApproval } : {}),
         })
@@ -651,6 +760,37 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   };
 
   /**
+   * ADR-0091 (FR-MCP-26): the profile a request asks for, before the project's ceiling is known: the given one, else
+   * the configured project's default or the top-level one, lowered to this client's maximum. With no default anywhere,
+   * INVALID_REQUEST naming `field`. The caller lowers a defaulted profile again to the project's effective maximum.
+   */
+  const wantedProfile = (given: unknown, projectId: unknown, field: string): TrustProfile => {
+    if (given !== undefined) return given as TrustProfile;
+    const wanted = defaultFor(projectId);
+    if (wanted === undefined) throw invalid("trust_profile is required", { field });
+    return wanted;
+  };
+  /** ADR-0091: the configured default for a request in `projectId` (or none), lowered to this client's maximum. */
+  const defaultFor = (projectId: unknown): TrustProfile | undefined => {
+    const configured =
+      typeof projectId === "string" ? (deps.config.projects ?? []).find((p) => p.id === projectId) : undefined;
+    return defaultedProfile(deps.config.defaultTrustProfile, configured, maxTrustProfile);
+  };
+  /**
+   * ADR-0093 (FR-POL-13): for a client configured `promote_trust_profile: true`, whether an explicit `given` profile
+   * ranks below `fallback` (the default an omitted one resolves to, already lowered to the request's ceiling), so the
+   * request is resolved as if `trust_profile` were omitted. Never for another client, nor without a default.
+   */
+  const promotes = (given: TrustProfile | undefined, fallback: TrustProfile | undefined): boolean =>
+    client.promoteTrustProfile === true &&
+    given !== undefined &&
+    fallback !== undefined &&
+    profileRank(given) < profileRank(fallback);
+  /** ADR-0091 (FR-MCP-26): the request's scope, else the operator's default scope for a `privileged` profile. */
+  const scopeOrDefault = (given: unknown, profile: TrustProfile): unknown =>
+    given ?? (profile === "privileged" ? deps.config.defaultPrivilegedScope : undefined);
+
+  /**
    * FRD V12 / BR-23 / LLD §11.2 steps 1-3, 5: the project, if this client may use it, with its primary context's
    * canonical path. Nothing is written. `profile` decides whether the workspace must be a Git repository (V4); the base
    * ref is verified whatever the profile, since the project's contexts are repositories by definition.
@@ -710,6 +850,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         ...(context.sign ? { sign: true as const } : {}),
         // T5.14 (FR-SES-07): the brief's hash, read now; an unreadable brief refuses the run (fail closed).
         ...admitBrief(project, deps.config.allowedRoots),
+        // ADR-0071: the setup step as of admission (the approved, in-force revision of a dynamic project).
+        ...snapshotSetup(project),
       },
     };
   };
@@ -723,7 +865,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const allowed = project?.project.allowedProviders;
     if (allowed === undefined) return { candidates: all, excluded: [] };
     // Config ids (`claude-code`) differ from adapter ids (`claude`); a provider with no mapping (the test `fake`) is never allowed.
-    const set = new Set<string>(allowed.flatMap((id) => adapterIdForConfigId(id) ?? []));
+    // ADR-0076: either spelling is compared by canonical name; a name no entry knows is never allowed.
+    const set = new Set<string>(allowed.flatMap((id) => canonicalProviderId(id) ?? []));
     if (required !== undefined && !set.has(required)) {
       throw new ToolError(
         "PERMISSION_BLOCKED",
@@ -757,9 +900,17 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         });
       }
     }
+    // ADR-0076: either spelling (`claude`, `claude-code`) names a provider; the request carries the canonical name from
+    // here on (request hash, stored queue request, route decision and ledger), so outputs report it as before.
+    const given = routing.provider_preference;
+    if (given !== undefined) routing.provider_preference = canonicalProviderId(given) ?? given;
     const named = routing.provider_preference;
     if (named !== undefined && !deps.registry.has(named as ProviderId)) {
-      throw invalid(`unknown provider ${named}`, { field: "routing.provider_preference" });
+      const accepted = acceptedProviderNames(deps.registry.list().map((a) => a.id));
+      throw invalid(`unknown provider ${given}; accepted names: ${accepted.join(", ")}`, {
+        field: "routing.provider_preference",
+        providers: accepted,
+      });
     }
     if (routing.require_provider === true && named === undefined) {
       throw invalid("routing.require_provider needs routing.provider_preference", { field: "routing" });
@@ -1026,13 +1177,25 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
   const delegateTask = async (a: Args): Promise<Envelope> => {
     const routing = a.routing as Routing | undefined;
-    const profile = a.trust_profile as TrustProfile;
+    // ADR-0091: an absent trust_profile is the configured default, lowered to the client's maximum here and to the
+    // project's effective maximum once the project is resolved. ADR-0093: a promoting client's explicit profile below
+    // that default is resolved the same way; whether it stays promoted is decided against the project's ceiling below.
+    const given = a.trust_profile as TrustProfile | undefined;
+    const fallback = given === undefined ? undefined : defaultFor(a.project);
+    const early = promotes(given, fallback) ? fallback : undefined;
+    let profile = early ?? wantedProfile(given, a.project, "trust_profile");
     // V12 / V3 / V4: exactly one of `project` and `workspace_path` (the schema's oneOf has already refused anything else).
     const resolved = a.project !== undefined ? await resolveProject(a.project as string, profile) : undefined;
+    if ((given === undefined || early !== undefined) && resolved !== undefined) {
+      profile = lowerProfile(profile, resolved.effectiveMax);
+    }
+    // ADR-0093: never below what was asked for; at or above the clamped default the request is unchanged.
+    const promotedFrom = early !== undefined && promotes(given, profile) ? given : undefined;
+    if (early !== undefined && promotedFrom === undefined) profile = given as TrustProfile;
     const workspace = resolved?.workspace ?? (await lifecycle.canonicalWorkspace(a.workspace_path as string, profile));
     checkCeiling(profile, resolved); // V5 / BR-23
-    // V13 (after V5): privileged_scope present exactly when the profile is privileged.
-    const scopeArg = a.privileged_scope;
+    // V13 (after V5): privileged_scope present exactly when the profile is privileged; ADR-0091 default scope.
+    const scopeArg = scopeOrDefault(a.privileged_scope, profile);
     if (profile === "privileged" && scopeArg === undefined) {
       throw invalid("trust_profile privileged requires privileged_scope", { field: "privileged_scope" });
     }
@@ -1152,6 +1315,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
               trustProfile: profile,
               clientMaxProfile: resolved?.effectiveMax ?? maxTrustProfile,
               cwd: workspace,
+              // The request's own scope, as stage 1: a re-check must never compile the bare name `privileged`.
+              ...(scope?.ok ? { profile: privilegedEligibilityProfile(scope.scope) } : {}),
             },
             privileged,
             minimumCapability,
@@ -1177,6 +1342,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       ...(skills !== undefined ? { skills } : {}),
       // T3.24 (FR-CAP-12, LLD §20.2): `light` is honoured only for a client configured `allow_light: true`.
       ...(a.light === true && client.allowLight === true ? { light: true } : {}),
+      // ADR-0093 (FR-POL-13): the explicit tier the request named, recorded as a `trust_profile_promoted` event.
+      ...(promotedFrom !== undefined ? { trustProfilePromotedFrom: promotedFrom } : {}),
       ...(scope?.ok
         ? {
             privileged: {
@@ -1264,7 +1431,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       // outside the project is ineligible like any other reason (BR-23) and is not probed.
       if (required !== undefined) projectCandidates(resolved, p0);
       const allowedSet = resolved?.project.allowedProviders;
-      const p0Allowed = allowedSet === undefined || allowedSet.some((id) => adapterIdForConfigId(id) === p0);
+      const p0Allowed = allowedSet === undefined || allowedSet.some((id) => canonicalProviderId(id) === p0);
       answerP0 = p0Allowed ? await ask([p0], p0) : undefined;
       if (answerP0 === undefined || !admissible(answerP0, privileged).includes(p0)) {
         if (required !== undefined && answerP0 !== undefined) throw eligibilityError(answerP0); // BR-18 → BR-2 / BR-3
@@ -1478,6 +1645,8 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         projectIds: [
           ...projectsForClient(deps.config.projects ?? [], client).map((p) => p.id),
           ...(projectTools?.listForClient().map((e) => e.project.id) ?? []),
+          // ADR-0068: an open onboarding decision is visible under the project it proposes.
+          ...(decisionsOffered ? ownOnboardingIds() : []),
         ],
       },
       a.since_cursor as string | undefined,
@@ -1554,11 +1723,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     };
   };
 
+  /** The project `checkListProject` accepted: this client's dynamic project or a configured one. */
+  const listProject = (projectId: string): ResolvedProject | undefined =>
+    projectTools?.listForClient().find((e) => e.project.id === projectId)?.project ??
+    (deps.config.projects ?? []).find((p) => p.id === projectId);
   /** The lower of this client's and the project's maximum profile, for a project `checkListProject` accepted. */
   const listProjectCeiling = (projectId: string): TrustProfile => {
-    const project =
-      projectTools?.listForClient().find((e) => e.project.id === projectId)?.project ??
-      (deps.config.projects ?? []).find((p) => p.id === projectId);
+    const project = listProject(projectId);
     return project === undefined ? maxTrustProfile : effectiveMaxProfile(maxTrustProfile, project);
   };
 
@@ -1566,10 +1737,16 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
    * The `enqueue_work` request checks that need no workspace (V5 against the lower of the client's and the project's
    * maximum now, V13, V7, V8, V15); `prefix` names the request in `details.field`. Also run on each entry of a
    * decision's enqueue list (T14.15), so a decision can never queue what this client could not queue itself.
+   * Returns the request to store: ADR-0091 fills an absent `trust_profile` (the default, lowered to the ceiling) and,
+   * for `privileged`, an absent `privileged_scope` (the operator's default), so admission reads them as if given.
    */
-  const checkQueuedRequest = (projectId: string, request: Args, prefix = "request."): void => {
-    const profile = request.trust_profile as TrustProfile;
+  const checkQueuedRequest = (projectId: string, request: Args, prefix = "request."): Args => {
     const effectiveMax = listProjectCeiling(projectId);
+    const given = request.trust_profile as TrustProfile | undefined;
+    const fallback = defaultedProfile(deps.config.defaultTrustProfile, listProject(projectId), effectiveMax);
+    // ADR-0093 (FR-POL-13): a promoting client's explicit profile below the clamped default is stored as the default.
+    const profile = given === undefined || promotes(given, fallback) ? fallback : given;
+    if (profile === undefined) throw invalid("trust_profile is required", { field: `${prefix}trust_profile` });
     if (profileRank(profile) > profileRank(effectiveMax)) {
       // V5 / BR-23 at enqueue; admission checks the ceiling again under the configuration of that time (LLD §18.4).
       throw new ToolError(
@@ -1583,7 +1760,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         },
       );
     }
-    const scopeArg = request.privileged_scope;
+    const scopeArg = scopeOrDefault(request.privileged_scope, profile);
     if (profile === "privileged" && scopeArg === undefined) {
       throw invalid("trust_profile privileged requires privileged_scope", { field: `${prefix}privileged_scope` });
     }
@@ -1610,13 +1787,13 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     }
     checkRouting(request.routing as Routing | undefined);
     skillFieldsOf(request, prefix); // V15 at enqueue; the fields are stored and resolve at the item's admission
+    return { ...request, trust_profile: profile, ...(scopeArg !== undefined ? { privileged_scope: scopeArg } : {}) };
   };
 
   const enqueueWork = async (a: Args) => {
     const projectId = a.project_id as string;
     checkListProject(projectId);
-    const request = a.request as Args;
-    checkQueuedRequest(projectId, request);
+    const request = checkQueuedRequest(projectId, a.request as Args); // ADR-0091: the resolved profile and scope
 
     const predecessors = [...((a.depends_on as string[] | undefined) ?? [])].sort();
     for (const id of predecessors) ownWorkItem(id);
@@ -1731,13 +1908,69 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     });
   };
 
+  /**
+   * ADR-0068: the project an onboarding decision proposes. `project_id` must not be a configured id or another
+   * client's dynamic project (one message for both, as for `create_project`), nor a deleted or usable project of this
+   * client; it may be unknown or this client's own project waiting for approval or rejected. The URL is parsed by the
+   * clone rules and, when `project_sources` is configured, must be allowed there. Returns the normalised URL.
+   */
+  const checkOnboarding = (projectId: string, a: Args): string => {
+    if (a.work_item_id !== undefined || a.enqueue !== undefined) {
+      throw invalid("onboarding cannot be combined with work_item_id or enqueue (the project does not exist yet)", {
+        field: a.work_item_id !== undefined ? "work_item_id" : "enqueue",
+      });
+    }
+    const taken = () =>
+      new ToolError("PERMISSION_BLOCKED", `project ${projectId} cannot be proposed by this client`, {
+        project: projectId,
+        reason: "NOT_MANAGEABLE",
+      });
+    if ((deps.config.projects ?? []).some((p) => p.id === projectId)) throw taken();
+    const st = deps.projectStore?.state(projectId);
+    if (st !== undefined) {
+      if (st.clientId !== deps.clientId) throw taken();
+      if (st.deleted) {
+        throw invalid(`project ${projectId} was deleted; project ids are not reused`, {
+          field: "project_id",
+          reason: "ID_DELETED",
+        });
+      }
+      if (st.inForce !== undefined) {
+        throw invalid(`project ${projectId} already has an approved revision; ask without onboarding`, {
+          field: "project_id",
+          reason: "PROJECT_EXISTS",
+        });
+      }
+    }
+    const onboarding = a.onboarding as { repository_url: string };
+    const src = parseRepositoryUrl(onboarding.repository_url);
+    if (src === undefined) {
+      throw invalid(
+        "onboarding.repository_url must be https://<host>/<owner>/<repo> (optional .git), without " +
+          "credentials, port, query or fragment",
+        { field: "onboarding.repository_url", reason: "CLONE_URL_INVALID" },
+      );
+    }
+    const sources = liveProjectSources?.();
+    if (sources !== undefined && !sourceAllowed(src, sources)) {
+      throw new ToolError(
+        "PERMISSION_BLOCKED",
+        "the repository host or owner is not in this server's project_sources",
+        { field: "onboarding.repository_url", reason: "CLONE_SOURCE_NOT_ALLOWED" },
+      );
+    }
+    return normalizedUrl(src);
+  };
+
   const requestDecisionTool = async (a: Args) => {
     const projectId = a.project_id as string;
-    checkListProject(projectId);
-    const enqueue = (a.enqueue as { request: Args; priority: number }[] | undefined) ?? [];
-    enqueue.forEach((e, i) => {
-      checkQueuedRequest(projectId, e.request, `enqueue[${i}].request.`);
-    });
+    const onboardingUrl = a.onboarding !== undefined ? checkOnboarding(projectId, a) : undefined;
+    if (onboardingUrl === undefined) checkListProject(projectId);
+    // ADR-0091: each entry is stored with its resolved profile and scope, as enqueue_work stores its request.
+    const enqueue = ((a.enqueue as { request: Args; priority: number }[] | undefined) ?? []).map((e, i) => ({
+      ...e,
+      request: checkQueuedRequest(projectId, e.request, `enqueue[${i}].request.`),
+    }));
     const limit = deps.config.queue?.maxItemsPerProject ?? DEFAULT_QUEUE_MAX_ITEMS_PER_PROJECT;
     if (enqueue.length > 0 && ledger.countWorkItemsForProject(projectId) + enqueue.length > limit) {
       throw invalid(`the work queue of project ${projectId} cannot take ${enqueue.length} more items`, {
@@ -1757,6 +1990,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
           options: a.options as DecisionOption[],
           recommendedOption: a.recommended_option as number,
           enqueue,
+          ...(onboardingUrl !== undefined ? { onboardingUrl } : {}),
         },
         deps.decisions?.announce,
       );
@@ -1766,8 +2000,24 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     }
   };
 
+  /**
+   * ADR-0068: project ids of this client's open onboarding decisions (the projects may not exist yet), for the digest.
+   * Bounded like `openDecisionsOf` (Delegated: the 200 oldest open decisions).
+   */
+  const ownOnboardingIds = (): Set<string> =>
+    new Set(
+      ledger
+        .listDecisions({ requesterClientIds: [deps.clientId], states: ["open"], limit: 200 })
+        .filter((d) => d.onboarding_url !== null)
+        .map((d) => d.project_id),
+    );
+
   const listDecisionsTool = async (a: Args) => {
-    if (a.project_id !== undefined) checkListProject(a.project_id as string);
+    // ADR-0068: a project id this client asked a decision about (an onboarding proposal) is a valid filter too; the
+    // rows are this client's own either way.
+    const ownDecision = (id: string) =>
+      ledger.listDecisions({ requesterClientIds: [deps.clientId], projectId: id, limit: 1 }).length > 0;
+    if (a.project_id !== undefined && !ownDecision(a.project_id as string)) checkListProject(a.project_id as string);
     const rows = ledger.listDecisions({
       requesterClientIds: [deps.clientId],
       ...(a.project_id !== undefined ? { projectId: a.project_id as string } : {}),
@@ -1866,15 +2116,26 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
 
   /**
    * LLD §16.3 `get_capacity` (T6.3; FR-MCP-02, FR-CAP-02, FR-CAP-03): the one capacity projection, for every registered
-   * provider in candidate order or for the one named. Read-only; it never probes or calls a provider.
+   * provider in candidate order or for the one named. Read-only. ADR-0079 (FR-CAP-13): with `providerUsage`, each
+   * enabled provider whose adapter has a usage reader is asked through its own CLI (no model call, cached a minute)
+   * and its entry carries `provider_usage`; nothing else is probed.
    */
   const getCapacity = async (args: Args) => {
     const registered = deps.registry.list().map((a) => a.id);
     const cand = candidates();
     const ids: string[] = [...cand, ...registered.filter((id) => !cand.includes(id))];
-    const named = args.provider as string | undefined;
-    if (named !== undefined && !ids.includes(named)) {
-      throw invalid(`unknown provider ${JSON.stringify(named)}`, { providers: ids });
+    // ADR-0076: either spelling; the answer names the canonical provider.
+    const given = args.provider as string | undefined;
+    const named = given === undefined ? undefined : (canonicalProviderId(given) ?? given);
+    // ADR-0081: `copilot` is usage-only (no adapter): accepted only while the quota reader is configured.
+    const quota = deps.copilotQuota;
+    const usageOnly = quota !== undefined && named === COPILOT_PROVIDER && !ids.includes(named);
+    if (named !== undefined && !ids.includes(named) && !usageOnly) {
+      const accepted = [...acceptedProviderNames(ids), ...(quota !== undefined ? [COPILOT_PROVIDER] : [])];
+      throw invalid(`unknown provider ${JSON.stringify(given)}; accepted names: ${accepted.join(", ")}`, {
+        providers: ids,
+        accepted_names: accepted,
+      });
     }
     // T6.14: pass the capacity object through. Rebuilding a two-field settings object here would drop subscriptions,
     // and get_capacity would disagree with `capacity --json`.
@@ -1882,12 +2143,31 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       windowSeconds: DEFAULT_CAPACITY_WINDOW_SECONDS,
       confidenceRuns: DEFAULT_CAPACITY_CONFIDENCE_RUNS,
     };
-    const providers = capacityProviders(named === undefined ? ids : [named], {
+    const providers = capacityProviders(usageOnly ? [] : named === undefined ? ids : [named], {
       ...(deps.config.providers !== undefined ? { providers: deps.config.providers } : {}),
       ...(deps.config.limits !== undefined ? { limits: deps.config.limits } : {}),
     });
     // T6.7: the affinity block shows this client's own runs only.
-    return capacityProjection(ledger, providers, settings, (deps.now ?? (() => new Date()))(), deps.clientId);
+    const now = (deps.now ?? (() => new Date()))();
+    const estimated = capacityProjection(ledger, providers, settings, now, deps.clientId);
+    // ADR-0079 (FR-CAP-13): provider-reported usage per adapter entry. A usage-only `copilot` request has no entries.
+    const projection =
+      deps.providerUsage === undefined
+        ? estimated
+        : withProviderUsage(
+            estimated,
+            await readProviderUsage(
+              usageReadTargets(
+                deps.registry.list().filter((a) => providers.some((p) => p.id === a.id)),
+                estimated,
+              ),
+              deps.providerUsage,
+              now,
+            ),
+          );
+    // ADR-0081: the provider-reported quota rides alongside, never mixed into the estimates. The reader never throws.
+    if (quota === undefined || (named !== undefined && !usageOnly)) return projection;
+    return { ...projection, provider_quota: [await quota()] };
   };
 
   /**
@@ -1899,6 +2179,11 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     return explainRoute(run.id, ledger.getRouteDecision(run.id), scrub);
   };
 
+  /** ADR-0091: the profile a request here without `trust_profile` resolves to; absent when no default is configured. */
+  const defaultProfileItem = (p: ResolvedProject) => {
+    const d = defaultedProfile(deps.config.defaultTrustProfile, p, effectiveMaxProfile(maxTrustProfile, p));
+    return d === undefined ? {} : { default_trust_profile: d };
+  };
   /** LLD §3 `list_projects`: the projects this client may use, without paths, remotes, identities or image data. */
   const listProjects = async () => ({
     projects: [
@@ -1906,13 +2191,19 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         id: p.id,
         name: p.name,
         environment_kind: p.environment.kind,
-        contexts: p.contexts.map((c) => ({ id: c.id, kind: c.kind, primary: c.primary, push_policy: c.push.policy })),
+        contexts: p.contexts.map(contextListItem),
         ...(p.maxTrustProfile !== undefined ? { max_trust_profile: p.maxTrustProfile } : {}),
         effective_max_profile: effectiveMaxProfile(maxTrustProfile, p),
+        ...defaultProfileItem(p),
         ...(p.allowedProviders !== undefined ? { allowed_providers: [...p.allowedProviders] } : {}),
+        ...mergePolicyItem(p),
+        ...setupItem(p),
       })),
       // T9.9: this client's dynamic projects (creator-only), marked `source: "dynamic"`.
-      ...(projectTools?.listForClient().map((e) => dynamicListItem(e, maxTrustProfile)) ?? []),
+      ...(projectTools?.listForClient().map((e) => ({
+        ...dynamicListItem(e, maxTrustProfile),
+        ...defaultProfileItem(e.project),
+      })) ?? []),
     ],
   });
 
@@ -1933,22 +2224,38 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     const probed = facts?.probe?.steps.every((s) => s.ok) === true;
     // T3.7: supported_profiles is the provider's compile matrix on this host: the host-platform rule, then the
     // adapter's own compile of each resolved profile (overrides included), exactly as the eligibility filter asks it.
+    // ADR-0092: `privileged` is listed when a non-bypass representative scope compiles or, failing that, an approved
+    // bypass cell does; `bypassOnly` records the second case (undefined while `privileged` is not listed).
     const supported: TrustProfile[] = [];
+    let bypassOnly: boolean | undefined;
     if (adapter && probed) {
       for (const p of TRUST_PROFILE_ORDER) {
         if (!profilePlatformSupported(p, answer.input.platform)) continue;
-        let profiles: ResolvedProfile[];
+        const compiles = (profile: ResolvedProfile) =>
+          !("ineligible" in compileCheck(adapter, profile, requirementsFor(p, profile), cwd));
+        if (p === "privileged") {
+          if (REPRESENTATIVE_PRIVILEGED_SCOPES.some((sc) => compiles(privilegedEligibilityProfile(sc)))) {
+            supported.push(p);
+            bypassOnly = false;
+          } else if (
+            // Listing-only approval: nothing is dispatched from here; a run's bypass is still decided by its approval
+            // at dispatch (`evaluateBypass`) and audited in its argv.
+            REPRESENTATIVE_BYPASS_SCOPES.some((sc) =>
+              compiles({ ...privilegedEligibilityProfile(sc), bypassApproved: true }),
+            )
+          ) {
+            supported.push(p);
+            bypassOnly = true;
+          }
+          continue;
+        }
+        let profile: ResolvedProfile;
         try {
-          profiles =
-            p === "privileged"
-              ? REPRESENTATIVE_PRIVILEGED_SCOPES.map((sc) => privilegedEligibilityProfile(sc))
-              : [lifecycle.resolveProfile(p)];
+          profile = lifecycle.resolveProfile(p);
         } catch {
           continue; // COMP-POL does not resolve this profile: unsupported, fail closed
         }
-        const compiles = (profile: ResolvedProfile) =>
-          !("ineligible" in compileCheck(adapter, profile, requirementsFor(p, profile), cwd));
-        if (profiles.some(compiles)) supported.push(p);
+        if (compiles(profile)) supported.push(p);
       }
     }
     return {
@@ -1959,6 +2266,7 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
       validated_range: facts?.gate?.evidence.validatedRange ?? null,
       auth_state: facts?.auth?.state ?? "NOT_CHECKED",
       supported_profiles: supported,
+      ...(bypassOnly !== undefined ? { privileged_bypass_only: bypassOnly } : {}),
       transports: [...(adapter?.transports ?? [])],
       models: [],
       sandbox_features: [],
@@ -2022,6 +2330,122 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
   /** T16.9 (FR-SKL-08): offered only while the store is wired and `skills.enabled` is true. */
   const skillsOffered = deps.skills?.settings.enabled === true;
   const skillValidators = compileSkillValidators();
+
+  // ADR-0069 (LLD §3.4.12): `publish_run`, scoped exactly as `get_run` (another client's or subject's run is unknown).
+  const publishOffered = deps.publish !== undefined && client.maxPushPolicy === "branch";
+  const publishValidators = compilePublishValidators();
+  const publishRunTool = async (a: Args) => {
+    const run = ownRun(a.run_id as string);
+    return publishRun(
+      { ledger, artifacts: deps.artifacts, clientId: deps.clientId, clientProjects: client.projects ?? [], scrub },
+      deps.publish as PublishDeps,
+      run,
+      { openPullRequest: a.open_pull_request !== false, draft: a.draft === true },
+    );
+  };
+  // ADR-0070 (LLD §3.4.13): `merge_run_pr`, offered exactly when `publish_run` is and the merge port is wired.
+  const mergeRunOffered = publishOffered && deps.mergeRun !== undefined;
+  const mergeRunPrTool = async (a: Args) =>
+    mergeRunPr(
+      { ledger, clientId: deps.clientId, clientProjects: client.projects ?? [] },
+      deps.publish as PublishDeps,
+      deps.mergeRun as MergeRunDeps,
+      ownRun(a.run_id as string),
+      a.expected_head_sha as string | undefined,
+    );
+  // ADR-0073 (LLD §3.4.14): `update_run_branch`, offered with `merge_run_pr` when the update port is wired too.
+  const updateBranchOffered = mergeRunOffered && updateRunOffered(deps.mergeRun);
+  const updateRunBranchTool = async (a: Args) =>
+    updateRunBranch(
+      { ledger, clientId: deps.clientId, clientProjects: client.projects ?? [] },
+      deps.publish as PublishDeps,
+      deps.mergeRun as MergeRunDeps,
+      ownRun(a.run_id as string),
+      a.expected_head_sha as string | undefined,
+    );
+  // ADR-0078 (LLD §3.4.16): `close_pr`, offered with `publish_run` when the pull-request port can read by number and
+  // close; scoped to pull requests `publish_run` created for this client's visible runs of the project.
+  const closePrToolOffered = publishOffered && closePrOffered(deps.publish);
+  const closePrTool = async (a: Args) =>
+    closePr(
+      {
+        ledger,
+        clientId: deps.clientId,
+        clientProjects: client.projects ?? [],
+        visibleRun: (runId) => {
+          const run = ledger.getRunRecord(runId);
+          return run !== undefined && run.client_id === deps.clientId && ownSubject(run.meta_session_id);
+        },
+      },
+      deps.publish as PublishDeps,
+      a as unknown as ClosePrArgs,
+    );
+  // ADR-0074 (LLD §3.4.15): scoped like `search_project_context` (projects) and `continue_task` (meta-sessions).
+  const baseOffered = deps.base !== undefined && maxTrustProfile !== "inspect-untrusted";
+  const baseValidators = compileBaseValidators();
+  const oauthAdmin = deps.subject === undefined ? deps.oauthAdmin : undefined;
+  const oauthOffered = oauthAdmin !== undefined;
+  const oauthValidator = new Ajv2020({ allErrors: true, strict: true, useDefaults: true }).compile(
+    inputSchema("list_oauth_clients"),
+  );
+  /** The client's newest visible run of `projectId` in `repoRoot`: where `refresh_project_base` records its event. */
+  const anchorRun = (projectId: string, repoRoot: string): string | undefined => {
+    const rows = (deps.base as BaseToolDeps).db
+      .prepare(
+        `SELECT r.id, r.meta_session_id FROM run r JOIN meta_session m ON m.id = r.meta_session_id
+         WHERE r.client_id = ? AND r.project_id = ? AND m.repo_root = ? ORDER BY r.created_at DESC, r.id DESC LIMIT 20`,
+      )
+      .all(deps.clientId, projectId, repoRoot) as { id: string; meta_session_id: string }[];
+    return rows.find((r) => ownSubject(r.meta_session_id))?.id;
+  };
+  const refreshProjectBaseTool = async (a: Args) => {
+    const project = await searchTarget(a.project_id as string);
+    return refreshProjectBase(deps.base as BaseToolDeps, project, (root) => anchorRun(project.id, root));
+  };
+  const rebaseSessionHandler = async (a: Args) => {
+    const sessionId = a.session_id as string;
+    const session = ledger.getMetaSession(sessionId);
+    const ctx = session ? lifecycle.metaSessionContext(sessionId) : undefined;
+    if (!session || !ctx || ctx.clientId !== deps.clientId || !ownSubject(sessionId)) {
+      throw invalid(`unknown meta-session ${sessionId}`);
+    }
+    if (session.status !== "ACTIVE") throw invalid(`meta-session ${sessionId} is closed`);
+    if (ctx.activeRunId !== undefined) {
+      throw invalid(`meta-session ${sessionId} has an active run ${ctx.activeRunId}`, {
+        reason: "ACTIVE_RUN",
+        run_id: ctx.activeRunId,
+      });
+    }
+    if (ctx.projectId === undefined) {
+      throw invalid(`meta-session ${sessionId} has no project, so it has no remote base`, {
+        reason: "NOT_REMOTE_BACKED",
+      });
+    }
+    // BR-23 / FR-PRJ-09: the meta-session's project is re-resolved under the current checks.
+    const project = await searchTarget(ctx.projectId);
+    return rebaseSessionTool(
+      deps.base as BaseToolDeps,
+      { id: sessionId, repoRoot: session.repo_root },
+      project,
+      a.expected_head_sha as string | undefined,
+    );
+  };
+  const baseHandlers: Record<BaseToolName, (a: Args) => Promise<object>> = {
+    refresh_project_base: refreshProjectBaseTool,
+    rebase_session: rebaseSessionHandler,
+  };
+  const publishHandlers: Record<PublishToolName, (a: Args) => Promise<object>> = {
+    publish_run: publishRunTool,
+    merge_run_pr: mergeRunPrTool,
+    update_run_branch: updateRunBranchTool,
+    close_pr: closePrTool,
+  };
+  const publishToolOffered = (name: string) =>
+    (PUBLISH_TOOL_NAMES as readonly string[]).includes(name) &&
+    publishOffered &&
+    (name !== "merge_run_pr" || mergeRunOffered) &&
+    (name !== "update_run_branch" || updateBranchOffered) &&
+    (name !== "close_pr" || closePrToolOffered);
   const skillGate = (profile: TrustProfile): SkillGate => ({
     profile,
     allowDraftInTrusted: deps.skills?.settings.allowDraftInTrusted === true,
@@ -2122,9 +2546,16 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
     applyToolProfile(client.toolProfile, [
       ...toolDescriptors({
         manageProjects: client.manageProjects === true && projectTools !== undefined,
+        projectSources: sourceRequestsOffered,
         searchContext: searchOffered(),
         workQueue: workQueueOffered,
         skills: skillsOffered,
+        publish: publishOffered,
+        mergeRunPr: mergeRunOffered,
+        updateRunBranch: updateBranchOffered,
+        closePr: closePrToolOffered,
+        baseTools: baseOffered,
+        oauthClients: oauthOffered,
       }),
       // T14.8: listed only for an approval_proxy client (absent, not refused, for every other client).
       ...(approvalProxy !== undefined
@@ -2169,13 +2600,20 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
           projectTools?.recordNotOffered(name as ProjectToolName, rawArgs);
         }
+        // ADR-0078: every `close_pr` call is audited, also one this client is not offered.
+        if (name === "close_pr") recordClosePrRefusal(ledger, deps.clientId, rawArgs, "TOOL_NOT_OFFERED");
         throw invalid(`unknown tool ${JSON.stringify(name.slice(0, 64))}`, {
           tools: offeredToolNames(),
         });
       }
       if ((PROJECT_TOOL_NAMES as readonly string[]).includes(name)) {
         // T9.9 (FR-PRJ-10): offered only with manage_projects; otherwise answered exactly like an unknown tool, but recorded.
-        if (client.manageProjects === true && projectTools !== undefined) {
+        // ADR-0087: `request_project_source` also needs project_sources and the grant store.
+        if (
+          client.manageProjects === true &&
+          projectTools !== undefined &&
+          (name !== "request_project_source" || sourceRequestsOffered)
+        ) {
           return ok(await projectTools.call(name as ProjectToolName, rawArgs));
         }
         projectTools?.recordNotOffered(name as ProjectToolName, rawArgs);
@@ -2206,6 +2644,43 @@ export function createSwitchboardServer(deps: McpServerDeps): SwitchboardMcpServ
         const validate = skillValidators[tool];
         if (!validate(args)) throw schemaError(validate.errors ?? []);
         return ok(await skillHandlers[tool](args));
+      }
+      if (name === "close_pr" && !publishToolOffered(name)) {
+        // ADR-0078: audited, then answered like an unknown tool below.
+        recordClosePrRefusal(ledger, deps.clientId, rawArgs, "TOOL_NOT_OFFERED");
+      }
+      if (publishToolOffered(name)) {
+        // ADR-0069: when not offered (no publish port, or max_push_policy none) it is answered like an unknown tool;
+        // ADR-0070: `merge_run_pr` also without the merge port; ADR-0073: `update_run_branch` also without the update
+        // port; ADR-0078: `close_pr` also without the port's read-by-number and close.
+        const tool = name as PublishToolName;
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        const validate = publishValidators[tool];
+        if (!validate(args)) {
+          if (tool === "close_pr") recordClosePrRefusal(ledger, deps.clientId, rawArgs, "SCHEMA_INVALID");
+          throw schemaError(validate.errors ?? []);
+        }
+        return ok(await publishHandlers[tool](args));
+      }
+      if ((BASE_TOOL_NAMES as readonly string[]).includes(name) && baseOffered) {
+        // ADR-0074: when not offered (no base port, or an inspect-only client) it is answered like an unknown tool.
+        const tool = name as BaseToolName;
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        const validate = baseValidators[tool];
+        if (!validate(args)) throw schemaError(validate.errors ?? []);
+        return ok(await baseHandlers[tool](args));
+      }
+      if ((OAUTH_TOOL_NAMES as readonly string[]).includes(name) && oauthAdmin !== undefined) {
+        // Stdio only: over HTTP `oauthAdmin` is never set, so the name is answered exactly like an unknown tool.
+        const args = structuredClone(rawArgs ?? {}) as Args;
+        if (!oauthValidator(args)) throw schemaError(oauthValidator.errors ?? []);
+        const id = args.client_id as string | undefined;
+        try {
+          return ok({ clients: id === undefined ? oauthAdmin.listClients() : [oauthAdmin.getClient(id)] });
+        } catch (err) {
+          if (err instanceof UnknownOAuthClientError) throw invalid(err.message, { field: "client_id" });
+          throw err;
+        }
       }
       if ((WORK_QUEUE_TOOL_NAMES as readonly string[]).includes(name) && workQueueOffered) {
         // T15.9 (FR-QUE-08): when not offered (a console client) it is answered exactly like an unknown tool.
@@ -2295,8 +2770,8 @@ const PER_PROFILE_REASONS: ReadonlySet<EligibilityReasonCode> = new Set([
  * provider compiles at least one privileged scope here"; each request's own scope is still compiled at dispatch, where
  * an `Ineligible` ends the run with its BR-3 code. No single scope compiles for both adapters (T3.5: Claude has no
  * network control, so it needs network `on`; T3.6: Codex cannot disable commands, so it needs shell `broad` with
- * network `off`), hence a small set rather than the narrowest scope alone. All have `bypass: false`: listing never
- * compiles with `bypassApproved`, which only an approval grants.
+ * network `off`), hence a small set rather than the narrowest scope alone. All have `bypass: false` and are compiled
+ * without `bypassApproved`; the approved bypass cells are tried separately ({@link REPRESENTATIVE_BYPASS_SCOPES}).
  */
 const REPRESENTATIVE_PRIVILEGED_SCOPES: readonly PrivilegedScope[] = [
   // The narrowest scope LLD §3.1 allows.
@@ -2325,6 +2800,32 @@ const REPRESENTATIVE_PRIVILEGED_SCOPES: readonly PrivilegedScope[] = [
   },
 ];
 
+/**
+ * ADR-0092 (Delegated, 2026-10-21; amends LLD §3.1 "Listing"): the approved bypass cells `list_capabilities` compiles
+ * when no {@link REPRESENTATIVE_PRIVILEGED_SCOPES} scope compiles. Grok Build, Cursor, OpenCode, Kimi Code and
+ * Antigravity compile only an approved bypass scope (their lower tiers are Ineligible by design, ADR-0077) and only
+ * with repository_config `enabled`; Claude and Codex also compile `disabled`. These are compiled with
+ * `bypassApproved: true` spread over {@link privilegedEligibilityProfile}: a listing-only simulation, since listing
+ * never dispatches. A run's bypass is still decided at dispatch by its approval (`evaluateBypass`) and audited in its
+ * argv; a request's own scope is still compiled there.
+ */
+const REPRESENTATIVE_BYPASS_SCOPES: readonly PrivilegedScope[] = [
+  {
+    files: { access: "worktree" },
+    shell: { mode: "broad" },
+    network: { mode: "on" },
+    repository_config: { mode: "enabled" },
+    bypass: true,
+  },
+  {
+    files: { access: "worktree" },
+    shell: { mode: "broad" },
+    network: { mode: "on" },
+    repository_config: { mode: "disabled" },
+    bypass: true,
+  },
+];
+
 function compileValidators(): Record<ToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
   return Object.fromEntries(TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
@@ -2337,6 +2838,22 @@ function compileSkillValidators(): Record<SkillToolName, ValidateFunction> {
   const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
   return Object.fromEntries(SKILL_TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
     SkillToolName,
+    ValidateFunction
+  >;
+}
+
+function compilePublishValidators(): Record<PublishToolName, ValidateFunction> {
+  const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
+  return Object.fromEntries(PUBLISH_TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
+    PublishToolName,
+    ValidateFunction
+  >;
+}
+
+function compileBaseValidators(): Record<BaseToolName, ValidateFunction> {
+  const ajv = new Ajv2020({ allErrors: true, strict: true, useDefaults: true });
+  return Object.fromEntries(BASE_TOOL_NAMES.map((n) => [n, ajv.compile(inputSchema(n))])) as Record<
+    BaseToolName,
     ValidateFunction
   >;
 }

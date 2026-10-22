@@ -11,6 +11,8 @@
  *
  *   request:  {"v":1,"token":"<token>","tool":"commit","arguments":{...}}
  *   response: {"ok":true,"result":{"sha":"...","files_changed":1}}
+ *             {"ok":true,"result":{"sha":"...","files_changed":2,"submodules":[{"paths":["libs/a"],"repo":"...",
+ *               "commit_sha":"..."}],"submodules_skipped":[{"path":"wiki","reason":"read_only"}]}}  (ADR-0087 item 4)
  *             {"ok":true,"result":{"pushed":true,"ref":"refs/heads/...","head_sha":"..."}}   (push, T9.6)
  *             {"ok":true,"result":{"status":"ok","index_revision":3,"results":[...]}}      (search, T12.9)
  *             {"ok":false,"error":{"code":"NOT_RUNNING","message":"..."}}
@@ -203,9 +205,20 @@ export interface ToolRequest {
   readonly arguments: Record<string, unknown>;
 }
 
+/**
+ * One answer line. An error carries a short code and a message; `details` is optional structured data the shim relays
+ * unchanged (today only a `SECRET_SCAN_BLOCKED` push refusal's findings, ADR-0075).
+ */
 export type ToolResponse =
   | { readonly ok: true; readonly result: Record<string, unknown> }
-  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } };
+  | {
+      readonly ok: false;
+      readonly error: {
+        readonly code: string;
+        readonly message: string;
+        readonly details?: Readonly<Record<string, unknown>>;
+      };
+    };
 
 /** True when `s` has the exact token shape (prefix plus 43 base64url characters). Does not say whether it is valid. */
 export function isTokenShaped(s: unknown): s is string {

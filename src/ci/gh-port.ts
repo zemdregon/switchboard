@@ -1,7 +1,8 @@
 /**
  * Production {@link CiStatusPort} (T15.3; ADR-0050): runs the operator's logged-in `gh` as an external subprocess with
  * an argv from the closed allowlist (`gh-argv.ts`), no shell, an allowlisted environment and a wall-clock bound. Only
- * allowlisted JSON fields are read; stderr is discarded and no `gh` output reaches an error message, log or the ledger.
+ * allowlisted JSON fields are read; this port discards stderr and no `gh` output reaches an error message, log or the
+ * ledger. {@link execGh} keeps a bounded stderr tail only for the pull-request port's failure detail (ADR-0095).
  * Tests inject {@link GhRunner}; CI never runs a real `gh`.
  */
 import { execFile } from "node:child_process";
@@ -11,7 +12,10 @@ import {
   ghEnv,
   ghPrGateViewArgv,
   ghPrMergeArgv,
+  ghPrMergeStateArgv,
+  ghPrReportedChecksArgv,
   ghPrRequiredChecksArgv,
+  ghPrUpdateBranchArgv,
   ghPrViewArgv,
   ghRunCancelArgv,
   ghRunHeadArgv,
@@ -23,8 +27,10 @@ import {
   isFullLowerSha,
   parseCheckRuns,
   parsePrGateView,
+  parsePrMergeState,
   parsePrView,
   parseQueuedRuns,
+  parseReportedChecks,
   parseRequiredChecks,
   parseRunHead,
   parseRunJobs,
@@ -33,12 +39,16 @@ import {
 } from "./gh-argv.js";
 import {
   type CiActionsPort,
+  type CiBranchUpdatePort,
   type CiConclusion,
   type CiMergePort,
   type CiPullRequestGateView,
+  type CiPullRequestMergeState,
+  type CiPullRequestMergeStatePort,
   type CiPullRequestPort,
   type CiPullRequestState,
   type CiQueuedRun,
+  type CiReportedChecks,
   type CiRequiredChecks,
   type CiRunJob,
   type CiRunQuery,
@@ -54,6 +64,8 @@ export const GH_EXIT_AUTH_REQUIRED = 4;
 export const GH_EXIT_CHECKS_PENDING = 8;
 export const DEFAULT_GH_TIMEOUT_MS = 30_000;
 const MAX_GH_STDOUT_BYTES = 1024 * 1024;
+/** ADR-0095: most characters of a failed run's stderr kept on {@link GhRunResult.stderr} (its tail). */
+export const MAX_GH_STDERR_CHARS = 4096;
 
 export interface GhRunResult {
   /** Exit code, or null when the process was killed. */
@@ -62,6 +74,11 @@ export interface GhRunResult {
   readonly timedOut?: boolean;
   /** The binary was not found. */
   readonly notFound?: boolean;
+  /**
+   * ADR-0095: the tail (at most {@link MAX_GH_STDERR_CHARS}) of stderr when `gh` exited non-zero; raw and unsanitised,
+   * so only the pull-request port reads it, through `ghFailureDetail`.
+   */
+  readonly stderr?: string;
 }
 
 export type GhRunner = (
@@ -70,7 +87,7 @@ export type GhRunner = (
   options: { env: Record<string, string>; timeoutMs: number },
 ) => Promise<GhRunResult>;
 
-/** Default runner: `execFile` (never a shell), stdout capped, stderr dropped. */
+/** Default runner: `execFile` (never a shell), stdout capped, stderr kept (tail) only for a non-zero exit. */
 export const execGh: GhRunner = (binary, argv, { env, timeoutMs }) =>
   new Promise((resolve) => {
     execFile(
@@ -84,12 +101,16 @@ export const execGh: GhRunner = (binary, argv, { env, timeoutMs }) =>
         maxBuffer: MAX_GH_STDOUT_BYTES,
         windowsHide: true,
       },
-      (err, stdout) => {
+      (err, stdout, stderr) => {
         if (err === null) return resolve({ exitCode: 0, stdout: String(stdout) });
         const e = err as NodeJS.ErrnoException & { code?: unknown; killed?: boolean; signal?: string | null };
         if (e.code === "ENOENT") return resolve({ exitCode: null, stdout: "", notFound: true });
         if (e.killed === true || e.signal === "SIGKILL") return resolve({ exitCode: null, stdout: "", timedOut: true });
-        resolve({ exitCode: typeof e.code === "number" ? e.code : 1, stdout: String(stdout ?? "") });
+        resolve({
+          exitCode: typeof e.code === "number" ? e.code : 1,
+          stdout: String(stdout ?? ""),
+          stderr: String(stderr ?? "").slice(-MAX_GH_STDERR_CHARS),
+        });
       },
     );
   });
@@ -114,7 +135,15 @@ export interface GhCiStatusPortOptions {
   readonly useCheckRunsFallback?: boolean;
 }
 
-export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullRequestPort, CiMergePort {
+export class GhCiStatusPort
+  implements
+    CiStatusPort,
+    CiActionsPort,
+    CiPullRequestPort,
+    CiMergePort,
+    CiBranchUpdatePort,
+    CiPullRequestMergeStatePort
+{
   private readonly binary: string;
   private readonly runner: GhRunner;
   private readonly sourceEnv: Readonly<Record<string, string | undefined>>;
@@ -244,12 +273,28 @@ export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullReques
    * error both refuse the merge.
    */
   async requiredChecks(q: { owner: string; repo: string; prNumber: number }): Promise<CiRequiredChecks> {
-    const argv = ghPrRequiredChecksArgv(q.owner, q.repo, String(q.prNumber));
+    return this.readChecks(ghPrRequiredChecksArgv(q.owner, q.repo, String(q.prNumber)), parseRequiredChecks);
+  }
+
+  /** G18 (ADR-0087 item 7): as {@link requiredChecks} without `--required`; none reported reads as `none`. */
+  async reportedChecks(q: { owner: string; repo: string; prNumber: number }): Promise<CiReportedChecks> {
+    return this.readChecks(ghPrReportedChecksArgv(q.owner, q.repo, String(q.prNumber)), parseReportedChecks);
+  }
+
+  /** G19 (ADR-0087 item 7): the state and merge commit of one pull request of any `owner/repo`; no `gh` text is kept. */
+  async pullRequestMergeState(q: { owner: string; repo: string; prNumber: number }): Promise<CiPullRequestMergeState> {
+    const out = this.parse(await this.run(ghPrMergeStateArgv(q.owner, q.repo, String(q.prNumber))), parsePrMergeState);
+    return out.mergeCommitSha === undefined
+      ? { state: out.state }
+      : { state: out.state, mergeCommitSha: out.mergeCommitSha };
+  }
+
+  private async readChecks(argv: string[], parseFn: (s: string) => string[]): Promise<CiRequiredChecks> {
     const r = await this.runner(this.binary, argv, { env: ghEnv(this.sourceEnv), timeoutMs: this.timeoutMs });
     const soft =
       r.notFound !== true && r.timedOut !== true && (r.exitCode === 1 || r.exitCode === GH_EXIT_CHECKS_PENDING);
     if (soft && r.exitCode === 1 && r.stdout.trim() === "") return { kind: "none" };
-    const buckets = this.parse(soft ? r.stdout : this.check(r), parseRequiredChecks);
+    const buckets = this.parse(soft ? r.stdout : this.check(r), parseFn);
     return buckets.length === 0 ? { kind: "none" } : { kind: "checks", buckets };
   }
 
@@ -262,6 +307,15 @@ export class GhCiStatusPort implements CiStatusPort, CiActionsPort, CiPullReques
     headSha: string;
   }): Promise<void> {
     await this.run(ghPrMergeArgv(q.owner, q.repo, String(q.prNumber), q.method, q.headSha.toLowerCase()));
+  }
+
+  async updatePullRequestBranch(q: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    expectedHeadSha: string;
+  }): Promise<void> {
+    await this.run(ghPrUpdateBranchArgv(q.owner, q.repo, String(q.prNumber), q.expectedHeadSha.toLowerCase()));
   }
 
   private async run(argv: string[]): Promise<string> {

@@ -28,8 +28,19 @@
  *
  * T3.24 (FR-CAP-12, LLD §20.2): a `QUEUED` run whose latest `load_hold` event has no later `load_release` carries
  * `hold: { reason: "held_load", since }` (the hold event's time). Absent otherwise; a hold is not a needs-attention reason.
+ *
+ * ADR-0069 (LLD §3.4.12): a run with at least one ACCEPTED `git_push` event (the agent `push` tool, an operator push
+ * recorded on it, or `publish_run`) carries `publications`, one entry per pushed branch and head, oldest first, with the
+ * newest `pull_request` row of that branch when `publish_run` opened or reused one. Deliberate exception to "no branch
+ * names" above: the remote branch is what the caller publishes and reviews; it is the controller's
+ * `<branch_prefix><meta-session id>`, never a run branch or a worktree path.
+ *
+ * ADR-0087 items 6 and 7 (LLD §3.4.17): a publication of an umbrella project carries `linked_pull_requests`, the
+ * submodule pull requests `publish_run` linked to the branch (newest per repository, with the pushed paths) and, once
+ * the ordered merge reached one, its `merge_state` read from the `submodule_merge` steps.
  */
 
+import { RUN_WARNING_CODES, type RunWarning } from "../adapters/types.js";
 import { HELD_LOAD_REASON, LOAD_HOLD_EVENT, LOAD_RELEASE_EVENT } from "../capacity/host-load.js";
 import { budgetControlFacts } from "../control/budgets.js";
 import { loopBreakerControlFacts } from "../control/loop-attention.js";
@@ -71,6 +82,8 @@ export interface Envelope {
     changed_files?: number;
     verification: Record<string, unknown>[];
     verification_summary?: VerificationSummaryView;
+    /** ADR-0072: recovered, non-security denials of a run that succeeded. */
+    warnings?: RunWarning[];
   };
   artifacts: Record<string, string>;
   usage: { reported: ReportedUsage[] | null; estimated: null; capacity_confidence: null };
@@ -86,7 +99,106 @@ export interface Envelope {
   /** T8.10 (FR-EXE-10, LLD §20.6): the run's newest verification result's pin; present once one is recorded. */
   verification?: VerificationPinView;
   replayed?: boolean;
+  /** ADR-0069: accepted pushes of this run's branch, with the pull request `publish_run` opened for it. */
+  publications?: PublicationView[];
   events?: { seq: number; ts: string; type: string; payload: unknown }[];
+}
+
+/** ADR-0069: one pushed branch head of a run; the pull request fields only when one was recorded for the branch. */
+export interface PublicationView {
+  branch: string;
+  head_sha: string;
+  pushed_at: string;
+  pull_request_url?: string;
+  pull_request_number?: number;
+  /** ADR-0087 item 6: the submodule pull requests `publish_run` linked to this branch; present only when there is one. */
+  linked_pull_requests?: LinkedPullRequestView[];
+}
+
+/** ADR-0087 items 6 and 7: one linked submodule pull request and, once the ordered merge reached it, its state. */
+export interface LinkedPullRequestView {
+  /** `host/owner/repo` (as `publish_run`'s `submodules[].repo`). */
+  repo: string;
+  paths: string[];
+  number: number;
+  url: string;
+  base_ref: string;
+  head_sha: string;
+  merge_state?: { state: "merged"; merged_sha: string } | { state: "refused"; reason: string };
+}
+
+/**
+ * ADR-0087: the newest `submodule_pull_request` row per repository linked to `branch`, with the paths of the push it
+ * was opened for and its merge state from the `submodule_merge` steps of the umbrella ref: `merged` once a
+ * `submodule_merged` step names the pull request, else `refused` with the newest refusal at its head, else absent.
+ */
+function linkedPullRequestsOf(ledger: Ledger, run: RunRecord, branch: string): LinkedPullRequestView[] {
+  const umbrellaRef = `refs/heads/${branch}`;
+  const newest = new Map<string, ReturnType<Ledger["listSubmodulePullRequestsForRun"]>[number]>();
+  for (const pr of ledger.listSubmodulePullRequestsForRun(run.id)) {
+    if (pr.umbrella_ref === umbrellaRef) newest.set(pr.push?.repo ?? pr.repo, pr);
+  }
+  if (newest.size === 0) return [];
+  const steps = run.project_id === null ? [] : ledger.listSubmoduleMergeSteps(run.project_id, umbrellaRef);
+  const out: LinkedPullRequestView[] = [];
+  for (const [repo, pr] of newest) {
+    // GitHub owner and repository names are case-insensitive.
+    const mine = steps.filter((s) => s.repo?.toLowerCase() === pr.repo.toLowerCase() && s.pr_number === pr.number);
+    const merged = mine.find((s) => s.step === "submodule_merged" && s.merged_sha !== null);
+    const refused = mine.filter((s) => s.step === "submodule_refused" && s.head_sha === pr.head_sha).at(-1);
+    out.push({
+      repo,
+      paths: pr.push !== undefined ? pathsOf(pr.push.paths_json) : [],
+      number: pr.number,
+      url: pr.url,
+      base_ref: pr.base_ref,
+      head_sha: pr.head_sha,
+      ...(merged !== undefined
+        ? { merge_state: { state: "merged" as const, merged_sha: merged.merged_sha as string } }
+        : refused?.reason != null
+          ? { merge_state: { state: "refused" as const, reason: refused.reason } }
+          : {}),
+    });
+  }
+  return out.sort((a, b) => ((a.paths[0] ?? a.repo) < (b.paths[0] ?? b.repo) ? -1 : 1));
+}
+
+function pathsOf(json: string): string[] {
+  try {
+    const v = JSON.parse(json) as unknown;
+    return Array.isArray(v) ? v.filter((p): p is string => typeof p === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** ADR-0069: accepted `git_push` events of the run (deduplicated by branch and head) and its `pull_request` rows. */
+function publicationsOf(ledger: Ledger, run: RunRecord, pushes: readonly { ts: string; payload: unknown }[]) {
+  const runId = run.id;
+  const out: PublicationView[] = [];
+  const seen = new Set<string>();
+  for (const e of pushes) {
+    const p = e.payload as { outcome?: unknown; ref?: unknown; head_sha?: unknown };
+    if (p.outcome !== "ACCEPTED" || typeof p.ref !== "string" || typeof p.head_sha !== "string") continue;
+    if (!p.ref.startsWith("refs/heads/") || !/^[0-9a-f]{40}$/u.test(p.head_sha)) continue;
+    const branch = p.ref.slice("refs/heads/".length);
+    const key = `${branch}\u0000${p.head_sha}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ branch, head_sha: p.head_sha, pushed_at: e.ts });
+  }
+  if (out.length === 0) return out;
+  const prs = ledger.listPullRequestsForRun(runId);
+  for (const pub of out) {
+    const pr = prs.filter((r) => r.branch === pub.branch).at(-1);
+    if (pr !== undefined) {
+      pub.pull_request_url = pr.url;
+      pub.pull_request_number = pr.number;
+    }
+    const linked = linkedPullRequestsOf(ledger, run, pub.branch);
+    if (linked.length > 0) pub.linked_pull_requests = linked;
+  }
+  return out;
 }
 
 /**
@@ -126,6 +238,8 @@ interface TransitionPayload {
   changed_files?: number;
   /** T3.10: per-command verification summaries (index, outcome, exit status; never argv or output). */
   verification?: unknown;
+  /** ADR-0072: the terminal transition's recovered-denial warnings. */
+  warnings?: unknown;
 }
 
 export function buildEnvelope(
@@ -138,7 +252,16 @@ export function buildEnvelope(
   let terminal: TransitionPayload | undefined;
   let summaryPayload: unknown;
   let loadHoldSince: string | undefined;
+  const pushes: { ts: string; payload: unknown }[] = [];
   for (const e of ledger.listRunEvents(run.id)) {
+    if (e.type === "git_push") {
+      try {
+        pushes.push({ ts: e.ts, payload: JSON.parse(e.payload_json) });
+      } catch {
+        // an unreadable payload is not a publication
+      }
+      continue;
+    }
     if (e.type === LOAD_HOLD_EVENT || e.type === LOAD_RELEASE_EVENT) {
       loadHoldSince = e.type === LOAD_HOLD_EVENT ? e.ts : undefined;
       continue;
@@ -169,9 +292,13 @@ export function buildEnvelope(
     );
   }
 
+  const warnings = warningsView(terminal?.warnings);
+  if (warnings.length > 0) result.warnings = warnings;
+
   const verificationSummary = summaryView(summaryPayload, scrub);
   if (verificationSummary !== undefined) result.verification_summary = verificationSummary;
   const pin = verificationPin(ledger, run.id);
+  const publications = publicationsOf(ledger, run, pushes);
 
   return {
     run_id: run.id,
@@ -191,6 +318,7 @@ export function buildEnvelope(
       ? { hold: { reason: HELD_LOAD_REASON, since: loadHoldSince } }
       : {}),
     ...(pin !== undefined ? { verification: pin } : {}),
+    ...(publications.length > 0 ? { publications } : {}),
     ...(attention !== undefined
       ? {
           needs_attention: needsAttentionOf(ledger, run, {
@@ -359,4 +487,21 @@ function operatorOnlyStripped(json: string): string {
   } catch {
     return JSON.stringify({ unparseable: true });
   }
+}
+
+const WARNING_TOOL = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+/** ADR-0072: the stored warnings re-checked against the closed shape on read; anything else is dropped. */
+function warningsView(raw: unknown): RunWarning[] {
+  if (!Array.isArray(raw)) return [];
+  const out: RunWarning[] = [];
+  for (const w of raw) {
+    if (typeof w !== "object" || w === null) continue;
+    const { code, tool, count } = w as Record<string, unknown>;
+    if (!RUN_WARNING_CODES.some((c) => c === code)) continue;
+    if (typeof tool !== "string" || !WARNING_TOOL.test(tool)) continue;
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 1) continue;
+    out.push({ code: code as RunWarning["code"], tool, count });
+  }
+  return out;
 }

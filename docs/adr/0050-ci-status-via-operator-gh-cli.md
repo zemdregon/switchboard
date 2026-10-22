@@ -65,6 +65,11 @@ every verb below, and each write verb is behind its own project switch, off by d
   `number,state,isDraft,mergeable,headRefOid` (G9; no check results — required-check gating is item 10, T15.8), read-only.
 - **Item 10, merge** (FR-SUB-02): `gh pr merge <number> --<method> --match-head-commit <sha>`, only for a project
   whose merge policy is on, under the gate of [ADR-0060](0060-opt-in-head-pinned-merge-policy.md).
+- *Note 2026-10-20:* [ADR-0073](0073-merge-gate-accepts-pure-base-merges.md) adds template G15, `gh api --method PUT
+  repos/{owner}/{repo}/pulls/{number}/update-branch -f expected_head_sha=<sha> --silent`, for MCP `update_run_branch`.
+- *Note 2026-10-21:* [ADR-0078](0078-mcp-close-pr.md) adds templates G16, `gh pr close <number> --repo <o>/<r> --comment
+  <controller comment> [--delete-branch]`, and G17, `gh pr view <number> --repo <o>/<r> --json
+  number,state,url,headRefName`, for MCP `close_pr`.
 
 Every other `gh` verb stays refused, and the argv allowlist test keeps proving it. Exact field names and flags are
 checked against the installed `gh` in ROADMAP T15.6 to T15.8 before code relies on them

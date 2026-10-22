@@ -21,8 +21,8 @@ export const RESUMED_SESSION_ID = "0b6c2d1e-0000-4000-8000-000000000042";
 /** The `failureDetail` text of `model_unavailable.jsonl` (its invented C10 message). */
 const MODEL_DETAIL =
   "model_unavailable: invalid model selection (--model synthetic-missing): SYNTHETIC. Available models: Synthetic Model";
-/** The guard's `failureDetail` for the `git commit` step in both Git-write fixtures (ADR-0039). */
-const GIT_DETAIL = "git write attempted: `git commit` can create commits, change refs or push";
+/** The guard's `failureDetail` for the `git push` step in both Git-write fixtures (ADR-0039). */
+const GIT_DETAIL = "git write attempted: `git push` can create commits, change refs or push";
 /** The guard's `failureDetail` for the two shadowed Git-write fixtures (PR #387: every parameter key and container). */
 const GIT_PUSH_DETAIL = "git write attempted: `git push` can create commits, change refs or push";
 const GIT_TAG_DETAIL = "git write attempted: `git tag` can create commits, change refs or push";

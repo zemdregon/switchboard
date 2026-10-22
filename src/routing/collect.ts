@@ -8,7 +8,7 @@
  * `probe`. `compile` is pure and runs after a successful probe (adapters resolve their binary path in `probe`).
  */
 import type { PreflightCache } from "../adapters/preflight-cache.js";
-import { BUILTIN_CONFIG_TO_ADAPTER_ID, configIdForAdapterId } from "../adapters/providers.js";
+import { BUILTIN_CONFIG_TO_ADAPTER_ID, canonicalProviderId, configIdForProviderName } from "../adapters/providers.js";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import type {
   AuthResult,
@@ -44,10 +44,13 @@ export const CONFIG_TO_ADAPTER_ID: Readonly<Record<ConfigProviderId, ProviderId>
  * follow the same default.
  */
 export function isProviderEnabled(config: Pick<SwitchboardConfig, "providers"> | undefined, id: ProviderId): boolean {
-  const configId = configIdForAdapterId(id);
+  // ADR-0076: `id` may be either spelling, and so may the map's keys when a caller built the config without
+  // `validateConfig`; a provider is disabled when any spelling of it says so (an alias never re-enables it).
+  const configId = configIdForProviderName(id);
   if (configId === undefined) return true;
   const providers = config?.providers as Readonly<Record<string, { enabled?: boolean } | undefined>> | undefined;
-  return providers?.[configId]?.enabled !== false;
+  const canonical = canonicalProviderId(id) as string;
+  return providers?.[configId]?.enabled !== false && providers?.[canonical]?.enabled !== false;
 }
 
 export interface EligibilityRequest {

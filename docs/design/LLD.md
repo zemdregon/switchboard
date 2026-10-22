@@ -476,6 +476,28 @@ registry table, `BUILTIN_PROVIDERS` in `src/adapters/providers.ts`; `ProviderId`
 `PROVIDER_IDS` and the `providers` and `allowed_providers` schema parts in `src/config/schema.ts`,
 `CONFIG_TO_ADAPTER_ID` in `src/routing/collect.ts` and the `serve` and `doctor` registrations are derived from it.
 
+*Canonical name and aliases (2026-10-20, Delegated, not owner-approved, [ADR-0076](../adr/0076-provider-name-aliases.md)):*
+a provider's **canonical name** is its adapter id; its config id, where different, is an **alias**. Every input that
+names a provider accepts both spellings (exact, lower case) and normalises them with `canonicalProviderId` or
+`configIdForProviderName` (`src/adapters/providers.ts`); every output reports the canonical name, as before. The
+loaded config keeps the config spelling (the second column of the table above); config files may use either.
+
+| Canonical name | Alias | Label |
+| --- | --- | --- |
+| `claude` | `claude-code` | Claude Code |
+| `codex` | none (same spelling) | Codex |
+| `grok` | `grok-build` | Grok Build |
+| `antigravity` | none (same spelling) | Antigravity |
+| `cursor` | none (same spelling) | Cursor |
+| `opencode` | none (same spelling) | OpenCode |
+| `kimi` | `kimi-code` | Kimi Code |
+| `muse` | `muse-code` | Muse Code |
+| `fake` | none (test-only, no config id) | fake adapter |
+
+A list that names one provider twice after normalisation is de-duplicated; two `providers.<name>` keys naming one
+provider are a config error. Enablement, project limits, `widened_providers` and the project candidate filter compare
+canonical names, so an alias cannot re-enable a disabled provider or widen a project's set.
+
 | Config provider id | Adapter `ProviderId` | In the table (T4.1) | Declared bypass-class flags (source) | Declared short flags and values (ADR-0037; source) |
 | --- | --- | --- | --- | --- |
 | `claude-code` | `claude` | Adapter | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions` ([TDD §4.1.1](TDD.md#411-claude-code-native-controls-per-profile-and-platform-t30), `claude --help` 2.1.296) | Value `--permission-mode bypassPermissions` (same source); active |
@@ -483,7 +505,7 @@ registry table, `BUILTIN_PROVIDERS` in `src/adapters/providers.ts`; `ProviderId`
 | `grok-build` | `grok` | Module `src/adapters/grok/` (T4.22; manifest range admits no version) | None (its long bypass flags are shared `BYPASS_FLAGS`) | Values `--permission-mode bypassPermissions`; `--allow` and `--allowed-tools` with `*` or `**` (catch-all, Proposed) ([TDD §4.3.1](TDD.md#431-grok-build-native-controls-per-profile-and-platform-t420)); active since T4.22 |
 | `antigravity` | `antigravity` | Module `src/adapters/antigravity/` (T4.32; manifest range `>=1.4.2 <1.5.0` since the live `adapters validate` pass on 2026-10-18, T4.38) | `-dangerously-skip-permissions` (the two-dash form is shared), `--remote-control`, `-remote-control`, `--gemini_dir`, `-gemini_dir`, `--add-dir`, `-add-dir` ([TDD §4.4](TDD.md#44-antigravity-agy-m4), the T4.31 live check, [ADR-0045](../adr/0045-one-dash-long-bypass-flag-spellings.md); Proposed) | None ([TDD §4.4.2](TDD.md#442-antigravity-native-controls-per-profile-and-platform-t430): `always-proceed` is a settings value) |
 | `cursor` | `cursor` | Module `src/adapters/cursor/` (T4.42; manifest range admits `>=2026.10.16 <2026.11.0` since the T4.48 live `adapters validate` pass on 2026-10-19) | `--auto-review`, `--worktree`, `--worktree-base`, `--skip-worktree-setup`, `--workspace`, `--add-dir`, `--plugin-dir`, `--api-key`, `--auth-token`, `--header`, `--endpoint` (`--force`, `--yolo`, `--approve-mcps` are shared; [TDD §4.5](TDD.md#45-cursor-cli-m4) and the T4.41 `--help`, Proposed) | Short `-f`, `-w`, `-H`, `-e`; value `--sandbox disabled` ([TDD §4.5](TDD.md#45-cursor-cli-m4), Proposed); active since T4.42 |
-| `opencode` | `opencode` | Module `src/adapters/opencode/` (T4.52; manifest range `>=2.0.23 <2.1.0` since the live `adapters validate` pass on 2026-10-18, T4.58) | `--auto` ([TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450), Proposed; never emitted, Q-83) | None (the inline `allow` permission is carried in the environment, which the adapter never sets, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
+| `opencode` | `opencode` | Module `src/adapters/opencode/` (T4.52; manifest range `>=2.0.23 <2.1.0` since the live `adapters validate` pass on 2026-10-18, T4.58) | `--auto` ([TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450), Proposed; emitted only in the approved bypass cell since 2026-10-21, ADR-0077; omitted before, Q-83) | None (the inline `allow` permission is carried in the environment, which the adapter never sets, [TDD §4.6.2](TDD.md#462-inventory-and-decisions-for-later-tasks-t450)) |
 | `kimi-code` | `kimi` | Module `src/adapters/kimi/` (T4.62; manifest range `>=2.1.1 <2.2.0` since the live `adapters validate` pass on 2026-10-18, T4.68) | `--auto`, `--plan` (`--yolo` is shared; [ADR-0049](../adr/0049-kimi-code-transport-and-bypass-class.md), [TDD §4.7](TDD.md#47-kimi-code-m4-blocked-by-b-1)). `-p`/`--prompt` are bypass-class (ADR-0049 item 1) declared as `providerScopedBypassFlags`, refused outside the approved bypass cell only in Kimi argv (Q-95 answered 2026-10-16; the compile gate emits `--prompt=`) | Short `-y`; ACP modes `auto`, `yolo` and the `mode` option with those values (ADR-0049 item 2); active since T4.62 |
 | `muse-code` | `muse` | Module `src/adapters/muse/` (T4.72; manifest range admits no version) | `--disable-approval`, `--disable-sandbox`, `--trust-workspace` (`--yolo` is shared; [TDD §4.8](TDD.md#48-muse-code-m4), Proposed) | Values `--approval-mode never`, `--sandbox-network unrestricted` and the deprecated alias `--sandbox-network enabled` (deliberate over-refusal; [TDD §4.8](TDD.md#48-muse-code-m4), Proposed); active since T4.72 |
 | none | `fake` | Test-only adapter (`serve` registers it only behind the test-only switch) | None | None |
@@ -520,7 +542,8 @@ export type NormalizedEvent =
   | { kind: 'message'; role: 'assistant'; text: string }               // bounded; final-visible text only
   | { kind: 'usage'; source: 'provider_reported'; metrics: Record<string, number|string|null> }
   | { kind: 'rate_limit'; resetAt?: string; reportedCategory?: string }
-  | { kind: 'permission_denied'; tool: string }                         // -> PERMISSION_BLOCKED
+  | { kind: 'permission_denied'; tool: string;                          // -> PERMISSION_BLOCKED, except a recovered
+      denial?: 'profile'|'git_write'|'outside_worktree'|'git_rule_local' } //  `profile`/`git_rule_local` denial (ADR-0072, §4)
   | { kind: 'sandbox_violation'; detail: string }                       // -> SANDBOX_VIOLATION
   | { kind: 'provider_error'; category: string; message: string }
   | { kind: 'result'; ok: boolean; summary?: string }
@@ -974,7 +997,7 @@ schema and fails on any unbounded node, so a new tool or field cannot silently r
 { "$defs": {
   "trust_profile": { "enum": ["inspect-untrusted","edit-untrusted","test-sandboxed","trusted-development","privileged"] },
   "routing": { "type": "object", "properties": {
-      "provider_preference": { "type": "string" },
+      "provider_preference": { "type": "string" },   // either spelling, normalised to the canonical name (ADR-0076)
       "require_provider": { "type": "boolean", "default": false },
       "minimum_capability": { "enum": ["low","medium","high"] },
       // Built (T7.14, §17.7, ADR-0055): delegate_task and enqueue_work only, mutually exclusive
@@ -992,7 +1015,8 @@ schema and fails on any unbounded node, so a new tool or field cannot silently r
       "result": { "type": "object", "properties": { "summary": { "type": "string", "maxLength": 4000 },
           "changed_files": { "type": "integer" },
           "verification": { "type": "array", "items": { "type": "object" } },   // per command, §8.1
-          "verification_summary": { "type": "object" } } },  // M11, T11.9: display-only prose, see §13.6
+          "verification_summary": { "type": "object" },  // M11, T11.9: display-only prose, see §13.6
+          "warnings": { "type": "array", "items": { "type": "object" } } } },  // ADR-0072: { code: "PERMISSION_DENIED_RECOVERED"|"GIT_RULE_DENIED_RECOVERED", tool, count }
       "artifacts": { "type": "object", "additionalProperties": { "type": "string" } },   // kind -> art_ id
       "approval": { "type": "object", "required": ["status","requested_at"], "properties": {   // privileged only (M3, §3.1)
           "status": { "enum": ["PENDING","APPROVED","DENIED"] }, "requested_at": { "type": "string" } } },
@@ -1021,12 +1045,40 @@ artifacts are operator-CLI only.
   "output": "envelope (status is current state; terminal only if the run finished within wait_seconds)" }
 ```
 
+*Amended 2026-10-21 ([ADR-0091](../adr/0091-configured-default-trust-profile-and-unattended-http-privileged.md), FR-MCP-26, owner ruling 2026-10-21, mechanism Delegated):*
+`trust_profile` is optional in the published schema (`required` is `["objective"]` plus the `workspace_path` /
+`project` alternative), as it is in the `enqueue_work` request (§18.2) and each `request_decision` enqueue entry. An
+absent profile resolves to the configured project's `default_trust_profile`, else the top-level
+`default_trust_profile` ([TDD §3.1](TDD.md#31-configuration)), lowered to the effective ceiling (the client's
+maximum, and in a project the lower of it and the project's); with neither configured the request is
+`INVALID_REQUEST` `trust_profile is required`, `details.field = "trust_profile"`. When the resolved profile is
+`privileged` and `privileged_scope` is absent, the configured `default_privileged_scope` is the request's scope (§3.1);
+an explicit scope wins. The request hash, eligibility, admission and a queued item's `request_json` use the resolved
+profile and scope. `list_projects` items add `default_trust_profile` (the clamped default) when one is configured.
+
+*Amended 2026-10-21 ([ADR-0093](../adr/0093-promote-explicit-lower-trust-profiles.md), FR-POL-13, owner ruling 2026-10-21, mechanism Delegated):*
+for a client configured `promote_trust_profile: true`, an explicit `trust_profile` that ranks below the default an
+absent one would resolve to (above, already lowered to the effective ceiling) is resolved as if absent, including the
+default scope; at or above that default, or with no default configured, the request is unchanged, so promotion never
+lowers a request and never exceeds the ceiling. `delegate_task` decides it after the project's ceiling is known; the
+admission transaction then appends a `trust_profile_promoted` run event `{ requested, resolved }`. `enqueue_work` and
+decision enqueue entries store the promoted profile and scope in `request_json`. `continue_task` is not promoted.
+
 Behaviour: validation, path and profile checks, then in one transaction insert `meta_session` (new), `run` (`QUEUED`, or
 `AWAITING_APPROVAL` for `privileged`, with its `PENDING` approval row, §3.1) and the first `run_event`; only then return
 or wait (§10). A repeated `(client, idempotency_key)` with identical `request_hash` returns the original run; the same
 key with different parameters fails `INVALID_REQUEST` (FR-MCP-08). A key starting `queue:` is reserved for runs the
 work queue admits and fails `INVALID_REQUEST` (§20.8). `wait_seconds` is a bounded wait on run completion;
 it never holds a DB transaction and returns the current non-terminal envelope on expiry.
+
+*Workspace refusal (FR-POL-10, 2026-10-20, [ADR-0068](../adr/0068-mcp-only-project-onboarding.md), Delegated detail):*
+every failure of `workspace_path` (outside the allowed roots, missing, not a directory, not a Git repository for a
+write-capable profile, repository root outside the roots) returns one `INVALID_REQUEST` message,
+`NOT_AN_ALLOWED_WORKSPACE`: "workspace_path is not an allowed workspace (an existing directory under an allowed root;
+a Git repository for write-capable profiles)". Before this, "workspace does not exist" was answered ahead of the
+allowed-root check, so a client could probe which host paths exist. `realpath` is taken of the raw path (no lexical
+`..` normalisation, so `link/..` resolves through the link). `checkWorkspace` in `src/lifecycle/lifecycle.ts`; tests
+`src/mcp/mcp-onboarding.test.ts` (byte-identical errors) and `test/malicious/controller.test.ts`.
 
 **`continue_task`** (M2 same provider, M5 cross-provider)
 
@@ -1080,18 +1132,21 @@ draft (M11, [§13.6](#136-task-contracts)); Switchboard never opens a pull reque
 exists only when the handoff-condensation task stored one beside the raw `handoff_view` (M11, T11.10, [§13.6](#136-task-contracts));
 it does not replace the view.
 **`list_capabilities`** `{}` returns `{ schema_version, providers: [{provider, adapter_status, binary_version,
-validated_range, auth_state, supported_profiles[], transports[], models[], sandbox_features[], git_write_control?}] }`;
+validated_range, auth_state, supported_profiles[], privileged_bypass_only?, transports[], models[], sandbox_features[],
+git_write_control?}] }`;
 reads cached preflight (NFR-PERF-02). `git_write_control` is `{ kind: "provider-deny-rules" | "none-documented", detail,
 remaining_controls[] }`, the adapter's FR-GIT-01 declaration (Proposed, added in T2.2).
 `supported_profiles` (T3.7, Proposed) is the provider's compile matrix on this host: a profile is listed only if the
 host platform is verified for it (Linux only until M4; every profile counts as sandbox-dependent, NFR-PORT-02) and the
 adapter's own `compile` of the resolved profile, with configured overrides, returns no `Ineligible` (the same check
-the eligibility filter makes). `privileged` is listed only if the adapter compiles the narrowest scope (read-only
-files, no shell, network off, repository configuration disabled, no bypass); each request's scope is still compiled
-at admission and dispatch. An off-host profile is excluded from routing with the machine-readable reason
-`PROFILE_PLATFORM_UNVERIFIED`, which maps to `ELIGIBILITY_NONE` (FRD BR-3).
+the eligibility filter makes). `privileged` is listed by the [§3.1](#31-privileged-scope-m3) "Listing" rule (any
+representative scope, or an approved bypass cell, [ADR-0092](../adr/0092-list-capabilities-lists-approved-bypass-cells.md));
+`privileged_bypass_only` is present exactly when `privileged` is listed and is true when only a bypass cell compiled.
+Each request's scope is still compiled at admission and dispatch. An off-host profile is excluded from routing with
+the machine-readable reason `PROFILE_PLATFORM_UNVERIFIED`, which maps to `ELIGIBILITY_NONE` (FRD BR-3).
 **`get_capacity`** (M6) `{ provider? }` returns the FR-CAP-02 fields per provider with `source`; `explicit_remaining` is
-null unless provider-reported. Detailed in [§16.3](#163-get_capacity-and-switchboard-capacity) (T6.1).
+null unless provider-reported. Detailed in [§16.3](#163-get_capacity-and-switchboard-capacity) (T6.1). `provider`
+takes either spelling and the answer names the canonical provider ([ADR-0076](../adr/0076-provider-name-aliases.md)).
 **`explain_route`** (M7) `{ run_id }` returns candidates, eligibility reasons, features, weights, scores and the
 `affinity` object ([§3.2](#32-provider-and-model-affinity-m7)) from `route_decision`, no model reasoning. Detailed in
 [§17.5](#175-explain_route) (T7.0).
@@ -1147,8 +1202,9 @@ characters, arrays at most 32 items), closed, so a client-limit key such as `max
 in_force_revision?, message? }` (`in_force_revision` and `message` Proposed). `approval_needed` values:
 `container_environment`, `push_policy`, `commit_identity`, `commit_signing`, `widened_trust_ceiling`,
 `widened_providers` (widening is measured against the revision in force), `merge_policy` (T15.8: the definition sets
-`merge_policy.enabled: true`, on every revision that keeps it on, §20.7). Errors, in check order: schema
-`INVALID_REQUEST`; a control, separator or bidirectional character in any string `INVALID_REQUEST`
+`merge_policy.enabled: true`, on every revision that keeps it on, §20.7), `project_setup` (ADR-0071: a `setup` that is
+new or differs from the revision in force, §5.3), `submodule_write` and `merge_checks` (ADR-0087, §3.4.17). Errors,
+in check order: schema `INVALID_REQUEST`; a control, separator or bidirectional character in any string `INVALID_REQUEST`
 (`CONTROL_CHARACTER`); a configured id or another client's project `PERMISSION_BLOCKED` with one message for both
 (`NOT_MANAGEABLE`); unknown id for update/delete, deleted id, or an existing id for create `INVALID_REQUEST` (ids are
 never reused); the loader's structural rules `INVALID_REQUEST`; ceiling, provider or push above the client's
@@ -1162,6 +1218,29 @@ a non-terminal run, or while a `delegate_task`/`continue_task` for the project i
 configured id) with `source: "dynamic"`, `revision` (the one in force, else the latest), `status`
 (`ACTIVE | PENDING_APPROVAL | REJECTED`) and `pending_revision?`; configured entries are unchanged. Implementation:
 `src/mcp/project-tools.ts`, `src/projects/`.
+
+*As built (2026-10-20, Delegated detail under owner ruling 2026-10-20, [ADR-0068](../adr/0068-mcp-only-project-onboarding.md)):*
+in `create_project` and `update_project` a `repository` context takes exactly one of `path` and `clone_url`
+(`mcpProjectDefinition` in `src/mcp/schemas.ts` publishes a `oneOf`; configuration files still require `path`).
+`clone_url` is `https://<host>/<owner>/<repo>` (optional `.git` and trailing slash) and is refused with user
+information, a port, a query, a fragment, percent-encoding, another scheme, `.` or `..` segments, characters outside
+`[A-Za-z0-9._-]` in owner or repo, a leading `-`, or more than 512 characters (`parseRepositoryUrl`,
+`src/projects/clone.ts`). The target is `<clone_root>/<host>/<owner lower>/<repo lower>` from the config key
+`project_sources` (§3.4.8 lists the keys). A missing target is cloned (`git clone --no-recurse-submodules --`, no
+shell, the server's own environment plus `GIT_TERMINAL_PROMPT=0`, stdin closed, `-c core.fsmonitor=false -c
+core.hooksPath=/dev/null` on every call, 300 s timeout) into a temporary directory beside the target and renamed into
+place; an existing target is reused only when it is a real directory and the top level of a repository whose `origin`
+normalizes to the same host, owner and repo, after a best-effort `git fetch origin`. Check order: schema, control
+characters, id ownership, `clone_url` parse and allowlist (the planned target stands in for `path`), structure, client
+limits, quotas, clone or reuse (the only side effect), filesystem checks, approval reasons, write. Closed errors, never
+git's stderr: `CLONE_URL_INVALID` (`INVALID_REQUEST`); `CLONE_SOURCE_NOT_ALLOWED`, `CLONE_NOT_CONFIGURED` and
+`CLONE_TARGET_CONFLICT` (`PERMISSION_BLOCKED`), the last when the target exists and is not that repository; and
+`CLONE_FAILED` (`TOOL_FAILURE`, `retryable: true`; `ToolError.retryable` in `src/mcp/errors.ts`). The stored
+definition keeps the resolved `path` and the normalized `clone_url` (`https://host/Owner/repo`). `list_projects`
+context items gain `source_url` (the normalized URL, never a path). The `project_event` payload of a call with a
+`clone_url` gains `clone` (`cloned | reused | failed | refused`) and `clone_sources` (`["host/owner/repo"]`, lower
+case). The `PENDING_APPROVAL` message names `decide_approval` (an approver client, §3.4.8) and `switchboard projects
+approve`. Tests: `src/projects/clone.test.ts`, `src/mcp/mcp-onboarding.test.ts`.
 
 **Error envelope** (FR-MCP-07). Delivered as an MCP tool result with `isError: true`:
 
@@ -1319,6 +1398,14 @@ event (`approval_id`, `status`, `reason: "client_policy"`). No other check is re
 `approve` and `deny` refuse such a run (it is never AWAITING_APPROVAL) and name the client policy. The envelope shows
 `approval.status` `APPROVED` and never `decided_by`.
 
+**Default scope (2026-10-21, FR-POL-12,
+[ADR-0091](../adr/0091-configured-default-trust-profile-and-unattended-http-privileged.md)).** The configuration may
+set `default_privileged_scope`, checked at load by this schema and the list rules (errors name
+`$.default_privileged_scope...`) and stored parsed. A `privileged` request (requested, or defaulted from
+`default_trust_profile`) without `privileged_scope` takes it; V13 is otherwise unchanged. Config load refuses a
+`privileged` default trust profile without it. The scope then follows every rule above (canonical form, hash, client
+policy, **Bypass**) exactly as a scope the request carried.
+
 **Bypass.** Before compiling any `privileged` run, COMP-POL loads the approval named by the snapshot's `approvalId` and
 sets `bypassApproved = true` only if: the row is `APPROVED`; its `scope_hash` equals the snapshot's `scopeHash` and the
 hash recomputed from this run's `client_id`, `meta_session_id` and snapshot scope; and the approved scope has
@@ -1340,6 +1427,15 @@ disable commands, so it needs shell `broad` with network `off`), so the narrowes
 nobody. A listed `privileged` means "this provider compiles at least one privileged scope here"; each request's own
 scope is still compiled at dispatch, where an `Ineligible` ends the run with its BR-3 code. Code:
 `REPRESENTATIVE_PRIVILEGED_SCOPES` in `src/mcp/server.ts`.
+
+*Amended 2026-10-21 ([ADR-0092](../adr/0092-list-capabilities-lists-approved-bypass-cells.md), Delegated):* when none
+of those scopes compiles, the listing also compiles the approved bypass cells `REPRESENTATIVE_BYPASS_SCOPES`
+(`worktree` files, shell `broad`, network `on`, `bypass: true`, repository configuration `enabled` and `disabled`)
+with a listing-only `bypassApproved: true` over the eligibility profile, so a provider whose only privileged cell is
+the approved bypass cell (Grok Build, Cursor, OpenCode, Kimi Code, Antigravity, ADR-0077) lists `privileged`, with
+`privileged_bypass_only: true`; otherwise the flag is `false`. A listed `privileged` therefore means "compiles at least
+one privileged scope here, possibly only the approved bypass cell". Listing never dispatches: a run's `bypassApproved`
+still comes only from its approval at dispatch (above) and the argv audit is unchanged.
 
 **What is shown where.** The envelope (`get_run`, `delegate_task`, `continue_task`, `cancel_run`) carries only
 `approval.status` and `approval.requested_at` for a `privileged` run; it never contains the scope content, the hash or
@@ -1502,7 +1598,9 @@ previous provider and model, runs that switched, by reason) are a query over `ro
 
 Design gate: [ADR-0041](../adr/0041-http-transport-with-oauth-2-1.md) (Accepted 2026-10-14 under T13.1), with its
 SDK and protocol-era statements superseded in part by [ADR-0062](../adr/0062-mcp-sdk-v2-dual-era-http.md) (T13.10).
-Requirements FR-MCP-12 to 17 and FR-MCP-19 (Client ID Metadata Documents, T13.11; the SDK-era move FR-MCP-18 is in
+Requirements FR-MCP-12 to 17, FR-MCP-20 to 25 (CLI-issued codes, T13.12,
+[ADR-0085](../adr/0085-cli-issued-one-time-codes-for-mcp-oauth.md)) and FR-MCP-19 (Client ID Metadata
+Documents, T13.11; the SDK-era move FR-MCP-18 is in
 [§20.11](#2011-mcp-sdk-v2-and-client-id-metadata-documents-fr-mcp-18-fr-mcp-19-t1310-t1311)). Off unless the config
 enables it.
 
@@ -1519,7 +1617,8 @@ enables it.
   such as `https://app.example`, exactly as a browser sends them; default empty, which refuses every request carrying
   an `Origin`). `public_url` and `port` are required when enabled. `cimd` (T13.11: Client ID Metadata Documents
   accepted as `client_id`; default true, `false` makes a URL `client_id` an unknown client with no fetch; stdio
-  unaffected). Plain
+  unaffected). `client_ip_header` (T13.12, optional: the header that carries the client address for the per-IP
+  consent lockout, honoured only from a loopback peer; see the T13.12 block below). Plain
   HTTP in `public_url` is refused at load, even for localhost. Code: `src/config/http-transport.ts`.
 - **Metadata.** `GET /.well-known/oauth-protected-resource` and the path-suffixed form
   `/.well-known/oauth-protected-resource/<endpoint path>` (RFC 9728 §3.1) return `resource` (the normalised
@@ -1529,7 +1628,8 @@ enables it.
   ["authorization_code", "refresh_token"]`, `code_challenge_methods_supported: ["S256"]`,
   `token_endpoint_auth_methods_supported: ["none"]` and `client_id_metadata_document_supported` (the `cimd` flag,
   T13.11). Each of those three endpoints answers 404 when `serve` has not
-  configured it (registration: T13.7; authorization and token: T13.8). Code: `src/mcp/http.ts`.
+  configured it (registration: T13.7; authorization and token: T13.8). T13.12 adds `/revoke` and
+  `revocation_endpoint` (below). Code: `src/mcp/http.ts`.
 - **Challenge.** A request without a valid bearer token gets HTTP 401 with `WWW-Authenticate` naming the metadata URL.
   The server never returns a token or any authorization detail.
 - **Verification.** Signature or introspection, `exp`, `iss` equal to the configured issuer, `aud` equal to the resource
@@ -1650,7 +1750,10 @@ CREATE TABLE oauth_pairing_code (        -- migration 0012 (T13.8); mutable only
   to an `mcp_client` id (at most 64 entries, each OAuth client once);
   `transport.http.default_mcp_client` optionally names the entry for an approved OAuth client with
   no mapping. Config load refuses a target that is not in `mcp_clients` or that has `privileged_approval: not_required`,
-  so a remote client's `privileged` runs always wait for the operator CLI (FR-MCP-14, ADR-0019), and a
+  so a remote client's `privileged` runs always wait for the operator CLI (FR-MCP-14, ADR-0019), unless the operator
+  sets `transport.http.allow_unattended_privileged: true` (default false; FR-MCP-27,
+  [ADR-0091](../adr/0091-configured-default-trust-profile-and-unattended-http-privileged.md)), which admits
+  `not_required` for a `clients` mapping and a profile-bound code, never for `default_mcp_client`; and a
   `default_mcp_client` with a `privileged` ceiling (only an explicit mapping may reach one). The token's OAuth client
   must still be `approved` on every request (401 otherwise, also when no client store is wired). At the MCP endpoint a
   valid token without the `mcp` scope, or whose client has no mapping, gets 403 `{"error":"insufficient_scope"}` with
@@ -1702,6 +1805,87 @@ CREATE TABLE http_subject (              -- migration 0013 (T13.5); insert-only,
   to a log or a response at all.
 - **Forbidden.** Forwarding the inbound token, logging it, or storing it in the ledger.
 
+#### CLI-issued, profile-bound codes, binding, lockout and revocation (FR-MCP-20 to FR-MCP-25, T13.12)
+
+*T13.12 (2026-10-21, Delegated, [ADR-0085](../adr/0085-cli-issued-one-time-codes-for-mcp-oauth.md)), `Partial`: the
+migration text below follows `src/ledger/migrations/0037_oauth_profile_binding.ts`; the behaviour is the design and is
+confirmed against the tests when T13.12 is Done.*
+
+- **Issue (FR-MCP-20).** `switchboard mcp oauth issue-code --client-profile <mcp_client_id> [--ttl <n>s|m|h]` (also
+  `--json`). `--ttl` takes an integer and one unit; the default is `10m`, the lower bound `1m` and the upper bound
+  `60m` (`3600s`, `1h`); a value outside it, or any other unit, is a usage error before anything is written. The
+  profile must be an `mcp_clients` entry that config load would accept as an HTTP target: a `privileged` maximum
+  trust profile or `privileged_approval: not_required` (unless `allow_unattended_privileged`, ADR-0091) is refused
+  with a usage error naming the reason (FR-MCP-14). The
+  code is 128 random bits from the CSPRNG behind a fixed prefix; only its SHA-256 (64 hex characters) is stored, and the
+  plaintext is printed once. In one transaction the new row is inserted and every older unused, unexpired code is marked
+  superseded. Audit event `code_issued` in `oauth_event` (profile, actor, never the code).
+- **Redeem (consent page).** The existing "pairing code" field accepts either kind. For a profile-bound code the lookup
+  is by hash with a constant-time compare, and it must be unused, unsuperseded and unexpired; the spend (`used_at`) and
+  the client approval happen in one transaction, so a code approves at most one client once. The pending client is then
+  bound to the code's profile. A client that already has a binding to a different profile is refused (no spend, no
+  change; revoke the client and redeem a new code to re-bind); a binding to the same profile is idempotent. The
+  unbound `consent pair` code and the passphrase approve exactly as before and create no binding. Refusals show the
+  same generic message as a wrong code. Audit event `consent_approved` (client, profile, method).
+- **Migration 0036.** Additive and forward-only; it reuses the existing pairing-code and client tables.
+
+```sql
+ALTER TABLE oauth_pairing_code ADD COLUMN mcp_client TEXT   -- the profile a code was issued for; NULL = legacy `consent pair`
+  CHECK (mcp_client IS NULL OR length(mcp_client) BETWEEN 1 AND 128);
+ALTER TABLE oauth_client ADD COLUMN mcp_client TEXT         -- the ledger binding; the config map still wins
+  CHECK (mcp_client IS NULL OR length(mcp_client) BETWEEN 1 AND 128);
+ALTER TABLE oauth_client ADD COLUMN bound_at TEXT CHECK ((mcp_client IS NULL) = (bound_at IS NULL));
+ALTER TABLE oauth_token ADD COLUMN grant_id TEXT            -- 'sbg_*', kept across refresh rotation (revoke by grant)
+  CHECK (grant_id IS NULL OR grant_id GLOB 'sbg_*');
+CREATE TABLE oauth_event (                                  -- append-only audit, no values
+  id INTEGER PRIMARY KEY, at TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('code_issued','consent_approved','token_issued','token_refreshed',
+                                     'token_revoked','client_revoked','tokens_revoked')),
+  client_id TEXT, mcp_client TEXT, method TEXT, actor TEXT NOT NULL, ip TEXT, reason TEXT
+) STRICT;
+```
+
+  A token written before the migration has no `grant_id`; revoking such a refresh token at `/revoke` revokes that
+  token alone. Triggers make `oauth_event` reject `UPDATE` and `DELETE`.
+
+- **Resolution order at `/mcp` (FR-MCP-21).** For a verified token's OAuth client: (1) the `transport.http.clients`
+  entry for that client id (a CIMD URL maps to its derived id, as for T13.11); (2) else the `oauth_client_binding` row;
+  (3) else `default_mcp_client`; (4) else the request is refused. Whichever entry is chosen is re-checked on every
+  request: the profile must still exist in the loaded configuration and pass the rule a `clients` mapping follows
+  (`privileged_approval` not `not_required` unless `allow_unattended_privileged`, ADR-0091; a `privileged` ceiling is
+  allowed, [ADR-0086](../adr/0086-bound-codes-follow-the-mapped-rule.md)), and the
+  client must still be `approved`; any failure is the same 401/403 refusal as today, never a retry against the next
+  step. The frozen maximum trust profile is that of the resolved entry, so a binding cannot raise it, and a privileged
+  run over HTTP still waits for the operator's approval, exactly as with a mapped client.
+- **Per-IP lockout (FR-MCP-23).** Consent-page wrong passphrases and wrong codes are counted per client address: 10
+  wrong attempts inside a 5-minute window set a 15-minute lock for that address (the constants of the operator's
+  gate; Delegated), during which every sign-in attempt from it is refused without checking the value. The global throttle
+  of T13.8 is unchanged and applies as well. The counters are in memory (Assumption: a restart clears them; the
+  global throttle and the code's own expiry bound the exposure).
+  `transport.http.client_ip_header` (optional string of 1 to 64 characters matching `^[a-z0-9][a-z0-9-]*$`, such as
+  `cf-connecting-ip`; anything else stops startup) names the header carrying the client address; it is read only when
+  the TCP peer address is loopback and its value is one IP literal; otherwise the peer address is used. From any other
+  peer the header is ignored. The lockout is logged with the address and a reason code, never the attempted value.
+- **Revocation endpoint (FR-MCP-22).** `POST /revoke`, `application/x-www-form-urlencoded` (RFC 7009), body at most
+  4 KiB, after the `Origin` check. Parameters: `token` and `client_id` (both required; `token_type_hint` accepted and
+  ignored). The token is looked up by SHA-256; when its row belongs to `client_id` it is revoked (a refresh token also
+  revokes the access tokens of its grant), and the response is `200` with an empty JSON object. An unknown token, a
+  token of another client or an unknown client also answer `200` and change nothing, so the response never discloses
+  whether a token exists; a missing parameter is `400 invalid_request`. The authorization server metadata adds
+  `revocation_endpoint` (the issuer plus `/revoke`) and `revocation_endpoint_auth_methods_supported: ["none"]`.
+  Audit event `token_revoked` (client id, never the token).
+- **Operator commands (FR-MCP-24).** `switchboard mcp oauth clients`, `client <client_id>`, `tokens [--client <id>]
+  [--all]` (default: unexpired, unrevoked tokens) and `revoke <client_id> [--tokens-only]`, each with `--json`. They
+  list `client_id`, name, redirect host, state (`pending`, `approved`, `denied`, `revoked`), bound profile and
+  its source, created and last-used times, and for tokens the kind, expiry and state; never a token, code, hash or
+  passphrase. `revoke` marks the client's tokens revoked and, without `--tokens-only`, the client `revoked`; both are
+  idempotent and work while `serve` runs, like `git ack-secret-scan`. Audit events `client_revoked` and `tokens_revoked`.
+- **MCP tool (FR-MCP-25).** `list_oauth_clients` has an empty input and returns the `clients` list above (no tokens). It
+  is registered by the stdio server only; the HTTP tool list never contains it, and a call over HTTP is an unknown tool.
+- **Tests (planned).** `src/mcp/oauth-profile-codes.test.ts`, `src/mcp/oauth-server.test.ts`, `src/mcp/http.test.ts`,
+  `src/cli/mcp-oauth.test.ts`, `src/ledger/ledger.test.ts` (migration 0037),
+  `src/config/config.test.ts` (`client_ip_header`), `test/malicious/controller.test.ts`.
+
 ### 3.4 Control plane (M14, Proposed, T14.0)
 
 Design gate for FR-CTL-01 to 11, [ADR-0047](../adr/0047-approval-proxy-over-mcp.md) and
@@ -1731,7 +1915,7 @@ Extend `$defs` in §3.0:
   "untrusted_text": { "type": "object", "required": ["text","label"], "properties": {
       "text": { "type": "string", "maxLength": 500 },
       "label": { "const": "untrusted_agent_text" } } },
-  "approval_kind": { "enum": ["privileged_scope","dynamic_project","push_revision"] },
+  "approval_kind": { "enum": ["privileged_scope","dynamic_project","push_revision","project_source"] },
   "approval_proxy_item": { "type": "object", "required": [
       "approval_id","approval_digest","kind","requested_at","target_client_id" ], "properties": {
       "approval_id": { "type": "string" },
@@ -2148,6 +2332,17 @@ Delegated, not owner-approved):**
 - Configuration: `approval_proxy` is a boolean (default false); `approval_proxy_targets` is a non-empty list of unique
   configured client ids and is refused at load without `approval_proxy: true` or when it names an unknown client.
   Without it a proxy targets only itself. `tool_profile` is not consulted.
+- `approval_proxy_kinds` ([ADR-0068](../adr/0068-mcp-only-project-onboarding.md), Delegated detail): a non-empty list
+  of unique values from `privileged_scope | dynamic_project | push_revision | project_source`, default the
+  first three (`project_source` only when listed, [ADR-0087](../adr/0087-submodule-projects.md), §3.4.17), refused at
+  load without `approval_proxy: true`. `list_pending_approvals` lists and `decide_approval` decides only those kinds; any
+  other kind gets the same single refusal as an unknown id (no oracle). Implementation: `proxyKinds` in
+  `src/control/approval-proxy.ts`. The orchestrator profile offers both tools whenever `approval_proxy` is true.
+- Top-level `project_sources` (`{ clone_root, allowed_hosts?, allowed_owners }`, strict; ADR-0068): `clone_root` is
+  absolute, exists, resolves under an allowed root and is not inside `data_dir`; `allowed_hosts` defaults to
+  `["github.com"]` (lower-case host names); `allowed_owners` is non-empty and matched case-insensitively. Absent, every
+  `clone_url` is refused (`CLONE_NOT_CONFIGURED`). `src/config/schema.ts`, `resolveProjectSources` in
+  `src/config/load.ts`; tests `src/config/project-sources.test.ts`.
 - Kinds: `privileged_scope` lists a `PENDING` row whose run is AWAITING_APPROVAL and passes every §3.1 hash check
   (`approval_id` is the `apv_` row id). A dynamic project revision lists while it is the latest, `PENDING_APPROVAL` and
   undecided (`approval_id` is the `prv_` revision row id); it is `push_revision` when its approval reasons include
@@ -2310,6 +2505,347 @@ configured. Research input: [consent-page approval link spike](../research/conse
 - Audit: page events carry event names, reason codes, methods and (after sign-in only) approval ids; never a handle,
   URL, passphrase or pairing code.
 
+#### 3.4.12 `publish_run` and publications (FR-GIT-12, ADR-0069)
+
+*Added 2026-10-20 (Linus, design authority, under owner ruling 2026-10-20; details not owner-approved).* Code:
+`src/mcp/publish.ts`, `src/ci/gh-pr.ts`, G13/G14 in `src/ci/gh-argv.ts`, `projectPushContextResolver` in
+`src/git/push.ts`, schemas in `src/mcp/schemas.ts`, wired in `src/cli/serve.ts`. Decision record:
+[ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md).
+
+**Offered** only when the server has the publish port (`serve`) and the client's `max_push_policy` is `branch`; never
+to a `console` profile. Otherwise it is answered exactly like an unknown tool.
+
+**Input** (closed): `{ run_id, open_pull_request?: boolean = true, draft?: boolean = false }`.
+
+**Checks, in order** (nothing is written before the push step): `run_id` names a run of this client and HTTP subject
+(as `get_run`; otherwise `INVALID_REQUEST "unknown run <id>"`); the run is `SUCCEEDED` (`INVALID_REQUEST`,
+`details.reason: RUN_NOT_SUCCEEDED`); its project resolves through the push resolver (configuration first, then an
+approved dynamic project's in-force revision while its creator keeps `manage_projects` and `max_push_policy: branch`),
+is the client's (configured: in its `projects` list; dynamic: created by it) and the primary context's policy is
+`branch` (`PERMISSION_BLOCKED` with `details.reason` `NO_PROJECT`, `CONTEXT_UNKNOWN` or `POLICY_NONE`); the run has a
+`git_commit` row (`INVALID_REQUEST`, `NOTHING_TO_PUBLISH`).
+
+**Push.** When the meta-session already has an ACCEPTED `git_push` event of the current publish head to the current
+target (remote and `refs/heads/<branch_prefix><sess>`), that push is returned (`reused: true`). Otherwise `GitPusher`
+(§12.6) runs with `requested_by: mcp_client:<id>` and the run as the event run; BR-31 does not apply (a controller
+push, as the operator's). A refusal is `PERMISSION_BLOCKED` (policy reasons, `SECRET_SCAN_BLOCKED` included) or
+`INVALID_REQUEST` (`NOTHING_TO_PUSH`) or `TOOL_FAILURE` (remote and Git failures), each with `details.reason` (the
+§12.6 reason code) and `details.push_id`. *Amended 2026-10-20 by
+[ADR-0075](../adr/0075-secret-scan-findings-in-refusals.md) (Delegated agent work, not owner-approved):* a
+`SECRET_SCAN_BLOCKED` refusal also has `details.findings` (`[{rule_id, path, line, path_truncated?}]`, at most 100),
+`details.finding_count` (exact) and `details.findings_truncated: true` when fewer are listed than counted, and its
+message names them (`push refused (SECRET_SCAN_BLOCKED): 2 secret-scan findings: github_token at
+test/fixtures/a.ts:12; jwt at src/x.ts:4. Remove each value ...`, §20.9). Never the value or the line.
+
+**Pull request** (when `open_pull_request`): `owner/repo` from `git remote get-url --push <remote>` (github.com https,
+`ssh://git@github.com/` or `git@github.com:` only; else `REMOTE_NOT_GITHUB`); base = `base_ref` without `refs/heads/`,
+`refs/remotes/<remote>/` or `<remote>/` (`BASE_INVALID` unless a safe branch name). G14 first; an `OPEN` pull request is
+reused (never edited). Otherwise G13 with the run's proposed text (ADR-0069 amendment 2026-10-20): the newest
+non-empty `pr_draft` artifact, else the proposal `extractProposal` finds in the run's scrubbed `result.summary` (the
+first level 1/2 ATX heading after a `---`/`***`/`___` line, else a level 1/2 heading on the first non-blank line; the
+heading is the title, the rest the body; fenced code is skipped; never a title from prose). Title
+`switchboard: <proposed title or run id>` (control characters removed, whitespace collapsed, wrapping emphasis or code
+markers and a trailing period removed, mentions neutralised, at most 120 characters of run text). Body: the proposed
+description (control characters removed, `@name` rewritten to `＠name`, capped at 16 KiB and so that the footer fits,
+an open fence or HTML comment closed) first, then `---`, a label naming it agent-written and untrusted and its source
+(`pr_draft` artifact or run result summary), then the controller footer (run, meta-session, provider, project, head);
+with no proposal, the footer alone. A `gh` failure leaves
+the push in place and returns `pull_request: null` with `pull_request_error` from the closed list `GH_MISSING`,
+`AUTH_REQUIRED`, `TIMEOUT`, `GH_FAILED`, `PARSE_FAILED`, `REMOTE_NOT_GITHUB`, `BASE_INVALID`. ADR-0095: a `GH_FAILED`
+from a non-zero exit adds `pull_request_error_detail: { exit_code, reason, message }`. `reason` is one of
+`HEAD_BRANCH_MISSING`, `BASE_BRANCH_MISSING`, `NO_COMMITS`, `PULL_REQUEST_EXISTS`, `RATE_LIMITED`,
+`PERMISSION_DENIED`, `NOT_FOUND`, `NETWORK`, `VALIDATION_FAILED` or `UNKNOWN`, classified from the stderr tail
+(at most 4096 characters, kept by `execGh` only on a non-zero exit). `message` is that stderr after the secret
+rules, with non-printable characters removed, lines joined with ` | `, capped at 300 characters, then passed
+through the outbound scrubber. It is returned only, never recorded. When G14 reports `MERGED` and the meta-session
+already has a `pull_request` row with that number, repository and the publication's head, that pull request is
+returned with `reused: true, merged: true` and no G13 runs (GitHub deletes a merged branch, so G13 would fail).
+
+**Output** (closed): `{ run_id, meta_session_id, publication: { push_id, remote, branch, head_sha, pushed_at, reused },
+pull_request: null | { number, url, draft, reused, merged? }, pull_request_error?, pull_request_error_detail? }`.
+
+**Records** (migration 0033). `git_push.requested_by` also takes `mcp_client:<id>` (table rebuilt as in migration 0016;
+`GLOB 'mcp_client:?*'`). `pull_request` (append-only): `id` (`prq_`), `run_id`, `meta_session_id`, `push_id`,
+`client_id`, `repo`, `number`, `url` (`https://github.com/...`), `branch`, `base_ref`, `head_sha`, `draft`, `action`
+(`created` or `reused`, a reuse recorded once per number and head), `created_at`; the same transaction appends a
+`pull_request_opened` run event with those facts.
+
+**Envelope `publications`** (`get_run`, `list_runs`, `get_digest` finished and failed entries): present when the run has
+at least one ACCEPTED `git_push` event recorded on it (agent `push` tool, an operator push recorded on it, or
+`publish_run`); one `{ branch, head_sha, pushed_at, pull_request_url?, pull_request_number? }` per branch and head,
+oldest first; the pull request fields come from the newest `pull_request` row of the run for that branch.
+
+#### 3.4.13 `merge_run_pr` (FR-SUB-02, FR-GIT-12, ADR-0070)
+
+*Added 2026-10-20 (Linus, design authority, on owner approval of auto-merge for whumpo-website; details not
+owner-approved).* Code: `src/mcp/merge-run-pr.ts`, `applyMergeGate` and `mergeOnRequest` in `src/ci/merge-policy.ts`,
+schemas in `src/mcp/schemas.ts`, wired in `src/cli/serve.ts`. Decision record: [ADR-0070](../adr/0070-mcp-merge-run-pr.md).
+
+**Offered** exactly when `publish_run` is (§3.4.12: the publish port and `max_push_policy: branch`, never a `console`
+profile) and the server also has the merge port (`serve` always wires it: the CI poller's `gh` port, or the same port on
+`ci_trigger.gh_binary` when `ci_trigger.enabled` is false). Otherwise it is answered exactly like an unknown tool;
+`tools/list` and `callTool` read the same `offeredDescriptors`.
+
+**Input** (closed): `{ run_id, expected_head_sha?: 40 lowercase hex }`.
+
+**Checks, in order.** `run_id` names a run of this client and HTTP subject (as `get_run`; otherwise `INVALID_REQUEST
+"unknown run <id>"`); its project is one the client may publish (`publishableContext`, §3.4.12: `PERMISSION_BLOCKED`
+`NO_PROJECT`, `CONTEXT_UNKNOWN` or `POLICY_NONE`); the run has an ACCEPTED `git_push` of a `refs/heads/*` ref recorded on
+it (`publish_run` or the agent `push` tool; else `INVALID_REQUEST`, `NOT_PUBLISHED`). Then `mergeOnRequest`: the ref's
+published tip is the newest ACCEPTED push of that remote and ref for the project (§18.6); the project's merge policy must
+be in force and enabled (`mergeTargetsFrom`, §20.7 item 1) and the project not paused (§3.4.4), else `policy_off`; a
+superseded ref (§20.4) is `head_moved`; a remote that is not github.com is `INVALID_REQUEST` `REMOTE_NOT_GITHUB`. Then
+§20.7's gate (`applyMergeGate`, `request` mode), the same function the poller runs: no pull request or a `CLOSED` one is
+`not_mergeable`; a `MERGED` one at the published tip returns `merged: true` without G12 (idempotent), at another head
+`head_moved`; `expected_head_sha` other than the published tip is `head_moved`; then draft, head, base, mergeable,
+verification (unless `require_verification` is false), reports, G11, the policy and G10 re-read, then G12 exactly as
+§20.7 item 4. Unlike the poller, an earlier `attempted` row at the head does not stop a new G12 (head-pinned, so a retry
+after `gh_error` is safe), and a pending check is refused at once (`check_pending`), never waited for.
+
+**Output** (closed): `{ run_id, pull_request: { number, url }, merged: true, head_sha, method }`; the URL is
+`https://github.com/<owner>/<repo>/pull/<number>` of the resolved remote. A refusal is `PERMISSION_BLOCKED` with
+`details.reason` from the closed `merge_event` list (§20.7 item 5), `details.head_sha` and, once read,
+`details.pull_request_number`; `gh_error` is `TOOL_FAILURE` with `retryable: true`.
+
+**Records.** Every refusal, attempt and merge is the poller's `merge_event` row (and run event on the publishing run,
+and sink event), so it appears in `get_digest` `ref_events`; the G10 read records `ref_event` rows as the poller's does.
+A refusal for a project without any policy records method `squash`. No new table, reason or migration.
+
+*Note 2026-10-20 (ADR-0073, Linus, design authority; not owner-approved):* the head check also accepts a chain of pure
+base merges on the published tip (§20.7.1). `expected_head_sha` may then be the published tip or the accepted head, the
+result gains `head_kind: "published" | "base_merge"`, `head_sha` in the result is the merged (accepted) head, and an
+already merged pull request whose head is a base merge head this gate merged is reported merged. Migration 0035 records
+`head_kind` and `pr_head_sha` on `merge_event`. `update_run_branch` is §3.4.14.
+
+#### 3.4.14 `update_run_branch` (FR-SUB-02, FR-GIT-12, ADR-0073)
+
+*Added 2026-10-20 (Linus, design authority, after production refusals of whumpo-website pull requests #299 and #300;
+details not owner-approved).* Code: `updateRunBranch` in `src/mcp/merge-run-pr.ts`, `updateBranchOnRequest` in
+`src/ci/branch-update.ts`, G15 in `src/ci/gh-argv.ts` (`ghPrUpdateBranchArgv`), schemas in `src/mcp/schemas.ts`
+(`PUBLISH_TOOL_NAMES`), wired in `src/cli/serve.ts`. Decision record:
+[ADR-0073](../adr/0073-merge-gate-accepts-pure-base-merges.md).
+
+**Offered** exactly when `merge_run_pr` is (§3.4.13) and the server also has the branch-update port and the pull-head
+reader (§20.7.1; `serve` always wires both); otherwise it is answered exactly like an unknown tool. Scope is
+`publish_run`'s: the run must be the caller's (another client's run is `unknown run`), the project one the client may
+publish (`max_push_policy: branch`), and the run must have a published branch (`INVALID_REQUEST`, `NOT_PUBLISHED`); a
+remote that is not github.com is `INVALID_REQUEST` `REMOTE_NOT_GITHUB`.
+
+**Input** (closed): `{ run_id, expected_head_sha?: 40 lowercase hex }`. **Output** (closed): `{ run_id, pull_request: {
+number, url }, updated: boolean, previous_head_sha }`; `updated: false` means the base head is already an ancestor of
+the pull request head and nothing was asked of GitHub.
+
+**Gating (Delegated, Linus, not owner-approved).** Only for a project whose merge policy is in force and enabled, not
+paused, and whose ref is not superseded (`policy_off` / `head_moved`). Reason: updating the branch is a write to the pull
+request branch that only matters for the merge path, so tying it to the opt-in policy keeps the GitHub write surface to
+projects the operator approved for merging.
+
+**Steps.** G10 read. No pull request or one not `OPEN` is `not_mergeable`; a head branch other than the published branch
+is `head_moved`; a base other than the configured base is `base_mismatch`; an `expected_head_sha` that is not the
+current head is `head_moved`. Then the controller's Git inspection (§20.7.1, the same hardened fetch): an error is
+`gh_error`; a head that is not the published tip or a pure base merge chain on it is `head_moved` (Switchboard only
+updates a branch whose content it vouches for); a base already contained is `updated: false`; a merge of the base into
+the head that would conflict (local `merge-tree`) is `not_mergeable` before any write. Otherwise G15: `api --method PUT
+repos/{owner}/{repo}/pulls/{number}/update-branch -f expected_head_sha=<head> --silent`, through the operator's `gh`
+login (`ci_trigger.gh_binary`, the `merge_run_pr` port, also when `ci_trigger` is off). GitHub answers 202 and the merge
+commit appears shortly after; that head is a pure base merge the gate accepts once required checks pass. Drafts are
+allowed. A G15 failure is `TOOL_FAILURE` `gh_error`, `retryable: true`. Refusals are `PERMISSION_BLOCKED` with
+`details.reason` from the closed `merge_event` list (§20.7 item 5).
+
+**Records.** No `merge_event` (nothing merged). Each outcome except `NOT_PUBLISHED` and `REMOTE_NOT_GITHUB` appends one
+`branch_update` run event on the run: `{ publish_ref, outcome: "requested" | "current" | "refused", previous_head_sha |
+head_sha, pr_number, reason? }` (ids, SHAs and codes only). Tests: `src/mcp/update-run-branch.test.ts`,
+`src/mcp/tools-list-callable.test.ts`, the G15 audit in `src/ci/gh-argv.test.ts`.
+
+#### 3.4.15 `refresh_project_base` and `rebase_session` (ADR-0074)
+
+*Added 2026-10-20 (Linus, design authority; details Delegated, not owner-approved).* Code: `src/mcp/base-tools.ts`,
+`src/git/session-rebase.ts`, `src/git/base-refresh.ts`, schemas in `src/mcp/schemas.ts`, wired in `src/cli/serve.ts`.
+Decision record: [ADR-0074](../adr/0074-fresh-base-for-cloned-projects-and-session-rebase.md); algorithm §5.2.1.
+
+**Offered** when the server has the base port (`serve` always wires it) and the client's ceiling is above
+`inspect-untrusted`, never in a `console` profile; listed right after the publish tools. Otherwise both are answered
+exactly like an unknown tool (`tools/list` and `callTool` read the same `offeredDescriptors`).
+
+A project is **remote-backed** when its primary context has an effective base remote (`base_remote`, or the §5.2.1
+default for a `clone_url` context); any other project is `INVALID_REQUEST` `NOT_REMOTE_BACKED`.
+
+**`refresh_project_base`.** Input (closed): `{ project_id }`, resolved as `search_project_context` resolves `project`
+(a configured project in the client's list, or the client's own dynamic project in force; anything else `INVALID_REQUEST
+"unknown project"`). The §5.2 refresh runs at once under the worktree serialisation, its event on the client's newest
+run of the project in that repository that the caller's subject may see (none: no event, Delegated). Output (closed):
+`{ project_id, base_ref, remote, base_commit, previous_commit, remote_commit, reason }`: `base_commit` is where a new
+meta-session of the project starts now (the fetched commit, or the local branch when it is current or ahead),
+`previous_commit` the remote-tracking ref before the fetch (or null), `remote_commit` after it, `reason` the §5.2
+reason code. An outcome other than `fetched` is `TOOL_FAILURE` `BASE_REFRESH_FAILED` with `details.fetch_reason`
+(retryable for `REPO_BUSY`, `FETCH_FAILED` and `FETCH_TIMEOUT`).
+
+**`rebase_session`.** Input (closed): `{ session_id, expected_head_sha?: 40 or 64 lowercase hex }`. The meta-session
+must be this client's and HTTP subject's (as `continue_task`; otherwise `INVALID_REQUEST "unknown meta-session <id>"`),
+`ACTIVE`, without a non-terminal run (`ACTIVE_RUN`), with a project (`NOT_REMOTE_BACKED` otherwise) re-resolved as
+above, whose primary context's repository is the meta-session's (`NOT_REMOTE_BACKED`). Then §5.2.1. Output (closed):
+`{ session_id, previous_head, new_head, base_commit, rebased_commits, publish?: { previous_tip, new_tip } }`. Refusals,
+all before anything about the session changes: `INVALID_REQUEST` with `details.reason` `CONFLICT`
+(`details.conflicting_paths`), `HEAD_MOVED`, `ACTIVE_RUN`, `NOTHING_TO_REBASE`, `MERGE_COMMIT`, `TOO_MANY_COMMITS`,
+`NOT_REMOTE_BACKED`; `PERMISSION_BLOCKED` `SIGNING_UNAVAILABLE`, `IDENTITY_REQUIRED`, `REPO_CONFIG_UNSAFE`,
+`PUBLISH_HISTORY_UNVERIFIED`; `TOOL_FAILURE` `BASE_REFRESH_FAILED` (`details.fetch_reason`), `REPO_BUSY` and
+`PUBLISH_REF_MOVED` (retryable), `GIT_TOO_OLD`, `GIT_FAILED`. The fetch of step 3 may already have moved the
+remote-tracking ref (recorded) when a later step refuses.
+
+**`publish_run` after a rebase.** A push the remote rejects as not a fast-forward is `PERMISSION_BLOCKED`
+`NON_FAST_FORWARD` (it was `TOOL_FAILURE`); the controller never forces (Q-112).
+
+#### 3.4.16 `close_pr` (FR-GIT-13, ADR-0078)
+
+*Added 2026-10-21 from an operator task (Delegated agent work, not owner-approved).* Code: `src/mcp/close-pr.ts`, G16
+and G17 in `src/ci/gh-argv.ts` (`ghPrCloseArgv`, `ghPrNumberViewArgv`), `GhPullRequestPort.findByNumber` and `close` in
+`src/ci/gh-pr.ts`, schemas in `src/mcp/schemas.ts` (`PUBLISH_TOOL_NAMES`), `listCreatedPullRequests` and
+`recordPullRequestClose` in `src/ledger/repo.ts`, migration `src/ledger/migrations/0036_pr_close_audit.ts`.
+Decision record: [ADR-0078](../adr/0078-mcp-close-pr.md).
+
+**Offered** exactly when `publish_run` is (§3.4.12) and the publish port's pull-request port has `findByNumber` and
+`close` (`serve` wires `GhPullRequestPort` on `ci_trigger.gh_binary`, which has both). Otherwise it is answered exactly
+like an unknown tool; `tools/list` and `callTool` read the same `offeredDescriptors`.
+
+**Input** (closed): `{ project_id, pull_request_number: integer >= 1, replacement_pull_request_number: integer >= 1,
+delete_branch?: boolean = false }`. **Output** (closed): `{ project_id, run_id, pull_request: { number, url },
+replacement_pull_request: { number, url }, closed: boolean, branch_deleted: boolean }`; `closed: false` means the pull
+request was already closed and nothing was written.
+
+**Checks, in order.** The two numbers differ (`INVALID_REQUEST`, `SAME_PULL_REQUEST`); the project passes
+`publishableContext` (§3.4.12: `PERMISSION_BLOCKED` `NO_PROJECT`, `CONTEXT_UNKNOWN` or `POLICY_NONE`); the primary
+context's push remote is a github.com remote (`INVALID_REQUEST`, `REMOTE_NOT_GITHUB`); a `pull_request` row with
+`action = 'created'`, that number and that `owner/repo` (case-insensitive) exists for a run of the project whose
+`client_id` is the caller and whose meta-session the caller's HTTP subject may see (newest first; otherwise
+`PERMISSION_BLOCKED` `NOT_SWITCHBOARD_PR`). No `gh` call happens before this point. Then G17 reads the pull request and
+the replacement: a pull request that is missing or whose `headRefName` is not the row's branch is `PERMISSION_BLOCKED`
+`HEAD_BRANCH_MISMATCH`; a missing replacement is `INVALID_REQUEST` `REPLACEMENT_NOT_FOUND`; `MERGED` is
+`PERMISSION_BLOCKED` `ALREADY_MERGED`; `CLOSED` returns `closed: false`; `OPEN` is closed with G16 and the comment
+`Superseded by #<replacement>.` plus a fixed line naming `close_pr`, the client id and the run id, with
+`--delete-branch` only when `delete_branch` is true. A G16 or G17 failure is `TOOL_FAILURE` with `details.reason` the
+port's closed code, retryable except `GH_MISSING` and `AUTH_REQUIRED`. Not gated on the merge policy or a pause.
+
+**Records.** Every call is one append-only `pull_request_close` row (migration 0036): `client_id`, `project_id`,
+`number`, `replacement_number` and `delete_branch` from the arguments (only well-typed values, else NULL), the matched
+`pull_request_id`, `run_id` and `repo` once known, `outcome` (`closed`, `already_closed`, `refused`, `failed`) and
+`reason` (the error's `details.reason`, else its code; NULL on success). Calls the server refuses first are recorded
+too: `TOOL_NOT_OFFERED` (not offered to this client, or outside its tool profile) and `SCHEMA_INVALID`. A row with a run
+also appends a `pull_request_close` run event on that run with the same facts. Never a comment, title or body. Tests:
+`src/mcp/publish-run.test.ts` ("close_pr (ADR-0078)"), `src/ci/gh-pr.test.ts`, `src/mcp/tools-list-callable.test.ts`.
+
+#### 3.4.17 Submodule projects (ADR-0087)
+
+*Added 2026-10-21 (Delegated agent work for an operator task for zemdregon, owner decision 25; not owner-approved).*
+Realizes FR-PRJ-11, FR-PRJ-12, FR-GIT-14, FR-GIT-15 and FR-SUB-03. Decision record and rationale:
+[ADR-0087](../adr/0087-submodule-projects.md); this section holds only the contracts. Code: `src/submodules/`
+(manifest, store, worktree, errors), `src/ci/submodule-merge.ts`, `src/projects/source-grants.ts`, `src/mcp/project-tools.ts`,
+`src/mcp/schemas.ts`, `src/config/schema.ts`, `src/control/approval-proxy.ts`, `src/cli/projects-sources.ts`;
+migration `src/ledger/migrations/0038_submodule_projects.ts`.
+
+**Setting** (`projects[].contexts[].submodules`, strict): `{ mode: "off" | "recursive", writable_paths?: string[],
+exclude?: string[] }`. `writable_paths` and `exclude` hold at most 512 worktree-relative POSIX paths each (no leading
+`/`, no empty, `.`, `..` or `.git` segment, no control character, no backslash), or `writable_paths` is exactly
+`["*"]`. Structure refusals are `INVALID_REQUEST` with `details.reason` `SUBMODULES_PRIMARY_ONLY`,
+`SUBMODULE_PATH_CONFLICT`, `SUBMODULE_PATH_UNKNOWN` and `SUBMODULE_WIKI_READ_ONLY` (the last two are read from the
+umbrella's `.gitmodules` at `base_ref` by `create_project` and `update_project`). `list_projects` contexts return
+`submodules: { mode, writable_paths, exclude }`.
+
+**Closed manifest and store reasons** (`SubmoduleError`, fixed message per reason; the offending umbrella-relative path
+in `details.path`, never a URL): `INVALID_REQUEST` for `SUBMODULE_URL_INVALID`, `SUBMODULE_UNDECLARED`,
+`SUBMODULE_PATH_UNSAFE`, `SUBMODULE_MANIFEST_TOO_LARGE` (more than 1024); `PERMISSION_BLOCKED` for
+`SUBMODULE_SOURCE_NOT_ALLOWED` and `SUBMODULE_LINK_INVALID`; `TOOL_FAILURE` for `SUBMODULE_MANIFEST_UNREADABLE`,
+`SUBMODULE_COMMIT_MISSING`, `SUBMODULE_ATTACH_FAILED`, `SUBMODULE_RECORD_INVALID`. Publication and merge add
+`SUBMODULE_HISTORY_UNVERIFIED`, `SUBMODULE_PUSH_FAILED` (with `details.submodules`, one outcome per repository) and
+`PATH_REFUSED` with `submodule_duplicate_diverged` or `submodule_read_only`. Run warnings: `submodule_link_invalid`,
+`submodule_changes_skipped`, `submodules_skipped`.
+
+**Submodule worktrees** (`src/submodules/worktree.ts`). The attach record (`<run worktree>.submodules.json`, mode 0600,
+`version: 1`) lists per entry `path`, `key`, `store`, `sha`, `writable`, `wiki` and `admin`, the name of its admin
+directory under the store's `.git/worktrees/` found at attach (a single path segment; records written before it was
+kept have none). Nothing resolves a path through the run worktree: the link check and detach compare the admin
+directory's `gitdir` with `<worktree>/<path>/.git` lexically, and detach removes only the recorded admin directory (or,
+for an older record, the lexical match), so a path replaced by a link into another run's worktree never selects that
+run's admin directory. After the link check, the controller's Git calls in a submodule worktree pass
+`--git-dir=<admin directory>` and `--work-tree=<path>`.
+
+**Approvals** (extends §3.4.1 and §3.4.8). `approval_needed` gains `submodule_write` (a revision whose `writable_paths`
+is non-empty; listed to the approval proxy as `push_revision`, like `push_policy`) and `merge_checks`
+(`merge_policy.checks: "all_reported"`). `approval_kind` gains `project_source`; it is in
+`APPROVAL_PROXY_KINDS` but not in the default kinds (`APPROVAL_PROXY_DEFAULT_KINDS`), so an approver serves it only
+when `mcp_clients[].approval_proxy_kinds` lists it. `approval_pending` / `project_source` is announced once per
+request.
+
+**`request_project_source`.** Offered only to a client with `manage_projects` when the server has `project_sources`.
+Input (closed): `{ owner: string 1..200, host?: string 1..253 (default "github.com") }`; the controller checks the
+syntax (`OWNER_INVALID`) and that the host is already in `allowed_hosts` (`HOST_NOT_ALLOWED`; a grant never adds a
+host). Output (closed): `{ request_id?, host, owner, status: "PENDING_APPROVAL" | "APPROVED" | "REJECTED" |
+"ALREADY_ALLOWED", message }`; asking again for a pending or approved owner returns the same request. An approved
+owner joins the effective `allowed_owners` at once. CLI: `switchboard projects sources list|approve <id>|reject <id>`.
+
+**`list_projects`** contexts add `base_ref`, `push_remote`, `branch_prefix`, `identity: { name, email }`, `sign`,
+`finalize_commit` (`base_ref`, `sign` and `finalize_commit` always present) and `submodules`; the project's
+`merge_policy` adds `checks`. Never a path or a secret.
+
+**`refresh_project_base`** result adds `submodules: { total, present, fetched, missing }` for a project with
+`mode: "recursive"`. **`publish_run`** result keeps every existing field and, for such a project, adds `submodules:
+[{ repo, paths, branch, head_sha, default_branch, publication: { push_id, pushed_at, reused }, pull_request,
+pull_request_error?, pull_request_error_detail? }]` (`repo` is `host/owner/repo`, `default_branch` may be null,
+`pull_request` is null when none was opened; ADR-0095 merged reuse and failure detail as in §3.4.12, against the
+`submodule_pull_request` rows). Before any push it refuses `PERMISSION_BLOCKED` `SUBMODULE_HISTORY_UNVERIFIED` (`details.path`),
+the umbrella pusher's own refusal when the umbrella is still to be pushed (`GitPusher.preflight`: the push's policy and
+repository checks without the scan or the remote write, a refusal recorded as the `git_push` row the push would write;
+for example `REPO_CONFIG_UNSAFE`, `REMOTE_UNKNOWN`, `REMOTE_URL_CREDENTIALS`, `REMOTE_TRANSPORT_NOT_ALLOWED`,
+`TARGET_PROTECTED`, `PUBLISH_HISTORY_UNVERIFIED`), or `SECRET_SCAN_BLOCKED` (the ADR-0075 shape plus `details.repos`:
+`host/owner/repo` keys, `umbrella` for the umbrella; submodule finding paths prefixed with the submodule path); a
+submodule push that is not accepted refuses
+`SUBMODULE_PUSH_FAILED` with `details.submodules: [{ repo, paths, branch, head_sha, outcome, reason, push_id, reused
+}]` and no umbrella push. The publications of `get_run`, `list_runs` and `get_digest` add `linked_pull_requests: [{
+repo, paths, number, url, base_ref, head_sha, merge_state? }]` (`merge_state` is `{ state: "merged", merged_sha }` or
+`{ state: "refused", reason }`, from the `submodule_merge` steps), and each linked pull request is a
+`pull_request_opened` run event with its `repo` (`owner/repo`). `get_digest` `ref_events` add entries of type
+`submodule_merge` with `code` `submodule_merged` or `gitlinks_repointed`, `repo` and `merged_sha`.
+
+**`merge_run_pr` and the policy poller.** For an umbrella publish ref with `submodule_pull_request` rows both run
+the ordered merge (`src/ci/submodule-merge.ts`, the `linkedMerge` hook of `mergeOnRequest` and `pollMergePolicies`;
+without the hook, or when any of the ref's newest-per-repository rows does not parse or is of another project, such a
+ref is never merged: `submodule_merge_unavailable`). Before any submodule pull request is merged, step 0
+(`umbrellaPreCheck` in `src/ci/merge-policy.ts`) checks the umbrella's conditions that do not depend on the repoint,
+at the published (pre-repoint) tip, with the gate's own reasons and `merge_event` rows: not superseded (`head_moved`);
+the umbrella pull request open (in `poll` mode none or not open ends the pass without a decision; in `request` mode it
+is `not_mergeable`, or `head_moved` when merged), not a draft, its head the published tip on the published branch, its
+base the base branch (`draft`, `head_moved`, `base_mismatch`); then `unverified_at_head` and `report_missing`; the
+refusal's `submodule_merge.phase` is `submodules`. The result adds, and every refusal's details add, `submodule_merge: {
+phase: "submodules" | "repoint" | "umbrella" | "merged", repos: [{ repo, paths, pr_number, state: "waiting" |
+"refused" | "merged", merged_sha?, reason? }] }`; `expected_head_sha` may name the published or the repointed tip.
+`merge_event.reason` gains `no_checks_reported`. The step machine is persisted in `submodule_merge` (steps
+`submodule_merged`, `submodule_refused`, `gitlinks_repointed`) and recomputed from it on every call; the umbrella's own
+decisions stay `merge_event` rows. Step refusals beyond the gate's reasons (**Delegated**): `merge_failed` (a failed
+G12; the poller does not retry that head), `store_unavailable`, `merge_commit_missing`,
+`merge_commit_off_default_branch`, `gitlink_mismatch`, `repoint_not_fast_forward`, `repoint_push_failed`,
+`secret_scan_blocked`, `submodule_merge_unavailable`; the fetch, push and G12 failures among them are `TOOL_FAILURE`,
+retryable. The repoint commit has one parent (the published tip), changes the linked gitlinks only (checked before
+the push and again before the umbrella gate), carries the context identity and the newest `submodule_merged` time (a
+retry writes the same commit), and has a `git_commit` row (`origin: finalize_only`, event `via: submodule_repoint`);
+the meta-session's publish ref moves to it (compare-and-swap) and the controller pusher pushes it. New
+`submodule_merged` and `gitlinks_repointed` steps are also `ref_event` run events of those kinds on the publishing
+run.
+
+**Audited `gh` argv** (ADR-0050 amendment 1 item 10 continues after G17, §20.7): G18 `pr checks <n> --repo <o>/<r>
+--json bucket` (every reported check, no `--required`; used only for `merge_policy.checks: all_reported`; the §20.7
+parsing assumptions for exit codes 1 and 8 apply) and G19 `pr view <n> --repo <o>/<r> --json state,mergeCommit` (the
+merge commit of a merged submodule pull request). **Assumption:** both flags and fields are taken from the `gh` manual
+pages, not checked against the installed `gh` (Q-109).
+
+**Persistence** (migration 0038; append-only, `STRICT`; ids `smc_`, `smp_`, `spr_`, `smm_`, `psr_`, `psd_`):
+`submodule_commit` (`run_id`, `meta_session_id`, `kind = 'publish'`, `repo` as `host/owner/repo`, `paths_json`,
+`parent_sha`, `commit_sha`, `umbrella_commit_sha`); `submodule_push` (`outcome` `ACCEPTED | REFUSED_POLICY |
+REJECTED_REMOTE | ERROR`, `ref`, `head_sha`, `umbrella_head_sha`, `requested_by`); `submodule_pull_request` (`repo` as
+`owner/repo`, `number`, `url`, `branch`, `base_ref`, `head_sha`, `umbrella_ref`, `draft`, `action` `created | reused`);
+`submodule_merge` (`step`, `repo`, `pr_number`, `head_sha`, `merged_sha`, `reason`; one refusal per ref, repo, head and
+reason); `project_source_request` (`client_id`, `host`, `owner`) and `project_source_decision` (`decision` `APPROVED |
+REJECTED`, `decided_by`, one per request). The same migration rebuilds `merge_event` to admit `no_checks_reported`.
+Never a URL with credentials, a title, a body or `gh` text.
+
 ## 4. Failure taxonomy
 
 `failure_code` on a `FAILED` run holds exactly one of these codes. `ELIGIBILITY_NONE` and `INVALID_REQUEST` were **added
@@ -2320,7 +2856,7 @@ of replay follows FR-WS-04.
 | Code | Meaning | Retryable? | Workspace action | Typical sources |
 | --- | --- | --- | --- | --- |
 | `AUTH_REQUIRED` | Provider not logged in; operator must log in natively | No | None (no mutation expected); report login command | `authPreflight`; headless auth error (FR-AUTH-02) |
-| `PERMISSION_BLOCKED` | Operation denied by profile/permission rules, or caller above its max profile | No | Roll back if mutated | Provider permission-denied event; MCP caller check (FR-MCP-06, FR-POL-05) |
+| `PERMISSION_BLOCKED` | Operation denied by profile/permission rules, or caller above its max profile | No | Roll back if mutated | Provider permission-denied event, except a recovered `profile`- or `git_rule_local`-class denial in a run that otherwise succeeded, which is a `result.warnings` entry instead ([ADR-0072](../adr/0072-recovered-denials-are-warnings.md)); MCP caller check (FR-MCP-06, FR-POL-05) |
 | `SANDBOX_VIOLATION` | Sandbox blocked an action | No | Roll back if mutated; flag for operator review | Provider sandbox event; outer sandbox denial (FR-POL-05) |
 | `MODEL_UNAVAILABLE` | Requested model not present or not entitled | No (re-route may succeed) | None | Provider error category; model registry miss |
 | `QUOTA_EXHAUSTED` | Subscription limit hit | No automatic retry; fail over, queue until known reset, or return (FR-CAP-06) | Roll back if mutated | Provider-reported limit; billing error category |
@@ -2778,9 +3314,131 @@ and its own `git fetch` stays denied.
 **Crash safety.** The event is appended after the fetch. A crash between the two leaves a moved tracking ref without a
 record: a later run's guard reports it (`other`, `report`), and step 2 does not trust it until the next recorded fetch.
 
-**Not covered.** A later run of the meta-session starts from the meta-session head, not a refreshed base; rebase
-preparation (§20.4) still resolves `base_ref` locally. `https` and `ssh` remotes are not tested (tests use `file`
-remotes).
+**Not covered.** A later run of the meta-session starts from the meta-session head, not a refreshed base (an
+orchestrator can call `rebase_session` first, §5.2.1); rebase preparation (§20.4) still resolves `base_ref` locally.
+`https` and `ssh` remotes are not tested (tests use `file` remotes).
+
+#### 5.2.1 Cloned projects and session rebase (ADR-0074)
+
+*Built 2026-10-20 (Linus, design authority; refinements Delegated, not owner-approved),
+[ADR-0074](../adr/0074-fresh-base-for-cloned-projects-and-session-rebase.md). Code: `defaultBaseRemote`,
+`effectiveBaseRemote`, `checkBaseRemote` and `toResolved` in `src/projects/rules.ts`; `src/git/session-rebase.ts`
+(`rebaseSession`); `src/mcp/base-tools.ts`; the tools in §3.4.15.*
+
+**Default base remote.** A dynamic definition's primary context with `clone_url` and no `base_remote` resolves with
+`baseRemote` = its `push.remote` when set, else `origin` (the remote `ensureClone` creates). `serveBaseRefresh`
+therefore runs the algorithm above before every new meta-session's first worktree of such a project; nothing else
+changes. Configured projects (whose contexts cannot carry `clone_url`) and `path` contexts keep the opt-in rule.
+
+**`base_remote` on a `clone_url` context** (`create_project`, `update_project`, after the structure check): any value
+other than `origin` is `PERMISSION_BLOCKED` `BASE_REMOTE_NOT_CLONE_REMOTE` (`details.field` names it). An explicit
+value that differs from the default waits for approval with reason `base_remote` (Delegated); the default or an equal
+explicit value does not.
+
+**Session rebase** (`rebaseSession`, called by `rebase_session`). Inputs: the meta-session, the primary context's
+`base_ref`, effective base remote, `identity` and `sign`, and an optional expected head. Let `B` be the meta-session's
+`base_commit` and `H` its `head_commit`.
+
+1. Refuse `NOTHING_TO_REBASE` without `repo_root`, `B` or `H`; `ACTIVE_RUN` (with `run_id`) when a run of the
+   meta-session is not terminal or holds the lease; `HEAD_MOVED` when the expected head is not `H`; `GIT_TOO_OLD`
+   below Git 2.40. Then, under the per-repository worktree serialisation, check those again and refuse `REPO_BUSY`
+   when any meta-session of the repository holds a lease, and `REPO_CONFIG_UNSAFE` when the repository's configuration
+   names a `merge.<driver>.driver`.
+2. The publish chain: the newest `git_commit` row of the meta-session names the publish ref `P`. When `P` resolves to a
+   commit other than `B`, its tip must be that ref's newest provenance row (`PUBLISH_HISTORY_UNVERIFIED` otherwise),
+   `sign: true` is `SIGNING_UNAVAILABLE` and a missing `identity` is `IDENTITY_REQUIRED`.
+3. The fetch: `refreshBase` (steps 1 to 6 above) with the event on the meta-session's newest run. An outcome other
+   than `fetched` is `BASE_REFRESH_FAILED` (`details.fetch_reason`). The fresh base `F` is the event's `base_commit`,
+   else the local branch (`CURRENT`, `LOCAL_AHEAD`). When `F` is `B` or an ancestor of it, nothing changes and the
+   result has `new_head = H` and `rebased_commits = 0`.
+4. Both chains `B..H` and `B..P` (each must start at `B`; a merge commit is `MERGE_COMMIT`, more than 500 commits
+   `TOO_MANY_COMMITS`; every commit of `B..P` must have a provenance row) are replayed onto `F`, oldest first: for a
+   commit `C` on the current tip `T`, `git merge-tree --write-tree --no-messages --name-only -z --merge-base=C^ T C`.
+   Exit 1 collects the conflicting paths and the replay goes on, so one `CONFLICT` refusal lists them all (sorted, at
+   most 50, `details.conflicting_paths`). A tree equal to `T`'s is dropped (empty on the new base). Otherwise
+   `git commit-tree <tree> -p T -F -` with the original message and author (name, e-mail, date), the committer
+   `Switchboard <switchboard@localhost>` for the checkpoint chain and the context `identity` for the publish chain, and
+   the current time. Only unreachable objects exist until step 5.
+5. Commit: `git update-ref --no-deref P <new tip> <old tip>` (compare-and-swap; failure `PUBLISH_REF_MOVED`), then one
+   ledger transaction: step 1's session checks again, `UPDATE meta_session SET head_commit = <new head>,
+   base_commit = F` guarded by the old head, base and no lease; one `git_commit` row per replayed controller commit,
+   copied from the original's (new id, `commit_sha`, `tree_sha`, `created_at`; `patch_id` and `tool_event_id` null);
+   and one `session_rebased` run event on the newest run: `{v: 1, previous_head, new_head, previous_base_commit,
+   base_commit, rebased_commits, dropped_commits, publish: {ref, previous_tip, new_tip, commits: [{from, to}] (at most
+   100)} | null}`. A failure in the transaction moves `P` back.
+
+The next `prepare` of the meta-session starts from the new `head_commit` (step 2 of §5 is unchanged), and the commit
+tool's lineage check and the push's history check run from the new `base_commit`. Nothing is pushed. A publish ref an
+earlier push put on the remote is no longer an ancestor; the non-forced push is rejected and `publish_run` answers
+`PERMISSION_BLOCKED` `NON_FAST_FORWARD` (Q-112). **Crash safety:** a crash after step 5's `update-ref` and before the
+transaction leaves a publish tip without a provenance row; the push refuses it (`PUBLISH_HISTORY_UNVERIFIED`) and the
+operator can move `P` back to the tip the ledger names. The replayed checkpoint chain is reachable only from
+`head_commit` until the next run's branch is created on it (Q-113).
+
+### 5.3 Project setup step (ADR-0071)
+
+*Built 2026-10-20 (Linus, design authority; refinements Delegated, not owner-approved),
+[ADR-0071](../adr/0071-project-setup-step.md). Code: `src/workspace/setup.ts` (`createProjectSetup`, `setupReport`),
+`src/exec/setup-sandbox.ts` (bridge and bubblewrap argv), `src/exec/connect-proxy.ts` (allowlisting CONNECT proxy), the
+`projectSetup` option and `projectSetup` step of `RunLifecycle` (`src/lifecycle/lifecycle.ts`), composed in
+`src/cli/serve.ts`.*
+
+**Definition.** `projects[].setup` (configuration file and dynamic definitions, §11.1 and §3 `create_project`):
+
+```jsonc
+"setup": {
+  "commands": [["corepack", "pnpm", "install", "--frozen-lockfile"]], // 1..8 argv arrays of 1..32 strings (1..1024 chars, no NUL)
+  "network": { "hosts": ["registry.npmjs.org"] },  // default; at most 8 lower-case DNS names, no IP literal, port or wildcard
+  "cache": "pnpm",                                 // "pnpm" | "npm" | "none" (default)
+  "timeout_seconds": 600,                          // default 600, at most 1800
+  "env": { "CI": "true" }                          // closed allowlist: CI, NODE_ENV, NO_COLOR; values [A-Za-z0-9._-]{0,64}
+}
+```
+
+Refused on a `container` project (`checkProjects`). A dynamic revision whose `setup` is new or differs after defaults
+from the revision in force waits for approval (`approval_needed` `project_setup`); removing it does not. `list_projects`
+shows `setup: { commands, network: { hosts }, cache, timeout_seconds, env? }` with defaults filled in. Admission freezes
+it as `policy_snapshot_json.project.setup` (`{ commands, network_hosts, cache, timeout_seconds, env }`), except for a
+read-only critic run.
+
+**Step** (lifecycle, LEASED, worktree runs only; after rebase preparation and the T9.5 ref snapshot, before the
+repository-configuration scan, context pack, compile and spawn):
+
+1. `plan`: lockfile hash (SHA-256 of the JSON list of `[name, sha256(bytes) | "absent" | "not_a_file"]` for
+   `pnpm-lock.yaml`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `bun.lock`, `bun.lockb` at the worktree
+   root) and setup hash (SHA-256 of the canonical frozen setup, hosts and env keys sorted). If
+   `<git rev-parse --absolute-git-dir>/switchboard-setup.json` is `{ v: 1, lockfile_sha256, setup_sha256 }` with both
+   equal: event `workspace_setup { phase: "skipped", reason: "marker_match" }`, continue.
+2. Event `{ phase: "started", commands, network_hosts, cache, timeout_seconds }`; the lease is extended by twice the
+   timeout plus the lease TTL.
+3. Bubblewrap from the outer sandbox detection (§8.4; detected on first use when `serve` did not); unavailable →
+   `sandbox_unavailable`. Create `<data_dir>/setup/<project>/home` and `<data_dir>/caches` (mode 0700) and a short
+   socket directory under the OS temporary directory; record the non-ignored `git status --porcelain=v1 -z
+   --untracked-files=normal` hash; start the proxy on `<socket dir>/proxy.sock`.
+4. Run the commands with `startVerification` (§8.1): built environment only (ADR-0071 item 7), wall clock
+   `timeout_seconds`, 256 KiB per stream, each argv wrapped as `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp
+   [--tmpfs <operator HOME> --tmpfs <data_dir> --tmpfs /run] [--ro-bind <hidden PATH entry or Node.js prefix>]*
+   --bind <worktree> --bind <setup home> --bind <data_dir>/caches --bind <socket dir> --chdir <worktree> --unshare-all
+   --die-with-parent --new-session -- <node> -e <bridge> <socket> <argv...>`; each spawn records pid, pgid and start
+   ticks with event `{ phase: "command_started", index, pid, pgid }`.
+5. Close the proxy and remove the socket directory. Succeeded only when every command passed and the status hash is
+   unchanged (else `outputs_not_ignored`); then write the marker (mode 0600).
+6. Store the `setup_log` artifact when a command ran (version 1: `outcome`, `reason?`, `confined`, both hashes, proxy
+   counts, per command `index`, redacted `argv`, `outcome`, `exit_code`, `signal`, `duration_ms`, redacted `stdout` and
+   `stderr`, truncation flags). Event `{ phase: "succeeded" | "failed" | "cancelled", reason?, duration_ms, exit_codes,
+   confined, proxy_allowed, proxy_refused, artifact_id? }`.
+7. Failure → `FAILED` `TOOL_FAILURE` before spawn with transition payload `{ reason: "SETUP_FAILED" | "SETUP_TIMEOUT",
+   setup_reason, setup_log? }` and `failure_detail` `project setup failed (SETUP_FAILED): <what>; output in the setup_log
+   artifact` (or `project setup timed out after <n> s (SETUP_TIMEOUT); ...`). Cancel → `CANCELLED` (T19). No setup
+   runner wired → `SETUP_FAILED` `unavailable`.
+
+**Proxy** (`startConnectProxy`): request head at most 8 KiB within 10 s; only `CONNECT <host>:443 HTTP/1.x` with
+`<host>` in the list (exact, case-insensitive) is tunnelled (`200 Connection Established`, then bytes both ways, idle
+close after 5 minutes, at most 64 tunnels); other methods `405`, other hosts or ports `403`, an oversized head `431`, a
+name without a public unicast address or a failed dial `502`, too many tunnels `503`. Only counts are kept.
+
+**Not covered** (ADR-0071 Consequences): content inside allowed TLS tunnels, CPU and memory limits, macOS, and GC of
+`<data_dir>/caches`.
 
 ## 6. Compliance manifest
 
@@ -2839,9 +3497,9 @@ it run in the adapter's only compiled cell instead: `privileged` with the narrow
 approved by an in-memory approval local to that call (no ledger row, approval record or config change), with the
 throwaway repository passed writable where the cell refuses a read-only workspace (Cursor, Kimi Code, OpenCode,
 Antigravity). Before the spawn the argv's bypass-class flags must be exactly the one flag the cell declares
-(`--always-approve`, `--force`, `--prompt`, `--dangerously-skip-permissions`; OpenCode declares none, so none may
-appear). The step detail, the `--json` `smoke_profile` field and the evidence line name the cell and its ruling; every
-other adapter, Claude Code and Codex included, is unchanged. A failed smoke step reports the run's classified failure
+(`--always-approve`, `--force`, `--prompt`, `--dangerously-skip-permissions`, and `--auto` for OpenCode, ADR-0077).
+The step detail, the `--json` `smoke_profile` field and the evidence line name the cell and its ruling; every other
+adapter, Claude Code and Codex included, is unchanged. A failed smoke step reports the run's classified failure
 code and its classifier detail (redacted with the ledger's secret patterns, e-mails and URL queries stripped, clipped
 to one line; never raw stderr or stdout), and the `--json` smoke step adds `failure_code` and `failure_detail`.
 The range is the installed `X.Y.Z` to the next minor, `>=X.Y.Z <X.(Y+1).0` (Q-12; an Assumption, not a provider
@@ -3360,6 +4018,11 @@ context kind aborts startup (NFR-SEC-06).
 Only the primary context is writable in this design; additional writable contexts (multi-repository changes) are deferred
 (ROADMAP §8). A context with `push.policy` other than `none` must have an `identity`.
 
+*Note (2026-10-20, Linus as design authority, [ADR-0071](../adr/0071-project-setup-step.md)):* a project (configured or
+dynamic, `host` only) may also set `"setup": { "commands": [[...]], "network": { "hosts": [...] }, "cache": "pnpm",
+"timeout_seconds": 600, "env": { "CI": "true" } }`, the dependency setup step the controller runs before the agent;
+shape, defaults, approval and the step are in [§5.3](#53-project-setup-step-adr-0071).
+
 *Note (2026-10-13, Delegated, [decision 29](../ROADMAP.md#42-owner-decisions), T3.21):* the top-level `timeouts` object
 is part of the same Ajv-validated schema (strict; unknown keys abort startup) and today holds one key,
 `"timeouts": { "preflight_ttl_seconds": 60 }` (integer 0 to 3600; default 60 is an **Assumption**; 0 disables the
@@ -3375,7 +4038,9 @@ primary context writable (default: writable iff primary), `push.policy: "branch"
 `container` and refused for `host`. `base_ref` is required (FR-PRJ-02). `base_remote` is optional, a remote name
 like `push.remote`, and only on the primary context ([§5.2](#52-base-refresh-fr-prj-02-note-adr-0067)). Context ids
 match `^[a-z][a-z0-9-]{0,40}$` and the image digest `^sha256:[0-9a-f]{64}$` (**Assumptions**). `allowed_providers`
-takes the provider IDs of `PROVIDER_IDS` (`claude-code`, `codex`, ...), not the short `claude` shown in the example. `max_trust_profile`,
+takes the provider IDs of `PROVIDER_IDS` (`claude-code`, `codex`, ...); *since ADR-0076 (2026-10-20, Delegated)* the
+canonical spelling shown in the example (`claude`) is accepted too, in configuration and in `create_project` and
+`update_project` (whose schema enum lists both spellings), and is stored as the config id, de-duplicated. `max_trust_profile`,
 `allowed_providers` and `sign` are checked for shape only; enforcement is T9.2 and T9.10. The filesystem rules run only
 in `switchboard projects validate` (absolute path; `realpath` under an allowed root, so `..` and symlink escapes are
 refused; a Git repository whose top level is also under an allowed root; `base_ref` resolves to a commit; a `container`
@@ -3468,7 +4133,8 @@ identity in step 6):* the steps run in `resolveProject` and `projectCandidates` 
 (1) unknown id `INVALID_REQUEST`; (2) not in the client's list `PERMISSION_BLOCKED`; a `container` environment fails here
 (M10); (5) the primary context's path is canonicalised against the allowed roots again (`INVALID_REQUEST`) and its
 `base_ref` must resolve to a commit; (3) the profile is checked against `effectiveMaxProfile` (`src/config/projects.ts`);
-(4) candidates are filtered by `allowed_providers` (config ids mapped to adapter ids with `adapterIdForConfigId`;
+(4) candidates are filtered by `allowed_providers` (either spelling mapped to the canonical adapter id with
+`canonicalProviderId`, ADR-0076;
 **Delegated reading of FR-PRJ-06 against FRD BR-23**: `require_provider` naming a provider outside the set is
 `PERMISSION_BLOCKED` before any write, a set that leaves no registered provider is `ELIGIBILITY_NONE` with
 `details.reason = "PROJECT_PROVIDERS"`, and a non-required preference outside the set is ignored); the excluded
@@ -3609,7 +4275,10 @@ Served by the shim to the agent as MCP tools; every object has `additionalProper
 (`NOT_RUNNING`, `LEASE_LOST`, `PATH_OUTSIDE_WORKTREE`, `NOTHING_TO_COMMIT`, `MESSAGE_EMPTY_AFTER_SANITISING`,
 `PUSH_NOT_ALLOWED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_REJECTED`, `SIGNING_FAILED`, from M11 `MESSAGE_REQUIRED`, and
 from T9.14 `SECRET_SCAN_BLOCKED`, §20.9) and are `git_tool_denied` or `git_push` events. They are returned to the agent
-and do not fail the run.
+and do not fail the run. *Amended 2026-10-20 by [ADR-0075](../adr/0075-secret-scan-findings-in-refusals.md)
+(Delegated, not owner-approved):* a `SECRET_SCAN_BLOCKED` push answer's message names each finding after
+`push refused: SECRET_SCAN_BLOCKED`, and the error carries an optional `details {findings, finding_count,
+findings_truncated?}` (§20.9), which the shim relays with the rest of the error object.
 
 **`message` and the inner agent (M11, FR-INN-10, Proposed).** `message` stays required in the published tool schema
 unless the `commit_message` task is enabled with `mode` other than `never`; the shim then serves the schema with no
@@ -4080,6 +4749,9 @@ silent:
   (that run non-terminal, or its session `ARCHIVED`); another session's publish ref may move to one of its intents.
   A remote-tracking ref may move to the SHA the newest `fetched` daemon base refresh recorded for it (2026-10-20,
   [§5.2](#52-base-refresh-fr-prj-02-note-adr-0067), [ADR-0067](../adr/0067-daemon-base-refresh-into-remote-tracking-ref.md)).
+  Refs under `refs/switchboard/merge-gate/` (the merge gate's controller-owned fetch namespace, 2026-10-20,
+  [§20.7.1](#2071-pure-base-merges-adr-0073), [ADR-0073](../adr/0073-merge-gate-accepts-pure-base-merges.md)) are ignored:
+  neither a violation nor trusted, in the per-ref comparison and in the tail digest.
 - **Concurrent runs in one repository (T9.11, Delegated).** The checkpoint commit moves a run branch before its `post`
   row exists, so another run's check in that window would report the move as a `switchboard` violation. The lifecycle
   therefore runs each run's check, mutation assessment and checkpoint as one critical section per repository root
@@ -4108,6 +4780,21 @@ silent:
   updates no local ref (BR-27: prevention is the control). Changes made by the operator during the run are flagged too
   (ROADMAP R-47). Verified on Git 2.43.0 only.
 
+*Amended 2026-10-21 ([ADR-0094](../adr/0094-bypass-git-fetch-and-local-git-not-fatal.md), FR-GIT-03 note, owner ruling
+2026-10-21, mechanism Delegated):* `RefGuard.compare` treats a change to a `refs/remotes/` ref (created, moved or
+deleted) or a newly created `refs/tags/` ref as an agent's own fetch, not a violation, when
+`Ledger.hasBypassRunOnRepoSince(repo_root, <LEASED snapshot ts>)` finds a run of the same repository with a
+`privileged_dispatch` event whose `bypass_approved` is true and whose `finished_at` is NULL or not before that time.
+Such refs are counted in the `git_ref_check` payload as `fetched_refs` (present only when non-zero). A moved or deleted
+tag and every other ref are judged as above. In a run whose own `privileged_dispatch` recorded `bypass_approved: true`,
+the `run_branch` and `worktree_head` restore entries are split off before the violation path: they are appended as a
+`git_agent_refs_restored` event (`{v: 1, entries}`), restored at once (a failure throws into `check_failed`) and listed
+as `agent_restored` (`scope`, `ref`, `to`) in the `git_ref_check` payload, never in `git_policy_violation`. The
+tool-call guard's bypass mode (`gitWriteInCommand(command, { bypass: true })`, `gitBypassReadVerdict`,
+`GIT_BYPASS_LOCAL_SUBCOMMANDS` in `src/adapters/git-write.ts`) decides which commands reach this point: plain `git
+fetch`, `git remote update`, `git ls-remote` and remote reads run; `commit`, `merge`, `cherry-pick`, `revert`, `reset`,
+a plain `pull` and `checkout -- <path>` are the non-fatal verdict `local`; everything else stays `write`.
+
 ### 12.6 Push algorithm
 
 1. Policy `branch`; the BR-31 credential-reach rule holds; the run (or, for an operator command, the meta-session) has a
@@ -4123,7 +4810,12 @@ silent:
 **As built (2026-10-13, Delegated, T9.6, [ADR-0028](../adr/0028-controller-push-and-credential-reach.md); owner text
 above unchanged).** Code: `src/git/push.ts` (`GitPusher`), `src/git/push-names.ts`, `src/git/credential-reach.ts`,
 callers `src/git/channel.ts` (agent tool) and `src/cli/git-push.ts` (operator command `switchboard git push
-<sess_...|run_...> [--json]`). Choices where this section was silent:
+<sess_...|run_...> [--json]`).
+*Note 2026-10-20 ([ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md)):* a third caller is MCP
+`publish_run` (§3.4.12, `requested_by: mcp_client:<id>`, no BR-31 check), and every caller resolves the context with
+`projectPushContextResolver` (configuration, then an approved dynamic project's in-force revision); where the list
+below says "from the CURRENT configuration", read "from the current configuration or in-force revision". Choices
+where this section was silent:
 
 - **Target.** The local publish ref `refs/heads/switchboard/pub/<sess>` (ADR-0025, Q-42 confirmed) is pushed to
   `refs/heads/<push.branch_prefix><sess>`. The refspec is `<verified head sha>:<target>`: never a ref name as source,
@@ -4162,7 +4854,9 @@ callers `src/git/channel.ts` (agent tool) and `src/cli/git-push.ts` (operator co
   commit_count, commits (newest first, at most 500), commits_truncated?, credential_reach?, secret_scan?}` (the last
   from T9.14, §20.9: `{from, hit_count, allowed_count, binary_count, binary_paths}`, present once the scan ran).
   Pushes of one meta-session are serialised in the process. Agent tool codes: `PUSH_NOT_ALLOWED`, `NOTHING_TO_PUSH`,
-  `REMOTE_REJECTED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_UNREACHABLE`, `GIT_FAILED`, `SECRET_SCAN_BLOCKED` (T9.14).
+  `REMOTE_REJECTED`, `CREDENTIALS_UNAVAILABLE`, `REMOTE_UNREACHABLE`, `GIT_FAILED`, `SECRET_SCAN_BLOCKED` (T9.14;
+  since [ADR-0075](../adr/0075-secret-scan-findings-in-refusals.md) its answer names each finding in the message and
+  in `error.details`, §20.9).
 - **BR-31** (`evaluateCredentialReach`, from the frozen snapshot, at channel open and at each call): `host` only (a
   `container` snapshot is refused until M10), frozen policy `branch`, no `bypassApproved` or scope `bypass` claim
   without a controller-verified approval, and shell `none` or `allowlist` with an empty list (a `privileged` run by its
@@ -5844,7 +6538,8 @@ No migration: every column used exists since migration 0001.
     "confidence_runs": 10,           // 1..1000; terminal runs in the window at which confidence reaches 1 (Q-69)
     "queue_horizon_seconds": 0,      // 0..86400; BR-9 wait for a known reset; 0 = never wait (Q-72)
     "breaker": { "failure_threshold": 3, "open_seconds": 300 },   // 1..100, 1..86400 (Q-70)
-    "retry": { "max_attempts": 3, "base_ms": 2000, "cap_ms": 120000 } // 1..10, 1..600000, 1..3600000; §9 values (Q-71)
+    "retry": { "max_attempts": 3, "base_ms": 2000, "cap_ms": 120000 } // 1..10, 1..600000, 1..3600000; §9 values (Q-71),
+    "copilot_quota": true             // FR-CAP-14, §16.11; false = no `gh` call, no provider_quota block
   },
   "providers": { "<id>": { "concurrency": 1 } }  // 1..64, T6.9; default limits.per_provider_concurrency
 }
@@ -5927,6 +6622,10 @@ per provider, headed by the `note`. **Wording rule (FR-CAP-03):** on every surfa
 quota" or a percentage of an estimate. `doctor` prints one `capacity` line per provider: breaker state, `throttle_risk`
 and `confidence`, labelled "estimate".
 
+FR-CAP-14 adds an optional top-level `provider_quota` array and the `copilot` provider argument (§16.11).
+T6.18 builds the provider's `provider_usage` report (§16.12) from recorded run output for Claude Code, absent when no
+windowed figure is current.
+
 T6.14 adds an optional top-level `pacing` array, one entry per subscription (§16.9). It is omitted when no subscription
 is configured, so an unconfigured projection stays byte-identical. `doctor` prints one pacing line per subscription.
 The gate verdict is shown; the projection holds nothing. The hold is T6.8 (§16.9), applied at admission and in
@@ -5939,6 +6638,10 @@ including `fake`, even when `candidateOrder` omits it). `switchboard capacity` a
 probes. `capacity --json` adds `schema_version` as every CLI `--json` does. With no ledger file, the CLI computes over
 an empty in-memory ledger and creates nothing. The `doctor` JSON gains a `capacity` key, and its text gains one line per
 adapter. The section never changes `ok`, and an unreadable ledger leaves it out.
+
+*Amendment 2026-10-21 (ADR-0079, Delegated):* "never probes a provider" no longer holds as written. For an enabled
+provider whose adapter has `readProviderUsage`, `get_capacity` also runs that CLI's own read-only account call and adds
+`provider_usage` (§16.10). It makes no model call and reads no credential.
 
 ### 16.4 Per-provider circuit breaker
 
@@ -6110,7 +6813,9 @@ declared reset key (below) that is still in the future, and without one its rese
 no reset: its used share is taken over the last `length_seconds`. Without a `budget`, a window has no estimate.
 
 **Declared keys** (`USAGE_KEYS` in the capacity module, empty and frozen until a task wires a sourced key, as
-`REMAINING_KEYS` in §16.2). An entry names a provider, the `usage_observation.metrics_json` key or `rate_limit` event
+`REMAINING_KEYS` in §16.2).
+*(Since 2026-10-21 it declares the `claude` keys, see below.)*
+An entry names a provider, the `usage_observation.metrics_json` key or `rate_limit` event
 field, and what it carries (`used_fraction`, `remaining_fraction` or `reset_at`), with the source document. Candidates
 named by T6.0, none wired: Antigravity's `/usage` `remaining_fraction` and `reset_time` per bucket (a separate call,
 Q-101), and Claude Code's `rate_limit_event` `resetsAt` (a synthetic fixture shape, T6.11).
@@ -6257,6 +6962,327 @@ breaker's probe): a queued run whose provider is deferred stays in `QUEUED`, one
 including `privileged` and `require_provider` runs and runs admitted to an undeferred provider whose subscription
 became deferred before dispatch. Nothing creates a run, a probe or a provider call. Tests:
 `src/lifecycle/pacing-gate.test.ts`, `src/routing/pacing-admission.test.ts`.
+
+*Update 2026-10-21 ([ADR-0088](../adr/0088-claude-code-usage-windows.md), ROADMAP T6.23, Delegated, not owner-approved):*
+`USAGE_KEYS` now declares Claude Code's `five_hour_used_fraction`, `five_hour_resets_at`, `seven_day_used_fraction` and
+`seven_day_resets_at` (the [capture](../research/claude-usage-capture-2026-10-21.md)). An entry may carry
+`window: { id, lengthSeconds }` (`five_hour` 18000 s, `seven_day` 604800 s). A windowed key feeds only a configured
+subscription window whose `length_seconds` equals its own, so a 7-day figure is never read into a 5-hour window.
+`REMAINING_KEYS` stays empty (Claude reports a used share). The figures reach `usage_observation` from the adapter's
+`usage` events (`src/adapters/claude/usage.ts`, `parse.ts`).
+
+### 16.10 Provider-reported usage reader (FR-CAP-13, ADR-0079)
+
+*Added 2026-10-21 (Delegated, not owner-approved).* The estimator of §16.2 never sees a provider's own quota, because no
+run output carries one. Where a provider's CLI can report the signed-in account's windows without a model call, an
+optional adapter method reads them, and the result is shown beside the projection.
+
+**Interface.** `ProviderAdapter.readProviderUsage?(runner, now): Promise<ProviderUsageReport | ProviderUsageUnavailable>`
+(`src/adapters/types.ts`; types in `src/adapters/provider-usage.ts`). The method is optional; Codex, Cursor, Grok
+Build, Kimi Code and Antigravity (T6.20, below) implement it, and OpenCode in [§16.13](#1613-provider-reported-spend-and-the-opencode-reader-fr-cap-16-adr-0089).
+
+```jsonc
+// ProviderUsageReport
+{ "source": "provider_reported", "provider": "codex", "observed_at": "<ISO>", "method": "codex app-server account/rateLimits/read",
+  "plan": "plus", "limit_reached": false, "limit_reached_type": null,
+  "windows": [ { "id": "primary", "limit_id": "codex", "window_seconds": 18000,
+                 "used_fraction": 0.21, "remaining_fraction": 0.79, "resets_at": "<ISO>" } ],
+  "credits": { "has_credits": true, "unlimited": false, "balance": "<string>" } }
+// ProviderUsageUnavailable
+{ "source": "unknown", "provider": "codex", "observed_at": "<ISO>", "error": "<short reason>" }
+```
+
+**Codex wire exchange** (`src/adapters/codex/usage.ts`). The adapter runs `codex app-server` through the existing
+`ProbeRunner` with the environment allowlist `PATH` and `HOME` and a 15 s timeout (**Proposed**). It writes three
+JSON-RPC lines on stdin: `initialize` (id 1), the `initialized` notification, and `account/rateLimits/read` (id 2) with
+`excludeResetCreditDetails: true`. The process exits at stdin end-of-file before answering, so stdin is held open until
+the id-2 answer arrives. No model is called. The CLI uses its own login; Switchboard reads no credential and no file
+under `~/.codex` (ADR-0003).
+
+| Provider field (app-server) | Report field |
+| --- | --- |
+| `rateLimits` and each entry of `rateLimitsByLimitId`: `primary`, `secondary` | `windows[]`, `id` is `primary` or `secondary`, prefixed `<limit_id>:` for a non-default bucket |
+| `usedPercent` | `used_fraction` = `usedPercent / 100`; `remaining_fraction` = `1 - used_fraction` |
+| `windowDurationMins` | `window_seconds` = minutes × 60 |
+| `resetsAt` (Unix seconds) | `resets_at` (ISO) |
+| `limitId` | `limit_id` |
+| `planType` | `plan` |
+| `credits.hasCredits`, `unlimited`, `balance` | `credits.has_credits`, `unlimited`, `balance` |
+| `rateLimitReachedType`, `ordinaryUsageAllowed` | `limit_reached`, `limit_reached_type`, only from the provider's flags, never inferred from a full window |
+
+`accountId` and every other field are dropped.
+
+**Optional report fields** (ADR-0083). A report may also carry `period` (`kind`: `weekly`, `monthly`, `daily` or
+`unknown`; `starts_at`; `resets_at`), the provider's current usage period even when no used share is reported;
+`amounts[]` (`id`, `value`, `unit: "unspecified"`, `key`), reported amounts whose unit the provider does not state; and
+`unreported[]`, keys the reader knows but the answer omitted (unreported, never 0). Codex sets none of them.
+
+**Grok Build wire exchange** (`src/adapters/grok/usage.ts`, ADR-0083). The adapter runs `grok agent --no-leader stdio`
+through the same `ProbeRunner` (`PATH` and `HOME`, 20 s timeout, **Proposed**). It writes two JSON-RPC lines:
+`initialize` (id 1, `protocolVersion: 1`) and `_x.ai/billing` (id 2, `{}`), and holds stdin open until the id-2 answer,
+because the agent exits at stdin end-of-file before answering. The `initialize` answer (agent id, hostname) is
+discarded. Grok fetches the figures from xAI with its own login; Switchboard reads no file under `~/.grok`.
+
+| Provider field (`_x.ai/billing` result) | Report field |
+| --- | --- |
+| `subscription_tier` | `plan` |
+| `config.currentPeriod.type` (`USAGE_PERIOD_TYPE_WEEKLY`, `_MONTHLY`, `_DAILY`) | `period.kind` (`weekly`, `monthly`, `daily`, else `unknown`) |
+| `config.currentPeriod.start`, `end` (fallback `config.billingPeriodStart`, `billingPeriodEnd`) | `period.starts_at`, `period.resets_at` (ISO) |
+| `config.creditUsagePercent` (**Assumption:** 0 to 100) | window `credit_period`: `used_fraction` = percent / 100, `window_seconds` = period length, `resets_at` = period end; absent → no window, key in `unreported` |
+| `config.prepaidBalance.val`, `onDemandCap.val`, `onDemandUsed.val`, `monthlyLimit.val` | `amounts[]` `prepaid_balance`, `on_demand_cap`, `on_demand_used`, `monthly_limit` (unit `unspecified`); absent → `unreported` |
+
+`limit_reached` and `limit_reached_type` are null and `credits` is null: Grok's answer has no such flag. Every other
+field is dropped. An answer without `config` is `unknown` ("`_x.ai/billing` answered without config").
+
+**Failure rules.** A spawn failure, a timeout, a missing answer or a JSON-RPC error returns `ProviderUsageUnavailable`
+with a short reason. An unknown figure is never headroom (BR-50).
+
+**Cursor `/usage` screen read** (`src/adapters/cursor/usage.ts`,
+[ADR-0080](../adr/0080-cursor-usage-from-the-cli-usage-command.md)). Cursor CLI has no non-interactive usage command
+(print mode sends `/usage` to the model). The adapter runs
+`script -qfec "stty cols 160 rows 50; exec cursor-agent --mode ask --trust" /dev/null` (BSD `script -q /dev/null sh -c`
+on macOS, **Assumption**). It uses the environment allowlist `PATH`, `HOME`, `USER`, `LOGNAME` and `TMPDIR`, plus a
+fixed `TERM` and an English UTF-8 locale. The working directory is the one owner-checked 0700 directory
+`<tmpdir>/switchboard-cursor-usage-<uid>`, kept between reads because Cursor records a project entry per directory. The
+reader types `/usage` once the prompt box is up, presses Enter only once the slash menu highlights `/usage` (so the
+text can never be sent as a prompt), parses the last panel, then sends Escape and Ctrl-C (SIGTERM after 1 s, SIGKILL
+after 3 s). The whole read times out after 30 s (**Proposed**). The CLI calls its own dashboard service with its own
+login. Switchboard reads only the screen, never stores it, and reads no Cursor file.
+
+| Panel text (CLI 2026.10.19) | Report field |
+| --- | --- |
+| `Usage • <plan>` | `plan` |
+| `Included` / `Auto` / `API` `<n>% used` | `windows[]` `included`, `included:auto`, `included:api`: `used_fraction` = n / 100, `remaining_fraction` = 1 − used, `window_seconds` null |
+| `Resets <Mon> <d>` (UTC date of the cycle end) or `Current period` | `reset_label` verbatim; `resets_at` = start of that UTC day (next on or after today), `reset_precision: "day"`; null for `Current period` |
+| `On-Demand` row and its detail line | `on_demand` {`state` `fixed` / `unlimited` / `disabled` / `unavailable`, `used_usd`, `limit_usd`, `remaining_usd`, `detail` verbatim} |
+| Enterprise `Current cycle $X`, `Previous period $Y` | `spend` {`current_cycle_usd`, `previous_period_usd`} |
+| Included at 100% and on-demand `disabled` or `fixed` with $0 remaining | `limit_reached: true`; below 100% or `unlimited` → false; otherwise null (Delegated) |
+
+The CLI's own messages (`Not logged in`, `not available for this plan`, `Failed to load usage data`), an exit before the
+panel, a menu that never shows `/usage` and the timeout all return `ProviderUsageUnavailable`. The four Cursor fields
+are optional in the shared report and in the output schema. Tests: `src/adapters/cursor/usage.test.ts` (recorded
+redacted capture `src/adapters/cursor/fixtures/usage_pro_exhausted.pty.txt` and synthetic panels built from the CLI's
+renderer strings), and the Cursor case in `src/mcp/get-capacity.test.ts`.
+
+**Reader and cache** (`src/capacity/provider-usage.ts`). `readProviderUsage` runs the readers of enabled providers that
+have one, in parallel. `ProviderUsageCache` is per process with a one-minute TTL (**Proposed**, Delegated).
+`withProviderUsage` adds the report to each provider entry of the §16.3 projection as `provider_usage`; the projection
+itself (`capacity_score`, `explicit_remaining`, `reset_at`, `pacing`, routing) is unchanged. The report is never written
+to the ledger and does not feed routing, pacing or the score; `REMAINING_KEYS` and `USAGE_KEYS` stay empty. Feeding it
+into pacing is possible follow-up work and is not done.
+
+**Surfaces.** `get_capacity` (the output schema gains an optional `provider_usage` per provider), `switchboard capacity`
+(text and `--json`) and `switchboard doctor` (a separate "Provider-reported usage" section, informational, never
+changes `ok`). Text shows fractions, not percentages (FR-CAP-03 wording rule), and "remaining" appears only on
+`provider_reported` lines. Tests: `src/adapters/grok/usage.test.ts` (recorded fixture
+`src/adapters/grok/fixtures/billing-supergrok-weekly.json` and a synthetic one),
+`src/adapters/codex/usage.test.ts` (recorded redacted fixture
+`src/adapters/codex/fixtures/usage/app-server-rate-limits.jsonl` and two synthetic ones),
+`src/capacity/provider-usage.test.ts`, and the block "provider_usage on get_capacity, capacity and doctor (ADR-0079,
+FR-CAP-13)" in `src/mcp/get-capacity.test.ts`.
+
+**Kimi Code** ([ADR-0084](../adr/0084-kimi-usage-via-cli-usage-display.md), T6.19; `src/adapters/kimi/usage.ts`).
+Kimi implements the same method over the interactive TUI, because its other surfaces carry no plan quota. The reader
+takes an injected `TerminalRunner`; production wiring builds one on `<data_dir>/probes`, and without it (as in tests) the
+reader returns `ProviderUsageUnavailable` and spawns nothing. Each read runs `kimi` under util-linux or BSD `script` in
+`<data_dir>/probes/kimi-usage` (empty real directory owned by the user, mode 0700, checked every time) with `PATH`,
+`HOME`, `TERM`, `COLUMNS` and `LINES` only, answers the trust dialog only when it names that directory with "Trust and
+continue" selected, types `/usage`, parses the "Plan usage" panel with `parseKimiUsagePanel`, and exits with Ctrl-C.
+Unrecognised text, a timeout or another dialog is `unknown`.
+
+| Panel text | Report field |
+| --- | --- |
+| `5h limit`, `N% used`, `resets in 1d 2h 3m` | window `5h`, `window_seconds` 18000, `used_fraction` = N / 100, `resets_at` = observation time plus the offset |
+| `Weekly limit` | window `weekly`, `window_seconds` 604800 |
+| `Monthly limit` | window `monthly`, `window_seconds` null |
+| `kimi N% · code M%` on the monthly row | windows `kimi:monthly` and `code:monthly`, `limit_id` `kimi` and `code` |
+| "Extra Usage" booster wallet | `credits` |
+| (not displayed) | `plan` and `limit_reached` are null; `method` is `kimi TUI /usage (pseudo-terminal)` |
+
+Precision is a whole percent and a minute-level reset. Side effects: the probe directory appears once in Kimi's
+workspace list and each read adds a `/usage` line to its input history. Tests: `src/adapters/kimi/usage.test.ts`.
+
+**Antigravity** (T6.20, [ADR-0082](../adr/0082-antigravity-usage-from-the-cli-usage-command.md), answers Q-101;
+`src/adapters/antigravity/usage.ts`, recorded `agy` 1.4.3 fixtures in `src/adapters/antigravity/fixtures/usage/`):
+
+1. `authPreflight` (`agy models`, §4) first. `AUTH_REQUIRED` gives `unknown` with the error "agy is not signed in"
+   and the native login command; `UNKNOWN` gives `unknown` with its reason. Only `OK` continues, because a signed-out
+   `agy -p "/usage"` waits about 60 s for a sign-in.
+2. `agy -p /usage --output-format json` and `agy -p /credits --output-format json` in parallel, from the system
+   temporary directory, with the probe environment (`PATH`, `HOME`) and a 20 s bound (**Proposed**).
+3. The last stdout line that parses as a JSON object must have `status` `SUCCESS`, `num_turns` 0 and `command.name`
+   `usage` (own properties only). Each `command.data.groups[].buckets[]` entry becomes a window when its `id` and
+   `window` are tokens (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`), `remaining_fraction` is a finite number in [0, 1] and
+   `reset_time` is absent or parses as a date; a duplicate id and windows past 64 are dropped. No valid window gives
+   `unknown`. Free text (`description`, the tab-separated `response`) is never read.
+
+| Provider field (`/usage`, `/credits`) | Report field |
+| --- | --- |
+| `buckets[].id` | `windows[].id` (unique across groups) |
+| `groups[].name` | `windows[].limit_id` (the group of models that share the bucket) |
+| `buckets[].window`: `5h`, `weekly` | `window_seconds` 18 000, 604 800; any other kind null |
+| `buckets[].remaining_fraction` | `remaining_fraction`; `used_fraction` = `1 - remaining_fraction` (six places) |
+| `buckets[].reset_time` | `resets_at` (ISO) |
+| `remaining_credits` | `credits`: `has_credits` (above 0), `unlimited` false, `balance` as a string; null if `/credits` fails |
+| (none) | `plan`, `limit_reached`, `limit_reached_type` null |
+
+Observed on 1.4.3: a bucket at `remaining_fraction` 1 reports a `reset_time` of now plus its window (the window has not
+started), so that `resets_at` moves on every read. Tests: `src/adapters/antigravity/usage.test.ts` and
+`src/mcp/get-capacity-antigravity-usage.test.ts` (the real probe runner against a stand-in `agy` that prints the
+recorded answers).
+
+### 16.11 Provider-reported quota of a usage-only provider (FR-CAP-14, ADR-0081)
+
+*Owner of the `provider_quota` schema (Delegated, not owner-approved).* A usage-only provider has no run adapter and no
+registry entry. Today the only one is GitHub Copilot, id `copilot`. Its quota never reaches routing, pacing, the
+estimator, `REMAINING_KEYS` or `USAGE_KEYS` (BR-60).
+
+**Configuration.** `capacity.copilot_quota`, boolean, default `true`. `false` turns the reader off: no `gh` call is
+made and `provider_quota` is absent.
+
+**Reader.** One read, cached in memory for 60 s and single-flight (concurrent callers share one in-flight call):
+
+1. Run `gh api /copilot_internal/user` with `execFile` (no shell), the allowlisted environment `ghEnv` of the CI
+   trigger (ADR-0050, no token variable), a 10 s timeout and stderr dropped. Switchboard never reads the token (ADR-0003).
+2. Parse stdout as JSON through a field allowlist. Kept: the plan (`copilot_plan`), the SKU (`access_type_sku`), the
+   reset date (`quota_reset_date_utc`) and, for `chat`, `completions` and `premium_interactions` under
+   `quota_snapshots`: `entitlement`, `remaining`, `percent_remaining`, `unlimited`, `overage_count`,
+   `overage_permitted`. Dropped, never stored or logged: every other key, including the account id, login, analytics
+   tracking id, endpoints and organisation lists. Source keys: [research note](../research/copilot-usage-2026-10-21.md).
+3. Any failure yields an `unavailable` entry, never a tool error. Reason (closed list): `gh_missing` (no `gh` binary),
+   `auth_required` (`gh` not logged in or not authorised for the call), `gh_failed` (other non-zero exit),
+   `timeout` (over 10 s), `unparseable` (not JSON or not the allowlisted shape), `no_quota` (parsed, but no quota
+   snapshot present).
+
+**Entry, status `ok`:**
+
+```jsonc
+{ "provider": "copilot", "usage_only": true, "status": "ok",
+  "source": "provider_reported",                 // every figure below is provider_reported (FR-CAP-03, BR-50)
+  "via": "gh api /copilot_internal/user",
+  "observed_at": "<ISO time of the read>",
+  "plan": "<copilot_plan>", "sku": "<access_type_sku>",
+  "reset_at": { "at": "<ISO time>", "source": "provider_reported" },   // or null
+  "quotas": [ {
+    "id": "premium_interactions",                // or "chat" or "completions"
+    "unit": "premium_requests",                  // "chat_requests" for chat, "code_completions" for completions
+    "unlimited": false, "entitlement": 0, "remaining": 0, "used": 0,
+    "percent_remaining": 0,                      // provider-reported, not an estimate
+    "overage_count": 0, "overage_permitted": false,
+    "reset_at": { "at": "<ISO time>", "source": "provider_reported" }  // or null
+  } ] }
+```
+
+**Entry, status `unavailable`:** `{ "provider": "copilot", "usage_only": true, "status": "unavailable",
+"source": "unknown", "via": "gh api /copilot_internal/user", "observed_at": "<ISO time>", "reason": "<closed reason>" }`.
+
+**`get_capacity` projection.** `provider_quota` is an optional top-level array, present only when the reader is on.
+No `provider` argument: the §16.3 projection unchanged plus `provider_quota: [<copilot entry>]`.
+`{"provider":"copilot"}` is accepted (it is not a registry id; §16.3's unknown-id refusal does not apply to it):
+`providers: []` plus `provider_quota: [<copilot entry>]`. Any other named provider: unchanged, no `provider_quota`.
+With the reader off, `{"provider":"copilot"}` is refused like any unknown id (`src/mcp/get-capacity.test.ts`).
+
+**CLI.** `switchboard capacity` prints a `copilot (usage-only ...)` section after the provider blocks and accepts
+`--provider copilot`; `--json` includes `provider_quota`. `doctor` is unchanged. The wording rule of §16.3 applies:
+"remaining" is printed only with "provider-reported".
+
+**Risk.** The endpoint is GitHub-internal and undocumented (ADR-0081); a shape change surfaces as `unparseable`.
+
+### 16.12 Claude Code usage windows from run output (FR-CAP-15, ADR-0088)
+
+No migration, no new output field. The Claude figures reach the capacity surfaces as an ADR-0079 `ProviderUsageReport`
+(§16.10) built on read from `usage_observation` rows and the clock, set as the provider's `provider_usage`:
+
+```jsonc
+"provider_usage": { "source": "provider_reported", "provider": "claude", "observed_at": "<ISO time>",
+  "method": "recorded run output (declared usage keys)", "plan": null, "limit_reached": null,
+  "limit_reached_type": null, "credits": null,
+  "windows": [ { "id": "five_hour", "limit_id": null, "window_seconds": 18000, "used_fraction": 0.03,
+                 "remaining_fraction": 0.97, "resets_at": "<ISO time>" } ] }
+```
+
+- **Collector query:** the ledger's `listLatestProviderReportedUsageWithKey` returns the newest 20
+  (`REPORTED_USAGE_ROWS`, Assumption) `provider_reported` rows carrying a given metric key for a provider, observed
+  within one window length (`src/ledger/repo.ts`); `src/capacity/collect.ts` calls it for each declared windowed share
+  key.
+- **Selection rule** (`src/capacity/reported-usage.ts`, pure function with an injected clock): per declared windowed
+  `used_fraction` key, among those rows keep the one with the latest declared reset, then the largest used share, then
+  the newest. Reason: a row is written when its run ends, so a long run that read the figure earlier can be stored
+  after a newer reading, and within one window the used share only grows. `resets_at` is the kept row's declared reset
+  key (`null` when the row carried none); a window whose `resets_at` is not after `now` is dropped;
+  `remaining_fraction` is `1 - used_fraction`; `window_seconds` is the key's declared window length. The report's
+  `observed_at` is the oldest reading among its windows. `plan`, `limit_reached`, `limit_reached_type` and `credits`
+  are `null`: run output carries none. The report is absent when no window remains, so a build without such keys is
+  byte-identical, and it never feeds the §16.2 estimate.
+- **Relation to a live reader (§16.10):** a provider with a `readProviderUsage` reader (Codex) has its live report
+  overlay or replace this one; a provider without a reader (Claude) shows this one. §16.10 item "may run a provider
+  CLI" does not apply to Claude: nothing is started for it.
+- **Freshness:** as new as the newest run of that provider. Nothing creates a run, a probe or a provider call
+  (FR-CAP-10) and nothing reads a credential (ADR-0003).
+- **Surfaces:** the existing `provider_usage` of `get_capacity`, and the shared text lines of `switchboard capacity`
+  and `doctor` (`providerUsageLines`), for example
+  `five_hour (18000 s, provider_reported): used 0.03, remaining 0.97, resets <ISO time>`. The §16.3 wording rule
+  holds: "remaining" appears only on `provider_reported` lines.
+- **Relation to pacing (§16.9):** the same rows feed a configured subscription window of the same length as a
+  `provider_reported` `used_fraction` and `reset_at`; the report shows them even when no subscription is configured.
+
+Tests: `src/capacity/reported-usage.test.ts`, `src/adapters/claude/usage.test.ts`, `src/mcp/get-capacity.test.ts`.
+
+### 16.13 Provider-reported spend and the OpenCode reader (FR-CAP-16, ADR-0089)
+
+*Added 2026-10-21 (Delegated, not owner-approved).* For a provider that reports spend, not quota windows, the §16.10
+report gains three optional fields, `spend_windows`, `scope` and `note` (distinct from Cursor's `spend` of
+[ADR-0080](../adr/0080-cursor-usage-from-the-cli-usage-command.md)); a report without them is unchanged.
+
+```jsonc
+// ProviderUsageReport, additions (all optional)
+{ "spend_windows": [ { "id": "five_hour", "window_seconds": 18000, "from": "<ISO>", "to": "<ISO>",
+               "amount": 0, "unit": "usd",
+               "detail": { "sessions": 0, "steps": 0,
+                           "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0 },
+                           "models": [ { "provider_id": "<id>", "model_id": "<id>", "cost_usd": 0, "steps": 0 } ],
+                           "models_omitted": 3 } } ],
+  "scope": "<what the figures cover>", "note": "<what is not reported>" }
+```
+
+`amount` is the reported spend, never a remaining figure (FR-CAP-03, BR-63). `detail.models_omitted` is present only
+when more than 20 models (**Proposed**) were reported. The `get_capacity` output schema types `spend_windows` entries closed
+(`unit` is the constant `usd`, `amount` ≥ 0, `window_seconds` an integer ≥ 1; `detail` an object).
+
+**OpenCode command** (`src/adapters/opencode/usage.ts`, constants in `src/adapters/opencode/protocol.ts`).
+`OpenCodeAdapter.readProviderUsage` runs, through the probe runner with the allowlist `PATH` and `HOME` and the
+adapter's executable and launcher arguments, once per window and one after another (**Delegated**):
+
+```text
+opencode api --standalone experimental.session.stats --param from=<epoch ms> --param to=<epoch ms> --param tools=none
+```
+
+| Window id | `window_seconds` | Note |
+| --- | --- | --- |
+| `five_hour` | 18 000 | Go plan 5-hour limit (documented) |
+| `weekly` | 604 800 | Go plan weekly limit (documented) |
+| `monthly` | 2 592 000 | **Assumption**: 30 days rolling; the Go monthly anchor is not reported |
+
+`to` is the read's `now`; `from` is `to` minus the window. Each call has a 20 s timeout (**Proposed**; about 3.7 s was
+measured). Mapping of `data` (own properties only): `cost` → `amount`; `sessions`, `steps`, `tokens.input`, `output`,
+`reasoning`, `cache.read`, `cache.write` → `detail`; each `models[]` entry's `model.providerID`, `model.id`, `cost`,
+`steps` → `detail.models[]`, sorted by cost descending then `provider_id/model_id`. The report sets `windows: []`,
+`plan`, `limit_reached`, `limit_reached_type` and `credits` to `null`, `method` to
+`opencode api --standalone experimental.session.stats`, and fixed `scope` and `note` texts.
+
+**Failure rules.** The first failing window ends the read with `ProviderUsageUnavailable`, reason
+`session stats (<window>): <why>` written by the controller: `opencode` not on PATH (nothing runs), could not start,
+timed out, exited non-zero, output not JSON (this includes the `HTTP 500 Internal Server Error` text OpenCode prints
+with exit 0), a missing or negative or non-finite figure, or a `data.range` whose `from` and `to` differ from the
+request. Raw stdout, stderr and the spawn error are never copied. Switchboard never opens `opencode.db` or `auth.json`
+(ADR-0003).
+
+**Text** (`providerUsageLines`). One line per `spend_windows` entry, after the §16.10 head line:
+`<id> (<window_seconds> s, provider_reported): spent <amount to 2 places> usd; limit not reported, remaining not
+reported, reset not reported`, then `scope: …` and `note: …`. Tests: `src/adapters/opencode/usage.test.ts` (recorded
+fixtures `src/adapters/opencode/fixtures/usage/stats-{5h,7d,30d}.stdout.txt` and two synthetic ones),
+`src/capacity/provider-usage.test.ts`, and "OpenCode spend on get_capacity and capacity (ADR-0089, FR-CAP-16)" in
+`src/mcp/get-capacity.test.ts`.
 
 ## 17. Routing (M7)
 
@@ -6765,6 +7791,19 @@ Dequeue is implemented inside COMP-RTE (scheduler tick) calling the same admissi
    the error's details when present, scrubbed and bounded like `message`. An unexpected exception records only the
    fixed `TOOL_FAILURE` message and its class name in `error_class`, never its own message or stack, request text or
    provider output.
+   *Amended 2026-10-20 ([ADR-0069](../adr/0069-mcp-publish-run-and-dynamic-project-push.md) item 10; Linus, design
+   authority, under owner ruling 2026-10-20):* `reason` and `stage` are now always present and CLOSED
+   (`ADMISSION_FAILURE_REASONS`, `ADMISSION_STAGES`): an error's own `details.reason` is kept only when it is one of the
+   listed controller codes (`ENVIRONMENT_NOT_IMPLEMENTED`, `PROJECT_BRIEF_UNAVAILABLE`, `NOT_MANAGEABLE`,
+   `PROJECT_PAUSED`, `GROUP_MEMBERS`, `PROJECT_PROVIDERS`, `SKILLS_DISABLED`, `QUEUE_FULL`, `BASE_REF_UNRESOLVED`),
+   otherwise it is the stage's code (`CLIENT_UNKNOWN`, `PROJECT_UNRESOLVED`, `CEILING_EXCEEDED`, `REQUEST_INVALID`,
+   `ROUTING_INVALID`, `SKILL_REFUSED`, `NO_ELIGIBLE_PROVIDER`, `ROUTE_FAILED`, `SUBMIT_REFUSED`), and an unexpected
+   exception is `INTERNAL_ERROR`. An unknown creator client now records `{ message, reason: CLIENT_UNKNOWN, stage:
+   client }` too. A base ref that does not resolve is `INVALID_REQUEST` (`BASE_REF_UNRESOLVED`) as for delegate_task,
+   no longer a raw Git error mapped to `TOOL_FAILURE`; the remembered-model re-check passes the request's compiled
+   scope as stage 1 does. The production evidence of 2026-10-20 (detail `{"code":"TOOL_FAILURE"}` only, project
+   `switchboard`, client `linus`, `model_group: hard`) is the shape written before the fix of item 5 (PR #784); the
+   regression is pinned in `src/queue/privileged-admission.test.ts` with that request shape.
 
 **MCP tools (T15.1).** `enqueue_work`, `list_work` and `cancel_work`, scoped as `list_runs` (§3.4.2): a `project_id`
 must name a project the client may use (unknown → `INVALID_REQUEST`, outside its `projects` list → `PERMISSION_BLOCKED`,
@@ -6778,6 +7817,9 @@ is unknown, `INVALID_REQUEST`). Only the creator may cancel over MCP; the operat
   `verification_commands`, `routing`, `priority`, `privileged_scope`. At enqueue the server applies the `delegate_task`
   checks that need no workspace: the ceiling against the lower of the client's and the project's maximum (V5,
   `PERMISSION_BLOCKED`), V13, V7 and V8. Admission re-checks under the configuration of that time (§18.4 step 2).
+  *Amended 2026-10-21 (ADR-0091, FR-MCP-26):* `trust_profile` may be omitted; the server fills it, and for
+  `privileged` an omitted `privileged_scope`, from the configured defaults (§3 `delegate_task`) and stores the
+  resolved values in `request_json`, so admission reads them as if given.
   `depends_on` (at most 32) names the caller's own items. A project already holding `queue.max_items_per_project` rows
   is `INVALID_REQUEST`. The key is stored as `mcp:<key>` so it cannot collide with schedule or CI keys, and is replayed
   (`replayed: true`) only for the same project, request, priority and `depends_on`. `dedupe_key` (T15.7, 1 to 200
@@ -7518,6 +8560,20 @@ Tests: `src/ci/ci-transient.test.ts` (fake `CiStatusPort`, fake `CiActionsPort` 
    No taxonomy code names a conflict, so deciding twice is `INVALID_REQUEST` with `details.reason` `CONFLICT`, as
    `QUEUE_FULL` is carried (Delegated). `request_decision` and `decide` never echo the text; `list_decisions` returns
    it as `{ text, label: "untrusted_client_text" }`.
+   *Onboarding (2026-10-20, [ADR-0068](../adr/0068-mcp-only-project-onboarding.md), Delegated detail):*
+   `request_decision` accepts an optional `onboarding: { repository_url }`. Then `project_id` is the proposed id: it
+   must be well-formed; a configured id or another client's dynamic project is `PERMISSION_BLOCKED` (`NOT_MANAGEABLE`,
+   one message); a deleted id is `INVALID_REQUEST` (`ID_DELETED`); an id with an approved revision is
+   `INVALID_REQUEST` (`PROJECT_EXISTS`); an unknown id or this client's own `PENDING_APPROVAL` or `REJECTED` project is
+   accepted. The URL uses the `clone_url` parser (`CLONE_URL_INVALID`) and, only when `project_sources` is configured,
+   its allowlist (`CLONE_SOURCE_NOT_ALLOWED`). `onboarding` cannot be combined with `work_item_id` or `enqueue`.
+   Without it the old rule holds. The normalized URL is stored in `decision_request.onboarding_url` (migration
+   **0032**, `src/ledger/migrations/0032_decision_onboarding.ts`: `ALTER TABLE ... ADD COLUMN`, nullable, `CHECK` it
+   starts with `https://` and is 9 to 512 characters; forward-only, ADR-0005; `project_id` has no foreign key since
+   migration 0030). `request_decision`, `list_decisions`, `decide` and `switchboard decisions list` show
+   `onboarding: { repository_url }` when present; `list_decisions` takes the proposed id as its `project_id` filter and
+   `get_digest` lists the open decision under it. Sinks still carry only the project id. Tests:
+   `src/mcp/mcp-onboarding.test.ts`.
 6. **Digest.** Each `get_digest` project lists the caller's open decisions as `open_decisions: [{ decision_id,
    work_item_id, reason: "awaiting_decision", requested_at }]`, present only when non-empty. `awaiting_decision` is
    that project-level entry and the sink reason code; it is not a run-level `needs_attention` reason, because a parked
@@ -7736,16 +8792,22 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
    (`CiTriggerPoller`): `ci_trigger.enabled` is the one switch for every `gh` call and `poll_interval_seconds` the pace,
    but a project needs no `ci_trigger.projects[]` entry to be merged. A paused project (§3.4.4) and a superseded ref
    (§20.4) are skipped without a `gh` call. Only refs the project published (`listPublishedRefs`, §18.6).
-3. **`gh` templates** (`src/ci/gh-argv.ts`, ADR-0050 amendment 1 item 10), audited like G1 to G9: G10 `pr view
-   <branch> --json number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName`; G11 `pr checks <n> --required
-   --json bucket` (only the required checks' buckets, so non-required checks are never read and cannot block or pass a
-   merge); G12 `pr merge <n> --repo <o>/<r> --<method> --match-head-commit <sha>`. Never `--admin`, `--auto` or
-   `--delete-branch`. The flags and fields were checked against the `gh` manual pages (`gh_pr_merge`,
-   `gh_pr_checks`, `gh_pr_view` on cli.github.com, 2026-10-20); `gh --help` could not be run on the build host, so the
-   check against the installed `gh` that ADR-0050 asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from
-   the manual's exit code 8 for pending checks): with `--json`, `gh pr checks` prints the array also when it exits 1
-   (a failed check) or 8 (a pending one), and exits 1 with no output when the base reports no required check. Every
-   reading fails closed: exit 1 with no output is `none` (refused), anything unparseable is `gh_error` (refused).
+3. **`gh` templates** (`src/ci/gh-argv.ts`, ADR-0050 amendment 1 item 10), audited like G1 to G9: G10 `pr view <branch>
+   --json number,state,isDraft,mergeable,headRefOid,headRefName,baseRefName`; G11 `pr checks <n> --required --json
+   bucket` (only the required checks' buckets, so non-required checks are never read and cannot block or pass a merge);
+   G12 `pr merge <n> --repo <o>/<r> --<method> --match-head-commit <sha>`. Never `--admin`, `--auto` or
+   `--delete-branch`. G15 (ADR-0073, §3.4.14) `api --method PUT repos/{owner}/{repo}/pulls/{n}/update-branch -f
+   expected_head_sha=<sha> --silent` is the only write besides G12 and the publish templates, used by
+   `update_run_branch` only. G16 `pr close <n> --repo <o>/<r> --comment <comment> [--delete-branch]` and G17 `pr view
+   <n> --repo <o>/<r> --json number,state,url,headRefName` (ADR-0078, §3.4.16) are used by `close_pr` only. G18 `pr
+   checks <n> --json bucket` and G19 `pr view <n> --json state,mergeCommit` (ADR-0087, §3.4.17) are reads of the ordered
+   submodule merge. The flags and fields were checked against the `gh` manual pages (`gh_pr_merge`, `gh_pr_checks`,
+   `gh_pr_view` on cli.github.com, 2026-10-20); `gh --help` could not be run on the build host, so the check against
+   the installed `gh` that ADR-0050 asks for is still open (ROADMAP §7.3, Q-109). **Assumption** (from the manual's
+   exit code 8 for pending checks): with
+   `--json`, `gh pr checks` prints the array also when it exits 1 (a failed check) or 8 (a pending one), and exits 1
+   with no output when the base reports no required check. Every reading fails closed: exit 1 with no output is `none`
+   (refused), anything unparseable is `gh_error` (refused).
 4. **Gate order** (the first failing step is the reason): G10 (no pull request → nothing; not `OPEN` → a `merged` or
    `closed` ref event only; `draft`; head other than the published tip or head branch other than the ref → `head_moved`;
    base other than the primary context's base branch → `base_mismatch`; not `MERGEABLE`, `UNKNOWN` included →
@@ -7780,6 +8842,60 @@ Tests: `src/ci/ref-conflicts.test.ts` (fake `CiPullRequestPort` and fake `GhRunn
    "queued" on GitHub's side, recorded as `merged`; the later `merged` ref event is the fact (ADR-0060 revisit clause).
 8. **Tests.** `src/ci/merge-policy.test.ts` (fake `CiMergePort` and fake `GhRunner`; every done-when clause), the
    approval wait in `src/mcp/project-tools.test.ts`, the migration in `src/ledger/ledger.test.ts`.
+
+*Note 2026-10-20 (ADR-0070, Linus, design authority; not owner-approved):* the per-ref gate of item 4 is one function,
+`applyMergeGate`, called by the poller (`poll` mode) and by MCP `merge_run_pr` (§3.4.13, `request` mode); behaviour of
+the poller is unchanged. `merge_policy.require_verification` (boolean, default `true`) is added: `false` skips the
+`verification_result`-at-head condition only (`required_reports`, the checks and every G10 condition still apply); a
+dynamic revision setting it `false` waits for approval with `approval_needed` `merge_policy`, like `enabled: true`, and
+step 4's policy re-read refuses `policy_off` when verification was turned back on after the pass skipped it.
+`list_projects` shows each project's `merge_policy` (in force) as `{ enabled, method, required_reports,
+require_verification }` when the project sets one.
+
+### 20.7.1 Pure base merges (ADR-0073)
+
+*Added 2026-10-20 (Linus, design authority, after production refusals of whumpo-website pull requests #299 and #300;
+details not owner-approved; refinements Delegated).* Code: `src/ci/base-merge.ts` (`GitPullHeadPort`,
+`classifyPullHead`), `applyMergeGate` in `src/ci/merge-policy.ts`, `src/ci/branch-update.ts`, the exemption in
+`src/git/ref-guard.ts`, migration `src/ledger/migrations/0035_merge_head_kind.ts`. Decision record:
+[ADR-0073](../adr/0073-merge-gate-accepts-pure-base-merges.md).
+
+1. **Acceptable head.** Step 1 of the gate (item 4) accepts the pull request head when it equals the published tip or is
+   a chain of 1 to 10 (`MAX_BASE_MERGE_CHAIN`, Delegated) pure base merges on it. A commit C is a pure base merge iff it
+   has exactly two parents; the first parent is the published tip or the previous commit of the chain; the second parent
+   is reachable from the base branch head on the remote (fetched now); and C's tree equals the tree of a clean local
+   merge of its parents (`git merge-tree --write-tree --no-messages <p1> <p2>`, no conflicts). Anything else (extra file
+   change, conflict resolution, non-merge commit, octopus, second parent not on the base, longer chain) is `head_moved`.
+   Classification is attempted only when the pull request is open, not a draft, its head branch is the published branch,
+   its base the configured base branch, and the head is not the published tip; in `poll` mode an earlier `attempted` row
+   at that head skips it first (no fetch).
+2. **Fetch and namespace.** Verification runs in the project's primary context repository (configured, or the dynamic
+   project in force). The only write is one hardened fetch (the ADR-0067 base refresh and ADR-0028 push hardening:
+   allowlisted environment, own session, 60 s timeout, hooks off, https, ssh and file transports only, refusal of unsafe
+   repository config and credential URLs) of `+refs/pull/<n>/head` and `+refs/heads/<base>` from the published ref's
+   remote into `refs/switchboard/merge-gate/<remote>/pr-<n>/{head,base}`, with `--porcelain --verbose --refmap=
+   --no-tags --no-prune --no-write-fetch-head --no-recurse-submodules --no-auto-maintenance` (`--refmap=` so
+   `refs/remotes/<remote>/<base>` is not opportunistically updated). The SHAs used are those the fetch prints, never a
+   later read of the refs. Everything else is read-only through the hardened `git` helper. Never an agent worktree or
+   an operator branch.
+3. **Fail closed.** Git older than 2.41 (`fetch --porcelain`; `merge-tree --write-tree` needs 2.38), unsafe repository
+   config, a custom `merge.<driver>.driver`, a remote URL that is not ok, an unknown project, or a fetched head different
+   from the head `gh` reported is `foreign`: `head_moved`. A failed or timed-out fetch, or a Git failure, is the refusal
+   `gh_error` (a read failure, retried next poll; `merge_run_pr` returns retryable `TOOL_FAILURE`). Delegated: the reason
+   list is closed (item 5), so `gh_error` also covers the controller's Git read.
+4. **Pin and conditions.** G12 is pinned to the accepted head (`--match-head-commit <accepted head>`) and step 4's
+   re-read must show that same head. Step 2's `verification_result` and `required_reports` stay keyed to the published
+   tip SHA; G11 is read at the actual head.
+5. **Ref guard.** `refs/switchboard/merge-gate/` is neither a violation nor trusted in §12.5's per-ref comparison and
+   tail digest (Delegated). `ref_event` is unchanged: a base merge head is still `foreign_commit` (Delegated).
+6. **Ledger** (migration **0035**; 0034 is reserved for PR #809's project setup step). `merge_event` gains nullable
+   `head_kind` (`published`, `base_merge`) and `pr_head_sha`, set together (`CHECK`) on rows written after the head check
+   held; `head_sha` stays the published tip. The refusal-once unique index keys on `(project_id, publish_ref, head_sha,
+   ifnull(pr_head_sha, ''), reason)`, so a refusal at a new accepted head is recorded again. Step 1's refusals
+   (`draft`, `head_moved`, `base_mismatch`, `not_mergeable`) are always written without the head, so the first read and
+   the step 4 re-read share one row. The `merge_event` run event payload gains `head_kind` and `pr_head_sha` when set.
+   `alreadyAttempted` (one G12 per head) is keyed on `coalesce(pr_head_sha, head_sha)`.
+7. **Tests.** `src/ci/base-merge.test.ts` (real local repositories and bare remotes), `src/ci/merge-policy.test.ts`.
 
 ### 20.8 Work queue over HTTP (FR-QUE-08, T15.9)
 
@@ -7851,7 +8967,21 @@ acknowledgement through the CLI (T9.14 split part 2, 2026-10-20, Linus decision,
   refused with its `credential_reach: "bypass_exempt"` still recorded), tool code `SECRET_SCAN_BLOCKED`, at most 50
   `secret_scan_hit` events `{stage: "push", rule_id, path, line, ref}` on the run the push is recorded against, then
   the `git_push` event with `secret_scan {from, hit_count, allowed_count, binary_count, binary_paths}`. The push tool
-  takes no input and `PushRequest` has no field the scan reads. `needs_attention` / `secret_scan_blocked` is derived
+  takes no input and `PushRequest` has no field the scan reads.
+- **Findings in the refusal** (*added 2026-10-20 by [ADR-0075](../adr/0075-secret-scan-findings-in-refusals.md),
+  Delegated agent work, not owner-approved*). `PushResult.secretScan {hits, hitCount}` is set on a
+  `SECRET_SCAN_BLOCKED` refusal only. `secretScanFindings` (`src/git/secret-scan.ts`) turns it into `{findings:
+  [{rule_id, path, line, path_truncated?}], finding_count, findings_truncated?}` (at most 100 findings, the exact
+  count; a path over 512 characters is cut and marked), which `publish_run` puts in `details` (§3.4.12), the agent
+  `push` tool in `error.details` (§12.6) and `switchboard git push --json` at the top level. The message list
+  (`describeSecretScanFindings`) is `<n> secret-scan finding(s): <rule_id> at <path>:<line>; ...`, at most 20 entries
+  within 1,200 characters, then `; and N more`, followed by a fixed hint (remove the value, build fake values at run
+  time in tests; the operator allowlist `git.secret_scan.allow`). A path that is not plain printable ASCII
+  (`[A-Za-z0-9._/@+=,~-]`) is shown as a JSON string with every other character escaped as `\uXXXX` and is cut at 160
+  characters, so a path cannot put a line break, a terminal escape or a bidirectional override into a message. Never
+  the value or the line. Tests: `src/mcp/publish.test.ts`, the "ADR-0075" cases of `src/git/push.test.ts`,
+  `src/git/channel.test.ts`, `src/cli/secret-scan-ack.test.ts` and the secret-scan case of
+  `src/mcp/publish-run.test.ts`. `needs_attention` / `secret_scan_blocked` is derived
   on read from the meta-session's `git_push` events (§3.4.5, `src/control/needs-attention.ts`).
 - **Allowlist.** `git.secret_scan.allow[]` (at most 64 entries of `{rule_id, path}`): a hit of that rule at a
   repository-relative path the glob matches exactly (`fixtures/**` for a tree; a bare directory name is not a prefix)

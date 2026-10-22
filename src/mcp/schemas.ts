@@ -31,6 +31,8 @@
  * (`boundedSchema`: strings at most 4096 characters, arrays at most 32 items), so an oversized definition fails V1.
  * `list_projects` entries for dynamic projects carry `source: "dynamic"`, `revision` and `status` (Proposed additions;
  * configured entries are unchanged and have no `source`).
+ * ADR-0068: in these tools only, a repository context takes exactly one of `path` and `clone_url` (`oneOf`; the
+ * configuration file keeps requiring `path`); a dynamic context cloned from a URL lists `source_url` (never a path).
  *
  * T14.1 (FR-CTL-01, LLD §3.4.2): `list_runs` is appended to the tool list; its rows are the `get_run` envelope. Proposed
  * (Delegated): `since`/`until` must be ISO-8601 date-times with a zone (`Z` or an offset); `status` and `status_in` are
@@ -67,11 +69,25 @@
  */
 
 import { FAILURE_CODES } from "../adapters/failure.js";
-import { MERGE_EVENT_TYPE, MERGE_REFUSAL_REASONS, REF_EVENT_KINDS, REF_EVENT_TYPE } from "../ci/merge-codes.js";
+import { acceptedProviderNames } from "../adapters/providers.js";
+import { GH_FAILURE_MESSAGE_MAX, GH_FAILURE_REASONS } from "../ci/gh-pr.js";
 import {
+  MERGE_EVENT_TYPE,
+  MERGE_REFUSAL_REASONS,
+  REF_EVENT_KINDS,
+  REF_EVENT_TYPE,
+  SUBMODULE_MERGE_PHASES,
+  SUBMODULE_MERGE_REPO_STATES,
+} from "../ci/merge-codes.js";
+import {
+  MERGE_POLICY_CHECKS,
+  MERGE_POLICY_METHODS,
+  MERGE_POLICY_REPORTS,
   MODEL_GROUP_NAME_PATTERN,
   PROJECT_ID_PATTERN,
+  PROVIDER_IDS,
   projectSchema,
+  SETUP_CACHES,
   SKILL_NAME_PATTERN,
   SKILL_REF_PATTERN,
   SKILL_ROLE_PATTERN,
@@ -79,6 +95,7 @@ import {
 import { NEEDS_ATTENTION_PRIORITY } from "../control/needs-attention.js";
 import { MODEL_ID_PATTERN } from "../models/registry.js";
 import { PRIVILEGED_SCOPE_SCHEMA } from "../policy/scope.js";
+import { MAX_CLONE_URL_LENGTH } from "../projects/clone.js";
 
 /** Bumped on any incompatible change to a published tool schema (Proposed). */
 export const TOOL_SCHEMA_VERSION = 1;
@@ -102,8 +119,17 @@ export const TOOL_NAMES = [
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
 
-/** T9.9: offered only to a client with `manage_projects` (FR-PRJ-10); absent from every other client's tool list. */
-export const PROJECT_TOOL_NAMES = ["create_project", "update_project", "delete_project"] as const;
+/**
+ * T9.9: offered only to a client with `manage_projects` (FR-PRJ-10); absent from every other client's tool list.
+ * ADR-0087: `request_project_source` is offered only when the server also has `project_sources` (`toolDescriptors`
+ * option `projectSources`).
+ */
+export const PROJECT_TOOL_NAMES = [
+  "create_project",
+  "update_project",
+  "delete_project",
+  "request_project_source",
+] as const;
 export type ProjectToolName = (typeof PROJECT_TOOL_NAMES)[number];
 
 /**
@@ -123,6 +149,34 @@ export type WorkQueueToolName = (typeof WORK_QUEUE_TOOL_NAMES)[number];
 /** T16.9 (FR-SKL-08, LLD §19.9): offered only while `skills.enabled` is true; to any other installation they do not exist. */
 export const SKILL_TOOL_NAMES = ["list_skills", "get_skill"] as const;
 export type SkillToolName = (typeof SKILL_TOOL_NAMES)[number];
+
+/**
+ * ADR-0069 (LLD §3.4.12): `publish_run`, offered only to a client whose `max_push_policy` is `branch` and only when the
+ * server has the publish port (`serve`); to any other client it does not exist. ADR-0070 (LLD §3.4.13): `merge_run_pr`
+ * under the same gate and only when the server also has the merge port. ADR-0073 (LLD §3.4.14): `update_run_branch`
+ * with `merge_run_pr` and only when the server also has the branch-update port and the pull-head reader. ADR-0078
+ * (LLD §3.4.16): `close_pr` under `publish_run`'s gate and only when the pull-request port can read by number and
+ * close.
+ */
+export const PUBLISH_TOOL_NAMES = ["publish_run", "merge_run_pr", "update_run_branch", "close_pr"] as const;
+export type PublishToolName = (typeof PUBLISH_TOOL_NAMES)[number];
+
+/**
+ * ADR-0074 (LLD §3.4.15): `refresh_project_base` and `rebase_session`, offered only when the server has the base port
+ * (`serve`) and to a client whose ceiling is above `inspect-untrusted` (they write Git objects and refs). Listed right
+ * after the publish tools.
+ */
+export const BASE_TOOL_NAMES = ["refresh_project_base", "rebase_session"] as const;
+export type BaseToolName = (typeof BASE_TOOL_NAMES)[number];
+
+/**
+ * `list_oauth_clients`: the HTTP transport's OAuth clients, read-only, as `switchboard mcp oauth clients|client` shows
+ * them (metadata, status, profile and its source, token counts; never a token, code or hash). Offered only on stdio (the
+ * operator's own session) and only when `serve` wires the OAuth admin view; an HTTP caller never sees it and is answered
+ * as for an unknown tool. Listed last.
+ */
+export const OAUTH_TOOL_NAMES = ["list_oauth_clients"] as const;
+export type OAuthToolName = (typeof OAUTH_TOOL_NAMES)[number];
 
 /** Delegated bounds for an MCP-supplied project definition (the configuration schema itself has none). */
 export const MAX_DEFINITION_STRING = 4096;
@@ -261,7 +315,29 @@ export function boundedSchema(schema: unknown): unknown {
   return out;
 }
 
-const PROJECT_DEFINITION = boundedSchema(projectSchema) as Record<string, unknown>;
+/**
+ * ADR-0068: the MCP-only definition. Each context takes exactly one of `path` and `clone_url` (an HTTPS repository URL,
+ * parsed and allow-listed by `src/projects/clone.ts`). ADR-0076: `allowed_providers` lists both provider spellings.
+ */
+function mcpProjectDefinition(): Record<string, unknown> {
+  const def = boundedSchema(projectSchema) as Record<string, unknown>;
+  const props = def.properties as Record<string, Record<string, unknown>>;
+  // ADR-0076: either spelling of each provider (`claude`, `claude-code`); project-tools stores the config spelling.
+  props.allowed_providers = { ...props.allowed_providers, items: { enum: acceptedProviderNames(PROVIDER_IDS) } };
+  const contexts = props.contexts as Record<string, unknown>;
+  const item = contexts.items as Record<string, unknown>;
+  item.properties = {
+    ...(item.properties as Record<string, unknown>),
+    clone_url: { type: "string", minLength: 1, maxLength: MAX_CLONE_URL_LENGTH },
+  };
+  item.required = (item.required as string[]).filter((r) => r !== "path");
+  item.oneOf = [
+    { properties: { path: true }, required: ["path"] },
+    { properties: { clone_url: true }, required: ["clone_url"] },
+  ];
+  return def;
+}
+const PROJECT_DEFINITION = mcpProjectDefinition();
 const PROJECT_REF = { type: "string", pattern: PROJECT_ID_PATTERN, maxLength: 41 } as const;
 
 /** Artifact kinds an MCP client may read; `provider_stdout`/`provider_stderr` are operator-CLI only (LLD §3). */
@@ -275,6 +351,8 @@ export const MCP_ARTIFACT_KINDS = [
   "handoff_condense",
   // T8.10 (FR-SKL-11, LLD §20.6): the docs-alignment report; its `notes` are untrusted text.
   "docs_alignment",
+  // ADR-0071: the project setup step's redacted output; its text is untrusted (package scripts write it).
+  "setup_log",
 ] as const;
 
 const TRUST_PROFILE = {
@@ -398,6 +476,20 @@ const ENVELOPE = {
             summary_artifact_id: ARTIFACT_ID,
           },
         },
+        // ADR-0072: recovered, non-security permission denials of a run that succeeded; closed codes, no agent text.
+        warnings: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["code", "tool", "count"],
+            properties: {
+              code: { enum: ["PERMISSION_DENIED_RECOVERED", "GIT_RULE_DENIED_RECOVERED"] },
+              tool: { type: "string", pattern: "^[A-Za-z0-9_.:-]{1,64}$" },
+              count: { type: "integer", minimum: 1 },
+            },
+          },
+        },
       },
     },
     artifacts: { type: "object", additionalProperties: ARTIFACT_ID },
@@ -467,6 +559,59 @@ const ENVELOPE = {
             enum: ["global_default", "global_role", "project_default", "project_role", "request", "continued"],
           },
           delivery: { enum: ["prompt_prefix", "native", "skipped", null] },
+        },
+      },
+    },
+    // ADR-0069 (LLD §3.4.12): accepted pushes of the run's branch; pull request fields once publish_run recorded one.
+    publications: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["branch", "head_sha", "pushed_at"],
+        properties: {
+          branch: { type: "string", maxLength: 255 },
+          head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+          pushed_at: { type: "string" },
+          pull_request_url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+          pull_request_number: { type: "integer", minimum: 1 },
+          // ADR-0087 items 6 and 7 (LLD §3.4.17): the submodule pull requests publish_run linked to this branch, with
+          // the ordered merge's state once it reached each; present only when there is one.
+          linked_pull_requests: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["repo", "paths", "number", "url", "base_ref", "head_sha"],
+              properties: {
+                repo: { type: "string", maxLength: 400 },
+                paths: { type: "array", items: { type: "string" } },
+                number: { type: "integer", minimum: 1 },
+                url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+                base_ref: { type: "string", maxLength: 255 },
+                head_sha: { type: "string", pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+                merge_state: {
+                  oneOf: [
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["state", "merged_sha"],
+                      properties: {
+                        state: { const: "merged" },
+                        merged_sha: { type: "string", pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+                      },
+                    },
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["state", "reason"],
+                      properties: { state: { const: "refused" }, reason: { type: "string", maxLength: 100 } },
+                    },
+                  ],
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -604,7 +749,7 @@ const DIGEST = {
               properties: {
                 approval_id: { type: "string" },
                 approval_digest: { type: "string", pattern: "^[0-9a-f]{64}$" },
-                kind: { enum: ["privileged_scope", "dynamic_project", "push_revision"] },
+                kind: { enum: ["privileged_scope", "dynamic_project", "push_revision", "project_source"] },
                 project_id: { type: "string" },
                 run_id: RUN_ID,
                 revision: { type: "integer" },
@@ -647,12 +792,28 @@ const DIGEST = {
                 event_id: { type: "string" },
                 run_id: RUN_ID,
                 ts: { type: "string" },
-                type: { enum: [REF_EVENT_TYPE, MERGE_EVENT_TYPE] },
-                code: { enum: [...REF_EVENT_KINDS, "merged", "refused"] },
+                // ADR-0087 item 7: `submodule_merge` entries are the ordered merge's steps (`code` is the step).
+                type: { enum: [REF_EVENT_TYPE, MERGE_EVENT_TYPE, "submodule_merge"] },
+                // `merged` is already a ref_event kind: list it once. A duplicate enum item makes get_digest's output
+                // schema invalid to a draft-07 meta-schema check (enum `uniqueItems`), which a strict MCP client can
+                // treat as a failed tools/list (see src/mcp/tools-list-callable.test.ts).
+                code: {
+                  enum: [
+                    ...new Set<string>([
+                      ...REF_EVENT_KINDS,
+                      "merged",
+                      "refused",
+                      "submodule_merged",
+                      "gitlinks_repointed",
+                    ]),
+                  ],
+                },
                 reason: { enum: [...MERGE_REFUSAL_REASONS] },
                 publish_ref: { type: "string" },
                 head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
                 pr_number: { type: ["integer", "null"] },
+                repo: { type: "string", maxLength: 200 },
+                merged_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
               },
             },
           },
@@ -690,7 +851,8 @@ const INPUTS = {
   delegate_task: {
     type: "object",
     additionalProperties: false,
-    required: ["objective", "trust_profile"],
+    // ADR-0091 (FR-MCP-26): trust_profile is optional; absent, the operator's configured default applies.
+    required: ["objective"],
     // FRD V12 / FR-PRJ-03: exactly one of `workspace_path` and `project`; the server turns this into one clear message.
     oneOf: [
       { properties: { workspace_path: true }, required: ["workspace_path"] },
@@ -713,7 +875,8 @@ const INPUTS = {
       priority: { type: "string", enum: ["interactive", "normal", "batch"], default: "normal" },
       wait_seconds: WAIT_SECONDS,
       idempotency_key: { type: "string", minLength: 8, maxLength: 128 },
-      // Required exactly when trust_profile is privileged (FRD V13, checked after the ceiling, V5); LLD §3.1.
+      // Required exactly when trust_profile is privileged (FRD V13, checked after the ceiling, V5); LLD §3.1. ADR-0091:
+      // absent with privileged, the operator's configured default_privileged_scope applies when there is one.
       privileged_scope: PRIVILEGED_SCOPE_SCHEMA,
       ...SKILL_FIELDS,
       // T3.24 (FR-CAP-12, LLD §20.2): exempt from a host load hold; honoured only for a client with `allow_light`.
@@ -838,7 +1001,7 @@ const WORK_INPUTS = {
       request: {
         type: "object",
         additionalProperties: false,
-        required: ["objective", "trust_profile"],
+        required: ["objective"],
         properties: {
           objective: DELEGATE.objective,
           trust_profile: DELEGATE.trust_profile,
@@ -881,6 +1044,16 @@ const WORK_INPUTS = {
 } as const;
 
 const PROJECT_INPUTS = {
+  request_project_source: {
+    type: "object",
+    additionalProperties: false,
+    required: ["owner"],
+    // Syntax is checked by the controller (reason codes OWNER_INVALID, HOST_NOT_ALLOWED), not by the schema.
+    properties: {
+      owner: { type: "string", minLength: 1, maxLength: 200 },
+      host: { type: "string", minLength: 1, maxLength: 253, default: "github.com" },
+    },
+  },
   create_project: {
     type: "object",
     additionalProperties: false,
@@ -950,6 +1123,8 @@ const CAPABILITIES = {
           validated_range: NULLABLE_STRING,
           auth_state: { type: "string", enum: ["OK", "AUTH_REQUIRED", "UNKNOWN", "NOT_CHECKED"] },
           supported_profiles: { type: "array", items: TRUST_PROFILE },
+          // ADR-0092: present exactly when `privileged` is listed; true when only an approved bypass cell compiled.
+          privileged_bypass_only: { type: "boolean" },
           transports: { type: "array", items: { type: "string" } },
           models: { type: "array", items: { type: "string" } },
           sandbox_features: { type: "array", items: { type: "string" } },
@@ -973,6 +1148,246 @@ const CAPABILITIES = {
 /** `list_projects` (LLD §3 project additions): no paths, remotes, identities or image references (FR-MCP-04). */
 /** T6.3 (LLD §16.3, ADR-0043 item 6): the capacity projection; estimates and provider-reported values kept apart. */
 const NULLABLE_NUMBER = { type: ["number", "null"] } as const;
+/** ADR-0081: one usage-only provider's quota as the provider reported it (`src/usage/copilot-quota.ts`). */
+const PROVIDER_QUOTA_COMMON = {
+  provider: { const: "copilot" },
+  usage_only: { const: true },
+  via: { const: "gh api /copilot_internal/user" },
+  observed_at: { type: "string" },
+} as const;
+const PROVIDER_QUOTA = {
+  anyOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "provider",
+        "usage_only",
+        "status",
+        "source",
+        "via",
+        "observed_at",
+        "plan",
+        "sku",
+        "reset_at",
+        "quotas",
+      ],
+      properties: {
+        ...PROVIDER_QUOTA_COMMON,
+        status: { const: "ok" },
+        source: { const: "provider_reported" },
+        plan: { type: ["string", "null"] },
+        sku: { type: ["string", "null"] },
+        reset_at: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["at", "source"],
+              properties: { at: { type: "string" }, source: { const: "provider_reported" } },
+            },
+          ],
+        },
+        quotas: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "id",
+              "unit",
+              "unlimited",
+              "entitlement",
+              "remaining",
+              "used",
+              "percent_remaining",
+              "overage_count",
+              "overage_permitted",
+              "reset_at",
+            ],
+            properties: {
+              id: { type: "string", enum: ["premium_interactions", "chat", "completions"] },
+              unit: { type: "string", enum: ["premium_requests", "chat_requests", "code_completions"] },
+              unlimited: { type: "boolean" },
+              entitlement: NULLABLE_NUMBER,
+              remaining: NULLABLE_NUMBER,
+              used: NULLABLE_NUMBER,
+              percent_remaining: NULLABLE_NUMBER,
+              overage_count: { type: "integer", minimum: 0 },
+              overage_permitted: { type: "boolean" },
+              reset_at: { type: ["string", "null"] },
+            },
+          },
+        },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["provider", "usage_only", "status", "source", "via", "observed_at", "reason"],
+      properties: {
+        ...PROVIDER_QUOTA_COMMON,
+        status: { const: "unavailable" },
+        source: { const: "unknown" },
+        reason: {
+          type: "string",
+          enum: ["gh_missing", "auth_required", "gh_failed", "timeout", "unparseable", "no_quota"],
+        },
+      },
+    },
+  ],
+} as const;
+/** ADR-0079 (FR-CAP-13, LLD §16.10): one provider's usage report, or `unknown` with a reason. */
+const PROVIDER_USAGE = {
+  anyOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "provider",
+        "source",
+        "observed_at",
+        "method",
+        "plan",
+        "limit_reached",
+        "limit_reached_type",
+        "windows",
+        "credits",
+      ],
+      properties: {
+        provider: { type: "string" },
+        source: { const: "provider_reported" },
+        observed_at: { type: "string" },
+        method: { type: "string" },
+        plan: { type: ["string", "null"] },
+        limit_reached: { type: ["boolean", "null"] },
+        limit_reached_type: { type: ["string", "null"] },
+        windows: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "limit_id", "window_seconds", "used_fraction", "remaining_fraction", "resets_at"],
+            properties: {
+              id: { type: "string" },
+              limit_id: { type: ["string", "null"] },
+              window_seconds: { type: ["integer", "null"], minimum: 1 },
+              used_fraction: { type: "number", minimum: 0, maximum: 1 },
+              remaining_fraction: { type: "number", minimum: 0, maximum: 1 },
+              resets_at: { type: ["string", "null"] },
+            },
+          },
+        },
+        credits: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["has_credits", "unlimited", "balance"],
+              properties: {
+                has_credits: { type: "boolean" },
+                unlimited: { type: "boolean" },
+                balance: { type: ["string", "null"] },
+              },
+            },
+          ],
+        },
+        // ADR-0083 (Grok Build): optional period, amounts and unreported keys.
+        period: {
+          type: "object",
+          additionalProperties: false,
+          required: ["kind", "starts_at", "resets_at"],
+          properties: {
+            kind: { enum: ["weekly", "monthly", "daily", "unknown"] },
+            starts_at: { type: ["string", "null"] },
+            resets_at: { type: ["string", "null"] },
+          },
+        },
+        amounts: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "value", "unit", "key"],
+            properties: {
+              id: { type: "string" },
+              value: { type: "number" },
+              unit: { const: "unspecified" },
+              key: { type: "string" },
+            },
+          },
+        },
+        unreported: { type: "array", items: { type: "string" } },
+        // ADR-0080 (Cursor): optional, as shown by the provider.
+        reset_label: { type: ["string", "null"] },
+        reset_precision: { enum: ["day", null] },
+        on_demand: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["state", "used_usd", "limit_usd", "remaining_usd", "detail"],
+              properties: {
+                state: { enum: ["fixed", "unlimited", "disabled", "unavailable"] },
+                used_usd: NULLABLE_NUMBER,
+                limit_usd: NULLABLE_NUMBER,
+                remaining_usd: NULLABLE_NUMBER,
+                detail: { type: ["string", "null"] },
+              },
+            },
+          ],
+        },
+        spend: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["current_cycle_usd", "previous_period_usd"],
+              properties: { current_cycle_usd: NULLABLE_NUMBER, previous_period_usd: NULLABLE_NUMBER },
+            },
+          ],
+        },
+        // ADR-0089 (FR-CAP-16, LLD §16.13): reported spend per window (OpenCode); `amount` is spent, not remaining.
+        spend_windows: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id", "window_seconds", "from", "to", "amount", "unit"],
+            properties: {
+              id: { type: "string" },
+              window_seconds: { type: "integer", minimum: 1 },
+              from: { type: "string" },
+              to: { type: "string" },
+              amount: { type: "number", minimum: 0 },
+              unit: { const: "usd" },
+              detail: { type: "object" },
+            },
+          },
+        },
+        scope: { type: "string" },
+        note: { type: "string" },
+      },
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["provider", "source", "observed_at", "method", "error"],
+      properties: {
+        provider: { type: "string" },
+        source: { const: "unknown" },
+        observed_at: { type: "string" },
+        method: { type: "string" },
+        error: { type: "string" },
+      },
+    },
+  ],
+} as const;
+
 const CAPACITY = {
   type: "object",
   additionalProperties: false,
@@ -1075,6 +1490,8 @@ const CAPACITY = {
               key_source: { type: "string" },
             },
           },
+          // ADR-0079 (FR-CAP-13): the provider's own report, read live through its CLI; absent without a reader.
+          provider_usage: PROVIDER_USAGE,
           concurrency_available: { type: "integer", minimum: 0 },
           concurrency_limit: { type: "integer", minimum: 1 },
           breaker: {
@@ -1108,6 +1525,8 @@ const CAPACITY = {
         },
       },
     },
+    // ADR-0081: optional. Usage-only providers' own quota reports; omitted unless the quota reader is configured.
+    provider_quota: { type: "array", items: PROVIDER_QUOTA },
     // T6.14 (LLD §16.9): optional. Omitted from the object when no subscription is configured, so it is not required.
     pacing: {
       type: "array",
@@ -1295,12 +1714,37 @@ const PROJECTS = {
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["id", "kind", "primary", "push_policy"],
+              required: ["id", "kind", "primary", "push_policy", "base_ref", "sign", "finalize_commit"],
               properties: {
                 id: { type: "string" },
                 kind: { type: "string", enum: ["repository"] },
                 primary: { type: "boolean" },
                 push_policy: { type: "string", enum: ["none", "branch"] },
+                // ADR-0087 item 8 (G2): the effective definition, so a client can read back what it set. Never a path
+                // or a secret.
+                base_ref: { type: "string" },
+                push_remote: { type: "string" },
+                branch_prefix: { type: "string" },
+                identity: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["name", "email"],
+                  properties: { name: { type: "string" }, email: { type: "string" } },
+                },
+                sign: { type: "boolean" },
+                finalize_commit: { type: "boolean" },
+                submodules: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["mode", "writable_paths", "exclude"],
+                  properties: {
+                    mode: { type: "string", enum: ["off", "recursive"] },
+                    writable_paths: { type: "array", items: { type: "string" } },
+                    exclude: { type: "array", items: { type: "string" } },
+                  },
+                },
+                // ADR-0068: a dynamic context cloned from a URL; the normalised URL, never a path.
+                source_url: { type: "string" },
               },
             },
           },
@@ -1308,7 +1752,41 @@ const PROJECTS = {
           max_trust_profile: TRUST_PROFILE,
           // Proposed: the ceiling this client gets here, the lower of its own and the project's.
           effective_max_profile: TRUST_PROFILE,
+          // ADR-0091: what an absent trust_profile resolves to here (the default, lowered to the ceiling).
+          default_trust_profile: TRUST_PROFILE,
           allowed_providers: { type: "array", items: PROVIDER },
+          // ADR-0070: the merge policy in force, present only when the project sets one (absent means off).
+          merge_policy: {
+            type: "object",
+            additionalProperties: false,
+            required: ["enabled", "method", "required_reports", "require_verification", "checks"],
+            properties: {
+              enabled: { type: "boolean" },
+              method: { enum: [...MERGE_POLICY_METHODS] },
+              required_reports: { type: "array", items: { enum: [...MERGE_POLICY_REPORTS] } },
+              require_verification: { type: "boolean" },
+              // ADR-0087 item 7.
+              checks: { enum: [...MERGE_POLICY_CHECKS] },
+            },
+          },
+          // ADR-0071: the setup step in force (defaults filled in), present only when the project sets one.
+          setup: {
+            type: "object",
+            additionalProperties: false,
+            required: ["commands", "network", "cache", "timeout_seconds"],
+            properties: {
+              commands: { type: "array", items: { type: "array", items: { type: "string" } } },
+              network: {
+                type: "object",
+                additionalProperties: false,
+                required: ["hosts"],
+                properties: { hosts: { type: "array", items: { type: "string" } } },
+              },
+              cache: { enum: [...SETUP_CACHES] },
+              timeout_seconds: { type: "integer", minimum: 1 },
+              env: { type: "object", additionalProperties: { type: "string" } },
+            },
+          },
           // T9.9 (Proposed): present on dynamic projects only.
           source: { type: "string", enum: ["dynamic"] },
           revision: { type: "integer", minimum: 1 },
@@ -1335,7 +1813,21 @@ const PROJECT_RESULT = {
   },
 } as const;
 
+const PROJECT_SOURCE_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["host", "owner", "status", "message"],
+  properties: {
+    request_id: { type: "string" },
+    host: { type: "string" },
+    owner: { type: "string" },
+    status: { type: "string", enum: ["PENDING_APPROVAL", "APPROVED", "REJECTED", "ALREADY_ALLOWED"] },
+    message: { type: "string" },
+  },
+} as const;
+
 const PROJECT_OUTPUTS = {
+  request_project_source: withError(PROJECT_SOURCE_RESULT),
   create_project: withError(PROJECT_RESULT),
   update_project: withError(PROJECT_RESULT),
   delete_project: withError(PROJECT_RESULT),
@@ -1451,7 +1943,9 @@ const WORK_OUTPUTS = {
 const WORK_DESCRIPTIONS: Readonly<Record<WorkQueueToolName, string>> = {
   enqueue_work:
     "Queue a delegate_task request (request: the delegate_task fields without workspace_path, project, wait_seconds " +
-    "and idempotency_key) on one project this client may use (see list_projects). The controller admits it later as " +
+    "and idempotency_key) on one project this client may use (see list_projects); an omitted trust_profile and a " +
+    "privileged request's omitted privileged_scope are filled from the operator's defaults now, as in delegate_task, " +
+    "and stored. The controller admits it later as " +
     "this client, under this client's and the project's trust ceiling at that time; a refusal there ends the item " +
     "FAILED_ADMISSION. priority (-1000 to 1000, larger first) orders this project's ready items; depends_on names " +
     "this client's items that must be DONE first. Returns the item; reusing idempotency_key with the same arguments " +
@@ -1548,6 +2042,509 @@ const SKILL_TEXT = {
 } as const;
 const SKILL_OUTPUTS = { list_skills: withError(SKILL_LIST), get_skill: withError(SKILL_TEXT) } as const;
 
+/** ADR-0069 closed `pull_request_error` vocabulary (`src/mcp/publish.ts`, `src/ci/gh-pr.ts`). */
+export const PUBLISH_PULL_REQUEST_ERRORS = [
+  "GH_MISSING",
+  "AUTH_REQUIRED",
+  "TIMEOUT",
+  "GH_FAILED",
+  "PARSE_FAILED",
+  "REMOTE_NOT_GITHUB",
+  "BASE_INVALID",
+] as const;
+
+/** ADR-0095: why `gh` failed (`GH_FAILED` only): exit code, closed reason, sanitised stderr excerpt. */
+const GH_FAILURE_DETAIL = {
+  type: "object",
+  additionalProperties: false,
+  required: ["exit_code", "reason", "message"],
+  properties: {
+    exit_code: { type: ["integer", "null"] },
+    reason: { enum: [...GH_FAILURE_REASONS] },
+    message: { type: "string", maxLength: GH_FAILURE_MESSAGE_MAX },
+  },
+} as const;
+
+const PUBLISH_INPUTS = {
+  close_pr: {
+    type: "object",
+    additionalProperties: false,
+    required: ["project_id", "pull_request_number", "replacement_pull_request_number"],
+    properties: {
+      project_id: PROJECT_REF,
+      pull_request_number: { type: "integer", minimum: 1, maximum: 9_999_999_999 },
+      replacement_pull_request_number: { type: "integer", minimum: 1, maximum: 9_999_999_999 },
+      delete_branch: { type: "boolean", default: false },
+    },
+  },
+  update_run_branch: {
+    type: "object",
+    additionalProperties: false,
+    required: ["run_id"],
+    properties: {
+      run_id: RUN_ID,
+      expected_head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+    },
+  },
+  merge_run_pr: {
+    type: "object",
+    additionalProperties: false,
+    required: ["run_id"],
+    properties: {
+      run_id: RUN_ID,
+      expected_head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+    },
+  },
+  publish_run: {
+    type: "object",
+    additionalProperties: false,
+    required: ["run_id"],
+    properties: {
+      run_id: RUN_ID,
+      open_pull_request: { type: "boolean", default: true },
+      draft: { type: "boolean", default: false },
+    },
+  },
+} as const;
+
+const PUBLISH_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["run_id", "meta_session_id", "publication", "pull_request"],
+  properties: {
+    run_id: RUN_ID,
+    meta_session_id: SESSION_ID,
+    publication: {
+      type: "object",
+      additionalProperties: false,
+      required: ["push_id", "remote", "branch", "head_sha", "pushed_at", "reused"],
+      properties: {
+        push_id: { type: "string", pattern: "^gps_[0-9A-HJKMNP-TV-Z]{26}$" },
+        remote: { type: "string", maxLength: 255 },
+        branch: { type: "string", maxLength: 255 },
+        head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+        pushed_at: { type: "string" },
+        reused: { type: "boolean" },
+      },
+    },
+    pull_request: {
+      oneOf: [
+        { type: "null" },
+        {
+          type: "object",
+          additionalProperties: false,
+          required: ["number", "url", "draft", "reused"],
+          properties: {
+            number: { type: "integer", minimum: 1 },
+            url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+            draft: { type: "boolean" },
+            reused: { type: "boolean" },
+            merged: { const: true },
+          },
+        },
+      ],
+    },
+    pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
+    pull_request_error_detail: GH_FAILURE_DETAIL,
+    // ADR-0087 item 6 (LLD §3.4.17): one entry per changed submodule repository of an umbrella project (`repo` is
+    // `host/owner/repo`); present only for a project whose primary context sets `submodules.mode: "recursive"`.
+    submodules: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["repo", "paths", "branch", "head_sha", "default_branch", "publication", "pull_request"],
+        properties: {
+          repo: { type: "string", maxLength: 400 },
+          paths: { type: "array", minItems: 1, items: { type: "string" } },
+          branch: { type: "string", maxLength: 255 },
+          head_sha: { type: "string", pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+          default_branch: { type: ["string", "null"], maxLength: 255 },
+          publication: {
+            type: "object",
+            additionalProperties: false,
+            required: ["push_id", "pushed_at", "reused"],
+            properties: {
+              push_id: { type: "string", pattern: "^smp_[0-9A-HJKMNP-TV-Z]{26}$" },
+              pushed_at: { type: "string" },
+              reused: { type: "boolean" },
+            },
+          },
+          pull_request: {
+            oneOf: [
+              { type: "null" },
+              {
+                type: "object",
+                additionalProperties: false,
+                required: ["number", "url", "draft", "reused"],
+                properties: {
+                  number: { type: "integer", minimum: 1 },
+                  url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+                  draft: { type: "boolean" },
+                  reused: { type: "boolean" },
+                  merged: { const: true },
+                },
+              },
+            ],
+          },
+          pull_request_error: { enum: [...PUBLISH_PULL_REQUEST_ERRORS] },
+          pull_request_error_detail: GH_FAILURE_DETAIL,
+        },
+      },
+    },
+  },
+} as const;
+
+/** ADR-0070 (LLD §3.4.13): a merged (or already merged) pull request; every refusal is an error envelope. */
+const MERGE_RUN_PR_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["run_id", "pull_request", "merged", "head_sha", "method"],
+  properties: {
+    run_id: RUN_ID,
+    pull_request: {
+      type: "object",
+      additionalProperties: false,
+      required: ["number", "url"],
+      properties: {
+        number: { type: "integer", minimum: 1 },
+        url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+      },
+    },
+    merged: { const: true },
+    head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+    head_kind: { enum: ["published", "base_merge"] },
+    method: { enum: [...MERGE_POLICY_METHODS] },
+    // ADR-0087 item 7: only for a publication with linked submodule pull requests (the same object a refusal's
+    // details.submodule_merge carries).
+    submodule_merge: {
+      type: "object",
+      additionalProperties: false,
+      required: ["phase", "repos"],
+      properties: {
+        phase: { enum: [...SUBMODULE_MERGE_PHASES] },
+        repos: {
+          type: "array",
+          maxItems: 1024,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["repo", "paths", "pr_number", "state"],
+            properties: {
+              repo: { type: "string", maxLength: 200 },
+              paths: { type: "array", maxItems: 1024, items: { type: "string", maxLength: 4096 } },
+              pr_number: { type: "integer", minimum: 1 },
+              state: { enum: [...SUBMODULE_MERGE_REPO_STATES] },
+              merged_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+              reason: { type: "string", maxLength: 64 },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+/** ADR-0073 (LLD §3.4.14): an update requested (or not needed); every refusal is an error envelope. */
+const UPDATE_RUN_BRANCH_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["run_id", "pull_request", "updated", "previous_head_sha"],
+  properties: {
+    run_id: RUN_ID,
+    pull_request: {
+      type: "object",
+      additionalProperties: false,
+      required: ["number", "url"],
+      properties: {
+        number: { type: "integer", minimum: 1 },
+        url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+      },
+    },
+    updated: { type: "boolean" },
+    previous_head_sha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+  },
+} as const;
+
+/** ADR-0078 (LLD §3.4.16): a closed (or already closed) Switchboard pull request; a refusal is an error envelope. */
+const CLOSE_PR_RESULT = {
+  type: "object",
+  additionalProperties: false,
+  required: ["project_id", "run_id", "pull_request", "replacement_pull_request", "closed", "branch_deleted"],
+  properties: {
+    project_id: PROJECT_REF,
+    run_id: RUN_ID,
+    pull_request: {
+      type: "object",
+      additionalProperties: false,
+      required: ["number", "url"],
+      properties: {
+        number: { type: "integer", minimum: 1 },
+        url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+      },
+    },
+    replacement_pull_request: {
+      type: "object",
+      additionalProperties: false,
+      required: ["number", "url"],
+      properties: {
+        number: { type: "integer", minimum: 1 },
+        url: { type: "string", pattern: "^https://github\\.com/", maxLength: 300 },
+      },
+    },
+    closed: { type: "boolean" },
+    branch_deleted: { type: "boolean" },
+  },
+} as const;
+
+const PUBLISH_OUTPUTS = {
+  publish_run: withError(PUBLISH_RESULT),
+  merge_run_pr: withError(MERGE_RUN_PR_RESULT),
+  update_run_branch: withError(UPDATE_RUN_BRANCH_RESULT),
+  close_pr: withError(CLOSE_PR_RESULT),
+} as const;
+
+const PUBLISH_DESCRIPTIONS: Readonly<Record<PublishToolName, string>> = {
+  publish_run:
+    "Publish one of this client's SUCCEEDED runs: the controller pushes the run's branch (its meta-session's " +
+    "controller commits, never forced, never the default branch, after the same secret scan as every push) to the " +
+    "project's configured remote, then, unless open_pull_request is false, opens a pull request with the operator's " +
+    "GitHub login (gh) or reuses the open one for that branch (a merged one of the same head is returned with merged " +
+    "true). Idempotent: publishing again returns the existing push and pull request. A refused push is " +
+    "PERMISSION_BLOCKED with details.reason. If gh fails the push still stands: pull_request is null and " +
+    "pull_request_error names why; GH_FAILED adds pull_request_error_detail (exit code, reason, sanitized gh message). The pull request body includes the run's agent-written " +
+    "draft, labelled untrusted. For an umbrella project (submodules.mode recursive) the controller first pushes each " +
+    "changed submodule repository's commits to the same branch name on that repository (after a secret scan of every " +
+    "repository; a finding refuses everything, with paths prefixed by the submodule path), refuses " +
+    "SUBMODULE_HISTORY_UNVERIFIED for a gitlink it did not commit and SUBMODULE_PUSH_FAILED (details.submodules) " +
+    "without pushing the umbrella unless every submodule push was accepted (a retry pushes only what is missing), " +
+    "then opens one pull request per submodule repository against its default branch and the umbrella pull " +
+    "request listing them; submodules[] reports each repository.",
+  merge_run_pr:
+    "Merge the pull request of one of this client's runs that publish_run published, with the operator's GitHub " +
+    "login (gh), only when the project's merge_policy is in force and enabled (see list_projects; update_project " +
+    "turns it on after approval) and, read from GitHub at the published head: the pull request is open, not a draft, " +
+    "on the project's base branch, mergeable, every required check passed (none required, or any pending, is " +
+    "refused, never waited for), the head is still the published one or only adds merges of the base branch on it " +
+    "(GitHub's Update branch, or update_run_branch; head_kind base_merge) (and expected_head_sha if given), and the " +
+    "policy's verification and report conditions hold at the published head. Merges with the policy's method, pinned " +
+    "to that head. A " +
+    "refusal is PERMISSION_BLOCKED with details.reason (policy_off, draft, head_moved, base_mismatch, not_mergeable, " +
+    "no_required_checks, no_checks_reported, check_pending, check_failed, unverified_at_head, report_missing); a gh failure is " +
+    "TOOL_FAILURE gh_error, retryable. Idempotent: an already merged pull request returns merged true. Every attempt " +
+    "is a merge_event in get_digest. For a publication with linked submodule pull requests (an umbrella project), " +
+    "each call advances an ordered merge as far as it can: each submodule pull request in path order through the same " +
+    "checks (and merge_policy.checks) at its pushed head and merged pinned to it (one merged by a person at that head " +
+    "is accepted); then one controller commit on the published tip that only re-points the gitlinks to the merge " +
+    "commits, pushed fast-forward to the pull request branch; then the umbrella gate at that new head, with " +
+    "verification and reports read at the published tip. Progress is in submodule_merge { phase (submodules, " +
+    "repoint, umbrella, merged), repos [{ repo, paths, pr_number, state (waiting, refused, merged), merged_sha, " +
+    "reason }] }, on the result and on every refusal's details; call again (check_pending is never waited for). " +
+    "Step refusals add merge_failed, store_unavailable, merge_commit_missing, merge_commit_off_default_branch, " +
+    "gitlink_mismatch, repoint_not_fast_forward, repoint_push_failed, secret_scan_blocked; the fetch, push and gh " +
+    "failures among them are TOOL_FAILURE, retryable.",
+  update_run_branch:
+    "Bring the pull request of one of this client's published runs up to date with its base branch (GitHub's Update " +
+    "branch, with the operator's GitHub login, gh), only when the project's merge_policy is in force and enabled, the " +
+    "pull request is open on the project's base branch and its head is one merge_run_pr accepts (the published head, " +
+    "or base-branch merges on it; and expected_head_sha if given). GitHub merges the base into the branch, pinned to " +
+    "that head; the new head is accepted by merge_run_pr once its required checks pass. updated is false when the " +
+    "branch already contains the base head (nothing is asked of GitHub). A refusal is PERMISSION_BLOCKED with " +
+    "details.reason (policy_off, head_moved, base_mismatch, not_mergeable: no open pull request, or the base merge " +
+    "would conflict); a gh or fetch failure is TOOL_FAILURE gh_error, retryable.",
+  close_pr:
+    "Close a superseded pull request that publish_run opened for one of this client's runs of project_id, with the " +
+    "operator's GitHub login (gh), posting a fixed comment that links replacement_pull_request_number (a pull " +
+    "request in the same repository), and, if delete_branch is true, deleting its head branch. Only a pull request " +
+    "Switchboard itself created (not one it reused, nor any other) in the project's own repository, still on the " +
+    "branch Switchboard published and not merged; anything else is PERMISSION_BLOCKED with details.reason " +
+    "(NOT_SWITCHBOARD_PR, HEAD_BRANCH_MISMATCH, ALREADY_MERGED, CONTEXT_UNKNOWN, POLICY_NONE). Idempotent: an " +
+    "already closed pull request returns closed false and nothing is written. A gh failure is TOOL_FAILURE with " +
+    "details.reason. Every call, allowed or refused, is recorded.",
+};
+
+const SHA = { type: "string", pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$" } as const;
+
+/** ADR-0074 (LLD §3.4.15). */
+const BASE_INPUTS = {
+  refresh_project_base: {
+    type: "object",
+    additionalProperties: false,
+    required: ["project_id"],
+    properties: { project_id: PROJECT_REF },
+  },
+  rebase_session: {
+    type: "object",
+    additionalProperties: false,
+    required: ["session_id"],
+    properties: { session_id: SESSION_ID, expected_head_sha: SHA },
+  },
+} as const;
+
+const BASE_REFRESH_REASONS = [
+  "ADVANCED",
+  "CURRENT",
+  "LOCAL_AHEAD",
+  "REPO_BUSY",
+  "BASE_NOT_BRANCH",
+  "REMOTE_INVALID",
+  "REMOTE_UNKNOWN",
+  "REPO_CONFIG_UNSAFE",
+  "REMOTE_URL_CREDENTIALS",
+  "REMOTE_TRANSPORT_NOT_ALLOWED",
+  "FETCH_TIMEOUT",
+  "FETCH_FAILED",
+  "GIT_FAILED",
+] as const;
+
+const BASE_OUTPUTS = {
+  refresh_project_base: withError({
+    type: "object",
+    additionalProperties: false,
+    required: ["project_id", "base_ref", "remote", "base_commit", "previous_commit", "remote_commit", "reason"],
+    properties: {
+      project_id: PROJECT_REF,
+      base_ref: { type: "string", maxLength: 255 },
+      remote: { type: "string", maxLength: 255 },
+      base_commit: SHA,
+      previous_commit: { oneOf: [{ type: "null" }, SHA] },
+      remote_commit: SHA,
+      reason: { enum: [...BASE_REFRESH_REASONS] },
+      // ADR-0087 item 3: only for a context with submodules.mode recursive.
+      submodules: {
+        type: "object",
+        additionalProperties: false,
+        required: ["total", "present", "fetched", "missing"],
+        properties: {
+          total: { type: "integer", minimum: 0 },
+          present: { type: "integer", minimum: 0 },
+          fetched: { type: "integer", minimum: 0 },
+          missing: { type: "integer", minimum: 0 },
+        },
+      },
+    },
+  }),
+  rebase_session: withError({
+    type: "object",
+    additionalProperties: false,
+    required: ["session_id", "previous_head", "new_head", "base_commit", "rebased_commits"],
+    properties: {
+      session_id: SESSION_ID,
+      previous_head: SHA,
+      new_head: SHA,
+      base_commit: SHA,
+      rebased_commits: { type: "integer", minimum: 0 },
+      publish: {
+        type: "object",
+        additionalProperties: false,
+        required: ["previous_tip", "new_tip"],
+        properties: { previous_tip: SHA, new_tip: SHA },
+      },
+    },
+  }),
+} as const;
+
+const OAUTH_CLIENT_ID = { type: "string", pattern: "^sbc_[A-Za-z0-9_-]{22}$" } as const;
+
+const OAUTH_INPUTS = {
+  list_oauth_clients: {
+    type: "object",
+    additionalProperties: false,
+    properties: { client_id: OAUTH_CLIENT_ID },
+  },
+} as const;
+
+const OAUTH_CLIENT_VIEW = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "client_id",
+    "client_name",
+    "cimd_url",
+    "status",
+    "created_at",
+    "decided_at",
+    "redirect_uris",
+    "grant_types",
+    "mcp_client",
+    "mcp_client_source",
+    "mcp_client_eligible",
+    "bound_mcp_client",
+    "bound_at",
+    "tokens",
+    "last_token_issued_at",
+  ],
+  properties: {
+    client_id: { type: "string" },
+    client_name: NULLABLE_STRING,
+    cimd_url: NULLABLE_STRING,
+    status: { enum: ["pending", "approved", "denied", "revoked"] },
+    created_at: { type: "string" },
+    decided_at: NULLABLE_STRING,
+    redirect_uris: { type: "array", items: { type: "string" } },
+    grant_types: { type: "array", items: { type: "string" } },
+    mcp_client: NULLABLE_STRING,
+    mcp_client_source: { enum: ["config_map", "ledger_binding", "default", null] },
+    mcp_client_eligible: { type: "boolean" },
+    bound_mcp_client: NULLABLE_STRING,
+    bound_at: NULLABLE_STRING,
+    tokens: {
+      type: "object",
+      additionalProperties: false,
+      required: ["active", "expired", "revoked"],
+      properties: {
+        active: { type: "integer", minimum: 0 },
+        expired: { type: "integer", minimum: 0 },
+        revoked: { type: "integer", minimum: 0 },
+      },
+    },
+    last_token_issued_at: NULLABLE_STRING,
+  },
+} as const;
+
+const OAUTH_OUTPUTS = {
+  list_oauth_clients: withError({
+    type: "object",
+    additionalProperties: false,
+    required: ["clients"],
+    properties: { clients: { type: "array", items: OAUTH_CLIENT_VIEW } },
+  }),
+} as const;
+
+const OAUTH_DESCRIPTIONS: Readonly<Record<OAuthToolName, string>> = {
+  list_oauth_clients:
+    "Operator view of the HTTP transport's OAuth clients, read-only (stdio only): per client its registration, " +
+    "status, the mcp_clients profile it acts as with the source (config_map, ledger_binding, default; " +
+    "mcp_client_eligible false means the MCP endpoint refuses it), the ledger binding a one-time code made, token " +
+    "counts (active, expired, revoked) and the newest token issue time. Never a token, code or hash. With client_id, " +
+    "that client only (an unknown id is INVALID_REQUEST).",
+};
+
+const BASE_DESCRIPTIONS: Readonly<Record<BaseToolName, string>> = {
+  refresh_project_base:
+    "Fetch the base branch of one of this client's remote-backed projects now (a dynamic project with clone_url, " +
+    "or one whose primary context sets base_remote), with the controller's hardened fetch into the remote-tracking " +
+    "ref only. Returns base_commit (where a new meta-session of the project starts now), previous_commit (the " +
+    "tracking ref before the fetch, or null) and remote_commit. New meta-sessions already fetch before their first " +
+    "worktree; this is for checking or forcing it. A project that is not remote-backed is INVALID_REQUEST " +
+    "NOT_REMOTE_BACKED; a failed fetch is TOOL_FAILURE BASE_REFRESH_FAILED with details.fetch_reason. For a " +
+    "context with submodules.mode recursive, every gitlink commit of base_commit is then made present in its " +
+    "submodule store and counted in submodules {total, present, fetched, missing}; a missing commit does not undo " +
+    "the refresh, a refused submodule manifest is reported with its details.reason and details.path.",
+  rebase_session:
+    "Rebase one of this client's meta-sessions onto a freshly fetched base, so its next continue_task starts from " +
+    "the current remote base plus the session's own commits. Only with no run in progress. The controller fetches " +
+    "the base, replays the session's commits (and its unpublished or published controller commits) without touching " +
+    "any worktree, and records the new head; it never pushes. Refused before anything changes, as INVALID_REQUEST " +
+    "with details.reason: CONFLICT (details.conflicting_paths), HEAD_MOVED (expected_head_sha differs), ACTIVE_RUN, " +
+    "NOT_REMOTE_BACKED, NOTHING_TO_REBASE, MERGE_COMMIT; or PERMISSION_BLOCKED SIGNING_UNAVAILABLE, " +
+    "IDENTITY_REQUIRED, REPO_CONFIG_UNSAFE; or TOOL_FAILURE BASE_REFRESH_FAILED, REPO_BUSY (retryable). A branch " +
+    "publish_run pushed before is not a fast-forward afterwards, and publishing it again is refused NON_FAST_FORWARD. " +
+    "For a context with submodules.mode recursive, a submodule gitlink both the session and the base moved to " +
+    "different commits is a CONFLICT naming that path; after a rebase the new base's submodule commits are fetched " +
+    "into their stores.",
+};
+
 const SKILL_DESCRIPTIONS: Readonly<Record<SkillToolName, string>> = {
   list_skills:
     "Operator-approved skills this client may name in delegate_task, read-only: per name the newest version it could " +
@@ -1589,9 +2586,12 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
   delegate_task:
     "Start a coding task in a new meta-session. Asynchronous: returns run_id and meta_session_id at once (status " +
     "QUEUED or later); poll get_run, or pass wait_seconds (0-60) for a bounded wait that never cancels the run. " +
-    "trust_profile above this client's maximum fails PERMISSION_BLOCKED. Routing hints only narrow provider choice. " +
-    "trust_profile privileged needs privileged_scope (files, shell, network, repository_config, optional bypass) and " +
-    "returns AWAITING_APPROVAL until the operator approves on the CLI; no tool can approve. Give exactly one of " +
+    "trust_profile above this client's maximum fails PERMISSION_BLOCKED; omitted, it is the operator's configured " +
+    "default lowered to the ceiling (see list_projects default_trust_profile), and it is required when none is " +
+    "configured. Routing hints only narrow provider choice. " +
+    "trust_profile privileged needs privileged_scope (files, shell, network, repository_config, optional bypass), or " +
+    "the operator's default scope when one is configured, and returns AWAITING_APPROVAL until the operator approves " +
+    "on the CLI unless the operator configured this client not to need it; no tool can approve. Give exactly one of " +
     "workspace_path and project (see list_projects); a project fixes the repository and caps trust_profile and " +
     "providers at the project's limits.",
   continue_task:
@@ -1614,15 +2614,27 @@ const DESCRIPTIONS: Readonly<Record<ToolName, string>> = {
     "Providers with adapter status, version, validated range, auth state, supported trust profiles, transports and " +
     "how Git writes are denied (FR-GIT-01).",
   list_projects:
-    "Projects this client may use with delegate_task: id, name, environment kind, contexts (id, kind, push policy), " +
-    "the project's trust ceiling, the ceiling this client gets there and allowed providers. Read-only; no paths.",
+    "Projects this client may use with delegate_task: id, name, environment kind, contexts (id, kind, push policy, " +
+    "base_ref, push remote name and branch prefix, commit identity, sign, finalize_commit and submodules, as in " +
+    "force), the project's trust ceiling, the ceiling this client gets there, allowed providers and merge policy. " +
+    "Read-only; no paths or secrets.",
   get_capacity:
     "Per-provider capacity, read-only. capacity_score, confidence and throttle_risk are controller estimates from " +
     "recent run outcomes, rate-limit signals, the circuit breaker and free slots, never provider-authoritative quota; " +
     "with no recent evidence they read unknown (score null, confidence 0). explicit_remaining and reset_at are set " +
     "only when the provider itself reported them. Optional provider narrows the answer to one provider. When " +
     "subscriptions are configured, pacing lists one entry per subscription with each window's figures, " +
-    "deferred_until and the gate verdict; that hold is not applied here.",
+    "deferred_until and the gate verdict; that hold is not applied here. provider_usage, where present, is the " +
+    "provider's own report read live through its CLI with no model call (Codex: account/rateLimits/read; Cursor: " +
+    "the CLI's /usage command; Antigravity: agy -p /usage and /credits) or, for Claude Code, the newest figures " +
+    "its runs printed (rate_limit_event, as of observed_at): each " +
+    "quota window's used_fraction, remaining_fraction and resets_at, the plan, credits and whether a limit is " +
+    "reached, all source provider_reported (Cursor adds reset_label, reset_precision day, on_demand dollars and " +
+    "spend); source unknown carries the reason the read failed. OpenCode reports spend, not quota: its report has " +
+    "empty windows and spend_windows (window, from, to, amount in usd as spent, never remaining) with scope and " +
+    "note; no limit, remaining share or reset is reported for it. " +
+    "When the operator's Copilot quota reader is on, provider_quota carries GitHub Copilot's own reported quota " +
+    "(provider copilot, usage-only, no run adapter); provider copilot returns only that.",
   explain_route:
     "Why a run went to its provider, read-only, from Switchboard's stored route decision: candidates with eligibility " +
     "reasons, the recorded task features, weights and per-candidate scores, the selection rule, the project's " +
@@ -1664,11 +2676,22 @@ const SEARCH_DESCRIPTIONS: Readonly<Record<SearchToolName, string>> = {
 };
 
 const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
+  request_project_source:
+    "Ask for a repository owner to be allowed for clone_url (and submodule URLs) on a host the operator already " +
+    "allows in project_sources (host defaults to github.com; a host is never added). Returns a request_id and " +
+    "PENDING_APPROVAL: an approver client whose operator lists the project_source kind decides it with " +
+    "decide_approval (list_pending_approvals), or the operator runs `switchboard projects sources approve`. Once " +
+    "approved the owner takes effect at once, without a restart. ALREADY_ALLOWED means the operator configured the " +
+    "owner; asking again for a pending or approved owner returns the same request.",
   create_project:
-    "Create a dynamic project for this client (shape as list_projects describes, plus repository contexts with path " +
-    "and base_ref). The repository must be a Git repository under an allowed root; trust ceiling, providers and push " +
-    "policy may not exceed this client's. A container environment, a push policy other than none, a commit identity, " +
-    "signing or a widening returns PENDING_APPROVAL: the operator must approve it on the CLI before it can start runs.",
+    "Create a dynamic project for this client (shape as list_projects describes, plus repository contexts with base_ref " +
+    "and exactly one of path and clone_url). path must be a Git repository under an allowed root. clone_url " +
+    "(https://<host>/<owner>/<repo>, an owner the operator allows in project_sources) makes the server clone it with " +
+    "its own git credentials, or reuse its earlier clone. Trust ceiling, providers and push policy may not exceed this " +
+    "client's. A container environment, a push policy other than none, a commit identity, signing, writable submodules, " +
+    "merge_policy.checks all_reported or a widening " +
+    "returns PENDING_APPROVAL: approve it with decide_approval from an approver client (list_pending_approvals), or " +
+    "the operator runs `switchboard projects approve`, before it can start runs.",
   update_project:
     "Write a new revision of a dynamic project this client created, under the same rules as create_project. A " +
     "revision that needs approval stays PENDING_APPROVAL and the previous revision stays in force until then.",
@@ -1677,7 +2700,15 @@ const PROJECT_DESCRIPTIONS: Readonly<Record<ProjectToolName, string>> = {
 };
 
 export interface ToolDescriptor {
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName;
+  name:
+    | ToolName
+    | ProjectToolName
+    | SearchToolName
+    | WorkQueueToolName
+    | SkillToolName
+    | PublishToolName
+    | BaseToolName
+    | OAuthToolName;
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
@@ -1689,7 +2720,20 @@ export interface ToolDescriptor {
  * (T12.6, FR-RAG-06), the work-queue tools only with `workQueue` (T15.1), the skill tools only with `skills` (T16.9).
  */
 export function toolDescriptors(
-  opts: { manageProjects?: boolean; searchContext?: boolean; workQueue?: boolean; skills?: boolean } = {},
+  opts: {
+    manageProjects?: boolean;
+    /** ADR-0087: the server has `project_sources` and a grant store, so `request_project_source` exists. */
+    projectSources?: boolean;
+    searchContext?: boolean;
+    workQueue?: boolean;
+    skills?: boolean;
+    publish?: boolean;
+    mergeRunPr?: boolean;
+    updateRunBranch?: boolean;
+    closePr?: boolean;
+    baseTools?: boolean;
+    oauthClients?: boolean;
+  } = {},
 ): ToolDescriptor[] {
   const base: ToolDescriptor[] = TOOL_NAMES.map((name) => ({
     name,
@@ -1704,6 +2748,35 @@ export function toolDescriptors(
         description: WORK_DESCRIPTIONS[name],
         inputSchema: structuredClone(WORK_INPUTS[name]) as Record<string, unknown>,
         outputSchema: structuredClone(WORK_OUTPUTS[name]) as Record<string, unknown>,
+      })),
+    );
+  }
+  if (opts.publish === true) {
+    // ADR-0069: right after the work-queue tools, before every retrieval-, skill- or project-gated tool. ADR-0070:
+    // `merge_run_pr` only with `mergeRunPr` as well; ADR-0073: `update_run_branch` only with `updateRunBranch` too.
+    // ADR-0078: `close_pr` only with `closePr`.
+    const offered = (name: PublishToolName) =>
+      name === "publish_run" ||
+      (name === "close_pr"
+        ? opts.closePr === true
+        : opts.mergeRunPr === true && (name === "merge_run_pr" || opts.updateRunBranch === true));
+    base.push(
+      ...PUBLISH_TOOL_NAMES.filter(offered).map((name) => ({
+        name,
+        description: PUBLISH_DESCRIPTIONS[name],
+        inputSchema: structuredClone(PUBLISH_INPUTS[name]) as Record<string, unknown>,
+        outputSchema: structuredClone(PUBLISH_OUTPUTS[name]) as Record<string, unknown>,
+      })),
+    );
+  }
+  if (opts.baseTools === true) {
+    // ADR-0074: right after the publish tools.
+    base.push(
+      ...BASE_TOOL_NAMES.map((name) => ({
+        name,
+        description: BASE_DESCRIPTIONS[name],
+        inputSchema: structuredClone(BASE_INPUTS[name]) as Record<string, unknown>,
+        outputSchema: structuredClone(BASE_OUTPUTS[name]) as Record<string, unknown>,
       })),
     );
   }
@@ -1727,21 +2800,51 @@ export function toolDescriptors(
       })),
     );
   }
-  if (opts.manageProjects !== true) return base;
-  return [
-    ...base,
-    ...PROJECT_TOOL_NAMES.map((name) => ({
-      name,
-      description: PROJECT_DESCRIPTIONS[name],
-      inputSchema: structuredClone(PROJECT_INPUTS[name]) as Record<string, unknown>,
-      outputSchema: structuredClone(PROJECT_OUTPUTS[name]) as Record<string, unknown>,
-    })),
-  ];
+  if (opts.manageProjects === true) {
+    base.push(
+      ...PROJECT_TOOL_NAMES.filter((name) => name !== "request_project_source" || opts.projectSources === true).map(
+        (name) => ({
+          name,
+          description: PROJECT_DESCRIPTIONS[name],
+          inputSchema: structuredClone(PROJECT_INPUTS[name]) as Record<string, unknown>,
+          outputSchema: structuredClone(PROJECT_OUTPUTS[name]) as Record<string, unknown>,
+        }),
+      ),
+    );
+  }
+  if (opts.oauthClients === true) {
+    base.push(
+      ...OAUTH_TOOL_NAMES.map((name) => ({
+        name,
+        description: OAUTH_DESCRIPTIONS[name],
+        inputSchema: structuredClone(OAUTH_INPUTS[name]) as Record<string, unknown>,
+        outputSchema: structuredClone(OAUTH_OUTPUTS[name]) as Record<string, unknown>,
+      })),
+    );
+  }
+  return base;
 }
 
 export function inputSchema(
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName,
+  name:
+    | ToolName
+    | ProjectToolName
+    | SearchToolName
+    | WorkQueueToolName
+    | SkillToolName
+    | PublishToolName
+    | BaseToolName
+    | OAuthToolName,
 ): Record<string, unknown> {
+  if ((OAUTH_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(OAUTH_INPUTS[name as OAuthToolName]) as Record<string, unknown>;
+  }
+  if ((BASE_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(BASE_INPUTS[name as BaseToolName]) as Record<string, unknown>;
+  }
+  if ((PUBLISH_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(PUBLISH_INPUTS[name as PublishToolName]) as Record<string, unknown>;
+  }
   if ((SKILL_TOOL_NAMES as readonly string[]).includes(name)) {
     return structuredClone(SKILL_INPUTS[name as SkillToolName]) as Record<string, unknown>;
   }
@@ -1756,8 +2859,25 @@ export function inputSchema(
 }
 
 export function outputSchema(
-  name: ToolName | ProjectToolName | SearchToolName | WorkQueueToolName | SkillToolName,
+  name:
+    | ToolName
+    | ProjectToolName
+    | SearchToolName
+    | WorkQueueToolName
+    | SkillToolName
+    | PublishToolName
+    | BaseToolName
+    | OAuthToolName,
 ): Record<string, unknown> {
+  if ((OAUTH_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(OAUTH_OUTPUTS[name as OAuthToolName]) as Record<string, unknown>;
+  }
+  if ((BASE_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(BASE_OUTPUTS[name as BaseToolName]) as Record<string, unknown>;
+  }
+  if ((PUBLISH_TOOL_NAMES as readonly string[]).includes(name)) {
+    return structuredClone(PUBLISH_OUTPUTS[name as PublishToolName]) as Record<string, unknown>;
+  }
   if ((SKILL_TOOL_NAMES as readonly string[]).includes(name)) {
     return structuredClone(SKILL_OUTPUTS[name as SkillToolName]) as Record<string, unknown>;
   }

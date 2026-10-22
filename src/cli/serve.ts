@@ -61,7 +61,7 @@ import type { FakeScenario } from "../adapters/fake/adapter.js";
 import {
   AdapterRegistry,
   adapterIdForConfigId,
-  configIdForAdapterId,
+  configIdForProviderName,
   createProbeRunner,
   evaluateVersionCanary,
   PreflightCache,
@@ -72,15 +72,20 @@ import {
 } from "../adapters/index.js";
 import { ArtifactStore, defaultRedactor } from "../artifacts/index.js";
 import { osLoadReader } from "../capacity/host-load.js";
+import { ProviderUsageCache } from "../capacity/provider-usage.js";
 import {
   CiTriggerPoller,
   GhCiStatusPort,
+  GhPullRequestPort,
+  GitPullHeadPort,
   mergeTargetsFrom,
   type OnRefSinkEvent,
   resolveGithubRemote,
+  type SubmoduleMergeDeps,
+  submoduleMergeHook,
   supersededDiffOf,
 } from "../ci/index.js";
-import { ConfigError, loadConfig, primaryContext, type ResolvedConfig } from "../config/index.js";
+import { ConfigError, loadConfig, primaryContext, type ResolvedConfig, submodulesEnabled } from "../config/index.js";
 import { collectDigestCounts, digestPushFor } from "../control/digest-push.js";
 import {
   ALL_PROJECTS_ID,
@@ -112,7 +117,7 @@ import { detectOuterSandbox, type OuterSandboxAvailability, outerSandboxRefusal 
 import { refreshBase } from "../git/base-refresh.js";
 import { GitToolService } from "../git/channel.js";
 import { GitPublisher } from "../git/commit.js";
-import { GitPusher, pushContextResolver } from "../git/push.js";
+import { GitPusher, projectPushContextResolver } from "../git/push.js";
 import { prepareRebaseMerge } from "../git/rebase-prep.js";
 import { createIdGenerator } from "../ids/index.js";
 import { createClassifyRouteFeaturesHook, createConfiguredInnerAgent, PROMPT_PROVIDER_NAMES } from "../inner/index.js";
@@ -126,6 +131,9 @@ import {
   CimdFetcher,
   createSwitchboardServer,
   type HttpTransportListener,
+  IpAttemptLimiter,
+  OAuthAdmin,
+  OAuthAuditLog,
   OAuthClientStore,
   OAuthTokenStore,
   PairingCodeStore,
@@ -135,11 +143,17 @@ import {
   startHttpTransport,
   startStdioServer,
 } from "../mcp/index.js";
-import type { PendingRevisionAnnouncement } from "../mcp/project-tools.js";
+import type { PendingRevisionAnnouncement, PendingSourceAnnouncement } from "../mcp/project-tools.js";
 import type { SearchContextDeps } from "../mcp/search-context.js";
 import { type ModelConfig, ModelRegistry } from "../models/index.js";
 import { createProfileResolver } from "../policy/index.js";
-import { DynamicProjectStore, innerSettingResolver, toResolved } from "../projects/index.js";
+import {
+  DynamicProjectStore,
+  effectiveProjectSources,
+  innerSettingResolver,
+  ProjectSourceGrantStore,
+  toResolved,
+} from "../projects/index.js";
 import {
   admitWorkItemRequest,
   attachQueueLowWater,
@@ -155,6 +169,7 @@ import { createTelemetry } from "../telemetry/index.js";
 import {
   type BaseRefreshRequest,
   collectOrphans,
+  createProjectSetup,
   createSeedStore,
   DEFAULT_SEED_ENTRIES_PER_SEED,
   DEFAULT_SEED_STORE_MB,
@@ -168,12 +183,13 @@ import {
   type SeedEnvironment,
   type SeedSpec,
   type SeedStore,
+  type SubmodulePlan,
   seedReclaimer,
   statfsDiskProbe,
   WorkspaceManager,
 } from "../workspace/index.js";
 import { briefContextPack } from "./brief-pack.js";
-import { type CliIo, PROBE_ENV_ALLOWLIST } from "./io.js";
+import { type CliIo, PROBE_ENV_ALLOWLIST, probeRootFor } from "./io.js";
 import { applyOperatorRequests } from "./operator.js";
 import { ragBackendFor, ragProjects, type ServeRag, startServeRag, toBuildProject } from "./rag-index.js";
 import { checkUnprivileged } from "./unprivileged.js";
@@ -275,7 +291,8 @@ export function modelRegistry(config: ResolvedConfig): ModelRegistry {
 export function enablement(config: ResolvedConfig, fake: FakeSwitch): (id: ProviderId) => boolean {
   return (id) => {
     if (id === "fake") return fake.enabled;
-    const configId = configIdForAdapterId(id);
+    // ADR-0076: either spelling of the provider; `config.providers` holds the config spelling (validateConfig).
+    const configId = configIdForProviderName(id);
     if (configId === undefined) return false; // not a configured provider id: fail closed
     return config.providers.get(configId)?.enabled !== false;
   };
@@ -486,7 +503,9 @@ export function runEnvironments(
 /**
  * LLD §5.2 (FR-PRJ-02 note, ADR-0067): the workspace manager's base refresh. A run's project resolves to its
  * configured definition, else a dynamic project's revision in force (as admission does); only a primary context that
- * sets `base_remote` fetches. The fetch uses the allowlisted environment of the controller's own push (ADR-0028).
+ * sets `base_remote` fetches. ADR-0074: a dynamic project's primary `clone_url` context resolves (`toResolved`) with
+ * its default base remote (its push remote, else `origin`), so every new meta-session of a cloned project fetches
+ * first. The fetch uses the allowlisted environment of the controller's own push (ADR-0028).
  */
 export function serveBaseRefresh(
   config: Pick<ResolvedConfig, "projects">,
@@ -514,6 +533,29 @@ export function serveBaseRefresh(
       { ids, sourceEnv, ...(now ? { now } : {}) },
     );
     return r.baseCommit;
+  };
+}
+
+/**
+ * ADR-0087 item 3: the submodule plan of a project's primary context, for configured and (in-force) dynamic projects;
+ * undefined unless it sets `submodules.mode: "recursive"`.
+ */
+export function serveSubmodulePlan(
+  config: Pick<ResolvedConfig, "projects">,
+  store: Pick<DynamicProjectStore, "state">,
+): (projectId: string) => SubmodulePlan | undefined {
+  return (projectId) => {
+    const configured = config.projects.find((p) => p.id === projectId);
+    const dynamic = configured === undefined ? store.state(projectId)?.inForce?.definition : undefined;
+    const project = configured ?? (dynamic !== undefined ? toResolved(dynamic) : undefined);
+    if (project === undefined) return undefined;
+    const ctx = primaryContext(project);
+    if (!submodulesEnabled(ctx) || ctx.submodules === undefined) return undefined;
+    return {
+      writablePaths: ctx.submodules.writablePaths,
+      exclude: ctx.submodules.exclude,
+      ...(ctx.baseRemote !== undefined ? { baseRemote: ctx.baseRemote } : {}),
+    };
   };
 }
 
@@ -598,6 +640,13 @@ async function runDaemon(
   const ledger = createLedger(db, { ids, ...(now ? { now } : {}) });
   const artifacts = new ArtifactStore(`${config.dataDir}/artifacts`);
   const seeds = serveSeeds(config, db, artifacts, ids, io.env, createDockerRuntime, now);
+  // ADR-0087 items 3 and 8: configured owners plus approved grants, re-read at each check, for submodule URLs and stores.
+  const liveProjectSources = effectiveProjectSources(
+    config.projectSources,
+    config.projectSources !== undefined
+      ? new ProjectSourceGrantStore(db, { ids, config: config.projectSources, ...(now ? { now } : {}) })
+      : undefined,
+  );
   const workspace = new WorkspaceManager({
     db,
     artifacts,
@@ -613,6 +662,12 @@ async function runDaemon(
       io.env,
       now,
     ),
+    // ADR-0087 item 3: submodule worktrees of a primary context with `submodules.mode: "recursive"`; every other
+    // project's worktree is exactly as before.
+    submodules: {
+      sources: liveProjectSources,
+      plan: serveSubmodulePlan(config, new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) })),
+    },
   });
 
   try {
@@ -699,15 +754,37 @@ async function runDaemon(
         }
       : undefined;
 
+  // T9.6 (ADR-0028): push targets come from this process's configuration at push time and, since ADR-0069, from the
+  // in-force revision of an approved dynamic project whose creator may still push; the operator's Git configuration is
+  // used only by the controller's own `git push` (allowlisted environment, never the agent's). One pusher serves the
+  // agent `push` tool and MCP `publish_run`, so pushes of one meta-session run one at a time.
+  const resolvePushContext = projectPushContextResolver({
+    projects: config.projects,
+    store: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+    clients: config.mcpClients,
+  });
+  const pusher = new GitPusher({
+    db,
+    resolveContext: resolvePushContext,
+    sourceEnv: io.env,
+    secretScanAllow: config.secretScanAllow,
+    ids,
+    ...(now ? { now } : {}),
+  });
+
   // T9.4: commit intents left by a crash (ADR-0025), then socket directories of channels a crash left open (ADR-0026).
   let gitTools: GitToolService;
   let finalizePublisher: GitPublisher;
   try {
+    // ADR-0087 item 4: submodule stores live under project_sources.clone_root; without it attach records refuse.
+    const submoduleCloneRoot =
+      config.projectSources !== undefined ? { submoduleCloneRoot: config.projectSources.cloneRoot } : {};
     const publisher = new GitPublisher({
       db,
       scratchDir: path.join(config.dataDir, "git-scratch"),
       sanitizePatterns: config.sanitizePatterns,
       secretScanAllow: config.secretScanAllow,
+      ...submoduleCloneRoot,
       ids,
       ...(now ? { now } : {}),
     });
@@ -720,6 +797,7 @@ async function runDaemon(
       sanitizePatterns: config.sanitizePatterns,
       secretScanAllow: config.secretScanAllow,
       allowedStates: ["FINALIZING"],
+      ...submoduleCloneRoot,
       ids,
       ...(now ? { now } : {}),
     });
@@ -727,16 +805,7 @@ async function runDaemon(
       db,
       dataDir: config.dataDir,
       publisher,
-      // T9.6 (ADR-0028): push targets come from this process's configuration at push time; the operator's Git
-      // configuration is used only by the controller's own `git push` (allowlisted environment, never the agent's).
-      pusher: new GitPusher({
-        db,
-        resolveContext: pushContextResolver(config.projects),
-        sourceEnv: io.env,
-        secretScanAllow: config.secretScanAllow,
-        ids,
-        ...(now ? { now } : {}),
-      }),
+      pusher,
       shimCommand: defaultShimCommand(),
       innerAgent,
       innerSettingFor,
@@ -790,6 +859,7 @@ async function runDaemon(
           artifacts,
           dataDir: config.dataDir,
           days: config.retention.days,
+          ...(config.projectSources !== undefined ? { cloneRoot: config.projectSources.cloneRoot } : {}),
           ...(now ? { now: now() } : {}),
         });
         log.info("retention gc finished", {
@@ -806,6 +876,7 @@ async function runDaemon(
           db,
           dataDir: config.dataDir,
           days: config.retention.days,
+          ...(config.projectSources !== undefined ? { cloneRoot: config.projectSources.cloneRoot } : {}),
           ...(now ? { now: now() } : {}),
         });
         log.info("orphan gc finished", {
@@ -841,7 +912,13 @@ async function runDaemon(
           db,
           floor,
           reclaimers: earlySweepReclaimers({
-            gc: { db, artifacts, dataDir: config.dataDir, days: config.retention.days },
+            gc: {
+              db,
+              artifacts,
+              dataDir: config.dataDir,
+              days: config.retention.days,
+              ...(config.projectSources !== undefined ? { cloneRoot: config.projectSources.cloneRoot } : {}),
+            },
             enabled: config.retentionEnabled,
             ...(seeds !== undefined ? { seeds: seedReclaimer(seeds.store) } : {}),
           }),
@@ -984,6 +1061,12 @@ async function runDaemon(
     ledger,
     // T15.7 (FR-QUE-07, LLD §20.4): controller Git merges the current base into a rebase run's worktree before spawn.
     rebasePrep: (q) => prepareRebaseMerge(db, q),
+    // ADR-0071: projects' dependency setup step, in bubblewrap with network only through the allowlisting proxy.
+    projectSetup: createProjectSetup({
+      dataDir: config.dataDir,
+      baseEnv: io.env,
+      ...(outerSandbox ? { outerSandbox } : {}),
+    }),
     workspace,
     artifacts,
     adapters: registry,
@@ -1260,11 +1343,38 @@ async function runDaemon(
     const dynamic = mergeStore.state(projectId)?.inForce?.definition;
     return dynamic === undefined ? undefined : resolveGithubRemote(primaryContext(toResolved(dynamic)).path, remote);
   };
+  // ADR-0073 (LLD §20.7.1): the merge gate's controller-side Git read of a pull request's head and base, in the
+  // project's primary context repository (configured or dynamic in force), shared by the poller and the MCP tools.
+  const pullHeads = new GitPullHeadPort({
+    repoOf: (projectId) => {
+      const project = config.projects.find((p) => p.id === projectId);
+      if (project !== undefined) return primaryContext(project).path;
+      const dynamic = mergeStore.state(projectId)?.inForce?.definition;
+      return dynamic === undefined ? undefined : primaryContext(toResolved(dynamic)).path;
+    },
+    sourceEnv: io.env,
+  });
   // T15.8 (FR-SUB-01, FR-SUB-02, ADR-0048): ref and merge events reach the sinks as closed payloads, once per row.
   const onRefEvent: OnRefSinkEvent | undefined = sinks === undefined ? undefined : (e) => sinks.emit(e);
   // T15.8 (FR-SUB-02, LLD §20.7, ADR-0060): projects whose merge policy is on in the definition in force: configured
   // projects, and dynamic projects' revisions in force (a revision turning it on waits for operator approval).
   const mergeTargets = () => mergeTargetsFrom(config.projects, mergeStore);
+  // ADR-0087 item 7: the ordered merge of an umbrella with linked submodule pull requests, on both the poller and
+  // `merge_run_pr`: G19 on the same port, the shared pusher, the stores under `project_sources.clone_root`, and the
+  // primary context's identity (configured or dynamic in force) for the repoint commit.
+  const submoduleMergeDeps = (port: GhCiStatusPort): SubmoduleMergeDeps => ({
+    mergeState: port,
+    pusher,
+    sources: liveProjectSources,
+    identityOf: (projectId) => {
+      const project = config.projects.find((p) => p.id === projectId);
+      if (project !== undefined) return primaryContext(project).identity;
+      const dynamic = mergeStore.state(projectId)?.inForce?.definition;
+      return dynamic === undefined ? undefined : primaryContext(toResolved(dynamic)).identity;
+    },
+    scratchDir: path.join(config.dataDir, "git-scratch"),
+    secretScanAllow: config.secretScanAllow,
+  });
   const ciPort = ciTrigger.enabled
     ? new GhCiStatusPort({
         binary: ciTrigger.ghBinary,
@@ -1320,8 +1430,21 @@ async function runDaemon(
           merge: ciPort,
           targets: mergeTargets,
           resolveRemote: resolveCiRemote,
+          pullHeads,
           nowMs: () => (now ? now() : new Date()).getTime(),
           ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
+          linkedMerge: submoduleMergeHook(
+            {
+              db,
+              ledger,
+              merge: ciPort,
+              targets: mergeTargets,
+              pullHeads,
+              nowMs: () => (now ? now() : new Date()).getTime(),
+              ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
+            },
+            submoduleMergeDeps(ciPort),
+          ),
         },
       )
     : undefined;
@@ -1404,6 +1527,24 @@ async function runDaemon(
     ? scheduleRetentionGc(config.retention.intervalMs, () => void gcPass("interval"), undefined, log)
     : undefined;
 
+  // ADR-0070, ADR-0073: the G10 to G12 and G15 port of `merge_run_pr` and `update_run_branch`: the poller's, or, when
+  // `ci_trigger.enabled` is false, the same port on `ci_trigger.gh_binary`.
+  const mergeRunPort =
+    ciPort ??
+    new GhCiStatusPort({
+      binary: config.ciTrigger.ghBinary,
+      sourceEnv: io.env,
+      useCheckRunsFallback: config.ciTrigger.useCheckRunsFallback,
+    });
+
+  // ADR-0081: one Copilot quota reader (cache and single flight shared by stdio and every HTTP session), on the same
+  // `gh` binary as the CI port. Only when `capacity.copilot_quota` is on and the process entry supplied the reader.
+  const copilotQuota =
+    config.capacity.copilotQuota && io.copilotQuota !== undefined
+      ? io.copilotQuota({ binary: config.ciTrigger.ghBinary, sourceEnv: io.env })
+      : undefined;
+  const usageTerminal = fake.enabled ? undefined : io.providerUsageTerminal?.(probeRootFor(config.dataDir));
+
   let code = 0;
   try {
     const mcpDeps = {
@@ -1418,6 +1559,13 @@ async function runDaemon(
         // T9.9 (FR-PRJ-10, ADR-0030): no dynamic project inside the data directory; disabled providers are off-limits.
         dataDir: config.dataDir,
         providers: config.providers,
+        // ADR-0068: `create_project` may clone a `clone_url` only where the operator configured project_sources.
+        ...(config.projectSources !== undefined ? { projectSources: config.projectSources } : {}),
+        // ADR-0091 (FR-POL-12): the request defaults; absent keeps trust_profile required and V13 unchanged.
+        ...(config.defaultTrustProfile !== undefined ? { defaultTrustProfile: config.defaultTrustProfile } : {}),
+        ...(config.defaultPrivilegedScope !== undefined
+          ? { defaultPrivilegedScope: config.defaultPrivilegedScope }
+          : {}),
         // T5.6: handoff bundle bounds (`continuity.*`, LLD §15.4).
         continuity: config.continuity,
         // T6.3: `get_capacity` settings and slot limits (LLD §16.1, §16.3).
@@ -1429,7 +1577,26 @@ async function runDaemon(
         modelGroups: config.modelGroups,
       },
       ...(now ? { now } : {}),
+      ...(copilotQuota !== undefined ? { copilotQuota } : {}),
+      // ADR-0079 (FR-CAP-13): `get_capacity` reads provider-reported usage through each provider's own CLI.
+      providerUsage: {
+        runner: createProbeRunner(PROBE_ENV_ALLOWLIST),
+        cache: new ProviderUsageCache(),
+        // ADR-0079: the pseudo-terminal for TUI-only readers (Kimi Code) in `<data_dir>/probes`; only when the entry
+        // point supplies it, and never with the test fake switch on (Delegated: a test never starts a provider TUI).
+        ...(usageTerminal !== undefined ? { terminal: usageTerminal } : {}),
+      },
       projectStore: new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) }),
+      // ADR-0087 item 8: runtime owner grants; an approval widens `allowed_owners` at once (no restart).
+      ...(config.projectSources !== undefined
+        ? {
+            projectSourceGrants: new ProjectSourceGrantStore(db, {
+              ids,
+              config: config.projectSources,
+              ...(now ? { now } : {}),
+            }),
+          }
+        : {}),
       // T14.8 (FR-CTL-08, ADR-0047 2f): proxied decisions the transition hook does not announce reach the same sinks.
       ...(sinks !== undefined
         ? {
@@ -1448,6 +1615,9 @@ async function runDaemon(
             },
             // T14.9 (FR-CTL-10, ADR-0048): a revision waiting for the operator reaches the sinks as `approval_pending`
             // (a revision has no run; the project carries it). One revision row emits once.
+            // ADR-0087: a new owner request reaches the sinks as `approval_pending` (kind `project_source`, no project).
+            announcePendingSource: (a: PendingSourceAnnouncement) =>
+              sinks.emit({ projectId: NO_PROJECT_ID, eventKind: "approval_pending", reasonCode: a.kind, runId: null }),
             announcePendingRevision: (a: PendingRevisionAnnouncement) =>
               sinks.emit({
                 projectId: a.projectId,
@@ -1478,8 +1648,63 @@ async function runDaemon(
       // T16.9 (FR-SKL-08, LLD §19.9): the skill store under `<data_dir>/skills/`, read-only; absent unless
       // `skills.enabled`, so a disabled installation offers no skill tools.
       ...(config.skills.enabled ? { skills: { db, dataDir: config.dataDir, settings: config.skills } } : {}),
+      // ADR-0069 (LLD §3.4.12): `publish_run` for clients with `max_push_policy: branch`: the shared pusher, then a pull
+      // request through the operator's own `gh` login (`ci_trigger.gh_binary`, audited G13/G14 argv, ADR-0050).
+      publish: {
+        pusher,
+        resolveContext: resolvePushContext,
+        pulls: new GhPullRequestPort({ binary: config.ciTrigger.ghBinary, sourceEnv: io.env }),
+        // ADR-0087 item 6: umbrella projects (`submodules.mode: "recursive"`) publish their submodule commits first,
+        // with the pusher's secret-scan allowlist and the same allowlisted push environment (ADR-0028).
+        submodules: {
+          db,
+          plan: serveSubmodulePlan(config, new DynamicProjectStore(db, { ids, ...(now ? { now } : {}) })),
+          sources: liveProjectSources,
+          secretScanAllow: config.secretScanAllow,
+          sourceEnv: io.env,
+        },
+      },
+      // ADR-0074 (LLD §3.4.15): `refresh_project_base` and `rebase_session`, with the same allowlisted fetch environment
+      // as the first-worktree refresh and the controller's own push (ADR-0028).
+      // ADR-0087 item 3: for a recursive context, the fetched base's gitlinks are made present in their stores.
+      base: { db, ids, sourceEnv: io.env, submodules: { sources: liveProjectSources }, ...(now ? { now } : {}) },
+      // ADR-0070 (LLD §3.4.13): `merge_run_pr`, offered with `publish_run`: the T15.8 gate on the poller's port, or,
+      // when `ci_trigger.enabled` is false, the same G10 to G12 port on `ci_trigger.gh_binary`. Not limited to
+      // `ci_trigger.projects`; the project's own merge policy in force decides.
+      // ADR-0073 (LLD §3.4.14): and `update_run_branch` on the same port (G15) with the same pull-head reader.
+      mergeRun: {
+        db,
+        merge: mergeRunPort,
+        update: mergeRunPort,
+        pullHeads,
+        targets: mergeTargets,
+        resolveRemote: resolveCiRemote,
+        nowMs: () => (now ? now() : new Date()).getTime(),
+        ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
+        // ADR-0087 item 7: the ordered merge for a publication with linked submodule pull requests.
+        linkedMerge: submoduleMergeHook(
+          {
+            db,
+            ledger,
+            merge: mergeRunPort,
+            targets: mergeTargets,
+            pullHeads,
+            nowMs: () => (now ? now() : new Date()).getTime(),
+            ...(onRefEvent === undefined ? {} : { onEvent: onRefEvent }),
+          },
+          submoduleMergeDeps(mergeRunPort),
+        ),
+      },
     };
-    mcp = await startStdioServer({ ...mcpDeps, clientId });
+    // `list_oauth_clients` on stdio only, and only with the HTTP transport on: the HTTP servers below are built from
+    // `mcpDeps` without it (and `createSwitchboardServer` refuses it for any HTTP subject anyway).
+    mcp = await startStdioServer({
+      ...mcpDeps,
+      clientId,
+      ...(config.httpTransport !== undefined
+        ? { oauthAdmin: new OAuthAdmin(db, config.httpTransport, now ? { now } : {}) }
+        : {}),
+    });
     mcp.server.onclose = () => resolveStop("mcp transport closed");
     log.info("serving MCP on stdio", {
       client: clientId,
@@ -1495,6 +1720,10 @@ async function runDaemon(
     // One wrong-passphrase lockout for the OAuth consent page and the approval-link page (T14.10).
     const passphraseLimiter = new AttemptLimiter();
     const pairing = new PairingCodeStore(db, now ? { now } : {});
+    // One per-address lockout for both consent pages; `client_ip_header` is honoured only from a loopback peer.
+    const ipLimiter = new IpAttemptLimiter(config.httpTransport?.clientIpHeader);
+    // Durable audit of grants and revocations (`oauth_event`); never a token, code or passphrase.
+    const oauthAudit = new OAuthAuditLog(db, now ? { now } : {});
     httpListener = await startHttpTransport(config.httpTransport, {
       tokens: oauthTokens,
       onTokenRejected: (reason) => log.warn("refused an HTTP bearer token", { reason }),
@@ -1521,6 +1750,8 @@ async function runDaemon(
               cimd: new CimdFetcher(),
               pairing,
               limiter: passphraseLimiter,
+              ipLimiter,
+              audit: oauthAudit,
               ...(config.httpTransport.passphraseHash !== undefined
                 ? { passphraseHash: config.httpTransport.passphraseHash }
                 : {}),
@@ -1537,6 +1768,7 @@ async function runDaemon(
               links: consentLinks,
               pairing,
               limiter: passphraseLimiter,
+              ipLimiter,
               ...(config.httpTransport.passphraseHash !== undefined
                 ? { passphraseHash: config.httpTransport.passphraseHash }
                 : {}),

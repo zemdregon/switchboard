@@ -6,7 +6,11 @@
  * text is still never persisted (NFR-PRIV-02).
  *
  * - `git_write` (FR-GIT-01): the parsed command can create commits, move refs or push. Always enforced, bypass runs
- *   included (the owner keeps Git-write denial in bypass, ADR-0017); classified `PERMISSION_BLOCKED`.
+ *   included (the owner keeps Git-write denial in bypass, ADR-0017); classified `PERMISSION_BLOCKED`. ADR-0094: in an
+ *   approved bypass run the check runs in bypass mode, so `git fetch`, `git remote update`, `git ls-remote` and the
+ *   read forms of `git remote` are not writes, and a verb confined to the run's own checkout (`local`: `git commit`,
+ *   `git reset`, `git pull`, `git checkout -- <path>`, ...) is left to the provider's Git deny rules and the FR-GIT-03
+ *   ref check instead of failing the run.
  * - `provider_state` (FR-AUTH-01): the call names a path under a provider config or credential directory. Enforced for
  *   every run except an approved bypass run (owner decision 25 restricts nothing about bypass); classified
  *   `SANDBOX_VIOLATION`.
@@ -47,7 +51,7 @@ export function guardToolCall(
   // A shell tool's command line is `command` (transient) or, for adapters that keep it, the clipped `target`.
   const command = call.tool === "shell" ? (call.command ?? call.target) : undefined;
   if (command !== undefined) {
-    const git = gitWriteInCommand(command);
+    const git = gitWriteInCommand(command, { bypass: ctx.bypass });
     if (git?.level === "write") return { kind: "git_write", reason: git.reason };
   }
   if (ctx.bypass) return undefined;

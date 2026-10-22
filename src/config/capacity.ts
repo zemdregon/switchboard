@@ -14,6 +14,7 @@ import {
   DEFAULT_CAPACITY_CONFIDENCE_RUNS,
   DEFAULT_CAPACITY_QUEUE_HORIZON_SECONDS,
   DEFAULT_CAPACITY_WINDOW_SECONDS,
+  DEFAULT_COPILOT_QUOTA,
   DEFAULT_PACING_BURST_FRACTION,
   DEFAULT_PACING_MIN_CONFIDENCE,
   DEFAULT_PACING_MODE,
@@ -55,6 +56,8 @@ export interface CapacitySettings {
   queueHorizonSeconds: number;
   breaker: { failureThreshold: number; openSeconds: number };
   retry: { maxAttempts: number; baseMs: number; capMs: number };
+  /** `capacity.copilot_quota`: read the usage-only `copilot` quota through the operator's `gh` (default true). */
+  copilotQuota: boolean;
   /** Sorted by name; empty when only `pacing` is set. */
   subscriptions?: SubscriptionSettings[];
   pacing?: PacingSettings;
@@ -74,6 +77,7 @@ export function resolveCapacity(input: CapacityConfigInput | undefined): Capacit
       baseMs: input?.retry?.base_ms ?? DEFAULT_RETRY_BASE_MS,
       capMs: input?.retry?.cap_ms ?? DEFAULT_RETRY_CAP_MS,
     },
+    copilotQuota: input?.copilot_quota ?? DEFAULT_COPILOT_QUOTA,
   };
   if (input?.subscriptions === undefined && input?.pacing === undefined) return settings;
   settings.subscriptions = Object.entries(input.subscriptions ?? {})

@@ -39,6 +39,8 @@ export interface DecisionRequestRow {
   note: string | null;
   created_at: string;
   decided_at: string | null;
+  /** ADR-0068 (migration 0032): the normalised repository URL of an onboarding decision; NULL otherwise. */
+  onboarding_url: string | null;
 }
 
 export interface NewDecisionRequest {
@@ -50,6 +52,8 @@ export interface NewDecisionRequest {
   readonly recommendedOption: number;
   /** Work items in the `enqueue_work` shape (`{ request, priority }`), inserted only on resolution. */
   readonly enqueue: readonly unknown[];
+  /** ADR-0068: the normalised repository URL of an onboarding decision. */
+  readonly onboardingUrl?: string;
 }
 
 export interface DecisionListFilter {
@@ -80,7 +84,7 @@ export interface DecisionLedgerSlice {
 }
 
 const COLS = `id, project_id, work_item_id, requester_client_id, question, options_json, recommended_option,
-  enqueue_json, state, decided_option, decided_by, note, created_at, decided_at`;
+  enqueue_json, state, decided_option, decided_by, note, created_at, decided_at, onboarding_url`;
 
 export function createDecisionLedgerSlice(
   db: Database.Database,
@@ -95,8 +99,8 @@ export function createDecisionLedgerSlice(
       const id = ids.id("dec");
       db.prepare(
         `INSERT INTO decision_request (id, project_id, work_item_id, requester_client_id, question, options_json,
-           recommended_option, enqueue_json, state, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+           recommended_option, enqueue_json, state, created_at, onboarding_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
       ).run(
         id,
         input.projectId,
@@ -107,6 +111,7 @@ export function createDecisionLedgerSlice(
         input.recommendedOption,
         JSON.stringify(input.enqueue),
         ts(),
+        input.onboardingUrl ?? null,
       );
       return getDecision(id) as DecisionRequestRow;
     },
